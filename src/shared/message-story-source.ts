@@ -1,0 +1,1 @@
+export type MessageStorySource = { status: 'unavailable' } | { status: 'ready'; storyId: string; ownerId: string | null; ownerName: string; ownerType: 'user' | 'channel' | null; expiresAt: number | null }

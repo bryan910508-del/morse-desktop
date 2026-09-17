@@ -1,0 +1,4 @@
+/* Permission prompts in the Mac system language; the Korean base values live in package.json build.mac.extendInfo. */
+"NSMicrophoneUsageDescription" = "음성 메시지를 직접 녹음할 때 마이크를 사용합니다.";
+"NSCameraUsageDescription" = "영상 메시지를 직접 촬영할 때 카메라를 사용합니다.";
+"NSSpeechRecognitionUsageDescription" = "음성 메시지를 글자로 바꿀 때 음성 인식을 사용합니다.";

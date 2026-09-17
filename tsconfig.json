@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "useUnknownInCatchVariables": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": ["node", "electron-vite/node", "vite/client"],
+    // better-sqlite3-multiple-ciphers ships index.d.ts but its "exports" map names no types.
+    "paths": { "better-sqlite3-multiple-ciphers": ["./node_modules/better-sqlite3-multiple-ciphers/index.d.ts"] }
+  },
+  "include": ["src", "electron.vite.config.ts"]
+}

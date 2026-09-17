@@ -1,0 +1,20 @@
+node_modules/
+out/
+dist/
+.build-cache/
+.DS_Store
+*.log
+*.tsbuildinfo
+.env*
+!*.example
+vendor/morse-lzfse/build/
+resources/native/
+infrastructure/.private/
+
+# Local-only folders and tool settings
+무제/
+.claude/settings.local.json
+infrastructure/.firebase/
+
+# The public source export (its own git repository)
+release/public-source/

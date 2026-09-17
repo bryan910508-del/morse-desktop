@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>com.morse.messenger.desktop.media</string>
+	<key>CFBundleName</key>
+	<string>Morse</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>음성 메시지를 글자로 바꿀 때 음성 인식을 사용합니다.</string>
+</dict>
+</plist>

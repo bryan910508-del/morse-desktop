@@ -1,0 +1,367 @@
+.history-widget { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column }
+.history-widget .top-bar { gap: 2px; padding: 0 8px 0 8px }
+.top-bar-peer { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 8px 0 6px; border-radius: var(--r-control); text-align: left; -webkit-app-region: no-drag }
+.top-bar-peer:hover { background: var(--card-pressed) }
+.top-bar-peer .top-bar-title { padding: 0 }
+.top-bar-selection { flex: 1; padding: 0 8px; font-size: var(--t-body); font-weight: 600 }
+.history-banner { flex: none; margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--divider); background: var(--sheet); font-size: var(--t-caption); color: var(--text-medium) }
+
+.history { position: relative; flex: 1; min-height: 0; overflow: hidden }
+.history-background { position: absolute; inset: 0; overflow: hidden; pointer-events: none }
+.history-background-photo { display: block; width: 100%; height: 100%; object-fit: cover }
+.history-background-shade { position: absolute; inset: 0 }
+.history-scroll { position: absolute; inset: 0; overflow-x: hidden; overflow-y: auto; outline: none }
+.history-inner { position: relative; width: 100% }
+.history-row { position: absolute; top: 0; left: 0; width: 100% }
+/* chat.style msgServiceMargin 10/10/10/2 */
+.history-date { display: flex; justify-content: center; padding: 10px 10px 4px }
+.channel-post-card {
+  display: grid; gap: 8px; width: min(420px, 100%); padding: 8px; border-radius: var(--r-bubble);
+  background: var(--bubble-in); color: var(--text); text-align: left
+}
+.channel-post-card:hover { background: var(--card-pressed) }
+.channel-post-card .media-tile { width: 100%; border-radius: calc(var(--r-bubble) - 4px) }
+.channel-post-card-body { display: grid; gap: 2px; min-width: 0; padding: 0 4px 2px }
+.channel-post-card-body strong { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-caption); color: var(--accent) }
+.channel-post-card-text { font-size: var(--t-body); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere }
+.history-service { display: flex; justify-content: center; padding: 4px 16px }
+.history-service .service-pill { max-width: min(560px, 80%); line-height: 1.45; text-align: center; white-space: pre-wrap }
+/* chat.style historyUnreadBarHeight 32 */
+.history-unread-bar { display: grid; place-items: center; height: 32px; margin: 8px 0 6px; background: var(--card); color: var(--text-medium); font-size: var(--t-caption); font-weight: 600; box-shadow: 0 1px 0 var(--divider), 0 -1px 0 var(--divider) }
+.history-notice { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; pointer-events: none }
+.history-notice button { pointer-events: auto }
+.history-paging { position: absolute; top: 8px; left: 50%; transform: translateX(-50%) }
+
+/* chat.style msgMargin left 16, top 6, right 56, bottom 2; msgMarginTopAttached 0 */
+.history-message { position: relative; display: flex; flex-wrap: wrap; align-items: flex-end; padding: 6px var(--msg-margin-right) 2px var(--msg-margin-left) }
+.history-message.attached-top { padding-top: 0 }
+.history-message.own { justify-content: flex-end; padding-left: var(--msg-margin-right); padding-right: var(--msg-margin-left) }
+.history-message.selecting { padding-left: 52px; cursor: pointer }
+.history-message.selecting .bubble { pointer-events: none }
+.history-message.selected::before { content: ''; position: absolute; inset: 0; background: var(--accent-soft) }
+.history-check { position: absolute; left: 16px; bottom: 6px; z-index: 1 }
+.history-photo { flex: none; width: var(--msg-photo-skip); display: flex; align-items: flex-end }
+
+/* chat.style msgPadding 11/8, msgMaxWidth 430; corners: MorseChatBubbleClusterGeometry */
+.bubble {
+  position: relative; min-width: 0; max-width: min(var(--msg-max), 100%); padding: var(--msg-pad-y) var(--msg-pad-x);
+  border-radius: var(--r-bubble-standalone); background: var(--bubble-in); color: var(--text); box-shadow: 0 1px 1px rgb(0 0 0 / .06);
+  font-size: var(--message-font-size); line-height: 1.42; overflow-wrap: anywhere; cursor: default
+}
+.history-message.own .bubble { background: var(--accent); color: #fff }
+.history-message.peer.attached-top .bubble { border-top-left-radius: var(--r-bubble-merged) }
+.history-message.peer.attached-bottom .bubble { border-bottom-left-radius: var(--r-bubble-merged) }
+.history-message.own.attached-top .bubble { border-top-right-radius: var(--r-bubble-merged) }
+.history-message.own.attached-bottom .bubble { border-bottom-right-radius: var(--r-bubble-merged) }
+.history-message.highlight .bubble { animation: history-highlight 2.4s ease-out }
+@keyframes history-highlight { 0%, 40% { box-shadow: 0 0 0 3px var(--accent-border) } 100% { box-shadow: 0 1px 1px rgb(0 0 0 / .06) } }
+.bubble.encrypted { color: var(--text-weak); font-style: italic }
+.bubble-name { margin-bottom: 2px; font-size: var(--t-caption); font-weight: 600; color: var(--accent) }
+.bubble-label { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; font-size: 12px; opacity: .8 }
+.bubble-text { white-space: pre-wrap }
+.bubble-text em { font-style: normal; color: var(--text-weak) }
+.history-message.own .bubble-text em { color: rgb(255 255 255 / .8) }
+.bubble-link { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; cursor: pointer }
+.bubble-link:hover { text-decoration: underline }
+.history-message.own .bubble-link { color: #fff; text-decoration: underline }
+.history-message.selecting .bubble-link { pointer-events: none }
+/* MorseChatManualTextBubble link card: the first address's host and the address, or a shared channel's name. */
+.bubble-link-card { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 300px; margin: 6px 0 18px; padding: 6px 10px; border-radius: 12px; background: var(--accent-soft); color: var(--text); text-align: left }
+.bubble-link-card:hover:not(:disabled) { background: var(--accent-border) }
+.bubble-link-card.share { padding: 8px 10px }
+.bubble-link-card-icon { flex: none; color: var(--accent) }
+.bubble-link-card-text { display: flex; flex-direction: column; min-width: 0; flex: 1 }
+.bubble-link-card-text strong { font-size: 12px; font-weight: 600 }
+.bubble-link-card-text small { font-size: 11px; color: var(--text-weak) }
+.bubble-link-card-chevron { flex: none; opacity: .6 }
+.history-message.own .bubble-link-card { background: rgb(0 0 0 / .17); color: rgb(255 255 255 / .92) }
+.history-message.own .bubble-link-card:hover:not(:disabled) { background: rgb(0 0 0 / .24) }
+.history-message.own .bubble-link-card-icon { color: rgb(255 255 255 / .85) }
+.history-message.own .bubble-link-card-text small { color: rgb(255 255 255 / .68) }
+/* A message of emoji only stands without a bubble, as on iOS (MorseChatEmojiOnlyFreeformCluster). */
+.history-message .bubble.emoji-only { padding: 0 0 20px; background: transparent; box-shadow: none; color: var(--text) }
+.bubble-emoji { line-height: 1.12; white-space: pre-wrap }
+.history-message.own .bubble-emoji { text-align: right }
+.bubble.emoji-only .bubble-meta, .history-message.own .bubble.emoji-only .bubble-meta { right: 4px; bottom: 2px; color: var(--text-medium) }
+.history-message.own .bubble.emoji-only .bubble-meta .read { color: var(--read-check) }
+.history-message.own .bubble.emoji-only .bubble-quote { border-left-color: var(--accent); background: var(--bubble-in) }
+.history-message.own .bubble.emoji-only .bubble-quote strong { color: var(--accent) }
+.history-message.own .bubble.emoji-only .bubble-reactions button { background: var(--accent-soft); color: var(--accent) }
+.history-message.own .bubble.emoji-only .bubble-reactions button.selected { background: var(--accent); color: #fff }
+/* chat.style msgDateSpace: room for the time on the last line */
+.bubble-meta-space { display: inline-block; width: 62px; height: 1px }
+.bubble-meta-space.own { width: 80px }
+.bubble-meta-space.edited { width: 104px }
+.bubble-meta-space.edited.own { width: 122px }
+.bubble-meta { position: absolute; right: 10px; bottom: 6px; display: inline-flex; align-items: center; gap: 3px; font-size: 12px; line-height: 1; color: var(--text-weak); white-space: nowrap; pointer-events: none }
+.history-message.own .bubble-meta { color: rgb(255 255 255 / .78) }
+.bubble-meta .read { color: var(--read-check) }
+.history-message.own .bubble-meta .read { color: #fff }
+.bubble.media-only { padding: 4px }
+.bubble.media-only .media-grid { margin: 0 }
+.bubble.media-only .bubble-meta { right: 12px; bottom: 12px; padding: 4px 7px; border-radius: 10px; background: rgb(0 0 0 / .45); color: #fff }
+/* A round video message stands on its own, without a bubble, as in Telegram. */
+.history-message .bubble.round { padding: 0; background: transparent; box-shadow: none }
+.bubble.round .bubble-meta { right: 4px; bottom: 4px; padding: 4px 7px; border-radius: 10px; background: rgb(0 0 0 / .45); color: #fff }
+/* A caption another client put on a round video stays readable in a small bubble of its own under the circle. */
+.bubble.round .bubble-text { margin-top: 4px; padding: var(--msg-pad-y) var(--msg-pad-x); border-radius: var(--r-bubble-standalone); background: var(--bubble-in); color: var(--text) }
+.history-message.own .bubble.round .bubble-text { background: var(--accent); color: #fff }
+.round-video { position: relative; display: grid; place-items: center; width: min(240px, 56vw); max-width: 100%; aspect-ratio: 1; padding: 0; overflow: hidden;
+  border-radius: 50%; background: rgb(0 0 0 / .12); color: #fff; isolation: isolate }
+.round-video > img, .round-video > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 50% }
+.round-video-thumb { filter: blur(10px); transform: scale(1.1) }
+.round-video-thumb.sharp { filter: none; transform: none }
+.round-video-ring { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); pointer-events: none; z-index: 1 }
+.round-video-ring circle { fill: none; stroke: rgb(255 255 255 / .85); stroke-width: 2.5; stroke-linecap: round; transition: stroke-dashoffset .2s linear }
+.round-video.idle .round-video-ring, .round-video.loading .round-video-ring, .round-video.error .round-video-ring { opacity: 0 }
+.round-video-icon { position: relative; z-index: 2; display: grid; place-items: center; width: 54px; height: 54px; border-radius: 50%; background: rgb(0 0 0 / .45) }
+.round-video-time { position: absolute; z-index: 2; left: 50%; bottom: 14px; transform: translateX(-50%); padding: 1px 8px; border-radius: 9px; background: rgb(0 0 0 / .45); font-size: 12px; white-space: nowrap }
+
+.bubble-quote {
+  display: grid; gap: 1px; width: 100%; min-width: 0; margin: 2px 0 6px; padding: 4px 8px 4px 10px; border-left: 2px solid var(--accent);
+  border-radius: 4px 8px 8px 4px; background: var(--accent-soft); color: inherit; font-size: var(--t-caption); text-align: left
+}
+.bubble-quote strong { display: flex; align-items: center; gap: 4px; min-width: 0; font-weight: 600; color: var(--accent) }
+.bubble-quote span { opacity: .86 }
+button.bubble-quote:hover { background: var(--accent-border) }
+.history-message.own .bubble-quote { border-left-color: #fff; background: rgb(255 255 255 / .16) }
+.history-message.own .bubble-quote strong { color: #fff }
+
+.media-grid { display: grid; gap: 2px; width: min(320px, 56vw); margin: -4px -7px 4px; overflow: hidden; border-radius: 12px }
+.media-grid.count-1 { grid-template-columns: 1fr }
+.media-grid.count-2, .media-grid.count-3, .media-grid.count-4 { grid-template-columns: 1fr 1fr }
+.media-tile { display: grid; place-content: center; justify-items: center; gap: 6px; aspect-ratio: 4 / 3; background: rgb(0 0 0 / .08); color: inherit; font-size: 12px }
+.media-grid.count-1 .media-tile { aspect-ratio: 16 / 10 }
+.media-tile:hover:not(:disabled) { background: rgb(0 0 0 / .15) }
+/* Telegram's stripped placeholder: the tiny picture that came with the message, blurred, until the
+   picture itself is fetched - or for as long as automatic download stays off. */
+.media-tile.placeholder { position: relative }
+.media-tile .media-thumb { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: blur(10px); transform: scale(1.1) }
+/* A video thumbnail of 240px or more is drawn as it is, like Telegram Desktop's kUseNonBlurredThreshold. */
+.media-tile .media-thumb.sharp { filter: none; transform: none }
+.media-tile.placeholder > svg, .media-tile.placeholder > span { position: relative; z-index: 1; color: #fff; text-shadow: 0 1px 3px rgb(0 0 0 / .55) }
+/* Telegram's automatic media download fills the tile with the picture itself. */
+.media-tile img { width: 100%; height: 100%; object-fit: cover }
+.media-tile.previewed { background: transparent }
+.media-tile.previewed > span { position: absolute; margin: 6px; padding: 1px 6px; border-radius: 8px; background: rgb(0 0 0 / .45); color: #fff }
+.media-tile.previewed { position: relative; place-content: stretch; justify-items: stretch }
+/* A single photo keeps its own shape within the bubble; an album keeps the cropped mosaic. The
+   shape arrives as an inline ratio when the message carries the picture's size; without one the
+   tile keeps its usual shape, so a picture still loading never leaves an empty bubble. */
+.media-grid.count-1 .media-tile.previewed.single { max-height: 420px; min-height: 120px }
+.media-grid.count-1 .media-tile.previewed.single img { max-height: 420px; object-fit: contain }
+.history-message.own .media-tile { background: rgb(255 255 255 / .16) }
+.history-message.own .media-tile:hover:not(:disabled) { background: rgb(255 255 255 / .24) }
+
+.voice-message { display: flex; align-items: center; gap: 10px; min-width: 220px; padding: 2px 0 14px }
+.voice-message-play { flex: none; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: #fff }
+.history-message.own .voice-message-play { background: #fff; color: var(--accent) }
+.voice-message-body { display: grid; gap: 4px; min-width: 0 }
+.voice-message-wave { display: flex; align-items: center; gap: 2px; height: 22px }
+.voice-message-wave i { width: 2px; border-radius: 1px; background: color-mix(in srgb, currentColor 32%, transparent) }
+.voice-message-wave i.played { background: currentColor }
+.history-message.peer .voice-message-wave i.played { background: var(--accent) }
+.voice-message small { font-size: 12px; opacity: .78 }
+
+.file-message { display: flex; align-items: center; gap: 12px; min-width: 220px; padding: 2px 0 16px; text-align: left; color: inherit }
+.file-message-icon { flex: none; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: #fff }
+.history-message.own .file-message-icon { background: #fff; color: var(--accent) }
+.file-message-text { display: grid; gap: 2px; min-width: 0 }
+.file-message-text strong { font-size: var(--t-body); font-weight: 600 }
+.file-message-text small { font-size: 12px; opacity: .78 }
+
+.bubble-reactions { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 14px }
+.bubble-reactions button { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px; border-radius: 13px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600 }
+.bubble-reactions button span { font-size: 14px }
+.bubble-reactions button.selected { background: var(--accent); color: #fff }
+.history-message.own .bubble-reactions button { background: rgb(255 255 255 / .2); color: #fff }
+.history-message.own .bubble-reactions button.selected { background: #fff; color: var(--accent) }
+
+.bubble-progress { height: 3px; margin: 6px 0 14px; overflow: hidden; border-radius: 2px; background: rgb(255 255 255 / .3) }
+.bubble-progress i { display: block; height: 100%; background: #fff; transition: width .2s }
+.history-message.failed .bubble { background: color-mix(in srgb, var(--accent) 75%, var(--failed)) }
+.history-failed { align-self: center; margin-right: 6px; color: var(--failed) }
+.history-failed-reason { flex-basis: 100%; padding-top: 3px; font-size: 12px; color: var(--failed); text-align: right }
+
+/* chat_helpers.style historyToDownPosition 12/10, historyToDownBadgeSize 22 */
+.history-down { position: absolute; right: 12px; bottom: 10px; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; background: var(--card); color: var(--icon); box-shadow: var(--shadow-elevated) }
+.history-down span { position: absolute; top: -8px; left: 50%; transform: translateX(-50%); min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 700; line-height: 22px }
+
+.drop-overlay { position: absolute; inset: 0; z-index: 20; display: grid; grid-template-rows: 1fr 1fr; gap: 10px; padding: 12px; background: color-mix(in srgb, var(--window-bg) 90%, transparent) }
+.drop-zone { display: grid; place-content: center; justify-items: center; gap: 8px; border: 2px dashed var(--divider-strong); border-radius: var(--r-card); color: var(--text-weak); text-align: center }
+.drop-zone * { pointer-events: none }
+.drop-zone strong { font-size: var(--t-headline); font-weight: 600 }
+.drop-zone span { font-size: var(--t-caption) }
+.drop-zone.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent) }
+.drop-zone.disabled { grid-row: span 2 }
+
+.compose { flex: none; border-top: 1px solid var(--divider); background: var(--card) }
+.compose-bar { display: flex; align-items: center; gap: 12px; height: var(--reply-bar); padding: 0 8px 0 16px }
+.compose-bar-icon { flex: none; color: var(--accent) }
+.compose-bar-text { flex: 1; min-width: 0; display: grid; gap: 1px; padding-left: 10px; border-left: 2px solid var(--accent) }
+.compose-bar-text strong { font-size: var(--t-caption); font-weight: 600; color: var(--accent) }
+.compose-bar-text span { font-size: var(--t-caption); color: var(--text-medium) }
+.compose-bar.warning .compose-bar-icon, .compose-bar.warning .compose-bar-text strong { color: var(--warning) }
+.compose-bar.warning .compose-bar-text { border-left-color: var(--warning) }
+.compose-hint { margin: 0; padding: 6px 16px 0; font-size: var(--t-caption); color: var(--text-weak) }
+.compose-row { display: flex; align-items: flex-end; gap: 4px; min-height: 54px; padding: 7px 8px }
+.compose-row .icon-button { width: 40px; height: 40px }
+.compose-field {
+  flex: 1; min-width: 0; min-height: 40px; max-height: var(--compose-max); padding: 9px 14px; overflow-y: auto; resize: none;
+  border: 1px solid var(--composer-border); border-radius: 20px; background: var(--composer-fill); color: var(--composer-text);
+  font-size: var(--message-font-size); line-height: 1.42
+}
+.compose-field::placeholder { color: var(--composer-placeholder) }
+.compose-field:focus { border-color: var(--accent-border) }
+.compose-send { flex: none; width: 40px; height: 40px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: #fff }
+.compose-send:hover:not(:disabled) { background: var(--accent-pressed) }
+.compose-blocked { display: grid; place-items: center; min-height: 54px; padding: 8px 16px; font-size: var(--t-caption); color: var(--text-weak); text-align: center }
+
+.voice-record-bar { display: flex; align-items: center; gap: 10px; min-height: 54px; padding: 7px 8px 7px 20px }
+.voice-record-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--danger); transition: transform .1s }
+.voice-record-time { min-width: 64px; font-size: var(--t-body); font-weight: 600; font-variant-numeric: tabular-nums }
+.voice-record-hint { flex: 1; min-width: 0; font-size: var(--t-caption); color: var(--text-weak) }
+
+.reaction-strip { display: flex; gap: 2px }
+.reaction-strip button { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; font-size: 20px; transition: transform .1s, background-color .1s }
+.reaction-strip button:hover { background: var(--card-pressed); transform: scale(1.12) }
+
+/* Voice preview (ListenWrap) and kept voice draft. */
+.voice-record-bar.preview { padding-left: 8px }
+/* While the record button is held: nothing to press, only where to let go; the lock waits above. */
+.voice-record-bar.held { padding-right: 16px }
+.voice-record-lock { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); animation: record-lock-hint 1.2s ease-in-out infinite }
+@keyframes record-lock-hint { 0%, 100% { transform: translateY(0) } 50% { transform: translateY(-4px) } }
+/* The video message being recorded: the camera in a circle above the compose area, mirrored as a selfie view. */
+.round-record { position: relative }
+.round-record-circle { position: absolute; left: 50%; bottom: calc(100% + 16px); width: min(280px, 60vw); aspect-ratio: 1; transform: translateX(-50%); overflow: hidden; display: grid; place-items: center;
+  border-radius: 50%; background: #000; box-shadow: 0 8px 32px rgb(0 0 0 / .35); z-index: 5 }
+.round-record-circle video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1) }
+.voice-preview-play { flex: none; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: #fff }
+.voice-preview-play:disabled { opacity: .7 }
+.voice-preview-track { flex: 1; min-width: 40px; height: 4px; overflow: hidden; border-radius: 2px; background: color-mix(in srgb, var(--accent) 22%, transparent) }
+.voice-preview-track i { display: block; height: 100%; background: var(--accent) }
+.voice-draft-label { flex: none; font-size: var(--t-caption); color: var(--text-weak) }
+button.voice-message-play:disabled { opacity: .7 }
+
+/* Rows stay hidden until measured and scrolled into place on open. */
+.history-inner.settling { visibility: hidden }
+
+/* Pinned bar under the chat header (iOS BookmarkBar: accent line, kind, n/total, preview). */
+.pinned-bar { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 6px 16px; border: 0; border-bottom: 1px solid var(--divider); background: var(--window-bg); color: var(--text); text-align: left; cursor: pointer }
+.pinned-bar:hover { background: var(--card-pressed) }
+.pinned-bar-line { flex: none; width: 3px; height: 26px; border-radius: 2px; background: var(--accent) }
+.pinned-bar-text { flex: 1; min-width: 0; display: grid; gap: 2px }
+.pinned-bar-label { display: flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; color: var(--accent) }
+.pinned-bar-label small { margin-left: 4px; font-weight: 400; color: var(--text-weak) }
+.pinned-bar-preview { font-size: var(--t-body) }
+.pin-type-actions { display: grid; gap: 8px; margin-top: 12px }
+/* iOS DeleteConfirmOverlay: one row per choice with its icon and a line on what it does. */
+.delete-choice { display: grid; gap: 4px; margin-top: 8px }
+.delete-choice-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 8px; border-radius: 10px; text-align: left; color: var(--text) }
+.delete-choice-row:hover { background: var(--card-pressed) }
+.delete-choice-row > span:last-child { display: flex; flex-direction: column; gap: 2px }
+.delete-choice-row strong { font-size: 15px; font-weight: 600 }
+.delete-choice-row small { font-size: 13px; color: var(--text-weak) }
+.delete-choice-icon { display: grid; place-items: center; flex: none; width: 40px; height: 40px; border-radius: 14px; background: var(--divider) }
+.delete-choice-row.danger strong { color: var(--danger) }
+.delete-choice-row.danger .delete-choice-icon { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger) }
+
+/* Queued messages of this chat (scheduled / when online). */
+.deferred-bar { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 6px 16px; border: 0; border-bottom: 1px solid var(--divider); background: var(--window-bg); color: var(--accent); font-size: var(--t-caption); font-weight: 600; text-align: left; cursor: pointer }
+.deferred-bar:hover { background: var(--card-pressed) }
+.deferred-bar small.error, .deferred-row small.error { color: var(--danger); font-weight: 400 }
+.deferred-list { display: grid; gap: 4px; max-height: 360px; overflow-y: auto }
+.deferred-row { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--divider) }
+.deferred-row-text { flex: 1; min-width: 0; display: grid; gap: 2px }
+.deferred-row-text small { font-size: var(--t-caption); color: var(--text-weak) }
+.schedule-input { width: 100%; margin-top: 8px }
+
+/* Event sheet fields. */
+.event-field { display: grid; gap: 4px; margin-top: 12px; font-size: var(--t-caption); color: var(--text-weak) }
+.event-field .text-input { width: 100% }
+
+/* iOS MorseChatPlaybackHeaderView / Telegram Media::Player bar: what is playing, where, how fast. */
+.playback-bar { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 10px; border-bottom: 1px solid var(--divider); background: var(--window-bg) }
+.playback-bar-body { display: flex; flex-direction: column; flex: 1; min-width: 0 }
+.playback-bar-title { font-size: 13px; font-weight: 600; color: var(--text); text-align: left }
+.playback-bar-track { display: flex; align-items: center; gap: 8px }
+.playback-bar-track input { flex: 1; height: 14px; accent-color: var(--accent) }
+.playback-bar-track small { flex: none; font-size: 11px; color: var(--text-weak); font-variant-numeric: tabular-nums }
+.playback-bar-rate { min-width: 36px; height: 28px; border-radius: 8px; font-size: 12px; font-weight: 600; color: var(--text-medium) }
+.playback-bar-rate:hover { background: var(--card-pressed) }
+.bubble-reaction-faces { display: inline-flex; margin-left: 2px }
+.bubble-reaction-faces .avatar { border: 1.5px solid var(--bubble-in); font-size: 9px !important }
+.bubble-reaction-faces .avatar + .avatar { margin-left: -6px }
+.reaction-people { display: grid; gap: 2px; max-height: 360px; overflow-y: auto }
+.reaction-people-row { display: flex; align-items: center; gap: 12px; padding: 6px 2px; font-size: 15px }
+.reaction-people-row .ellipsis { flex: 1; min-width: 0 }
+.reaction-people-emoji { font-size: 18px }
+button.service-pill { cursor: pointer }
+.date-jump-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px }
+.date-jump-head strong { font-size: 15px; font-weight: 600 }
+.date-jump-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; text-align: center }
+.date-jump-weekday { padding: 4px 0; font-size: 12px; color: var(--text-weak) }
+.date-jump-day { height: 38px; border-radius: 50%; font-size: 14px; color: var(--text) }
+.date-jump-day:hover:not(:disabled) { background: var(--card-pressed) }
+.date-jump-day:disabled { color: var(--text-disabled) }
+.date-jump-day.today { color: var(--accent); font-weight: 700 }
+.date-jump-day.selected { background: var(--accent); color: #fff }
+/* iOS MorseGroupCategoryBar: topic chips in one scrolling row. */
+.category-bar { display: flex; gap: 6px; padding: 6px 12px; overflow-x: auto; border-bottom: 1px solid var(--divider); background: var(--window-bg); scrollbar-width: none }
+.category-bar button { flex: none; height: 28px; padding: 0 12px; border-radius: 14px; background: var(--card); color: var(--text-medium); font-size: 13px; white-space: nowrap }
+.category-bar button.active { background: var(--accent); color: #fff; font-weight: 600 }
+.voice-message-wrap { display: grid }
+.voice-transcribe { flex: none; align-self: flex-start; display: grid; place-items: center; width: 30px; height: 30px; margin-left: 4px; border-radius: 10px; background: color-mix(in srgb, currentColor 10%, transparent); color: inherit; opacity: .6 }
+.voice-transcribe.active, .voice-transcribe:hover:not(:disabled) { opacity: 1 }
+.voice-transcript { margin: -8px 0 16px; max-width: 360px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; opacity: .85 }
+/* iOS sticker message: 184px, drawn without a bubble. */
+.sticker-view { display: grid; place-items: center; width: 184px; height: 184px }
+.sticker-view img, .sticker-view video { width: 100%; height: 100%; object-fit: contain }
+.sticker-missing { font-size: 13px; color: var(--text-weak) }
+/* Telegram TabbedSelector / iOS MorseEntityKeyboard above the composer. */
+.compose-row { position: relative }
+.compose-entities.active { color: var(--accent) }
+.entity-panel { position: absolute; right: 8px; bottom: calc(100% + 8px); z-index: 30; display: flex; flex-direction: column; width: 360px; height: 380px; border-radius: 14px; background: var(--card); color: var(--text); box-shadow: var(--shadow-floating); overflow: hidden }
+.entity-tabs { display: flex; gap: 4px; padding: 8px; border-bottom: 1px solid var(--divider) }
+.entity-tabs button { flex: 1; height: 30px; border-radius: 8px; font-size: 13px; color: var(--text-weak) }
+.entity-tabs button.active { background: var(--accent-soft); color: var(--accent); font-weight: 600 }
+.entity-emoji { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; padding: 8px; overflow-y: auto }
+.entity-emoji button { height: 38px; border-radius: 8px; font-size: 24px; line-height: 1 }
+.entity-emoji button:hover { background: var(--card-pressed) }
+.entity-stickers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 8px; overflow-y: auto; align-content: start }
+.entity-sticker, .entity-create { aspect-ratio: 1; border-radius: 10px; display: grid; place-items: center; padding: 4px }
+.entity-sticker:hover { background: var(--card-pressed) }
+.entity-sticker img, .entity-sticker video { width: 100%; height: 100%; object-fit: contain }
+.entity-create { gap: 2px; background: var(--accent-soft); color: var(--accent); font-size: 11px; text-align: center }
+.entity-empty { grid-column: 1 / -1; margin: 12px 4px; font-size: 13px; color: var(--text-weak); text-align: center }
+/* Telegram sticker pack tabs: favorites (★) then the installed sets, one thumbnail each. */
+.entity-pack-strip { display: flex; gap: 4px; padding: 6px 8px; border-bottom: 1px solid var(--divider); overflow-x: auto; flex: none }
+.entity-pack-strip button { flex: none; width: 36px; height: 36px; border-radius: 8px; display: grid; place-items: center; padding: 3px; color: var(--text-weak) }
+.entity-pack-strip button.active { background: var(--accent-soft); color: var(--accent) }
+.entity-pack-strip button img, .entity-pack-strip button video { width: 100%; height: 100%; object-fit: contain }
+.sticker-view[role="button"] { cursor: pointer }
+/* Telegram StickerPackScreen (sticker-pack-sheet.tsx). */
+.sticker-pack-sub { margin: 0 0 8px; font-size: 12px; color: var(--text-weak) }
+.sticker-pack-loading { display: grid; place-items: center; height: 160px }
+.sticker-pack-empty { margin: 24px 0; font-size: 13px; color: var(--text-weak); text-align: center }
+.sticker-pack-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; max-height: 360px; overflow-y: auto }
+.sticker-pack-item { aspect-ratio: 1; border-radius: 10px; display: grid; place-items: center; padding: 6px }
+.sticker-pack-item:hover:not(:disabled) { background: var(--card-pressed) }
+.sticker-pack-item.highlighted { background: var(--accent-soft) }
+.sticker-pack-item img, .sticker-pack-item video { width: 100%; height: 100%; object-fit: contain }
+.sticker-crop { background-color: #d9d9d9; background-repeat: no-repeat }
+.sticker-crop-video { position: relative; overflow: hidden }
+.sticker-crop-video video { position: absolute; max-width: none; pointer-events: none }
+.sticker-editor-preview { display: grid; place-items: center; height: 280px }
+.sticker-editor-preview img, .sticker-editor-preview video { max-width: 100%; max-height: 100%; object-fit: contain }
+.sticker-editor-actions { display: flex; justify-content: center; gap: 8px; margin-top: 8px }
+/* The sticker editor's destination step. */
+.sticker-destinations { display: grid; gap: 2px }
+.sticker-destination { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 8px 10px; border-radius: var(--r-control); color: var(--text); text-align: left }
+.sticker-destination:hover:not(:disabled) { background: var(--card-pressed) }
+.sticker-destination:disabled { opacity: .5 }
+.sticker-destination svg { flex: none; color: var(--accent) }
+.sticker-destination span { flex: 1; min-width: 0 }
+.sticker-destination small { color: var(--text-weak); font-size: var(--t-caption2) }
+.sticker-destination-loading { display: grid; place-items: center; min-height: 44px }

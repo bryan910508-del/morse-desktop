@@ -1,0 +1,4 @@
+/* Permission prompts in the Mac system language; the Korean base values live in package.json build.mac.extendInfo. */
+"NSMicrophoneUsageDescription" = "Morse использует микрофон, когда вы записываете голосовые сообщения.";
+"NSCameraUsageDescription" = "Morse использует камеру, когда вы записываете видеосообщения.";
+"NSSpeechRecognitionUsageDescription" = "Morse использует распознавание речи, чтобы превращать голосовые сообщения в текст.";

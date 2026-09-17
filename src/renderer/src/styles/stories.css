@@ -1,0 +1,84 @@
+/* Dialogs::Stories row (storiesHeight 77, photo 42). */
+.stories-row { flex: none; display: flex; gap: 2px; height: 77px; padding: 6px 8px 0; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid var(--divider); scrollbar-width: none }
+.stories-row::-webkit-scrollbar { display: none }
+.story-peer { flex: none; display: grid; justify-items: center; align-content: start; gap: 4px; width: 62px; padding: 0; border-radius: var(--r-control) }
+.story-ring { display: grid; place-items: center; width: 48px; height: 48px; padding: 2px; border-radius: 50%; background: var(--divider) }
+.story-peer.unseen .story-ring { background: linear-gradient(135deg, var(--accent), #6985C1) }
+.story-ring > .avatar { box-shadow: 0 0 0 2px var(--card) }
+.story-peer-name { max-width: 60px; font-size: 11px; line-height: 14px; color: var(--text-weak) }
+.story-peer.unseen .story-peer-name { color: var(--text); font-weight: 500 }
+
+/* Media::Stories::View */
+.story-viewer { position: fixed; inset: 0; z-index: 110; display: flex; align-items: center; justify-content: center; gap: 16px; background: rgb(0 0 0 / .92); color: #fff; animation: morse-fade-in .15s ease-out }
+.story-viewer:focus-visible { outline: none }
+.story-close { position: absolute; top: 12px; right: 12px }
+.story-frame { position: relative; display: flex; flex-direction: column; height: min(92vh, 860px); aspect-ratio: 9 / 16; max-width: calc(100vw - 144px); overflow: hidden; border-radius: 14px; background: #000 }
+.story-progress { position: absolute; top: 8px; left: 8px; right: 8px; z-index: 3; display: flex; gap: 3px }
+.story-progress span { flex: 1; height: 2px; overflow: hidden; border-radius: 1px; background: rgb(255 255 255 / .35) }
+.story-progress i { display: block; height: 100%; background: #fff }
+.story-header { position: absolute; top: 16px; left: 10px; right: 6px; z-index: 3; display: flex; align-items: center; gap: 8px; text-shadow: 0 1px 2px rgb(0 0 0 / .45) }
+.story-header > span:not(.avatar) { flex: 1; min-width: 0; display: grid; gap: 1px }
+.story-header > .avatar { flex: none }
+.story-header strong { font-size: 13px; font-weight: 600 }
+.story-header small { font-size: 12px; opacity: .8 }
+.story-header .icon-button { color: #fff }
+.story-stage { flex: 1; min-height: 0; display: grid; place-items: center }
+.story-stage img, .story-stage video { width: 100%; height: 100%; object-fit: contain }
+.story-tap { position: absolute; top: 60px; bottom: 64px; z-index: 1; padding: 0; background: none; cursor: default }
+.story-tap.previous { left: 0; width: 35% }
+.story-tap.next { right: 0; width: 65% }
+.story-caption { position: absolute; left: 0; right: 0; bottom: 58px; z-index: 2; max-height: 30%; margin: 0; padding: 28px 14px 10px; overflow-y: auto; background: linear-gradient(transparent, rgb(0 0 0 / .65)); font-size: 14px; line-height: 1.45; white-space: pre-wrap; word-break: break-word }
+.story-reactions { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; display: flex; justify-content: center; gap: 6px; padding: 8px 10px 12px; background: rgb(0 0 0 / .65) }
+.story-reactions button { width: 38px; height: 38px; border-radius: 50%; font-size: 20px; line-height: 1 }
+.story-reactions button:hover:not(:disabled) { background: rgb(255 255 255 / .14) }
+.story-reactions button:disabled { opacity: .5 }
+.story-nav { flex: none; width: 48px; height: 96px; display: grid; place-items: center; color: #fff; opacity: .6 }
+.story-nav:hover { opacity: 1 }
+.story-nav.hidden { visibility: hidden }
+
+/* Own stories: ring, views and audience bar. */
+.story-peer.own .story-ring { background: linear-gradient(135deg, var(--accent), #6985C1) }
+.story-peer.own .story-peer-name { color: var(--text); font-weight: 500 }
+.story-owner-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 8px; padding: 8px 10px 12px; background: rgb(0 0 0 / .65) }
+.story-owner-views { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 17px; color: #fff; font-size: 13px; font-weight: 500 }
+.story-owner-views:hover:not(:disabled) { background: rgb(255 255 255 / .14) }
+.story-owner-views:disabled { opacity: .6 }
+.story-owner-privacy { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-size: 12px; opacity: .85 }
+.story-owner-bar .icon-button { color: #fff }
+.story-viewer-reaction { flex: none; font-size: 18px }
+
+/* Add story entry and composer. */
+.story-peer.add .story-ring { background: var(--card); box-shadow: inset 0 0 0 2px var(--divider) }
+.story-add-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 50%; background: var(--sheet); color: var(--accent) }
+.story-compose-photo { display: grid; justify-items: center; gap: 10px; margin-bottom: 12px }
+.story-compose-photo img, .story-compose-empty { width: 180px; max-width: 100%; aspect-ratio: 9 / 16; border-radius: var(--r-control); background: var(--sheet); object-fit: contain }
+.story-compose-empty { display: grid; place-items: center; align-content: center; gap: 8px; padding: 12px; color: var(--text-weak); font-size: var(--t-caption); text-align: center }
+.story-compose-privacy { display: flex; gap: 6px; margin-top: 10px }
+.story-compose-option { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 36px; border-radius: var(--r-control); background: var(--sheet); color: var(--text-medium); font-size: var(--t-caption); font-weight: 500 }
+.story-compose-option.active { background: var(--accent-soft); color: var(--accent) }
+.story-compose-option:disabled { opacity: .6 }
+
+/* Story reply bar above the reactions. */
+.story-bottom { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; display: grid; gap: 4px; padding: 10px 10px 12px; background: rgb(0 0 0 / .65) }
+.story-bottom .story-reactions { position: static; padding: 0; background: none }
+.story-reply { display: flex; align-items: center; gap: 6px }
+.story-reply-field { flex: 1; min-width: 0; height: 36px; padding: 0 14px; border: 1px solid rgb(255 255 255 / .3); border-radius: 18px; background: rgb(255 255 255 / .08); color: #fff; font: inherit; font-size: 14px; outline: none }
+.story-reply-field::placeholder { color: rgb(255 255 255 / .6) }
+.story-reply-field:focus { border-color: rgb(255 255 255 / .6) }
+.story-reply-send { flex: none; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: #fff }
+.story-reply-send:disabled { opacity: .5 }
+.story-caption.with-reply { bottom: 104px }
+.story-tap { bottom: 110px }
+
+/* Story composer: video poster badge, media buttons and sound row. */
+.story-compose-preview { position: relative; display: block; max-width: 100% }
+.story-compose-badge { position: absolute; left: 8px; bottom: 8px; display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 10px; background: rgb(0 0 0 / .55); color: #fff; font-size: 12px; font-variant-numeric: tabular-nums }
+.story-compose-media-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px }
+.story-compose-sound { display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 12px; border-radius: 8px; background: var(--card-pressed); font-size: var(--t-body) }
+.story-compose-sound span { flex: 1 }
+
+/* Link found in a story caption. */
+.story-caption-link { display: inline-flex; align-items: center; gap: 4px; margin-left: 8px; padding: 0; color: #8fc1ff; font-size: 13px; pointer-events: auto }
+
+/* Reaction already sent to this story. */
+.story-reactions button.selected { background: rgb(255 255 255 / .22); box-shadow: inset 0 0 0 2px rgb(255 255 255 / .55) }

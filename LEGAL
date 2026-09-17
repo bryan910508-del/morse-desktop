@@ -1,0 +1,34 @@
+Morse Desktop
+Copyright (C) 2026 Morse
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program (LICENSE). If not, see <https://www.gnu.org/licenses/>.
+
+Portions of this program are derived from Telegram Desktop,
+the official desktop application for the Telegram messaging service:
+https://github.com/telegramdesktop/tdesktop (version 7.2.8, commit 272f6f5c).
+
+  Copyright (c) 2014-2026 The Telegram Desktop Authors.
+
+  Telegram Desktop is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  In addition, as a special exception, the copyright holders give permission
+  to link the code of portions of this program with the OpenSSL library.
+
+Files derived from Telegram Desktop keep the original copyright notice.
+
+Source distribution note: secret material is not part of the corresponding
+source. Never publish infrastructure/.private/ or any .env files.

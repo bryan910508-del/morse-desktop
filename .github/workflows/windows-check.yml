@@ -1,0 +1,26 @@
+# Builds the Windows installer without publishing anything, so the Windows build is known to work before a release
+# tag starts release-windows.yml. It runs when the windows-check branch is pushed (or by hand) and keeps the installer
+# as a workflow artifact for a week.
+name: Windows check
+on:
+  push:
+    branches: [windows-check]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      - run: npx electron-builder --config electron-builder.release.cjs --win --x64 --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: morse-windows-setup
+          path: dist/Morse-Setup-x64.exe
+          retention-days: 7

@@ -1,0 +1,78 @@
+.avatar {
+  position: relative; display: inline-grid; place-items: center; flex: none; overflow: hidden; border-radius: 50%;
+  background: var(--avatar-fill); color: #fff; font-weight: 700; line-height: 1
+}
+.avatar > .avatar-initials, .avatar > img { grid-area: 1 / 1 }
+.avatar img { width: 100%; height: 100%; object-fit: cover; display: block }
+.avatar img.pending { opacity: 0 }
+.avatar.saved { background: var(--accent) }
+.avatar.secret { background: var(--secret) }
+.avatar.deleted { background: var(--text-disabled) }
+.avatar.channel { background: linear-gradient(160deg, var(--wave-icon), var(--wave-deep)) }
+
+.layer { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: var(--layer-bg); animation: morse-fade-in .15s ease-out }
+.layer[inert] { pointer-events: none }
+.box {
+  display: flex; flex-direction: column; max-width: 100%; max-height: min(760px, calc(100vh - 48px)); overflow: hidden;
+  border-radius: var(--r-sheet); background: var(--card); color: var(--text); box-shadow: var(--shadow-floating); animation: morse-box-in .16s ease-out
+}
+.box-title { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 12px 12px 4px 22px }
+.box-title h2 { flex: 1; margin: 0; font-size: var(--t-headline); font-weight: 600; line-height: 1.3 }
+.box-content { flex: 1; min-height: 0; overflow: auto; padding: 6px 22px 14px }
+.box-content > * + * { margin-top: 12px }
+.box-buttons { display: flex; justify-content: flex-end; gap: 4px; padding: 6px 12px 12px }
+.box-text { margin: 2px 0 6px; font-size: var(--t-body); line-height: 1.55; color: var(--text-medium); white-space: pre-wrap; user-select: text }
+.box-note { margin: 0; font-size: var(--t-caption); line-height: 1.5; color: var(--text-weak) }
+.box-error { margin: 0; font-size: var(--t-caption); color: var(--danger) }
+
+.toasts { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 250; display: grid; gap: 8px; justify-items: center; pointer-events: none }
+.toast {
+  display: flex; align-items: center; gap: 14px; max-width: min(480px, calc(100vw - 32px)); padding: 10px 16px; border-radius: var(--r-control);
+  background: rgb(23 25 29 / .9); color: #fff; font-size: var(--t-caption); line-height: 1.45; box-shadow: var(--shadow-elevated); pointer-events: auto;
+  animation: morse-fade-in .15s ease-out
+}
+.toast.error { background: color-mix(in srgb, var(--danger) 90%, #000) }
+.toast button { flex: none; color: #9CCBFF; font-weight: 600 }
+
+.popup-menu {
+  position: fixed; z-index: 300; min-width: 208px; max-width: 320px; padding: 6px 0; border-radius: var(--r-list);
+  background: var(--card); color: var(--text); box-shadow: var(--shadow-floating); animation: morse-fade-in .08s ease-out
+}
+.popup-menu:focus-visible { outline: none }
+.popup-menu-header { padding: 2px 8px 6px; margin-bottom: 4px; border-bottom: 1px solid var(--divider) }
+.popup-menu button[role=menuitem] {
+  display: flex; align-items: center; gap: 14px; width: 100%; min-height: 36px; padding: 0 18px 0 16px;
+  text-align: left; font-size: var(--t-body); color: var(--text)
+}
+.popup-menu button[role=menuitem] svg { flex: none; color: var(--icon-muted) }
+.popup-menu button[role=menuitem]:hover:not(:disabled), .popup-menu button[role=menuitem]:focus-visible { background: var(--card-pressed); outline: none }
+.popup-menu button[role=menuitem].danger, .popup-menu button[role=menuitem].danger svg { color: var(--danger) }
+.popup-menu hr { height: 1px; margin: 5px 0; border: 0; background: var(--divider) }
+
+.list-button {
+  display: flex; align-items: center; gap: 16px; width: 100%; min-height: 48px; padding: 6px 20px;
+  text-align: left; color: var(--text); font-size: var(--t-body); transition: background-color .12s
+}
+.list-button:hover:not(:disabled) { background: var(--card-pressed) }
+.list-button-icon { display: grid; place-items: center; width: 24px; color: var(--icon-muted); flex: none }
+.list-button-text { display: grid; flex: 1; min-width: 0; gap: 2px }
+.list-button-text small { font-size: var(--t-caption); color: var(--text-weak) }
+.list-button.danger, .list-button.danger .list-button-icon { color: var(--danger) }
+
+.section-divider { height: 8px; background: var(--window-bg); border-top: 1px solid var(--divider); border-bottom: 1px solid var(--divider) }
+.section-label { padding: 14px 20px 6px; font-size: var(--t-caption); font-weight: 600; color: var(--accent) }
+.empty-state { display: grid; place-items: center; gap: 10px; padding: 32px 24px; text-align: center; color: var(--text-weak); font-size: var(--t-caption); line-height: 1.5 }
+.service-pill {
+  display: inline-block; padding: 4px 12px; border-radius: 14px; background: rgb(0 0 0 / .32); color: #fff;
+  font-size: var(--t-caption); font-weight: 500; backdrop-filter: blur(8px)
+}
+:root[data-theme=light] .service-pill { background: rgb(23 25 29 / .38) }
+/* iOS ProfileShareSheet. */
+.profile-share { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center }
+.profile-share strong { margin-top: 8px; font-size: 20px; font-weight: 700 }
+.profile-share > span { font-size: 13px; color: var(--text-medium) }
+.profile-share-qr { display: flex; flex-direction: column; align-items: center; gap: 10px; margin: 16px 0 8px; padding: 16px; border-radius: 16px; background: var(--card) }
+.profile-share-qr .qr-code { border-radius: 12px }
+.profile-share-qr small { font-size: 13px; color: var(--text-weak) }
+.profile-share-link { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 12px; border-radius: 12px; background: var(--card); color: var(--accent) }
+.profile-share-link span { flex: 1; min-width: 0; font-size: 13px; color: var(--text); text-align: left }

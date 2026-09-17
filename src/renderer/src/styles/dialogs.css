@@ -1,0 +1,68 @@
+.dialogs { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0 }
+.dialogs .top-bar { gap: 8px; padding: 0 12px 0 8px; border-bottom: 0 }
+.dialogs .search-field { flex: 1; min-width: 0 }
+.dialogs-connection { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 16px; font-size: var(--t-caption); color: var(--text-weak) }
+
+.dialogs-folders { flex: none; display: flex; gap: 2px; height: 40px; padding: 0 8px; overflow-x: auto; border-bottom: 1px solid var(--divider); scrollbar-width: none }
+.dialogs-folders::-webkit-scrollbar { display: none }
+.dialogs-folder {
+  position: relative; flex: none; display: flex; align-items: center; gap: 6px; height: 40px; padding: 0 10px;
+  font-size: var(--t-caption); font-weight: 600; color: var(--text-weak)
+}
+.dialogs-folder:hover { color: var(--text-medium) }
+.dialogs-folder[aria-selected=true] { color: var(--accent) }
+.dialogs-folder[aria-selected=true]::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: 0; height: 3px; border-radius: 3px 3px 0 0; background: var(--accent) }
+.dialogs-folder .count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--text-disabled); color: #fff; font-size: 11px; line-height: 18px; text-align: center }
+.dialogs-folder[aria-selected=true] .count { background: var(--accent) }
+
+.dialogs-subheader { flex: none; display: flex; align-items: center; gap: 6px; height: 48px; padding: 0 8px; border-bottom: 1px solid var(--divider); font-size: var(--t-body); font-weight: 600 }
+.dialogs-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden }
+.dialogs-virtual { position: relative; width: 100% }
+.dialogs-section-title { position: absolute; left: 0; right: 0; height: 32px; padding: 10px 16px 0; font-size: var(--t-caption); font-weight: 600; color: var(--text-weak) }
+
+/* dialogs.style defaultDialogRow: height 62, padding 10/8, photo 46, name top 10, text top 34, text left 68 */
+.dialog-row {
+  position: absolute; left: 0; right: 0; height: var(--dialog-row); display: flex; align-items: center; gap: 12px;
+  padding: 0 var(--dialog-pad-x); text-align: left; color: var(--text)
+}
+.dialog-row:hover { background: var(--card-pressed) }
+.dialog-row.active { background: var(--accent); color: #fff }
+.dialog-row-body { flex: 1; min-width: 0; display: grid; gap: 4px }
+.dialog-row-line { display: flex; align-items: center; gap: 5px; min-width: 0; height: 20px }
+.dialog-row-name { flex: 1; min-width: 0; font-size: var(--t-body); font-weight: 600; color: var(--list-title) }
+.dialog-row-kind { flex: none; color: var(--icon-muted) }
+.dialog-row-kind.secret { color: var(--secret) }
+.dialog-row-time { flex: none; font-size: 12px; color: var(--text-weak) }
+.dialog-row-time.sending { display: inline-flex; color: var(--text-weak) }
+.dialog-row-preview { flex: 1; min-width: 0; font-size: var(--t-caption); color: var(--text-weak) }
+.dialog-row-preview.draft b { font-weight: 500; color: var(--danger) }
+.dialog-row-preview.typing { color: var(--accent) }
+.dialog-row-status { flex: none; display: inline-flex; color: var(--icon-muted) }
+/* dialogs.style dialogsUnreadHeight 19, font 12 bold */
+.dialog-row-badge { flex: none; min-width: 19px; height: 19px; padding: 0 6px; border-radius: 10px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 700; line-height: 19px; text-align: center }
+.dialog-row-badge.muted { background: var(--swipe-mute) }
+.dialog-row-badge.mark { min-width: 10px; width: 10px; height: 10px; padding: 0 }
+.dialog-row.active :is(.dialog-row-name, .dialog-row-time, .dialog-row-preview, .dialog-row-kind, .dialog-row-status) { color: #fff }
+.dialog-row.active .dialog-row-badge { background: #fff; color: var(--accent) }
+.dialog-row.active .dialog-row-badge.muted { color: var(--swipe-mute) }
+.dialog-row .avatar-archive { background: var(--swipe-mute) }
+.dialogs-empty { display: grid; place-items: center; gap: 12px; padding: 40px 24px; text-align: center; color: var(--text-weak); font-size: var(--t-caption); line-height: 1.55 }
+.dialogs-empty strong { font-size: var(--t-body); color: var(--text-medium) }
+
+/* Morse chat folders (users/{uid}/folders). */
+.dialogs-folder-name { max-width: 160px }
+.folder-box .settings-toggle { padding-inline: 0 }
+.folder-row { display: flex; align-items: center; gap: 4px; min-height: 48px }
+.folder-row-main { flex: 1; min-width: 0; display: grid; gap: 2px; padding: 6px 4px; text-align: left; color: var(--text) }
+.folder-row-main small { font-size: var(--t-caption); color: var(--text-weak) }
+.folder-pick-row { width: 100% }
+.folder-pick-emoji { width: 42px; font-size: 22px; line-height: 42px; text-align: center }
+
+/* Online badge on a 1:1 row photo (iOS MorseListOnlineIndicator: primary fill, background ring). */
+.dialog-row-photo { position: relative; flex: none; display: inline-flex }
+.online-dot { position: absolute; right: 0; bottom: 0; width: 14px; height: 14px; border-radius: 50%; background: var(--accent); border: 2px solid var(--window-bg) }
+
+.dialog-row-reaction { flex: none; margin-left: 6px; font-size: 16px; line-height: 20px }
+/* st::dialogsUpdateButton: a full-width accent bar under the chat list. */
+.dialogs-update { flex: none; height: 48px; background: var(--accent); color: #fff; font-size: var(--t-body); font-weight: 600; text-transform: uppercase; letter-spacing: .02em }
+.dialogs-update:hover { background: var(--accent-pressed) }

@@ -1,0 +1,22 @@
+# Builds the Windows installer on GitHub's Windows runner and attaches it, with latest.yml for the updater, to the
+# release of the pushed tag (v<package.json version>). The Mac build is signed and notarized on the release Mac.
+name: Windows release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build
+      - run: npx electron-builder --config electron-builder.release.cjs --win --x64 --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

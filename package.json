@@ -1,0 +1,136 @@
+{
+  "name": "morse-messenger-desktop",
+  "version": "0.237.0",
+  "description": "Morse Messenger for macOS and Windows",
+  "author": "Morse",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "main": "out/main/boot.cjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "node scripts/compile-lzfse.cjs && node scripts/compile-firestore.cjs && node scripts/compile-translate.cjs && tsc --noEmit && node scripts/third-party-notices.cjs && electron-vite build",
+    "build:auth": "tsc --noEmit -p infrastructure/tsconfig.json && vite build --config infrastructure/proof.vite.config.ts && node infrastructure/hosting-assets.cjs",
+    "test:unit": "node scripts/run-unit-tests.cjs",
+    "build:mac": "npm run build && electron-builder --mac --dir --publish never",
+    "build:win": "node scripts/require-windows.cjs && npm run build && electron-builder --win --dir --publish never",
+    "prepare:dependencies": "node scripts/prepare-dependencies.cjs",
+    "dev": "electron-vite dev",
+    "release:mac": "npm run build && electron-builder --config electron-builder.release.cjs --mac --publish never && node scripts/notarize-dmg.cjs",
+    "release:win": "node scripts/require-windows.cjs && npm run build && electron-builder --config electron-builder.release.cjs --win --publish never"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "1.14.4",
+    "@grpc/proto-loader": "0.8.1",
+    "@tanstack/react-virtual": "3.14.12",
+    "better-sqlite3-multiple-ciphers": "13.0.3",
+    "electron-updater": "6.8.9",
+    "google-proto-files": "6.0.1",
+    "lucide-react": "1.45.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "socket.io-client": "4.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "44.3.0",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "firebase": "12.19.0",
+    "typescript": "7.0.2",
+    "vite": "7.3.6"
+  },
+  "build": {
+    "appId": "com.morse.messenger.desktop",
+    "productName": "Morse",
+    "directories": {
+      "output": "dist",
+      "buildResources": "resources"
+    },
+    "files": [
+      "LICENSE",
+      "LEGAL",
+      "out/**/*",
+      "resources/brand/morse.png",
+      "resources/THIRD_PARTY_NOTICES.txt",
+      "resources/firestore-v1.json",
+      "package.json",
+      "resources/native/*.node",
+      "resources/native/morse-translate",
+      "resources/native/morse-media",
+      "!node_modules/better-sqlite3-multiple-ciphers/{deps,src}/**/*",
+      "!node_modules/better-sqlite3-multiple-ciphers/prebuilds/{linux,linuxmusl}-*",
+      "!node_modules/better-sqlite3-multiple-ciphers/prebuilds/win32-arm64.node"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/better-sqlite3-multiple-ciphers/**/*",
+      "resources/native/*.node",
+      "resources/native/morse-translate",
+      "resources/native/morse-media"
+    ],
+    "npmRebuild": true,
+    "protocols": [
+      {
+        "name": "Morse",
+        "schemes": [
+          "morse",
+          "talky"
+        ]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.social-networking",
+      "identity": "Apple Development",
+      "icon": "resources/brand/morse.png",
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "음성 메시지를 직접 녹음할 때 마이크를 사용합니다.",
+        "NSCameraUsageDescription": "영상 메시지를 직접 촬영할 때 카메라를 사용합니다.",
+        "NSSpeechRecognitionUsageDescription": "음성 메시지를 글자로 바꿀 때 음성 인식을 사용합니다."
+      },
+      "extraResources": [
+        {
+          "from": "resources/locales/ko.lproj",
+          "to": "ko.lproj"
+        },
+        {
+          "from": "resources/locales/en.lproj",
+          "to": "en.lproj"
+        },
+        {
+          "from": "resources/locales/en_GB.lproj",
+          "to": "en_GB.lproj"
+        },
+        {
+          "from": "resources/locales/ru.lproj",
+          "to": "ru.lproj"
+        }
+      ],
+      "entitlements": "resources/entitlements.mac.plist",
+      "entitlementsInherit": "resources/entitlements.mac.plist"
+    },
+    "win": {
+      "icon": "resources/brand/morse.png",
+      "target": [
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  }
+}

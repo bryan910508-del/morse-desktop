@@ -1,0 +1,43 @@
+import { createHash } from 'node:crypto'
+import type { SendWire } from '../../shared/model'
+import { tr } from '../../shared/i18n'
+
+// The Railway server's canonical() (morse-message-authority.js) in its exact field order: the payloadDigest it
+// stores must equal this, or a send whose answer was lost is taken for a conflict when it is looked up.
+// IDs and transport flags are excluded.
+const stringFields = ['encryptedMediaMetadata', 'fileName', 'mediaUrl', 'thumbnailUrl', 'thumbData', 'videoCaption', 'imageCaption', 'categoryId', 'replyToId',
+  'replyStoryOwnerName', 'replyStoryThumbData', 'replyStoryOwnerType', 'replyStoryId', 'replyStoryOwnerId', 'replyStoryThumbnailUrl', 'replyStoryMediaType',
+  'replyStoryText', 'replyStoryChannelId', 'iv'] as const
+const numberFields = ['replyStoryExpiresAt', 'fileSize', 'videoDuration', 'videoWidthPx', 'videoHeightPx', 'mediaWidthPx', 'mediaHeightPx', 'voiceDuration'] as const
+const arrayFields = ['mediaKeys', 'imageWidthsPx', 'imageHeightsPx', 'voiceWaveform'] as const
+
+export function textDigest(wire: SendWire): string {
+  const source = wire as unknown as Record<string, unknown>
+  const canonical: Record<string, unknown> = { type: wire.type, text: wire.text, isSilent: wire.isSilent === true, isEncrypted: false }
+  for (const key of stringFields) if (typeof source[key] === 'string') canonical[key] = source[key]
+  for (const key of numberFields) if (source[key] !== undefined && source[key] !== null) canonical[key] = source[key]
+  for (const key of arrayFields) if (Array.isArray(source[key])) canonical[key] = source[key]
+  if (source.isCircleVideo === true) canonical.isCircleVideo = true
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
+}
+export const retryableRejections = new Set(['UNAUTHORIZED', 'SUSPENDED', 'CHAT_MISSING', 'NOT_PARTICIPANT', 'PEER_GONE', 'BLOCKED', 'POSTING_RESTRICTED'])
+// DIRECT_CHAT_EXISTS: the pair already has a dialog under another id (morse-message-authority.js). The list
+// receives that dialog; this room's message was not stored.
+export const definiteRejections = new Set([...retryableRejections, 'INVALID_PAYLOAD', 'REPLY_MESSAGE_NOT_FOUND', 'CONFLICT', 'DIRECT_CHAT_EXISTS'])
+export function deliveryReason(reason: string): string {
+  return ({ BLOCKED: tr('차단 상태로 전송할 수 없습니다.'), PEER_GONE: tr('상대 계정을 확인할 수 없습니다.'),
+    'upload-network': tr('첨부 업로드가 중단되었습니다. 다시 전송을 누르면 수신 위치를 확인합니다.'),
+    'upload-permission': tr('첨부를 올릴 권한을 확인하지 못했습니다. 계정과 대화 상태를 확인해 주세요.'),
+    'upload-conflict': tr('서버 첨부와 보관한 원본이 일치하지 않아 전송을 중단했습니다.'),
+    'upload-expired': tr('업로드 세션이 만료되었습니다. 이 대기를 정리하고 파일을 다시 첨부해 주세요.'),
+    'upload-metadata': tr('첨부 완료 정보를 확인하지 못했습니다. 다시 확인해 주세요.'),
+    POSTING_RESTRICTED: tr('이 대화에 게시할 권한이 없습니다.'), NOT_PARTICIPANT: tr('대화 참여 권한이 없습니다.'),
+    CHAT_MISSING: tr('대화를 찾을 수 없습니다.'), SUSPENDED: tr('현재 계정의 전송이 제한되어 있습니다.'),
+    REPLY_MESSAGE_NOT_FOUND: tr('답장 원본이 없어 전송되지 않았습니다. 최신 대화에서 다시 작성해 주세요.'),
+    UNAUTHORIZED: tr('로그인 상태를 다시 확인해 주세요.'), INVALID_PAYLOAD: tr('전송할 수 없는 내용입니다.'),
+    CONFLICT: tr('서버 기록과 전송 정보가 일치하지 않습니다.'),
+    DIRECT_CHAT_EXISTS: tr('이 상대와의 대화가 이미 있습니다. 대화 목록의 기존 대화에서 다시 보내 주세요.'),
+    'ack-pending': tr('전송 결과를 확인하고 있습니다.'),
+    'not-found': tr('전송 여부를 확인할 수 없습니다. 대화 기록을 확인해 주세요.'),
+    'lookup-failed': tr('서버 기록을 확인하지 못했습니다. 다시 확인해 주세요.') } as Record<string, string>)[reason] ?? tr('전송 결과를 확인해야 합니다.')
+}

@@ -1,0 +1,82 @@
+.boot { position: fixed; inset: 0; display: grid; place-content: center; justify-items: center; gap: 14px; background: var(--window-bg); color: var(--text-weak); text-align: center }
+.boot img { width: 72px; height: 72px; border-radius: 18px }
+.boot h1 { margin: 0; font-size: var(--t-headline); color: var(--text) }
+.boot p { margin: 0; font-size: var(--t-caption) }
+
+.window { display: flex; width: 100%; height: 100%; overflow: hidden; background: var(--window-bg) }
+.column-left { position: relative; flex: none; min-width: 0; height: 100%; display: flex; flex-direction: column; background: var(--card) }
+.window.one-column .column-left { flex: 1 }
+.column-resizer { position: relative; z-index: 5; flex: none; width: 1px; background: var(--divider-strong); cursor: col-resize }
+.column-resizer::before { content: ''; position: absolute; top: 0; bottom: 0; left: -4px; right: -4px }
+.column-main { position: relative; flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; overflow: hidden }
+.column-third { flex: none; min-width: 0; height: 100%; display: flex; flex-direction: column; border-left: 1px solid var(--divider-strong); background: var(--card) }
+.third-layer { position: fixed; inset: 0; z-index: 60; background: var(--layer-bg); animation: morse-fade-in .15s ease-out }
+.third-layer-panel {
+  position: absolute; top: 0; right: 0; bottom: 0; width: min(392px, 100vw); display: flex; flex-direction: column;
+  background: var(--card); box-shadow: var(--shadow-floating); animation: morse-slide-right .18s ease-out
+}
+.empty-main { flex: 1; display: grid; place-items: center; background: var(--window-bg) }
+
+.top-bar {
+  flex: none; height: var(--top-bar); display: flex; align-items: center; gap: 4px; padding: 0 8px 0 16px;
+  border-bottom: 1px solid var(--divider); background: var(--card); -webkit-app-region: drag
+}
+.top-bar :is(button, input, textarea, label, [role=button]) { -webkit-app-region: no-drag }
+.top-bar-title { flex: 1; min-width: 0; display: grid; gap: 1px; padding: 0 4px; text-align: left; -webkit-app-region: no-drag }
+.top-bar-title strong { font-size: var(--t-body); font-weight: 600; color: var(--text) }
+.top-bar-title span { font-size: var(--t-caption); color: var(--text-weak) }
+.top-bar-title span.online { color: var(--accent) }
+/* iOS ChatRoomChatHeader: «입력 중...» in the accent colour after a small dot. */
+.top-bar-title span.typing { display: inline-flex; align-items: center; gap: 4px; color: var(--accent) }
+.top-bar-title span.typing::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--accent) }
+
+.main-menu-layer { position: fixed; inset: 0; z-index: 90; background: var(--layer-bg); animation: morse-fade-in .15s ease-out }
+.main-menu {
+  position: absolute; top: 0; bottom: 0; left: 0; width: var(--main-menu-width); display: flex; flex-direction: column;
+  background: var(--card); box-shadow: var(--shadow-floating); animation: morse-slide-left .2s ease-out
+}
+.main-menu-cover {
+  position: relative; flex: none; height: var(--main-menu-cover); display: flex; flex-direction: column; justify-content: flex-end; gap: 10px;
+  padding: 18px 20px 16px; color: #fff; background: linear-gradient(160deg, var(--wave-mid), var(--wave-deep))
+}
+.main-menu-cover .avatar { box-shadow: 0 0 0 2px rgb(255 255 255 / .35) }
+.main-menu-account { display: grid; gap: 2px; min-width: 0; padding-right: 72px }
+.main-menu-account strong { font-size: var(--t-body); font-weight: 600 }
+.main-menu-account span { font-size: var(--t-caption); opacity: .8 }
+.main-menu-items { flex: 1; overflow: auto; padding: 8px 0 }
+.main-menu-item { display: flex; align-items: center; gap: 22px; width: 100%; height: 44px; padding: 0 22px; font-size: var(--t-body); color: var(--text); text-align: left }
+.main-menu-item svg { flex: none; color: var(--icon-muted) }
+.main-menu-item:hover { background: var(--card-pressed) }
+.main-menu-footer { flex: none; padding: 12px 22px 16px; font-size: var(--t-caption2); color: var(--text-weak) }
+
+.shortcut-group h3 { margin: 12px 0 6px; font-size: var(--t-caption); font-weight: 600; color: var(--accent) }
+.shortcut-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; font-size: var(--t-body) }
+.shortcut-row kbd { padding: 3px 8px; border-radius: 6px; background: var(--card-pressed); color: var(--text-medium); font: 600 var(--t-caption) var(--font) }
+
+/* Accounts: Window::MainMenu list and Settings::Information AccountsList. */
+.accounts-list { display: grid; padding: 4px 0; border-bottom: 1px solid var(--divider) }
+.accounts-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 48px; padding: 6px 18px; text-align: left; color: var(--text) }
+.accounts-row:hover { background: var(--card-pressed) }
+.accounts-row-text { flex: 1; min-width: 0; display: grid; gap: 1px }
+.accounts-row-text strong { font-size: var(--t-body); font-weight: 600 }
+.accounts-row-text small { font-size: var(--t-caption); color: var(--text-weak) }
+.accounts-row-text small.error { color: var(--danger) }
+.accounts-row-check { flex: none; color: var(--accent) }
+.accounts-row-badge { flex: none; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; line-height: 20px; text-align: center }
+.accounts-row-add { flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; color: var(--accent) }
+.accounts-list.settings { border-bottom: 0 }
+.accounts-list.settings .accounts-row { padding-inline: 20px }
+.accounts-list.settings .accounts-row-add { width: 42px; height: 42px }
+
+/* Last seen: online in the accent color (MorsePresenceStrings isOnlineActivity). */
+.top-bar-title span.online, .info-cover span.online, .peer-row-text small.online { color: var(--accent) }
+
+/* Window::MainMenu (tdesktop 272f6f5c): below the macOS title bar, accounts behind the cover arrow, night mode as a row. */
+.main-menu-userpic { width: max-content; border-radius: 50% }
+.main-menu-accounts-toggle { position: absolute; right: 12px; bottom: 16px; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; color: #fff; transition: transform .15s ease-out }
+.main-menu-accounts-toggle:hover { background: rgb(255 255 255 / .14) }
+.main-menu-accounts-toggle.open { transform: rotate(180deg) }
+.main-menu-separator { height: 1px; margin: 6px 0; background: var(--divider) }
+.main-menu-night-row { cursor: pointer }
+.main-menu-night-row > span { flex: 1 }
+.dialog-row .avatar-notes { background: var(--accent) }

@@ -1,0 +1,178 @@
+@font-face { font-family: Pretendard; src: url('/Pretendard-Regular.otf') format('opentype'); font-weight: 400; font-display: swap }
+@font-face { font-family: Pretendard; src: url('/Pretendard-Medium.otf') format('opentype'); font-weight: 500; font-display: swap }
+@font-face { font-family: Pretendard; src: url('/Pretendard-SemiBold.otf') format('opentype'); font-weight: 600; font-display: swap }
+@font-face { font-family: Pretendard; src: url('/Pretendard-Bold.otf') format('opentype'); font-weight: 700; font-display: swap }
+
+/* Identity: Morse iOS (MorseColor, DesignTokens, MorsePresentationPalette).
+   Structure metrics: Telegram Desktop 7.2.8 styles (window, dialogs, chat, info). */
+:root {
+  --font: Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  --accent: #007AFF;
+  --accent-soft: rgb(0 122 255 / .12);
+  --accent-border: rgb(0 122 255 / .24);
+  --accent-pressed: color-mix(in srgb, #007AFF 86%, #000);
+  --danger: #F04452;
+  --danger-soft: rgb(240 68 82 / .12);
+  --success: #16B26B;
+  --warning: #F5A623;
+  --secret: #8B5CF6;
+  --secret-soft: rgb(139 92 246 / .12);
+  --read-check: #64B5FF;
+  --failed: #FF3B30;
+  --swipe-mute: #94A3B8;
+  --swipe-pin: #A78BFA;
+  --swipe-unread: #60A5FA;
+  --wave-icon: #6985C1;
+  --wave-deep: #25448C;
+  --wave-mid: #4563A7;
+  --avatar-fill: #4F6EF7;
+
+  --r-chip: 8px;
+  --r-control: 10px;
+  --r-list: 12px;
+  --r-sheet: 14px;
+  --r-card: 16px;
+  --r-bubble: 20px;
+  /* MorseChatBubbleClusterGeometry standaloneRadius / mergedRadius */
+  --r-bubble-standalone: 16px;
+  --r-bubble-merged: 8px;
+
+  --s-xxs: 4px;
+  --s-xs: 8px;
+  --s-sm: 12px;
+  --s-md: 16px;
+  --s-lg: 20px;
+  --s-xl: 28px;
+  --s-xxl: 40px;
+  --s-xxxl: 56px;
+
+  --t-caption2: 11px;
+  --t-caption: 13px;
+  --t-body: 15px;
+  --t-headline: 17px;
+  --t-title3: 20px;
+  --t-title2: 24px;
+  --t-title1: 28px;
+
+  --shadow-card: 0 2px 10px rgb(0 0 0 / .08);
+  --shadow-elevated: 0 4px 16px rgb(0 0 0 / .15);
+  --shadow-floating: 0 6px 20px rgb(0 0 0 / .2);
+
+  /* window.style */
+  --column-left-min: 260px;
+  --column-left-max: 540px;
+  --column-main-min: 380px;
+  --column-third-min: 292px;
+  --column-third-max: 392px;
+  /* info.style topBarHeight, dialogs.style defaultDialogRow, dialogsStoriesFull */
+  --top-bar: 54px;
+  --dialog-row: 62px;
+  --dialog-photo: 46px;
+  --dialog-pad-x: 10px;
+  --dialog-text-left: 68px;
+  --stories-height: 77px;
+  --stories-photo: 42px;
+  /* chat.style msgMaxWidth, msgMinWidth, msgPadding, msgMargin, msgPhotoSize */
+  --msg-max: 430px;
+  --msg-min: 160px;
+  --msg-pad-y: 8px;
+  --msg-pad-x: 11px;
+  --msg-margin-left: 16px;
+  --msg-margin-right: 56px;
+  --msg-photo: 33px;
+  --msg-photo-skip: 40px;
+  /* chat_helpers.style historyReplyHeight, historyComposeFieldMaxHeight */
+  --reply-bar: 49px;
+  --compose-max: 224px;
+  /* window_main_menu.style mainMenuWidth, mainMenuCoverHeight; info.style infoDesiredWidth */
+  --main-menu-width: 274px;
+  --main-menu-cover: 134px;
+  --info-desired: 392px;
+
+  --message-font-size: 14px;
+}
+
+:root, :root[data-theme=light] {
+  color-scheme: light;
+  --window-bg: #F5F6F8;
+  --card: #FFFFFF;
+  --card-pressed: #E7EBF0;
+  --sheet: #F2F3F6;
+  --divider: rgb(212 216 223 / .72);
+  --divider-strong: #D4D8DF;
+  --text: #17191D;
+  --text-medium: #515C68;
+  --text-weak: #657180;
+  --text-disabled: #89929D;
+  --icon: #515C68;
+  --icon-muted: #657180;
+  --glass-tint: rgb(255 255 255 / .10);
+  --glass-border: rgb(101 113 128 / .24);
+  --composer-fill: rgb(255 255 255 / .90);
+  --composer-border: rgb(101 113 128 / .22);
+  --composer-text: #17191D;
+  --composer-placeholder: rgb(81 92 104 / .68);
+  --bubble-in: #FFFFFF;
+  --date-line: #D4D8DF;
+  --list-title: #17191D;
+  --channel-badge-fg: #075985;
+  --channel-badge-bg: rgb(186 230 253 / .65);
+  --layer-bg: rgb(0 0 0 / .4);
+}
+
+:root[data-theme=dark] {
+  color-scheme: dark;
+  --window-bg: #191B1F;
+  --card: #23262B;
+  --card-pressed: #2B2E33;
+  --sheet: #1E2126;
+  --divider: rgb(42 45 50 / .60);
+  --divider-strong: #2A2D32;
+  --text: #F1F3F5;
+  --text-medium: #B0B8C1;
+  --text-weak: #6B7684;
+  --text-disabled: #4E5560;
+  --icon: #B0B8C1;
+  --icon-muted: #6B7684;
+  --glass-tint: rgb(255 255 255 / .025);
+  --glass-border: rgb(255 255 255 / .18);
+  --composer-fill: rgb(35 38 43 / .82);
+  --composer-border: rgb(176 184 193 / .15);
+  --composer-text: #F1F3F5;
+  --composer-placeholder: rgb(176 184 193 / .70);
+  --bubble-in: rgb(42 45 50 / .85);
+  --date-line: #3A3A3A;
+  --list-title: #FFFFFF;
+  --channel-badge-fg: #7DD3FC;
+  --channel-badge-bg: rgb(12 74 110 / .65);
+  --layer-bg: rgb(0 0 0 / .55);
+}
+
+:root[data-theme=black] {
+  color-scheme: dark;
+  --window-bg: #000000;
+  --card: #161719;
+  --card-pressed: #222428;
+  --sheet: #101113;
+  --divider: rgb(48 50 56 / .62);
+  --divider-strong: #303238;
+  --text: #F5F6F8;
+  --text-medium: #B8C0CA;
+  --text-weak: #747E8B;
+  --text-disabled: #505761;
+  --icon: #B8C0CA;
+  --icon-muted: #747E8B;
+  --glass-tint: rgb(255 255 255 / .018);
+  --glass-border: rgb(255 255 255 / .16);
+  --composer-fill: rgb(22 23 25 / .86);
+  --composer-border: rgb(184 192 202 / .14);
+  --composer-text: #F5F6F8;
+  --composer-placeholder: rgb(184 192 202 / .68);
+  --bubble-in: rgb(22 23 25 / .90);
+  --date-line: #303238;
+  --list-title: #FFFFFF;
+  --channel-badge-fg: #7DD3FC;
+  --channel-badge-bg: rgb(12 74 110 / .65);
+  --layer-bg: rgb(0 0 0 / .6);
+}

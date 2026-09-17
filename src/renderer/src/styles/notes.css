@@ -1,0 +1,53 @@
+/* Morse space notes: list rows follow Dialogs::Row geometry. */
+.notes-widget { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--card) }
+.notes-title { flex: 1; min-width: 0; padding: 0 6px; font-size: var(--t-body); font-weight: 600 }
+.notes-search { flex: none; padding: 0 10px 8px; border-bottom: 1px solid var(--divider) }
+.note-row { display: grid; gap: 3px; width: 100%; height: 62px; padding: 9px 12px 9px 16px; text-align: left }
+.note-row:hover { background: var(--card-pressed) }
+.note-row.active { background: var(--accent); color: #fff }
+.note-row-line { display: flex; align-items: center; gap: 6px; min-width: 0 }
+.note-row-line strong { flex: 1; min-width: 0; font-size: var(--t-body); font-weight: 600 }
+.note-row-line time { flex: none; font-size: 12px; color: var(--text-weak) }
+.note-row-pin { flex: none; color: var(--icon-muted) }
+.note-row-preview { font-size: var(--t-caption); color: var(--text-weak) }
+.note-row.active .note-row-line time, .note-row.active .note-row-preview, .note-row.active .note-row-pin { color: rgb(255 255 255 / .8) }
+.notes-more { display: flex; justify-content: center; padding: 8px }
+
+.note-editor { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--card) }
+.note-editor-bar { flex: none; display: flex; align-items: center; gap: 12px; min-height: 40px; padding: 6px 16px; border-bottom: 1px solid var(--divider); background: var(--sheet); font-size: var(--t-caption); color: var(--text-medium) }
+.note-editor-bar span { flex: 1; min-width: 0 }
+.note-editor-body { flex: 1; min-height: 0; display: flex; flex-direction: column; width: min(100%, 720px); margin: 0 auto; padding: 20px 24px 24px; overflow-y: auto }
+.note-editor-title { width: 100%; margin: 0 0 12px; padding: 0; border: 0; background: none; color: var(--text); font: inherit; font-size: 22px; font-weight: 700; outline: none }
+.note-editor-text { flex: 1; min-height: 240px; width: 100%; padding: 0; border: 0; background: none; color: var(--text); font: inherit; font-size: var(--message-font-size, var(--t-body)); line-height: 1.6; resize: none; outline: none }
+.note-editor-title::placeholder, .note-editor-text::placeholder { color: var(--text-weak) }
+.note-editor-meta { flex: none; margin: 16px 0 0; font-size: 12px; color: var(--text-weak) }
+.note-editor-status { font-size: 12px; color: var(--text-weak) }
+
+/* Chat background box. */
+.background-preview { position: relative; display: flex; flex-direction: column; justify-content: flex-end; gap: 6px; height: 170px; margin-bottom: 8px; padding: 12px; overflow: hidden; border-radius: var(--r-control) }
+.background-preview .history-background { position: absolute; inset: 0 }
+.background-preview-bubble { position: relative; max-width: 70%; padding: 6px 11px; border-radius: 16px; font-size: 13px }
+.background-preview-bubble.in { align-self: flex-start; background: var(--bubble-in); color: var(--text) }
+.background-preview-bubble.out { align-self: flex-end; background: var(--accent); color: #fff }
+.background-inherit { display: flex; align-items: center; gap: 8px; width: 100%; height: 40px; margin-top: 8px; padding: 0 12px; border-radius: var(--r-control); background: var(--sheet); font-size: var(--t-body) }
+.background-inherit.active { background: var(--accent-soft); color: var(--accent) }
+.background-photo-actions { display: flex; gap: 8px; margin: 10px 0 4px }
+.background-photo-actions .button { flex: 1 }
+.background-slider { display: grid; grid-template-columns: 96px 1fr; align-items: center; gap: 12px; margin-top: 8px; font-size: var(--t-caption); color: var(--text-medium) }
+.background-slider input { accent-color: var(--accent) }
+.background-group { margin-top: 10px }
+.background-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 8px }
+.background-swatch { display: grid; gap: 4px; justify-items: center; padding: 0; font-size: 12px; color: var(--text-medium) }
+.background-swatch-paint { position: relative; display: grid; place-items: center; width: 100%; height: 56px; overflow: hidden; border-radius: var(--r-control); box-shadow: inset 0 0 0 1px var(--divider); color: #fff }
+.background-swatch-paint .history-background { position: absolute; inset: 0 }
+.background-swatch-paint svg { position: relative; filter: drop-shadow(0 1px 2px rgb(0 0 0 / .5)) }
+.background-swatch.active .background-swatch-paint { box-shadow: 0 0 0 2px var(--accent) }
+.background-swatch.active { color: var(--accent) }
+
+/* Settings storage page. */
+.storage-section { padding: 4px 0 8px }
+.storage-usage { margin: 0; padding: 0 22px 6px; font-size: var(--t-caption); color: var(--text-weak) }
+.storage-row { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 4px 12px 4px 22px }
+.storage-row-text { flex: 1; min-width: 0; display: grid; gap: 2px }
+.storage-row-text strong { font-size: var(--t-body); font-weight: 500 }
+.storage-row-text small { font-size: var(--t-caption); color: var(--text-weak) }

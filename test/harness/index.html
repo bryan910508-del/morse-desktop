@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Morse renderer harness</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- The preload gives the page its language before any module loads; the harness does the same for ?lang=. -->
+    <script>window.morse = { language: new URLSearchParams(location.search).get('lang') || 'ko' }</script>
+    <script type="module" src="./harness.ts"></script>
+  </body>
+</html>

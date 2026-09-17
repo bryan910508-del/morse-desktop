@@ -1,0 +1,16 @@
+{
+  "projectId": "talky-a38c3",
+  "projectNumber": "123713400904",
+  "origin": "https://morse-desktop-auth.web.app",
+  "siteKey": "6LcJ-LgtAAAAAJRQqOon3QrI1Lf7jbiimVoJX-7N",
+  "apps": {
+    "macOS": {
+      "appId": "1:123713400904:web:ab73d80da819443120e87d"
+    },
+    "Windows": {
+      "appId": "1:123713400904:web:ab2e7b5f2a4dfe3720e87d"
+    }
+  },
+  "authApiKey": "AIzaSyAddUgWttqZvBm1wUdLBr5ZLyGMwU5Qq4Y",
+  "proofApiKey": "AIzaSyAkMU5rKfl-4U852G550cPUTbHiM4YBUFY"
+}
