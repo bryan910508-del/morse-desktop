@@ -27,13 +27,15 @@ import { stickerSidePx } from '../../shared/stickers'
 import type { AttachmentDraft, VideoFacts } from '../../shared/uploads'
 import { callMorseFunction, MorseCallableFailure } from '../network/morse-callable'
 import type { PeoplePhotoResolver } from './channel-people-photos'
+import { ReactionUpdates } from './reaction-updates'
 import { tr } from '../../shared/i18n'
 
 interface Inquiry extends InquirySummary { role: InquiryRole; cutoff: number | null; autoDeleteSeconds: number; autoDeleteMyOnly: boolean; outboxRead: ReadCursor | null }
 interface ListState { request: InquiryListRequest; stop: (() => void) | null; value: InquiryListSnapshot }
 // The listened documents stay so an explicit photo selection can be resolved against the same row.
 interface ThreadState { request: InquiryThreadRequest; stop: (() => void) | null; roomStop: (() => void) | null; inquiry: Inquiry | null; marked: string; marking: boolean
-  rows: Map<string, FirestoreDocument>; value: InquiryThreadSnapshot; expiryTimer?: ReturnType<typeof setTimeout>; expired?: ExpiredMessages }
+  rows: Map<string, FirestoreDocument>; value: InquiryThreadSnapshot; expiryTimer?: ReturnType<typeof setTimeout>; expired?: ExpiredMessages
+  reactionUpdates: ReactionUpdates }
 
 const kinds: readonly string[] = ['text', 'image', 'video', 'voice', 'file', 'sticker', 'location', 'event']
 const labels: Record<string, string> = { image: tr('사진'), video: tr('동영상'), voice: tr('음성 메시지'), sticker: tr('스티커') }
@@ -244,7 +246,7 @@ export class ChannelInquiries {
 
   openThread(request: InquiryThreadRequest): void {
     this.closeThread()
-    const state: ThreadState = { request, stop: null, roomStop: null, inquiry: null, marked: '', marking: false, rows: new Map(),
+    const state: ThreadState = { request, stop: null, roomStop: null, inquiry: null, marked: '', marking: false, rows: new Map(), reactionUpdates: new ReactionUpdates(),
       value: { ...request, channelId: '', role: 'subscriber', title: '', channelName: '', status: 'loading', items: [], message: '', pinnedIds: [], autoDeleteSeconds: 0, autoDeleteMyOnly: false, scheduled: [], outboxRead: null } }
     this.thread = state
     this.changed()
@@ -290,7 +292,11 @@ export class ChannelInquiries {
           if (this.thread !== state || !state.inquiry) return
           const current = state.inquiry
           state.rows = new Map(rows)
-          const items = [...rows.values()].flatMap(row => { try { const item = decodeInquiryMessage(row, current, this.uid); return item && !this.hidden(current.id, item.id) ? [item] : [] } catch { return [] } })
+          const items = [...rows.values()].flatMap(row => { try {
+            const item = decodeInquiryMessage(row, current, this.uid)
+            const updated = item && !item.system ? state.reactionUpdates.reactions(item.id, row, this.uid) : null
+            return item && !this.hidden(current.id, item.id) ? [updated ? { ...item, reactions: updated } : item] : []
+          } catch { return [] } })
           items.sort((a, b) => (a.createdAt ?? Number.MAX_SAFE_INTEGER) - (b.createdAt ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id))
           state.value = { ...state.value, status: 'ready', items: attachInquiryReplies(items, state.value.title), message: '' }
           this.expireMessages(state)
@@ -654,6 +660,17 @@ export class ChannelInquiries {
     this.allowed()
     await setMessageReaction(this.auth, this.uid, { id: randomUUID(), chatId: inquiryQueueChatId(request.inquiryId), messageId: request.messageId, reactions: request.reactions },
       this.signal(), request.inquiryId)
+  }
+  // reactionUpdated for a message of the open room: its item takes the event's reactions until the document catches up.
+  reactionUpdated(inquiryId: string, messageId: string, map: Record<string, unknown>, version: number): void {
+    const state = this.thread
+    if (!state || this.closed || state.request.inquiryId !== inquiryId) return
+    const doc = state.rows.get(`${documents}/channelInquiries/${inquiryId}/messages/${messageId}`)
+    if (!doc || !state.reactionUpdates.remember(messageId, map, version, doc)) return
+    const reactions = state.reactionUpdates.reactions(messageId, doc, this.uid)
+    if (!reactions) return
+    state.value = { ...state.value, items: state.value.items.map(item => item.id === messageId ? { ...item, reactions } : item) }
+    this.changed()
   }
   async remove(request: InquiryTargetRequest): Promise<void> {
     const state = this.requireThread(request), item = state.value.items.find(entry => entry.id === request.messageId)

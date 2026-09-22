@@ -37,13 +37,24 @@ export function documentVersion(doc: FirestoreDocument): string {
 }
 export function messageReactions(doc: FirestoreDocument, uid: string, names: Record<string, string> = {}): ChatMessage['reactions'] {
   const map = mapField(doc.fields, 'reactions')
-  return Object.entries(map).flatMap(([emoji, value]) => {
+  return reactionsFromMap(Object.fromEntries(Object.entries(map).map(([emoji, value]) => {
     const users = object(value.arrayValue ?? {}).values
+    return [emoji, Array.isArray(users) ? users.map(item => object(item).stringValue) : null]
+  })), uid, names)
+}
+// A message's reactions as {emoji: [uid…]} — the document's map, or the full state a reactionUpdated event carries.
+export function reactionsFromMap(map: Record<string, unknown>, uid: string, names: Record<string, string> = {}): ChatMessage['reactions'] {
+  return Object.entries(map).flatMap(([emoji, users]) => {
     if (!emoji.length || emoji.length > 32 || !Array.isArray(users)) return []
-    const ids = new Set(users.map(item => object(item).stringValue).filter((id): id is string => typeof id === 'string' && Boolean(id)))
+    const ids = new Set(users.filter((id): id is string => typeof id === 'string' && Boolean(id) && id.length <= 160))
     const people = [...ids].sort((a, b) => a === uid ? -1 : b === uid ? 1 : 0).slice(0, 50).map(id => ({ uid: id, name: id === uid ? tr('나') : names[id] || tr('참여자') }))
     return ids.size ? [{ emoji, count: ids.size, selected: ids.has(uid), users: people }] : []
   }).sort((a, b) => b.count - a.count || (a.emoji < b.emoji ? -1 : 1))
+}
+// reactionVersion on a message document: how many reaction writes it has had.
+export function reactionVersion(doc: FirestoreDocument): number {
+  const value = Number(object(doc.fields.reactionVersion ?? {}).integerValue ?? 0)
+  return Number.isSafeInteger(value) && value > 0 ? value : 0
 }
 export function childId(name: string, parent: string): string {
   if (!name.startsWith(`${parent}/`)) throw new ReadFailure('data')

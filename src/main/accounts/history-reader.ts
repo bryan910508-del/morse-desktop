@@ -7,6 +7,7 @@ import { mediaResources } from '../media/media-document'
 import { originalPreview, replyOriginal, ReplyContext } from './reply-context'
 import { ExpiredMessages } from './expired-messages'
 import { recordHistoryStep } from '../platform/history-diagnostics'
+import { ReactionUpdates } from './reaction-updates'
 import { tr } from '../../shared/i18n'
 
 export class HistoryReader {
@@ -25,6 +26,7 @@ export class HistoryReader {
   private failed = false
   private expiryTimer?: ReturnType<typeof setTimeout>
   private readonly replies: ReplyContext
+  private readonly reactionUpdates = new ReactionUpdates()
   // checkTTLs(): what this room has seen expire leaves the server too, since no one else takes it away.
   private readonly expired: ExpiredMessages
   private value: HistorySnapshot = { messages: [], before: null, hasMore: false, revision: 0, status: 'loading', message: '', newerAvailable: false }
@@ -161,7 +163,11 @@ export class HistoryReader {
     try {
       const raw = this.sorted(this.rows.values())
       if (raw.reduce((total, doc) => total + JSON.stringify(doc).length, 0) > 32 * 1024 * 1024) throw new ReadFailure('data')
-      const messages = raw.map(doc => decodeMessage(doc, this.dialog)).filter((message): message is ChatMessage => message !== null && !this.hidden(message.id)).reverse()
+      const messages = raw.map(doc => {
+        const message = decodeMessage(doc, this.dialog)
+        const updated = message && !message.encrypted ? this.reactionUpdates.reactions(message.id, doc, this.dialog.accountUid, this.dialog.participantNames) : null
+        return message && updated ? { ...message, reactions: updated } : message
+      }).filter((message): message is ChatMessage => message !== null && !this.hidden(message.id)).reverse()
       const name = (id: string): string => `${documents}/chats/${this.dialog.summary.id}/messages/${id}`
       // Loaded rows retain their existing authoritative owner. Only off-window
       // originals need separate, bounded document targets; never recurse replies.
@@ -182,6 +188,13 @@ export class HistoryReader {
       this.fail(new ReadFailure('data')); return
     }
     this.value.revision = this.nextRevision(); this.changed(this.snapshot)
+  }
+  // reactionUpdated for a message of this history: shown at once, until its document says as much.
+  reactionUpdated(messageId: string, map: Record<string, unknown>, version: number): void {
+    if (this.closed || this.failed) return
+    const doc = this.rows.get(`${documents}/chats/${this.dialog.summary.id}/messages/${messageId}`)
+    if (!doc) return
+    if (this.reactionUpdates.remember(messageId, map, version, doc) && this.value.status === 'ready') this.publish()
   }
   // A message deleted for this person only leaves the history at once.
   hiddenChanged(): void {

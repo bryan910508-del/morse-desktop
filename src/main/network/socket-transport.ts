@@ -16,6 +16,9 @@ export interface TransportEvents {
   rejected?(reason: string): void
   // A line for connection-check.log: the step and a reason, nothing that names the account.
   step?(step: string, detail?: string): void
+  // reactionUpdated (docs/reaction-socket-contract-2026-09-22.md §3): a message's full reaction state, sent to every
+  // socket of its participants but the one that changed it.
+  reactionUpdated?(body: unknown): void
 }
 
 export class SocketMessageTransport {
@@ -31,6 +34,8 @@ export class SocketMessageTransport {
   // registration is renewed here before that moment, in place; meanwhile only what sends waits.
   private renewTimer?: ReturnType<typeof setTimeout>
   private renewing = false
+  // What the server said it can do when it registered this socket (registered.capabilities).
+  private capabilities: string[] = []
 
   constructor(private readonly version: string, private readonly events: TransportEvents) {}
   get ready(): boolean { return this.currentState === 'ready' }
@@ -127,6 +132,7 @@ export class SocketMessageTransport {
         return
       }
       const renewed = this.renewing
+      this.capabilities = (value.capabilities as unknown[]).filter((item): item is string => typeof item === 'string')
       this.invalidateRegistration()
       this.registerAttempt = 0
       this.events.step?.(renewed ? 'renewed' : 'registered')
@@ -152,6 +158,7 @@ export class SocketMessageTransport {
         this.stop('rejected')
       }
     })
+    socket.on('reactionUpdated', (body: unknown) => { if (active() && this.ready) this.events.reactionUpdated?.(body) })
     socket.on('newMessage', (body: unknown) => {
       if (!active() || !this.ready) return
       try { this.events.message(incomingMessage(body)) }
@@ -197,6 +204,24 @@ export class SocketMessageTransport {
     return committedReadAck(body, chatId, readerId, target)
   }
 
+  // Contract §4: reactions go over the socket only while it is registered and the server offers message-reactions.
+  get reactionsReady(): boolean { return this.ready && !this.renewing && this.capabilities.includes('message-reactions') }
+  // setReaction (contract §2), answered within 15 s; anything short of an answer is for the caller to send again
+  // through the callable, which the same clientRevision keeps from applying twice.
+  async setReaction(payload: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+    const socket = this.socket, generation = this.generation
+    if (signal.aborted || !socket?.connected || !socket.io.engine?.transport?.writable || !this.reactionsReady) throw new NotEmitted(tr('연결을 기다리고 있습니다.'))
+    const pending = socket.volatile.timeout(15000).emitWithAck('setReaction', payload)
+    let cancel!: () => void
+    const body: unknown = await new Promise((resolve, reject) => {
+      cancel = () => reject(new ProtocolFailure(tr('반응 결과를 확인해야 합니다.')))
+      signal.addEventListener('abort', cancel, { once: true })
+      pending.then(resolve, reject)
+      if (signal.aborted) cancel()
+    }).finally(() => signal.removeEventListener('abort', cancel))
+    if (signal.aborted || generation !== this.generation || socket !== this.socket) throw new ProtocolFailure(tr('연결이 변경되었습니다.'))
+    return body
+  }
   suspend(): void { this.stop('suspended') }
   resume(): void {
     const credentials = this.credentials

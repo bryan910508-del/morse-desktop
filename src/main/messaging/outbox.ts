@@ -83,7 +83,9 @@ function pendingText(row: StoredIntent): string {
 export interface AccountAuthorization extends ReadCredentials {
   storageScope: string
   sender: { readonly ready: boolean; send(wire: SendWire, signal: AbortSignal): Promise<SendAcknowledgement>
-    markRead(chatId: string, target: MessagePosition, signal: AbortSignal): Promise<ReadAcknowledgement> }
+    markRead(chatId: string, target: MessagePosition, signal: AbortSignal): Promise<ReadAcknowledgement>
+    // The socket's setReaction, while the server offers it (docs/reaction-socket-contract-2026-09-22.md).
+    readonly reactions?: boolean; react?(payload: Record<string, unknown>, signal: AbortSignal): Promise<unknown> }
 }
 interface ReadContext { ready: boolean; dialogs: Map<string, DialogSummary>; reader: FirestoreReader | null }
 

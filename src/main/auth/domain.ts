@@ -42,7 +42,8 @@ export class AuthenticationDomain {
       },
       connection: (account, state) => this.hooks.connection(account, state),
       closed: (account, purge) => this.hooks.closed(account, purge),
-      notificationHint: (account, hint) => this.hooks.notificationHint(account, hint)
+      notificationHint: (account, hint) => this.hooks.notificationHint(account, hint),
+      reactionUpdated: (account, body) => this.hooks.reactionUpdated(account, body)
     }, uid, { admit: next => this.admit(next), admitNew: () => this.admitNew(), creationToken: signal => this.creationToken(signal) })
     return controller
   }

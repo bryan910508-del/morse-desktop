@@ -39,6 +39,8 @@ export interface AuthenticatedAccountHooks {
   connection(uid: string, state: ConnectionState): void
   closed(uid: string, purge: boolean): void
   notificationHint(uid: string, hint: NotificationHint): void
+  // A message's full reaction state from the socket (reactionUpdated).
+  reactionUpdated(uid: string, body: unknown): void
 }
 // Main::Domain decides whether another account fits on this device and supplies the
 // signed-in account's token for creating one.
@@ -283,6 +285,7 @@ export class AuthenticationController {
       rejected: reason => { owner.rejection = reason },
       state: state => { recordConnectionStep('state', state); this.connectionChanged(owner, state, ready, failed) },
       step: (step, detail) => recordConnectionStep(step, detail),
+      reactionUpdated: body => { if (this.owner === owner && !controller.signal.aborted && owner.established) this.accounts.reactionUpdated(record.profile.uid, body) },
       message: message => {
         if (this.owner === owner && !controller.signal.aborted && owner.established && message.senderId !== record.profile.uid) {
           this.accounts.notificationHint(record.profile.uid, { chatId: message.chatId, id: message.id })
@@ -320,6 +323,11 @@ export class AuthenticationController {
           markRead: (chatId, target, signal) => {
             if (!isCurrentSender()) throw new NotEmitted(tr('계정 연결이 변경되었습니다.'))
             return owner.transport.markRead(chatId, record.profile.uid, target, AbortSignal.any([signal, controller.signal]))
+          },
+          get reactions() { return isCurrentSender() && owner.transport.reactionsReady },
+          react: (payload, signal) => {
+            if (!isCurrentSender() || payload.expectedUid !== record.profile.uid) throw new NotEmitted(tr('계정 연결이 변경되었습니다.'))
+            return owner.transport.setReaction(payload, AbortSignal.any([signal, controller.signal]))
           }
         },
         authorize: async (signal, force) => {

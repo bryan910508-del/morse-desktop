@@ -3021,6 +3021,7 @@ else {
         },
         connection: (uid, state) => accounts.connection(uid, state),
         notificationHint: (uid, hint) => accounts.get(uid)?.notificationHint(hint),
+        reactionUpdated: (uid, body) => accounts.get(uid)?.reactionUpdated(body),
         closed: (uid, purge) => { accounts.close(uid, purge); updatePresence() },
         maxAccounts: () => maxAccounts(),
         activeUid: () => accounts.active?.profile.uid ?? null

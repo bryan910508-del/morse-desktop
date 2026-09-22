@@ -44,7 +44,7 @@ import type { CommentDraftParent, CommentDraftRecord, CommentDraftTarget, Commen
 import { ChannelDiscussionJoin } from './channel-discussion-join'
 import type { DiscussionLeaveWork, DiscussionLeaveWorkClear, DiscussionLeaveWorkDismiss } from '../../shared/channel-discussion-leave-work'
 import type { GroupLeaveRequest } from '../../shared/group-leave'
-import { identifier } from '../../shared/validation'
+import { identifier, object } from '../../shared/validation'
 import { ChannelDiscussionHistory } from './channel-discussion-history'
 import type { ChannelDiscussionNavigation, ChannelDiscussionDestination } from '../../shared/channel-discussion-navigation'
 import { ChannelJoinDecisions } from './channel-join-decisions'
@@ -143,7 +143,7 @@ import { freePinLimit, premiumPinLimit, type PinMessageRequest, type PinnedMessa
 import { canReply, type ReplyBinding, type ReplyDraftSnapshot } from '../../shared/reply-draft'
 import { canForwardMessage, canForwardMedia, canForwardText, type ForwardProgress, type ForwardRequest, type ForwardSource, type ForwardTarget } from '../../shared/forward'
 import { prepareForwardMedia, type ForwardMediaSource } from '../media/forward-media'
-import { inquiryOfQueueChatId, inquiryQueueChatId, type InquiryForwardRequest, type InquiryForwardRoom } from '../../shared/channel-inquiries'
+import { inquiryIdentifier, inquiryOfQueueChatId, inquiryQueueChatId, type InquiryForwardRequest, type InquiryForwardRoom } from '../../shared/channel-inquiries'
 import { outgoingText } from '../../shared/validation'
 import { tr } from '../../shared/i18n'
 import type { VideoEdit } from '../media/attachment-staging'
@@ -1544,6 +1544,16 @@ export class AccountSession {
       this.hiddenChats.endClear(chatId)
       if (!this.closed && this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() }
     }
+  }
+  // reactionUpdated from the socket: the open room shows the message's new reactions at once (contract §3). The list's
+  // unseen-reaction badge still comes with the room document.
+  reactionUpdated(raw: unknown): void {
+    if (this.closed || this.locked) return
+    try {
+      const body = object(raw), map = object(body.reactions), version = Number(body.reactionVersion), messageId = identifier(body.messageId)
+      if (typeof body.inquiryId === 'string' && body.inquiryId) this.channelInquiries.reactionUpdated(inquiryIdentifier(body.inquiryId), messageId, map, version)
+      else if (typeof body.chatId === 'string' && this.selected?.dialog.summary.id === body.chatId) this.selected.reactionUpdated(messageId, map, version)
+    } catch { /* Not an event this account can read; the document brings the same state. */ }
   }
   // AppState.markReactionSeen: the open chat's unseen reaction is cleared here at once and acknowledged with its
   // version, so a newer reaction that arrives meanwhile is not cleared by it.
