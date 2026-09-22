@@ -18,6 +18,7 @@ import { dialogById, useDesktop, useDesktopEvent } from '../app/store'
 import { controller, useUi } from '../app/ui'
 import { errorText, sameDay, serviceDate } from '../app/format'
 import { copyText } from '../app/clipboard'
+import { copyImage } from '../app/copy-image'
 import { hasFiles } from '../app/drop'
 import { trackWrite } from '../app/drafts'
 import { useShortcut } from '../app/shortcuts'
@@ -40,6 +41,7 @@ import { inCategory } from '../../../shared/forum'
 import { LocalMessageView, MessageView, type MessageLayout, type MessageMenuTarget } from './message'
 import { deleteMessage, overlayMessage, reconcileActions, reconcileMessages, toggleReaction, useMessageOverlay } from './message-overlay'
 import { useVisibleRead } from './visible-read'
+import { useScrollDate } from './scroll-date'
 import { autoTranslate, offerTranslation, toggleTranslation, translationShown } from '../app/translations'
 import { usePresence } from '../app/presence'
 import { useTyping } from '../app/typing'
@@ -65,7 +67,7 @@ function attachable(entry: Entry): boolean {
   return entry.kind === 'local' || (!entry.message.system && !entry.message.encrypted && entry.message.kind !== 'channelPost' && entry.message.kind !== 'unsupported')
 }
 
-function ReactionStrip({ onPick }: { onPick(emoji: string): void }) {
+export function ReactionStrip({ onPick }: { onPick(emoji: string): void }) {
   return <div className="reaction-strip">{quickReactions.map(emoji => <button key={emoji} type="button" aria-label={tr('{0} 반응', [emoji])} onClick={() => onPick(emoji)}>{emoji}</button>)}</div>
 }
 
@@ -192,6 +194,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     for (const item of outgoing.items) if (!ids.has(item.id)) list.push({ kind: 'local', key: item.id, item, time: item.createdAt })
     return list
   }, [history.messages, outgoing.items, overlayRevision, accountUid, forum, forumSelected])
+  const entryTimes = useMemo(() => entries.map(entry => entry.time), [entries])
   const group = dialog?.kind === 'group'
   const layouts = useMemo<MessageLayout[]>(() => entries.map((entry, index) => {
     const previous = entries[index - 1], next = entries[index + 1]
@@ -278,6 +281,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight
     bottom.current = distance < 80
     setAway(distance > 480)
+    scrollDate.check()
     if (element.scrollTop < 400) void loadOlder()
   }
   async function jumpLatest(): Promise<void> {
@@ -287,18 +291,21 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     } else if (entries.length) { virtual.scrollToIndex(entries.length - 1, { align: 'end' }); pendingScroll.current = null }
   }
 
+  // HistoryInner's scroll date: the day of the topmost message, floating over the history while it is scrolled.
+  const inlineDates = useMemo(() => layouts.map(layout => layout.date), [layouts])
+  const scrollDate = useScrollDate(scroll, virtual, entryTimes, inlineDates, settled)
+  useEffect(() => { scrollDate.reset() }, [chatId])
+
   const readError = useVisibleRead(scroll, { accountUid, chatId, history, enabled: historyReady && connection === 'ready' && layerCount === 0 && selection === null && !secret })
   useEffect(() => { if (readError) controller.toast(readError, 'error') }, [readError])
 
   const peers = useMemo(() => dialog ? [...new Set(dialog.participantUids)].filter(uid => uid !== accountUid) : [], [dialog?.participantUids, accountUid])
   // TopBarWidget::updateOnlineDisplay: a 1:1 chat's subtitle is the peer's last seen.
   const peerPresence = usePresence(dialog?.kind === 'direct' && !chatId.startsWith('memo_') ? peers[0] ?? null : null)
-  const readPositions = dialog?.readPositions
-  const readState = (message: ChatMessage): 'sent' | 'partial' | 'read' => {
-    if (!readPositions || !message.readEligible || !peers.length) return 'sent'
-    const target = readCursor(message.position), readers = peers.filter(uid => readCovers(readPositions[uid], target)).length
-    return readers === 0 ? 'sent' : readers === peers.length ? 'read' : 'partial'
-  }
+  // History::isServerSideUnread: an own message is read once it is within the room's one outbox boundary.
+  const outboxRead = dialog?.outboxRead ?? null
+  const readState = (message: ChatMessage): 'sent' | 'read' =>
+    message.readEligible && readCovers(outboxRead, readCursor(message.position)) ? 'read' : 'sent'
 
   const selectReply = useCallback(async (message: ChatMessage): Promise<void> => {
     if (!canReply(message) || !outgoingRef.current.canCompose) return
@@ -343,6 +350,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
         // MorseStickerPreview: a received sticker can be kept in my library.
         message.kind === 'sticker' && savable ? { label: tr('스티커 저장'), icon: <Sticker size={18} />, onSelect: () => { void saveSticker(accountUid, chatId, message) } } : null,
         savable && message.kind !== 'sticker' ? { label: message.kind === 'voice' ? tr('파일로 저장') : tr('저장'), icon: <Download size={18} />, onSelect: () => { void saveAttachment(accountUid, chatId, message, savable.index) } } : null,
+        // AddPhotoActions: «Copy Image» beside the save, under the same restriction.
+        savable?.kind === 'image' ? { label: tr('이미지 복사'), icon: <Copy size={18} />, onSelect: () => { void copyAttachmentImage(accountUid, chatId, message, savable.index) } } : null,
         canForwardMessage(message) ? { label: tr('전달'), icon: <Forward size={18} />, onSelect: () => showShareBox(accountUid, [message]) } : null,
         message.version && !message.system ? { label: tr('선택'), icon: <Check size={18} />, onSelect: () => setSelection([message.id]) } : null,
         deletable ? 'separator' : null,
@@ -359,7 +368,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     popupMenu.open(point, [
       item.retryable ? { label: tr('다시 보내기'), icon: <RotateCcw size={18} />, onSelect: () => { void window.morse.retryMessage(accountUid, chatId, item.id).catch(reason => controller.toast(errorText(reason, tr('다시 보내지 못했습니다.')), 'error')) } } : null,
       item.text ? { label: tr('텍스트 복사'), icon: <Copy size={18} />, onSelect: () => { controller.toast(copyText(item.text) ? tr('복사했습니다.') : tr('복사하지 못했습니다.')) } } : null,
-      { label: failed ? tr('삭제') : tr('보내기 취소'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void window.morse.discardOutgoing(accountUid, chatId, item.id).catch(reason => controller.toast(errorText(reason, tr('처리하지 못했습니다.')), 'error')) } }
+      // A sent item is already the server's message; only the history's own menu changes it.
+      item.state !== 'sent' && { label: failed ? tr('삭제') : tr('보내기 취소'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void window.morse.discardOutgoing(accountUid, chatId, item.id).catch(reason => controller.toast(errorText(reason, tr('처리하지 못했습니다.')), 'error')) } }
     ])
   }, [accountUid, chatId])
   const jumpReply = useCallback((message: ChatMessage) => {
@@ -458,13 +468,18 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       </>}
     </header>
     {dialog && !secret && <PinnedBar accountUid={accountUid} chatId={chatId} />}
-    {dialog && forum && <CategoryBar accountUid={accountUid} chatId={chatId} forum={forum} selected={forumSelected} />}
+    {dialog && forum && <CategoryBar accountUid={accountUid} chatId={chatId} forum={forum} selected={forumSelected}
+      owner={dialog.kind === 'group' && dialog.createdBy === accountUid && !dialog.discussion} />}
     <PlaybackBar chatId={chatId} />
     {dialog && !secret && <DeferredBar accountUid={accountUid} chatId={chatId} />}
     {dialog?.historyMessage && <p className="history-banner" role="status">{dialog.historyMessage}</p>}
     <div className="history" onDragEnter={dragOver} onDragOver={dragOver} onDrop={drop}
       onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(null) }}>
       <BackgroundSurface value={surface} scope={scope} />
+      {scrollDate.value && <div className={`history-floating-date${scrollDate.value.shown ? ' shown' : ''}`}>
+        <button type="button" className="service-pill" tabIndex={scrollDate.value.shown ? 0 : -1} title={tr('날짜로 이동')}
+          onClick={() => { if (dialog && !secret && historyReady) showDateJumpBox(accountUid, chatId, scrollDate.value!.time) }}>{serviceDate(scrollDate.value.time)}</button>
+      </div>}
       <div ref={scroll} className={`history-scroll${selection !== null ? ' selecting' : ''}`} onScroll={onScroll} tabIndex={-1} data-region-focus aria-busy={paging || history.status === 'loading'}>
         <div className={`history-inner${settled ? '' : ' settling'}`} style={{ height: virtual.getTotalSize() }}>
           {virtual.getVirtualItems().map(item => {
@@ -523,7 +538,7 @@ function DeleteMessagesBox({ count, forEveryone, direct, choose, close }: { coun
   </Box>
 }
 
-function chooseDeletion(count: number, forEveryone: boolean, direct: boolean): Promise<'everyone' | 'me' | null> {
+export function chooseDeletion(count: number, forEveryone: boolean, direct: boolean): Promise<'everyone' | 'me' | null> {
   return new Promise(resolve => {
     let settled = false
     const settle = (value: 'everyone' | 'me' | null): void => { if (!settled) { settled = true; resolve(value) } }
@@ -534,7 +549,7 @@ function chooseDeletion(count: number, forEveryone: boolean, direct: boolean): P
 // A secret room's media is never saved (iOS hides «저장» there).
 function mediaSavable(dialog: DialogSummary | null): boolean { return Boolean(dialog && dialog.kind !== 'secret') }
 
-async function saveAttachment(accountUid: string, chatId: string, message: ChatMessage, index: number): Promise<void> {
+export async function saveAttachment(accountUid: string, chatId: string, message: ChatMessage, index: number): Promise<void> {
   const requestId = crypto.randomUUID()
   try {
     await window.morse.openMedia(accountUid, chatId, { requestId, messageId: message.id, version: message.version, index })
@@ -543,7 +558,17 @@ async function saveAttachment(accountUid: string, chatId: string, message: ChatM
   finally { void window.morse.closeMedia(accountUid, requestId).catch(() => {}) }
 }
 
-async function saveSticker(accountUid: string, chatId: string, message: ChatMessage): Promise<void> {
+export async function copyAttachmentImage(accountUid: string, chatId: string, message: ChatMessage, index: number): Promise<void> {
+  const requestId = crypto.randomUUID()
+  try {
+    const ready = await window.morse.openMedia(accountUid, chatId, { requestId, messageId: message.id, version: message.version, index })
+    if (!ready.url || ready.presentation !== 'image') throw new Error(tr('이미지를 복사하지 못했습니다.'))
+    await copyImage(ready.url)
+  } catch (reason) { controller.toast(errorText(reason, tr('이미지를 복사하지 못했습니다.')), 'error') }
+  finally { void window.morse.closeMedia(accountUid, requestId).catch(() => {}) }
+}
+
+export async function saveSticker(accountUid: string, chatId: string, message: ChatMessage): Promise<void> {
   const requestId = crypto.randomUUID()
   try {
     const ready = await window.morse.openMedia(accountUid, chatId, { requestId, messageId: message.id, version: message.version, index: 0 })

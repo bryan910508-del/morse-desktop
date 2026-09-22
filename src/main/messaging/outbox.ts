@@ -105,6 +105,11 @@ export class OutboxPump {
   private rerun = false
   private wake?: ReturnType<typeof setTimeout>
   private retryAt = new Map<string, { at: number; attempts: number }>()
+  // Telegram never takes a sent message off the screen: the local item stays and only takes its server id
+  // (Api::Updates updateMessageID → HistoryItem::setRealId). Morse's message is written under the id it was sent
+  // with, but the history learns of it a moment after the server's answer; until then the sent item is kept here,
+  // so the bubble does not leave and come back. The history showing the id, or a minute, ends it.
+  private sent = new Map<string, { row: StoredIntent; timer: ReturnType<typeof setTimeout> }>()
   private busyId: string | null = null
   private views = new Set<string>()
   private known = new Set<string>()
@@ -230,6 +235,14 @@ export class OutboxPump {
     if (this.closed || this.storageFailed || !this.repository) throw new Error(tr('전송 저장소를 사용할 수 없습니다.'))
     return this.repository.call<T>(command)
   }
+  // Storage::Cache::Database: media already fetched. Like the picture cache it is a copy of what the server sent.
+  async mediaCacheState<T>(command: import('../storage/media-cache-table').MediaCacheCommand): Promise<T> {
+    await this.opening
+    if (this.closed || this.storageFailed || !this.repository) throw new Error(tr('전송 저장소를 사용할 수 없습니다.'))
+    return this.repository.call<T>(command)
+  }
+  // The addresses of pictures already seen: a copy of what the server showed, never a picture itself.
+  peerPhotoState<T>(command: import('../storage/peer-photo-table').PeerPhotoCommand): Promise<T> { return this.store<T>(command) }
   reminderState<T>(command: EventReminderCommand): Promise<T> { return this.store<T>(command) }
   profilePhotoState<T>(command: ProfileUploadCommand, validate: () => void = () => {}): Promise<T> { return this.store<T>(command, validate) }
   voiceDraftStorageState<T>(command:import('../storage/voice-draft-storage-table').VoiceDraftStorageCommand,validate:()=>void):Promise<T>{return this.store<T>(command,validate)}
@@ -286,10 +299,25 @@ export class OutboxPump {
     const visible = !this.closed && !this.auth.signal.aborted && this.targetExists(chatId)
     return { revision, canCompose: this.eligible(chatId), canDiscard: this.queueAvailable(chatId), policyHeld: !this.composeAllowed(chatId), writingBlocked: this.joinChat === chatId || !this.composeAllowed(chatId), message: this.storageFailed ? tr('전송 저장소를 사용할 수 없습니다. 앱을 다시 열어 주세요.') :
       !this.initialized ? tr('전송 기록을 불러오는 중…') : this.joinChat === chatId ? tr('토론방 참여 기록을 확인한 뒤 작성할 수 있습니다.') : !this.composeAllowed(chatId) ? this.context().dialogs.get(chatId)?.composeMessage || tr('토론방 작성 조건을 확인해 주세요.') : !this.eligible(chatId) ? tr('대화와 연결을 확인한 뒤 전송할 수 있습니다.') : '',
-      items: visible ? rows.filter(row => row.chatId === chatId).map(row => ({ id: row.id, chatId, text: pendingText(row), replyToId: row.wire.replyToId, createdAt: row.createdAt,
+      items: visible ? [...rows.filter(row => row.chatId === chatId), ...[...this.sent.values()].map(entry => entry.row)
+        .filter(row => row.chatId === chatId && !rows.some(other => other.id === row.id))].map(row => this.sent.has(row.id) && !rows.some(other => other.id === row.id) ? {
+        id: row.id, chatId, text: pendingText(row), replyToId: row.wire.replyToId, createdAt: row.createdAt, state: 'sent' as const, reason: '', busy: false,
+        voicePreview: row.voicePreview, forwarded: row.forwarded, storyReply: Boolean(row.wire.replyStoryId), retryable: false } : ({ id: row.id, chatId, text: pendingText(row), replyToId: row.wire.replyToId, createdAt: row.createdAt,
         state: row.state, reason: this.earlierForward(row, rows) ? tr('앞선 전달 메시지의 결과 확인 또는 대기 정리가 필요합니다.') : row.state === 'uploading' ? tr('첨부 업로드 대기 중') : row.state === 'queued' ? tr('메시지 전송 대기 중') : deliveryReason(row.reason), busy: this.busyId === row.id,
         voicePreview:row.voicePreview, forwarded: row.forwarded, storyReply: Boolean(row.wire.replyStoryId), progress: this.busyId === row.id ? this.uploadProgress : undefined,
         retryable: row.state === 'upload-failed' || (row.state === 'failed' && retryableRejections.has(row.reason)) })) : [] }
+  }
+  private keepSent(row: StoredIntent): void {
+    if (this.closed) return
+    clearTimeout(this.sent.get(row.id)?.timer)
+    const timer = setTimeout(() => { if (this.sent.get(row.id)?.timer === timer) { this.sent.delete(row.id); void this.publish() } }, 60000)
+    this.sent.set(row.id, { row, timer })
+  }
+  // The open history now shows these messages: their sent items have handed over.
+  shown(chatId: string, ids: ReadonlySet<string>): void {
+    let changed = false
+    for (const [id, entry] of this.sent) if (entry.row.chatId === chatId && ids.has(id)) { clearTimeout(entry.timer); this.sent.delete(id); changed = true }
+    if (changed) void this.publish()
   }
   async snapshot(chatId: string): Promise<OutgoingSnapshot> {
     this.views.add(chatId)
@@ -300,13 +328,35 @@ export class OutboxPump {
   }
   forget(chatId: string): void { this.views.delete(chatId) }
   private async publish(): Promise<void> {
-    if (!this.views.size) return
     const revision = ++this.revision
     let rows: StoredIntent[] = []
     if (this.initialized && !this.closed && !this.storageFailed) {
       try { rows = await this.store<StoredIntent[]>({ kind: 'list' }) } catch { /* frame exposes the storage failure */ }
     }
+    this.noteChatSends(rows)
     for (const chatId of this.views) this.changed(chatId, this.frame(chatId, rows, revision))
+  }
+  // iOS MorseChatListRowDisplay hasFailedOutgoing / hasSendingOutgoing: a room's row marks a message of mine that
+  // did not go, and a clock while the newest of mine is still on its way.
+  private chatSends = new Map<string, { failed: boolean; newest: number }>()
+  private noteChatSends(rows: StoredIntent[]): void {
+    const next = new Map<string, { failed: boolean; newest: number }>()
+    for (const row of rows) {
+      const entry = next.get(row.chatId) ?? { failed: false, newest: 0 }
+      if (row.state === 'failed' || row.state === 'upload-failed') entry.failed = true
+      else entry.newest = Math.max(entry.newest, row.createdAt)
+      next.set(row.chatId, entry)
+    }
+    const same = next.size === this.chatSends.size && [...next].every(([id, value]) => {
+      const old = this.chatSends.get(id); return old?.failed === value.failed && old.newest === value.newest
+    })
+    this.chatSends = next
+    if (!same) this.pendingChanged()
+  }
+  // `top`: the room's last message on the server. Mine still going is the newest only if it came after that.
+  chatSendState(chatId: string, top: number | null): { sending: boolean; failed: boolean } {
+    const entry = this.chatSends.get(chatId)
+    return { failed: Boolean(entry?.failed), sending: Boolean(entry?.newest && (top === null || entry.newest > top)) }
   }
   private blockStorage(): void {
     if (this.storageFailed || this.closed) return
@@ -728,6 +778,7 @@ export class OutboxPump {
           await this.auth.sender.send(intent.wire, signal)
           if (!this.active(signal)) return
           this.retryAt.delete(intent.id)
+          this.keepSent(intent)
           await this.store({ kind: 'finish', id: intent.id, discarded: false })
         } catch (error) {
           if (error instanceof NotEmitted) {
@@ -799,6 +850,7 @@ export class OutboxPump {
             stringField(doc.fields, 'payloadDigest', 64) !== textDigest(intent.wire)) {
           await this.store({ kind: 'state', id: intent.id, state: 'failed', reason: 'CONFLICT' }); return 'conflict'
         }
+        this.keepSent(intent)
         await this.store({ kind: 'finish', id: intent.id, discarded: false }); return 'found'
       }
       if (intent.state !== 'failed') await this.store({ kind: 'state', id: intent.id, state: 'uncertain', reason: 'not-found' })
@@ -847,6 +899,8 @@ export class OutboxPump {
   async close(purge: boolean): Promise<void> {
     if (this.closed) return
     this.closed = true; this.pause(); this.known.clear()
+    for (const entry of this.sent.values()) clearTimeout(entry.timer)
+    this.sent.clear()
     await this.opening; await this.task?.catch(() => {})
     if (this.repository) await this.repository.close(purge)
     this.views.clear(); this.pending.clear(); this.commentDraftsKnown.clear(); this.postDraftsKnown.clear(); this.noteDraftsKnown.clear(); this.storyComposerDraftsKnown.clear(); this.noteEditDraftsKnown.clear(); this.storyCaptionDraftsKnown.clear()

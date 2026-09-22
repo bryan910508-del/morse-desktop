@@ -15,12 +15,22 @@
 .history-row { position: absolute; top: 0; left: 0; width: 100% }
 /* chat.style msgServiceMargin 10/10/10/2 */
 .history-date { display: flex; justify-content: center; padding: 10px 10px 4px }
+/* HistoryInner's scroll date: the day of the topmost message over the history, fading in while it is scrolled
+   (st::historyDateFadeDuration) and out a second after it stops. */
+.history-floating-date {
+  position: absolute; z-index: 5; top: 10px; left: 0; right: 0; display: flex; justify-content: center;
+  opacity: 0; transition: opacity .18s ease-out; pointer-events: none
+}
+.history-floating-date.shown { opacity: 1; pointer-events: auto }
 .channel-post-card {
   display: grid; gap: 8px; width: min(420px, 100%); padding: 8px; border-radius: var(--r-bubble);
   background: var(--bubble-in); color: var(--text); text-align: left
 }
 .channel-post-card:hover { background: var(--card-pressed) }
-.channel-post-card .media-tile { width: 100%; border-radius: calc(var(--r-bubble) - 4px) }
+/* A photo keeps the shape it was taken in, as Telegram draws one in a bubble: the card's picture fills its width,
+   keeps its own shape (the post's, when it chose one) and is never cropped to a tile. */
+.channel-post-card .media-tile { width: 100%; aspect-ratio: auto; min-height: 120px; max-height: 420px; border-radius: calc(var(--r-bubble) - 4px) }
+.channel-post-card .media-tile.previewed img { max-height: 420px; object-fit: contain }
 .channel-post-card-body { display: grid; gap: 2px; min-width: 0; padding: 0 4px 2px }
 .channel-post-card-body strong { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-caption); color: var(--accent) }
 .channel-post-card-text { font-size: var(--t-body); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere }
@@ -83,7 +93,7 @@
 .bubble-emoji { line-height: 1.12; white-space: pre-wrap }
 .history-message.own .bubble-emoji { text-align: right }
 .bubble.emoji-only .bubble-meta, .history-message.own .bubble.emoji-only .bubble-meta { right: 4px; bottom: 2px; color: var(--text-medium) }
-.history-message.own .bubble.emoji-only .bubble-meta .read { color: var(--read-check) }
+.history-message.own .bubble.emoji-only .bubble-meta .read-mark { color: var(--read-check) }
 .history-message.own .bubble.emoji-only .bubble-quote { border-left-color: var(--accent); background: var(--bubble-in) }
 .history-message.own .bubble.emoji-only .bubble-quote strong { color: var(--accent) }
 .history-message.own .bubble.emoji-only .bubble-reactions button { background: var(--accent-soft); color: var(--accent) }
@@ -95,8 +105,7 @@
 .bubble-meta-space.edited.own { width: 122px }
 .bubble-meta { position: absolute; right: 10px; bottom: 6px; display: inline-flex; align-items: center; gap: 3px; font-size: 12px; line-height: 1; color: var(--text-weak); white-space: nowrap; pointer-events: none }
 .history-message.own .bubble-meta { color: rgb(255 255 255 / .78) }
-.bubble-meta .read { color: var(--read-check) }
-.history-message.own .bubble-meta .read { color: #fff }
+.bubble-meta .read-mark, .history-message.own .bubble-meta .read-mark { color: var(--read-check); flex: none }
 .bubble.media-only { padding: 4px }
 .bubble.media-only .media-grid { margin: 0 }
 .bubble.media-only .bubble-meta { right: 12px; bottom: 12px; padding: 4px 7px; border-radius: 10px; background: rgb(0 0 0 / .45); color: #fff }
@@ -170,7 +179,10 @@ button.bubble-quote:hover { background: var(--accent-border) }
 .file-message-text strong { font-size: var(--t-body); font-weight: 600 }
 .file-message-text small { font-size: 12px; opacity: .78 }
 
-.bubble-reactions { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 14px }
+.bubble-reactions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 14px }
+/* The date as the reaction rows' last item (iOS 4d764434 / Telegram): on the last row when it fits, below otherwise. */
+.bubble-reactions:has(> .bubble-meta.inline) { margin-bottom: 0; align-items: flex-end }
+.bubble-meta.inline { position: static; margin-left: auto; align-self: flex-end; height: 26px; padding-bottom: 2px; align-items: flex-end }
 .bubble-reactions button { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 8px; border-radius: 13px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600 }
 .bubble-reactions button span { font-size: 14px }
 .bubble-reactions button.selected { background: var(--accent); color: #fff }

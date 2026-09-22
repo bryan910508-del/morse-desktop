@@ -1,11 +1,12 @@
 import { locale, tr } from './i18n'
 // Viewer-redacted presence (RTDB presenceRedacted/{viewer}/{target}, server morse-presence-redaction):
-// { s: online | present (t: last seen, seconds) | lastWeek | lastMonth | hidden | none }.
-export type PresenceCode = 'online' | 'present' | 'lastWeek' | 'lastMonth' | 'hidden' | 'none'
+// { s: online | present (t: last seen, seconds) | lastWeek | lastMonth | longTimeAgo | hidden | none }. The server
+// follows Telegram's buckets: lastMonth within a month, longTimeAgo beyond (Telegram's «a long time ago»).
+export type PresenceCode = 'online' | 'present' | 'lastWeek' | 'lastMonth' | 'longTimeAgo' | 'hidden' | 'none'
 export interface PeerPresence { s: PresenceCode; t?: number }
 export interface PresenceText { text: string; online: boolean }
 
-const codes: PresenceCode[] = ['online', 'present', 'lastWeek', 'lastMonth', 'hidden', 'none']
+const codes: PresenceCode[] = ['online', 'present', 'lastWeek', 'lastMonth', 'longTimeAgo', 'hidden', 'none']
 
 // MorseUserPresence.fromRedactedPayload
 export function peerPresence(raw: unknown): PeerPresence {
@@ -27,6 +28,7 @@ export function presenceText(presence: PeerPresence, now = Date.now()): Presence
     case 'online': return { text: tr('온라인'), online: true }
     case 'lastWeek': return { text: tr('일주일 이내'), online: false }
     case 'lastMonth': return { text: tr('한 달 이내'), online: false }
+    case 'longTimeAgo': return { text: tr('오래 전'), online: false }
     case 'hidden': return { text: tr('최근에 접속함'), online: false }
     case 'present': {
       if (!presence.t) return { text: tr('최근에 접속함'), online: false }

@@ -29,7 +29,14 @@ export class SelfProfileSession {
   private value: Omit<ProfileSnapshot, 'photo' | 'photoUpload'> = { status: 'loading', profile: null, message: '', saving: false, result: 'none', resultMessage: '' }
   private readonly photo: ProfilePhoto
   readonly photoUpload: ProfilePhotoUpload
-  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly changed: () => void, store: (command: ProfileUploadCommand, validate?: () => void) => Promise<ProfileUploadState>) {
+  // The address of my own picture now, for the album this device keeps.
+  get photoAddress(): string {
+    const raw = this.doc ? photoSource(this.doc) : ''
+    return raw && raw !== 'invalid' ? raw : ''
+  }
+  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly changed: () => void, store: (command: ProfileUploadCommand, validate?: () => void) => Promise<ProfileUploadState>,
+    // My own picture belongs to the same album this device keeps of everyone's (ProfilePhotoHistory).
+    private readonly seen: (uid: string, raw: string) => void = () => {}) {
     this.photo = new ProfilePhoto(uid, auth, () => this.publish())
     this.photoUpload = new ProfilePhotoUpload(uid, auth, store, {
       validate: version => this.photoGuard(version), changed: () => this.publish(), completed: () => this.restart(),
@@ -94,6 +101,7 @@ export class SelfProfileSession {
           this.doc = doc; this.value.profile = profile; this.value.status = 'ready'; this.value.message = ''
           const raw = photoSource(doc)
           if (raw !== 'invalid') cache?.confirm(`user:${this.uid}`, raw || null)
+          if (raw && raw !== 'invalid') this.seen(this.uid, raw)
           if (!this.locked) void this.photo.select(raw)
         } catch {
           this.doc = null; this.photo.clear(); this.value.profile = null; this.value.status = 'error'

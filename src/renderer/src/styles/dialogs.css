@@ -38,11 +38,14 @@
 .dialog-row-preview.draft b { font-weight: 500; color: var(--danger) }
 .dialog-row-preview.typing { color: var(--accent) }
 .dialog-row-status { flex: none; display: inline-flex; color: var(--icon-muted) }
+/* iOS failedRed exclamationmark.circle.fill beside the name; the sending clock in the weak text colour. */
+.dialog-row-failed { flex: none; color: var(--danger) }
+.dialog-row-sending { flex: none; color: var(--text-weak) }
 /* dialogs.style dialogsUnreadHeight 19, font 12 bold */
 .dialog-row-badge { flex: none; min-width: 19px; height: 19px; padding: 0 6px; border-radius: 10px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 700; line-height: 19px; text-align: center }
 .dialog-row-badge.muted { background: var(--swipe-mute) }
 .dialog-row-badge.mark { min-width: 10px; width: 10px; height: 10px; padding: 0 }
-.dialog-row.active :is(.dialog-row-name, .dialog-row-time, .dialog-row-preview, .dialog-row-kind, .dialog-row-status) { color: #fff }
+.dialog-row.active :is(.dialog-row-name, .dialog-row-time, .dialog-row-preview, .dialog-row-kind, .dialog-row-status, .dialog-row-sending) { color: #fff }
 .dialog-row.active .dialog-row-badge { background: #fff; color: var(--accent) }
 .dialog-row.active .dialog-row-badge.muted { color: var(--swipe-mute) }
 .dialog-row .avatar-archive { background: var(--swipe-mute) }

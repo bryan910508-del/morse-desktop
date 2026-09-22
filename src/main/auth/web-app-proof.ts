@@ -24,6 +24,9 @@ interface ProofResponse { host: string; path: string; method: string; status: nu
 interface ProofFailureEntry { step: ProofFailureStep; detail: string; blockedHosts: string[]; responses: ProofResponse[]; elapsedMs: number; platform: 'macOS' | 'Windows' }
 
 const maxLogBytes = 256 * 1024
+// The exchange normally ends in a few seconds; the hidden try gives up first, and the window in view has the rest of
+// the 35 seconds FirebaseRest allows a proof.
+const hiddenDeadline = 12000, visibleDeadline = 20000
 const guardedSessions = new WeakSet<Electron.Session>()
 
 // Local diagnostics for a failed security check: the failed step, a short reason,
@@ -90,7 +93,20 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
     })
   }
 
-  private acquire(signal: AbortSignal): Promise<AppCheckProof> {
+  // reCAPTCHA Enterprise here is the score-based kind: nothing is asked of the person, so the page does its work
+  // without being seen, as iOS's App Attest does its own. Only when that attempt is refused or runs out of time does
+  // the window open — the same check, in view — so a sign-in is never worse off than before. The whole exchange stays
+  // inside the 35 seconds the caller allows.
+  private async acquire(signal: AbortSignal): Promise<AppCheckProof> {
+    try { return await this.attempt(signal, false, hiddenDeadline) }
+    catch (error) {
+      const step = (error as { proofStep?: ProofFailureStep }).proofStep
+      if (signal.aborted || !step || !['page-error', 'timeout', 'invalid-response'].includes(step)) throw error
+      return this.attempt(signal, true, visibleDeadline)
+    }
+  }
+
+  private attempt(signal: AbortSignal, visible: boolean, deadlineMs: number): Promise<AppCheckProof> {
     if (signal.aborted) return Promise.reject(new AuthenticationFailure('cancelled'))
     const requestId = randomUUID(), started = Date.now(), blocked = new Set<string>(), responses: ProofResponse[] = []
     const url = `${this.origin}/verify.html#${new URLSearchParams({ platform: this.platform, requestId })}`
@@ -138,6 +154,8 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
         sandbox: true, contextIsolation: true, nodeIntegration: false,
         webSecurity: true, allowRunningInsecureContent: false, webviewTag: false,
         devTools: false, navigateOnDragDrop: false, safeDialogs: true,
+        // A page that is not shown must not be slowed down: reCAPTCHA's work runs on timers.
+        backgroundThrottling: false,
       },
     })
     window.setMenu(null)
@@ -168,7 +186,7 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
       const fail = (step: ProofFailureStep, detail = ''): void => {
         if (settled) return
         void recordProofFailure({ step, detail, blockedHosts: [...blocked], responses: [...responses], elapsedMs: Date.now() - started, platform: this.platform })
-        finish(undefined, new AuthenticationFailure(step === 'window-closed' ? 'cancelled' : 'app-proof'))
+        finish(undefined, Object.assign(new AuthenticationFailure(step === 'window-closed' ? 'cancelled' : 'app-proof'), { proofStep: step }))
       }
       const cancel = (): void => finish(undefined, new AuthenticationFailure('cancelled'))
       const receive = (event: IpcMainEvent, payload: unknown): void => {
@@ -183,13 +201,13 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
         }
         try { finish(proofFromToken(data.token, this.appId)) } catch { fail('invalid-response', 'token claims') }
       }
-      const deadline = setTimeout(() => fail('timeout', tr('30초 안에 결과를 받지 못함')), 30000)
+      const deadline = setTimeout(() => fail('timeout', `${visible ? 'visible' : 'hidden'} ${deadlineMs / 1000}s`), deadlineMs)
       ipcMain.on('morse:app-proof', receive)
       signal.addEventListener('abort', cancel, { once: true })
       window.once('closed', () => fail('window-closed'))
       window.webContents.once('render-process-gone', (_event, details) => fail('renderer-gone', details.reason))
       window.webContents.on('did-fail-load', (_event, code, description, _validatedURL, isMainFrame) => { if (isMainFrame) fail('load-failed', `${description} (${code})`) })
-      window.once('ready-to-show', () => { if (!settled) window.show() })
+      window.once('ready-to-show', () => { if (!settled && visible) window.show() })
       if (signal.aborted) { cancel(); return }
       void window.loadURL(url).catch(() => fail('load-failed', 'loadURL rejected'))
     })

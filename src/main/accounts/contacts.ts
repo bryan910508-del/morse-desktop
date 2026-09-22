@@ -62,8 +62,10 @@ export class ContactsSession {
   private readonly profileNames: PeerProfiles
 
   constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly changed: () => void,
-    private readonly store: <T>(command: ContactDetailsCommand | ContactPhotoCommand, validate?: () => void) => Promise<T>) {
-    this.profileNames = new PeerProfiles(uid, auth, auth.signal, () => { if (!this.closed) { this.order(); this.publish() } })
+    private readonly store: <T>(command: ContactDetailsCommand | ContactPhotoCommand, validate?: () => void) => Promise<T>,
+    // The picture a person has now, for the album this device keeps of that person (ProfilePhotoHistory).
+    seen: (uid: string, raw: string) => void = () => {}) {
+    this.profileNames = new PeerProfiles(uid, auth, auth.signal, () => { if (!this.closed) { this.order(); this.publish() } }, seen)
     registerPeerProfiles(auth, this.profileNames)
     this.personalPhotos = new ContactPhotos(store, uid => this.connected && !this.auth.signal.aborted && this.has(uid) && !this.unavailablePhotos.has(uid), () => this.publish())
     this.listAvatars = new ContactAvatars(uid, auth, peerUid => {

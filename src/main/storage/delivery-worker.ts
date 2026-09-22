@@ -49,6 +49,7 @@ import { executeReplyDraft, requireReply, storedReply } from './reply-draft-tabl
 import { executeMessageBookmark } from './message-bookmark-table'
 import { executeHiddenChat } from './hidden-chat-table'
 import { executeHiddenMessage } from './hidden-message-table'
+import { executePeerPhoto } from './peer-photo-table'
 import { executeChatFlag } from './chat-flag-table'
 import { executeContactFlag } from './contact-flag-table'
 import { executeSticker } from './sticker-table'
@@ -62,6 +63,7 @@ import { executeChatBackground } from './chat-background-table'
 import { executeProfileUpload } from './profile-photo-upload-table'
 import { executeGroupPhotoUpload } from './group-photo-upload-table'
 import { UserpicStore } from './userpic-cache-table'
+import { MediaCacheStore } from './media-cache-table'
 
 const { directory, uid, scope, key } = workerData as { directory: string; uid: string; scope: string; key: string }
 identifier(uid)
@@ -71,6 +73,8 @@ const db = openEncryptedDatabase(file, key)
 chmodSync(file, 0o600)
 // Pictures already fetched live in their own cache file, sealed with the same local key.
 const userpics = new UserpicStore(join(directory, 'userpics.sqlite'), key)
+// Storage::Cache::Database: media already fetched, kept in the account's own cache file under the same local key.
+const mediaFiles = new MediaCacheStore(join(directory, 'media.sqlite'), key)
 db.pragma('journal_mode = WAL'); db.pragma('synchronous = FULL'); db.pragma('busy_timeout = 5000'); db.pragma('secure_delete = ON')
 const version = db.pragma('user_version', { simple: true }) as number
 // The archive of retired journals written by an earlier version is encrypted with the same key.
@@ -155,6 +159,7 @@ db.transaction(() => {
     CREATE TABLE IF NOT EXISTS stickers (id TEXT PRIMARY KEY, kind TEXT NOT NULL, data BLOB NOT NULL, created_at REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS contact_flags (peer_uid TEXT PRIMARY KEY, favorite INTEGER NOT NULL DEFAULT 0, archived INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS hidden_messages (chat_id TEXT NOT NULL, message_id TEXT NOT NULL, hidden_at REAL NOT NULL, PRIMARY KEY(chat_id, message_id));
+    CREATE TABLE IF NOT EXISTS peer_photos (uid TEXT NOT NULL, raw TEXT NOT NULL, seen_at INTEGER NOT NULL, PRIMARY KEY(uid, raw));
     CREATE TABLE IF NOT EXISTS pending_directs (chat_id TEXT PRIMARY KEY, peer_uid TEXT UNIQUE NOT NULL,
       display_name TEXT NOT NULL, created_at REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS intents (sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL,
@@ -179,7 +184,7 @@ db.transaction(() => {
   for (const [name, type] of [['upload', 'TEXT'], ['source', 'BLOB'], ['source_digest', 'TEXT'], ['upload_request_digest', 'TEXT'], ['forward_operation_id', 'TEXT']]) if (!columns.has(name!)) db.exec(`ALTER TABLE intents ADD COLUMN ${name} ${type}`)
   const owner = db.prepare('SELECT scope FROM owner LIMIT 1').get() as { scope: string } | undefined
   if (owner?.scope !== scope) {
-    db.exec('DELETE FROM voice_drafts; DELETE FROM channel_post_photos; DELETE FROM story_publication_audios; DELETE FROM story_publication_commits; DELETE FROM story_photo_uploads; DELETE FROM story_video_commits; DELETE FROM story_video_uploads; DELETE FROM story_video_publications; DELETE FROM story_publications; DELETE FROM story_composer_audios; DELETE FROM story_composer_videos; DELETE FROM story_composer_photos; DELETE FROM story_composer_drafts; DELETE FROM story_reply_detachments; DELETE FROM story_reply_texts; DELETE FROM story_reply_drafts; DELETE FROM story_view_receipts; DELETE FROM story_reaction_changes; DELETE FROM story_hidden_changes; DELETE FROM story_privacy_moves; DELETE FROM story_removals; DELETE FROM story_caption_saves; DELETE FROM story_caption_drafts; DELETE FROM space_note_removals; DELETE FROM space_note_text_saves; DELETE FROM space_note_edit_drafts; DELETE FROM space_note_creations; DELETE FROM space_note_drafts; DELETE FROM channel_creations; DELETE FROM channel_post_creations; DELETE FROM channel_post_drafts; DELETE FROM channel_comment_creations; DELETE FROM channel_comment_drafts; DELETE FROM channel_discussion_joins; DELETE FROM channel_join_decisions; DELETE FROM channel_access_changes; DELETE FROM channel_photo_uploads; DELETE FROM group_photo_uploads; DELETE FROM contact_personal_photos; DELETE FROM profile_photo_history; DELETE FROM profile_photo_upload; DELETE FROM chat_background_photos; DELETE FROM chat_backgrounds; DELETE FROM forward_receipts; DELETE FROM contact_details; DELETE FROM reply_drafts; DELETE FROM message_bookmarks; DELETE FROM event_reminders; DELETE FROM pending_directs; DELETE FROM notification_receipts; DELETE FROM upload_parts; DELETE FROM intents; DELETE FROM local_drafts; DELETE FROM read_receipts; DELETE FROM hidden_chats; DELETE FROM cleared_chats; DELETE FROM hidden_messages; DELETE FROM chat_flags; DELETE FROM contact_flags; DELETE FROM stickers; DELETE FROM message_actions; DELETE FROM owner;')
+    db.exec('DELETE FROM voice_drafts; DELETE FROM channel_post_photos; DELETE FROM story_publication_audios; DELETE FROM story_publication_commits; DELETE FROM story_photo_uploads; DELETE FROM story_video_commits; DELETE FROM story_video_uploads; DELETE FROM story_video_publications; DELETE FROM story_publications; DELETE FROM story_composer_audios; DELETE FROM story_composer_videos; DELETE FROM story_composer_photos; DELETE FROM story_composer_drafts; DELETE FROM story_reply_detachments; DELETE FROM story_reply_texts; DELETE FROM story_reply_drafts; DELETE FROM story_view_receipts; DELETE FROM story_reaction_changes; DELETE FROM story_hidden_changes; DELETE FROM story_privacy_moves; DELETE FROM story_removals; DELETE FROM story_caption_saves; DELETE FROM story_caption_drafts; DELETE FROM space_note_removals; DELETE FROM space_note_text_saves; DELETE FROM space_note_edit_drafts; DELETE FROM space_note_creations; DELETE FROM space_note_drafts; DELETE FROM channel_creations; DELETE FROM channel_post_creations; DELETE FROM channel_post_drafts; DELETE FROM channel_comment_creations; DELETE FROM channel_comment_drafts; DELETE FROM channel_discussion_joins; DELETE FROM channel_join_decisions; DELETE FROM channel_access_changes; DELETE FROM channel_photo_uploads; DELETE FROM group_photo_uploads; DELETE FROM contact_personal_photos; DELETE FROM profile_photo_history; DELETE FROM profile_photo_upload; DELETE FROM chat_background_photos; DELETE FROM chat_backgrounds; DELETE FROM forward_receipts; DELETE FROM contact_details; DELETE FROM reply_drafts; DELETE FROM message_bookmarks; DELETE FROM event_reminders; DELETE FROM pending_directs; DELETE FROM notification_receipts; DELETE FROM upload_parts; DELETE FROM intents; DELETE FROM local_drafts; DELETE FROM read_receipts; DELETE FROM hidden_chats; DELETE FROM cleared_chats; DELETE FROM hidden_messages; DELETE FROM peer_photos; DELETE FROM chat_flags; DELETE FROM contact_flags; DELETE FROM stickers; DELETE FROM message_actions; DELETE FROM owner;')
     db.prepare('INSERT INTO owner(scope) VALUES(?)').run(scope)
     userpics.clear()
   }
@@ -253,10 +258,12 @@ function execute(command: DeliveryCommand): unknown {
     case 'bookmarks-read': case 'bookmark-set': return executeMessageBookmark(db, command)
     case 'hidden-chats-read': case 'hidden-chat-set': case 'cleared-chats-read': case 'cleared-chat-set': return executeHiddenChat(db, command)
     case 'hidden-messages-read': case 'hidden-messages-add': return executeHiddenMessage(db, command)
+    case 'peer-photos-read': case 'peer-photo-seen': case 'peer-photo-forget': return executePeerPhoto(db, command)
     case 'chat-flags-read': case 'chat-flag-set': return executeChatFlag(db, command)
     case 'contact-flags-read': case 'contact-flag-set': return executeContactFlag(db, command)
     case 'stickers-list': case 'sticker-read': case 'sticker-add': case 'sticker-remove': return executeSticker(db, command)
     case 'userpic-read': case 'userpic-write': case 'userpic-owners': case 'userpic-owner': case 'userpic-usage': case 'userpic-clear': return userpics.execute(command)
+    case 'media-cache-read': case 'media-cache-write': case 'media-cache-usage': case 'media-cache-clear': return mediaFiles.execute(command)
     case 'event-reminders': case 'event-reminder-add': case 'event-reminder-remove': return executeEventReminder(db, command)
     case 'text-known': {
       const wire = command.wire
@@ -352,9 +359,9 @@ function execute(command: DeliveryCommand): unknown {
       })(); return null
     }
     case 'close':
-      if (command.purge) db.transaction(() => { db.exec('DELETE FROM voice_drafts; DELETE FROM channel_post_photos; DELETE FROM story_publication_audios; DELETE FROM story_publication_commits; DELETE FROM story_photo_uploads; DELETE FROM story_video_commits; DELETE FROM story_video_uploads; DELETE FROM story_video_publications; DELETE FROM story_publications; DELETE FROM story_composer_audios; DELETE FROM story_composer_videos; DELETE FROM story_composer_photos; DELETE FROM story_composer_drafts; DELETE FROM story_reply_detachments; DELETE FROM story_reply_texts; DELETE FROM story_reply_drafts; DELETE FROM story_view_receipts; DELETE FROM story_reaction_changes; DELETE FROM story_hidden_changes; DELETE FROM story_privacy_moves; DELETE FROM story_removals; DELETE FROM story_caption_saves; DELETE FROM story_caption_drafts; DELETE FROM space_note_removals; DELETE FROM space_note_text_saves; DELETE FROM space_note_edit_drafts; DELETE FROM space_note_creations; DELETE FROM space_note_drafts; DELETE FROM channel_creations; DELETE FROM channel_post_creations; DELETE FROM channel_post_drafts; DELETE FROM channel_comment_creations; DELETE FROM channel_comment_drafts; DELETE FROM channel_discussion_joins; DELETE FROM channel_join_decisions; DELETE FROM channel_access_changes; DELETE FROM channel_photo_uploads; DELETE FROM group_photo_uploads; DELETE FROM contact_personal_photos; DELETE FROM profile_photo_history; DELETE FROM profile_photo_upload; DELETE FROM chat_background_photos; DELETE FROM chat_backgrounds; DELETE FROM forward_receipts; DELETE FROM contact_details; DELETE FROM reply_drafts; DELETE FROM message_bookmarks; DELETE FROM event_reminders; DELETE FROM pending_directs; DELETE FROM notification_receipts; DELETE FROM upload_parts; DELETE FROM intents; DELETE FROM local_drafts; DELETE FROM read_receipts; DELETE FROM hidden_chats; DELETE FROM cleared_chats; DELETE FROM hidden_messages; DELETE FROM chat_flags; DELETE FROM contact_flags; DELETE FROM stickers; DELETE FROM message_actions; DELETE FROM owner;') })()
-      if (command.purge) userpics.clear()
-      userpics.close()
+      if (command.purge) db.transaction(() => { db.exec('DELETE FROM voice_drafts; DELETE FROM channel_post_photos; DELETE FROM story_publication_audios; DELETE FROM story_publication_commits; DELETE FROM story_photo_uploads; DELETE FROM story_video_commits; DELETE FROM story_video_uploads; DELETE FROM story_video_publications; DELETE FROM story_publications; DELETE FROM story_composer_audios; DELETE FROM story_composer_videos; DELETE FROM story_composer_photos; DELETE FROM story_composer_drafts; DELETE FROM story_reply_detachments; DELETE FROM story_reply_texts; DELETE FROM story_reply_drafts; DELETE FROM story_view_receipts; DELETE FROM story_reaction_changes; DELETE FROM story_hidden_changes; DELETE FROM story_privacy_moves; DELETE FROM story_removals; DELETE FROM story_caption_saves; DELETE FROM story_caption_drafts; DELETE FROM space_note_removals; DELETE FROM space_note_text_saves; DELETE FROM space_note_edit_drafts; DELETE FROM space_note_creations; DELETE FROM space_note_drafts; DELETE FROM channel_creations; DELETE FROM channel_post_creations; DELETE FROM channel_post_drafts; DELETE FROM channel_comment_creations; DELETE FROM channel_comment_drafts; DELETE FROM channel_discussion_joins; DELETE FROM channel_join_decisions; DELETE FROM channel_access_changes; DELETE FROM channel_photo_uploads; DELETE FROM group_photo_uploads; DELETE FROM contact_personal_photos; DELETE FROM profile_photo_history; DELETE FROM profile_photo_upload; DELETE FROM chat_background_photos; DELETE FROM chat_backgrounds; DELETE FROM forward_receipts; DELETE FROM contact_details; DELETE FROM reply_drafts; DELETE FROM message_bookmarks; DELETE FROM event_reminders; DELETE FROM pending_directs; DELETE FROM notification_receipts; DELETE FROM upload_parts; DELETE FROM intents; DELETE FROM local_drafts; DELETE FROM read_receipts; DELETE FROM hidden_chats; DELETE FROM cleared_chats; DELETE FROM hidden_messages; DELETE FROM peer_photos; DELETE FROM chat_flags; DELETE FROM contact_flags; DELETE FROM stickers; DELETE FROM message_actions; DELETE FROM owner;') })()
+      if (command.purge) { userpics.clear(); mediaFiles.clear() }
+      userpics.close(); mediaFiles.close()
       db.pragma('wal_checkpoint(TRUNCATE)'); db.close(); return null
   }
 }

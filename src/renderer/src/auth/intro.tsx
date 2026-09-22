@@ -14,6 +14,14 @@ import { tr } from '../../../shared/i18n'
 const noStates: AccountAuthState[] = []
 
 // The Apple logo glyph of the «Sign in with Apple» buttons (iOS SF Symbol apple.logo).
+// The security check runs without a window now, so reCAPTCHA's notice is shown where the person signs in — Google asks
+// for it to be visible in the flow whenever its badge is not (reCAPTCHA FAQ: hiding the badge).
+function RecaptchaNotice() {
+  return <p className="intro-legal">{tr('이 앱은 reCAPTCHA의 보호를 받으며 Google의')}{' '}
+    <button type="button" className="intro-legal-link" onClick={() => { void window.morse.openRecaptchaTerms('privacy').catch(() => {}) }}>{tr('개인정보처리방침')}</button>{tr('과')}{' '}
+    <button type="button" className="intro-legal-link" onClick={() => { void window.morse.openRecaptchaTerms('terms').catch(() => {}) }}>{tr('서비스 약관')}</button>{tr('이 적용됩니다.')}</p>
+}
+
 function AppleLogo() {
   return <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M12.15 6.9c-.95 0-2.42-1.08-3.96-1.04-2.04.03-3.91 1.18-4.96 3.01-2.12 3.68-.55 9.1 1.52 12.09 1.01 1.45 2.21 3.09 3.79 3.04 1.52-.07 2.09-.99 3.94-.99 1.83 0 2.35.99 3.96.95 1.64-.03 2.68-1.48 3.68-2.95 1.16-1.69 1.64-3.33 1.66-3.42-.04-.01-3.18-1.22-3.22-4.86-.03-3.04 2.48-4.49 2.6-4.56-1.43-2.09-3.62-2.32-4.39-2.38-2-.16-3.68 1.09-4.61 1.09zM15.53 3.83c.84-1.01 1.4-2.43 1.25-3.83-1.21.05-2.66.8-3.53 1.82-.78.9-1.45 2.34-1.27 3.71 1.34.1 2.72-.69 3.56-1.7" /></svg>
 }
@@ -132,13 +140,14 @@ export function Intro() {
       <p className="intro-description">{tr('익명 ID로 새 계정을 만들고 이 데스크탑에 연결합니다.')}</p>
       <div className={`intro-id${userId ? '' : ' empty'}`}>{userId ? <strong className="selectable">@{userId}</strong> : tr('아이디를 생성해 주세요')}</div>
       <button className="button secondary block" type="button" disabled={busy} onClick={() => setUserId(newUserId())}>{userId ? tr('다른 ID 생성') : tr('익명 ID로 시작하기')}</button>
-      <p className="intro-note">{tr('가입 후엔 변경할 수 없어요. (이름은 언제든 가능) 만들 때 보안 확인 창이 잠시 열립니다.')}</p>
+      <p className="intro-note">{tr('가입 후엔 변경할 수 없어요. (이름은 언제든 가능)')}</p>
       <button className="button primary block" type="button" disabled={busy || !userId} onClick={() => { void create() }}>{busy && !apple ? <><Spinner size={16} />{tr('계정 만드는 중…')}</> : tr('계정 만들기')}</button>
       {appleButton(tr('Apple로 계정 만들기'))}
       {busy
         ? <button className="button flat block" type="button" onClick={() => { void run(() => window.morse.authentication.cancelSignIn(), false) }}>{tr('취소')}</button>
         : <button className="intro-link" type="button" onClick={() => { setMode('connect'); setError('') }}>{tr('이미 계정이 있어요 · 복구 코드로 연결')}</button>}
       {status && <p className={`intro-status${failed ? ' error' : ''}`} role={failed ? 'alert' : 'status'}>{status}</p>}
+      <RecaptchaNotice />
     </div>
       : <form className="intro-step" onSubmit={event => { event.preventDefault(); if (!busy && code.trim()) void run(() => window.morse.authentication.signInWithBackupCode(code)) }}>
         <img className="intro-logo" src="/morse.png" alt="" />
@@ -151,7 +160,7 @@ export function Intro() {
             <KeyRound size={18} />
             <input type="password" value={code} maxLength={256} placeholder={tr('복구 코드')} autoComplete="off" autoCapitalize="characters" spellCheck={false} autoFocus disabled={busy} onChange={event => setCode(event.target.value)} />
           </label>
-          <p className="intro-note">{tr('복구 코드는 로그인 확인에만 사용합니다. 연결할 때 보안 확인 창이 잠시 열립니다.')}</p>
+          <p className="intro-note">{tr('복구 코드는 로그인 확인에만 사용합니다.')}</p>
           <button className="button primary block" type="submit" disabled={busy || !code.trim()}>{busy && !apple ? <><Spinner size={16} />{tr('연결 확인 중…')}</> : tr('계정 연결')}</button>
           {appleButton(tr('Apple로 로그인'))}
           {busy
@@ -159,6 +168,7 @@ export function Intro() {
             : <button className="button flat block" type="button" onClick={() => { setMode('create'); setError('') }}><UserPlus size={18} />{tr('새 계정 만들기')}</button>}
           {status && <p className={`intro-status${failed ? ' error' : ''}`} role={failed ? 'alert' : 'status'}>{status}</p>}
           {savedList}
+          <RecaptchaNotice />
         </>}
       </form>}
   </div>

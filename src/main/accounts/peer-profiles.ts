@@ -33,7 +33,9 @@ export class PeerProfiles {
   private answered = new Set<string>()
   private closed = false
   private readonly cache: UserpicCache | null
-  constructor(private readonly uid: string, auth: object, private readonly signal: AbortSignal, private readonly changed: () => void) {
+  constructor(private readonly uid: string, auth: object, private readonly signal: AbortSignal, private readonly changed: () => void,
+    // ProfilePhotoHistory.save: the address of a picture this device has just seen of this person.
+    private readonly seen?: (uid: string, raw: string) => void) {
     this.cache = userpicCacheFor(auth)
   }
 
@@ -77,6 +79,7 @@ export class PeerProfiles {
           const next = decodePeerProfile(rows.get(root), rows.has(entry.reciprocal))
           const previous = this.profiles.get(entry.uid) ?? null
           this.cache?.confirm(`user:${entry.uid}`, next?.photo || null)
+          if (next?.photo) this.seen?.(entry.uid, next.photo)
           if (!this.answered.has(entry.uid)) { this.answered.add(entry.uid); changed = true }
           if (previous?.name === next?.name && previous?.photo === next?.photo && previous?.mutual === next?.mutual) continue
           this.profiles.set(entry.uid, next); changed = true

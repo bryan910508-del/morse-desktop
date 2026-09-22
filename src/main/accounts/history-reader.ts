@@ -5,6 +5,7 @@ import { decodeMessage, documents, expiry, historyReadable, historyLimit, messag
 import type { MediaRequest } from '../../shared/media'
 import { mediaResources } from '../media/media-document'
 import { originalPreview, replyOriginal, ReplyContext } from './reply-context'
+import { ExpiredMessages } from './expired-messages'
 import { recordHistoryStep } from '../platform/history-diagnostics'
 import { tr } from '../../shared/i18n'
 
@@ -24,11 +25,20 @@ export class HistoryReader {
   private failed = false
   private expiryTimer?: ReturnType<typeof setTimeout>
   private readonly replies: ReplyContext
+  // checkTTLs(): what this room has seen expire leaves the server too, since no one else takes it away.
+  private readonly expired: ExpiredMessages
   private value: HistorySnapshot = { messages: [], before: null, hasMore: false, revision: 0, status: 'loading', message: '', newerAvailable: false }
 
   constructor(readonly dialog: ReadDialog, private readonly reader: FirestoreReader, private readonly changed: (snapshot: HistorySnapshot) => void,
-    private readonly nextRevision: () => number, private readonly hidden: (messageId: string) => boolean = () => false) {
+    private readonly nextRevision: () => number, private readonly hidden: (messageId: string) => boolean = () => false,
+    // Nothing is taken from the server while the screen is locked or the account has moved on.
+    private readonly writable: () => boolean = () => true) {
     this.replies = new ReplyContext(dialog, reader, this.abort.signal, () => this.publish())
+    this.expired = new ExpiredMessages(
+      entry => reader.deleteMessage(entry.doc, dialog.summary.id, entry.id, dialog.accountUid, this.abort.signal),
+      // A group takes away only this account's own messages, as iOS does; a 1:1 or the memo space takes any.
+      entry => !this.closed && !this.failed && this.writable() && historyReadable(dialog) && dialog.summary.kind !== 'secret' &&
+        (dialog.summary.kind !== 'group' || entry.senderId === dialog.accountUid))
   }
   get snapshot(): HistorySnapshot { return { ...this.value, messages: [...this.value.messages] } }
   mediaResource(request: MediaRequest) {
@@ -166,6 +176,8 @@ export class HistoryReader {
       })
       const nextExpiry = [...raw.map(expiry), this.replies.nextExpiry()].filter((time): time is number => time !== null && time > Date.now()).sort((a, b) => a - b)[0]
       if (nextExpiry) this.expiryTimer = setTimeout(() => this.publish(), Math.min(2147483647, Math.max(1, nextExpiry - Date.now() + 1)))
+      // What has already expired is taken from the server as well, so it is gone for the other side too.
+      if (this.value.status === 'ready') this.expired.sweep(raw)
     } catch {
       this.fail(new ReadFailure('data')); return
     }
@@ -277,7 +289,7 @@ export class HistoryReader {
   private cancelPage(): void { this.epoch++; this.pageAbort?.abort(); this.pageAbort = null; this.paging = null }
   close(): void {
     if (this.closed) return
-    this.closed = true; this.cancelPage(); this.abort.abort(); this.stopTail?.(); this.stopGroups(); this.replies.clear(); clearTimeout(this.expiryTimer)
+    this.closed = true; this.cancelPage(); this.abort.abort(); this.stopTail?.(); this.stopGroups(); this.replies.clear(); this.expired.close(); clearTimeout(this.expiryTimer)
     this.rows.clear(); this.top = []
   }
 }

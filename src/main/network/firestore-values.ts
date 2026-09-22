@@ -4,7 +4,7 @@ import { messageStorySource } from './message-story-source'
 import type { ChatMessage, DialogSummary, MessagePosition } from '../../shared/model'
 import { comparePosition, positionMilliseconds } from '../../shared/model'
 import { identifier, object } from '../../shared/validation'
-import { idleReadSync, readCursor } from '../../shared/read-receipts'
+import { idleReadSync, outboxReadTill, readCursor } from '../../shared/read-receipts'
 import { mediaCaption, mediaResources } from '../media/media-document'
 import { messageMediaMetadata } from '../media/message-media-metadata'
 import { tr } from '../../shared/i18n'
@@ -126,7 +126,7 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
   else if (preview === '__TALKY_SECRET__') preview = tr('비밀 메시지')
   return { summary: { id, version: documentVersion(doc), kind: kind as DialogSummary['kind'], title, participantUids: participants,
     preview: preview.slice(0, 300), top, unreadCount: Math.max(0, Math.trunc(numberField(mapField(f, 'unreadCounts'), uid))),
-    markedUnread: boolField(mapField(f, 'manualUnread'), uid), readPositions, readSync: idleReadSync,
+    markedUnread: boolField(mapField(f, 'manualUnread'), uid), readPositions, outboxRead: outboxReadTill(readPositions, participants.filter(participant => participant !== uid)), readSync: idleReadSync,
     // isArchived / isMuted in the shared room document are another person's choice as often as this one's;
     // this device's own flags are applied by the session (ChatFlags).
     pinned: false, pinVersion: '', archived: false, muted: false,
@@ -158,11 +158,15 @@ function unseenReaction(fields: Record<string, WireObject>, uid: string): Dialog
   } catch { return undefined }
 }
 // chats/{id}.pinnedForAllMessageIds: message ids pinned for everyone (unreadable entries are left out).
-function pinnedMessageIds(fields: Record<string, WireObject>): string[] {
+export function pinnedMessageIds(fields: Record<string, WireObject>): string[] {
   const values = (fields.pinnedForAllMessageIds as { arrayValue?: { values?: unknown } } | undefined)?.arrayValue?.values
   if (!Array.isArray(values)) return []
   return [...new Set(values.flatMap(value => { try { return [identifier((value as { stringValue?: unknown }).stringValue)] } catch { return [] } }))].slice(0, 100)
 }
+// PostAspectRatio, as the channel wrote it on the post and onChannelPostCreated mirrored into the room.
+// «auto» is the picture's own shape, which only the picture itself can tell.
+const postAspects: Record<string, number> = { '1:1': 1, '4:5': 4 / 5, '16:9': 16 / 9 }
+export function postAspectRatio(raw: string): number | null { return postAspects[raw] ?? null }
 export function historyReadable(dialog: ReadDialog): boolean { return dialog.summary.historyAccess === undefined || dialog.summary.historyAccess === 'ready' }
 export function decodeMessage(doc: FirestoreDocument, dialog: ReadDialog, now = Date.now()): ChatMessage | null {
   if (!historyReadable(dialog)) return null
@@ -182,7 +186,8 @@ export function decodeMessage(doc: FirestoreDocument, dialog: ReadDialog, now = 
   const replyId = encrypted || system ? '' : stringField(f, 'replyToId', 160).trim() || stringField(f, 'reply_to', 160).trim()
   if (replyId) identifier(replyId)
   // A channel post card is a system message that carries the post's own picture; every other system line carries none.
-  const card = kind === 'channelPost' ? { channelId: stringField(f, 'channelId', 160), postId: stringField(f, 'channelPostId', 160), channelName: stringField(f, 'channelName', 512) } : null
+  const card = kind === 'channelPost' ? { channelId: stringField(f, 'channelId', 160), postId: stringField(f, 'channelPostId', 160), channelName: stringField(f, 'channelName', 512),
+    ...(postAspectRatio(stringField(f, 'aspectRatio', 16)) ? { ratio: postAspectRatio(stringField(f, 'aspectRatio', 16))! } : {}) } : null
   const attachments = system && !card ? [] : mediaResources(doc, dialog.summary.id, kind, encrypted).map(resource => resource.summary)
   const circular = messageFlag(f, 'isCircleVideo')
   return { id: position.id, chatId: dialog.summary.id, senderId,

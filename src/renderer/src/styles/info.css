@@ -102,6 +102,8 @@ button.info-row:hover { background: var(--card-pressed) }
 
 .media-viewer { position: fixed; inset: 0; z-index: 110; display: flex; flex-direction: column; background: rgb(0 0 0 / .92); color: #fff; animation: morse-fade-in .15s ease-out }
 .media-viewer:focus-visible { outline: none }
+/* A profile picture opens as it is, whole: OverlayWidget fits the photo to the window without cropping it. */
+.photo-viewer .media-viewer-stage img { max-width: min(92vw, 720px); max-height: 84vh; border-radius: 12px; object-fit: contain }
 .media-viewer-top { flex: none; display: flex; align-items: center; gap: 8px; height: 56px; padding: 0 12px 0 20px; -webkit-app-region: drag }
 .media-viewer-top button { -webkit-app-region: no-drag }
 .media-viewer-meta { flex: 1; min-width: 0; display: grid; gap: 2px }
@@ -222,6 +224,11 @@ button.info-row:hover { background: var(--card-pressed) }
 .shared-media-text small.link { color: var(--accent) }
 .forum-list { display: grid; gap: 2px; margin-bottom: 10px }
 .forum-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 4px; font-size: 14px; border-bottom: 1px solid var(--divider) }
+.forum-row { gap: 8px; min-height: 36px }
+.forum-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.forum-row-delete:hover:not(:disabled) { color: var(--danger) }
+.forum-row-state { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-caption); color: var(--text-weak) }
+.forum-row-retry { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 8px; font-size: var(--t-caption); color: var(--danger) }
 .forum-add { display: flex; gap: 8px }
 .forum-add input { flex: 1; min-width: 0; height: 36px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--divider); background: var(--card); color: var(--text) }
 .settings-radio span small { display: block; font-size: 12px; color: var(--text-weak) }

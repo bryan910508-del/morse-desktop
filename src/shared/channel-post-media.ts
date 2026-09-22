@@ -2,6 +2,9 @@ import { identifier, object } from './validation'
 import { tr } from './i18n'
 
 export interface ChannelPostMediaItem { index: number; kind: 'image' | 'video' | 'unsupported'; available: boolean; videoAvailable: boolean
+  // The tiny blurred picture the post carries, drawn while the picture itself is fetched (immediateThumbnailData),
+  // and the size of the original, so the tile keeps its place before anything is drawn.
+  blur: string; width?: number; height?: number
   // The picture drawn inside the post, as Telegram draws a channel post's media in the channel itself.
   picture?: import('./channel-home').ChannelHomeImage | null }
 export interface ChannelPostMediaRequest {

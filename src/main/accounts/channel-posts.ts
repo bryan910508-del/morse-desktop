@@ -29,7 +29,7 @@ import type { ChannelPostLikeRequest } from '../../shared/channel-post-like'
 import { ChannelPostMediaSession } from './channel-post-media'
 import type { ChannelPostMediaRequest } from '../../shared/channel-post-media'
 import { channelPostMedia, channelPostRevision } from '../media/channel-post-media-document'
-import { ChannelPostPictures } from './channel-post-pictures'
+import { ChannelPostPictures, type PictureSource } from './channel-post-pictures'
 import type { ChannelPostsRequest, ChannelPostsSnapshot, ChannelPostText } from '../../shared/channel-posts'
 import { comparePosition } from '../../shared/model'
 import { identifier } from '../../shared/validation'
@@ -122,7 +122,7 @@ export class ChannelPosts {
     return scope
   }
   // The pictures a post shows in the channel: the same objects an opened post reads, through the same grant.
-  private pictureSource(key: string): { path: string; video: boolean; postId: string } {
+  private pictureSource(key: string): PictureSource {
     const value = this.value, [channelId, postId, rawIndex] = key.split('/')
     if (!value || value.status !== 'ready' || !channelId || !postId || value.channelId !== channelId) throw new Error('Post picture unavailable')
     const scope = this.validate(channelId), doc = this.rows.get(`${documents}/channels/${channelId}/posts/${postId}`)
@@ -130,7 +130,7 @@ export class ChannelPosts {
     decodeChannelPost(doc, channelId, scope, this.uid)
     const item = channelPostMedia(doc, channelId).items[Number(rawIndex)]
     if (!item?.path || item.kind === 'unsupported') throw new Error('Post picture unavailable')
-    return { path: item.path, video: item.kind === 'video', postId }
+    return { path: item.path, video: item.kind === 'video', postId, blur: item.blur, width: item.width ?? 0, height: item.height ?? 0 }
   }
   // The pictures of the posts now listed, as the feed wants the first picture of each of its posts.
   private wantPictures(): void {

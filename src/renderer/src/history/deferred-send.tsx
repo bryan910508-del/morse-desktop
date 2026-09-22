@@ -38,11 +38,11 @@ export function showScheduleBox(onPick: (at: number) => void): void {
   controller.showLayer(close => <ScheduleBox close={close} onPick={onPick} />)
 }
 
-function DeferredRow({ accountUid, chatId, item }: { accountUid: string; chatId: string; item: DeferredItem }) {
+function DeferredRow({ item, drop }: { item: DeferredItem; drop(item: DeferredItem): Promise<void> }) {
   const [busy, setBusy] = useState(false)
   const cancel = async (): Promise<void> => {
     setBusy(true)
-    try { await trackWrite(window.morse.cancelDeferred(accountUid, chatId, item.kind, item.id)); controller.toast(tr('예약이 취소됐어요')) }
+    try { await drop(item); controller.toast(tr('예약이 취소됐어요')) }
     catch (reason) { controller.toast(errorText(reason, tr('예약 취소에 실패했어요')), 'error'); setBusy(false) }
   }
   const when = item.failed ? tr('보내지 못했어요') : item.kind === 'online' ? tr('상대방이 접속하면 전송돼요') : item.scheduledAt ? whenFormat.format(item.scheduledAt) : tr('예약 시간 확인 중')
@@ -51,22 +51,24 @@ function DeferredRow({ accountUid, chatId, item }: { accountUid: string; chatId:
     <button type="button" className="button flat danger" disabled={busy} onClick={() => { void cancel() }}>{item.failed ? tr('삭제') : tr('취소')}</button>
   </div>
 }
-function DeferredListBox({ accountUid, chatId, close }: { accountUid: string; chatId: string; close(): void }) {
-  const items = useDesktop(snapshot => snapshot?.deferredMessages?.chatId === chatId ? snapshot.deferredMessages.items : null) ?? []
+function DeferredListBox({ items, drop, close }: { items: DeferredItem[]; drop(item: DeferredItem): Promise<void>; close(): void }) {
   return <Box title={tr('예약된 메시지')} width={420} onClose={close} buttons={<button className="button flat" onClick={close}>{tr('닫기')}</button>}>
-    {items.length ? <div className="deferred-list">{items.map(item => <DeferredRow key={`${item.kind}:${item.id}`} accountUid={accountUid} chatId={chatId} item={item} />)}</div>
+    {items.length ? <div className="deferred-list">{items.map(item => <DeferredRow key={`${item.kind}:${item.id}`} item={item} drop={drop} />)}</div>
       : <div className="empty-state">{tr('예약된 메시지가 없어요')}</div>}
   </Box>
 }
 
-// Telegram's scheduled messages entry: queued messages of this chat, opened from a bar under the header.
-export function DeferredBar({ accountUid, chatId }: { accountUid: string; chatId: string }) {
-  const items = useDesktop(snapshot => snapshot?.deferredMessages?.chatId === chatId ? snapshot.deferredMessages.items : null) ?? []
+// Telegram's scheduled messages entry: the queued messages of the open room, opened from a bar under the header.
+export function DeferredItemsBar({ items, drop }: { items: DeferredItem[]; drop(item: DeferredItem): Promise<void> }) {
   if (!items.length) return null
   const scheduled = items.filter(item => item.kind === 'scheduled').length, online = items.length - scheduled
-  return <button type="button" className="deferred-bar" onClick={() => controller.showLayer(close => <DeferredListBox accountUid={accountUid} chatId={chatId} close={close} />)}>
+  return <button type="button" className="deferred-bar" onClick={() => controller.showLayer(close => <DeferredListBox items={items} drop={drop} close={close} />)}>
     <Clock size={16} aria-hidden="true" />
     <span className="ellipsis">{[scheduled ? tr('예약된 메시지 {0}개', [scheduled]) : '', online ? tr('온라인시 보내기 {0}개', [online]) : ''].filter(Boolean).join(' · ')}</span>
     {items.some(item => item.failed) && <small className="error">{tr('보내지 못한 메시지가 있어요')}</small>}
   </button>
+}
+export function DeferredBar({ accountUid, chatId }: { accountUid: string; chatId: string }) {
+  const items = useDesktop(snapshot => snapshot?.deferredMessages?.chatId === chatId ? snapshot.deferredMessages.items : null) ?? []
+  return <DeferredItemsBar items={items} drop={async item => { await trackWrite(window.morse.cancelDeferred(accountUid, chatId, item.kind, item.id)) }} />
 }

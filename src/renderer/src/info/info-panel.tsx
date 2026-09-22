@@ -17,6 +17,7 @@ import { changeGroupPhoto } from '../app/photos'
 import { showAddMembersBox } from '../boxes/group-boxes'
 import { showTextEditBox } from '../boxes/text-edit-box'
 import { Avatar, PeerAvatar } from '../ui/avatar'
+import { showPhotoViewer } from '../ui/photo-viewer'
 import { Spinner, Switch, TextField } from '../ui/controls'
 import { SharedMedia } from './shared-media'
 import { showForumBox } from './forum-box'
@@ -143,9 +144,11 @@ function ContactProfile({ accountUid, uid, fromChat }: { accountUid: string; uid
     catch (reason) { controller.toast(errorText(reason, tr('차단 상태를 바꾸지 못했습니다.')), 'error') }
   }
   const personal = live?.personalPhoto.status === 'ready' ? live.personalPhoto : null
+  // The picture this profile shows, and the one its cover opens.
+  const coverUrl = personalUrl ?? (profile.photo.status === 'ready' ? profile.photo.url : profile.visibility === 'visible' && profile.photo.status !== 'none' ? listUrl : null)
   return <>
     <div className="info-cover">
-      <Avatar name={profile.displayName} url={personalUrl ?? (profile.photo.status === 'ready' ? profile.photo.url : profile.visibility === 'visible' && profile.photo.status !== 'none' ? listUrl : null)} size={88} />
+      <Avatar name={profile.displayName} url={coverUrl} size={88} onOpen={() => { if (coverUrl) showPhotoViewer(coverUrl, profile.displayName, { accountUid, peerUid: uid }) }} />
       <h2 className="selectable">{profile.displayName}</h2>
       {presence && <span className={presence.online ? 'online' : undefined}>{presence.text}</span>}
       {profile.originalName && profile.originalName !== profile.displayName && <span>{tr('원래 이름 {0}', [profile.originalName])}</span>}
@@ -249,7 +252,8 @@ function GroupInfo({ accountUid, dialog, onProfile }: { accountUid: string; dial
   }
   return <>
     <div className="info-cover">
-      <Avatar name={current.groupName ?? dialog.title} url={photo?.status === 'ready' ? photo.url : null} size={88} />
+      <Avatar name={current.groupName ?? dialog.title} url={photo?.status === 'ready' ? photo.url : null} size={88}
+        onOpen={() => { if (photo?.status === 'ready' && photo.url) showPhotoViewer(photo.url, current.groupName ?? dialog.title) }} />
       <h2 className="selectable">{current.groupName ?? dialog.title}</h2>
       <span>{tr('{0} · 참여자 {1}명', [current.discussion ? tr('채널 토론방') : tr('그룹', [], 'kind'), members.length])}</span>
     </div>

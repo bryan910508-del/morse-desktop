@@ -26,12 +26,14 @@ export class DeferredMessages {
   private owner: Owner | null = null
   constructor(private readonly uid: string, private readonly signal: AbortSignal, private readonly changed: () => void) {}
 
-  bind(chatId: string, reader: FirestoreReader): void {
+  // An inquiry room has only a scheduled queue: its participants do not see each other's presence,
+  // so «온라인시 보내기» does not exist there (talky-scheduled-online-messages: inquiryAligned).
+  bind(chatId: string, reader: FirestoreReader, kinds: readonly DeferredKind[] = ['scheduled', 'online']): void {
     this.clear()
     const owner: Owner = { chatId, rows: { scheduled: new Map(), online: new Map() }, stops: [] }
     this.owner = owner
     const equal = (field: string, value: string) => ({ fieldFilter: { field: { fieldPath: field }, op: 'EQUAL', value: { stringValue: value } } })
-    for (const kind of ['scheduled', 'online'] as const) {
+    for (const kind of kinds) {
       owner.stops.push(reader.watch({ query: { parent: documents, structuredQuery: { from: [{ collectionId: deferredCollections[kind] }],
         where: { compositeFilter: { op: 'AND', filters: [equal('chatId', chatId), equal('senderId', this.uid)] } } } } }, this.signal, {
         snapshot: rows => { if (this.owner !== owner) return; owner.rows[kind] = new Map(rows); this.changed() },

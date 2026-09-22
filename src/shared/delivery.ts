@@ -8,7 +8,8 @@ export interface LocalOutgoing {
   storyReply?: boolean
   voicePreview?: import('./voice-queue-preview').VoiceQueueMetadata
   createdAt: number
-  state: DeliveryState
+  // 'sent': the server has it and the history has not shown it yet (see OutboxPump.sent).
+  state: DeliveryState | 'sent'
   reason: string
   busy: boolean
   retryable: boolean

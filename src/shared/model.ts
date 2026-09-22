@@ -125,6 +125,10 @@ export interface DialogSummary {
   unreadCount: number
   markedUnread: boolean
   readPositions: Record<string, ReadCursor>
+  // How far the other people have read what this account sent (outboxReadTill).
+  outboxRead: ReadCursor | null
+  // A message of mine in this room that did not go, and whether the newest one of mine is still on its way.
+  sends?: { sending: boolean; failed: boolean }
   readSync: ReadSyncState
   pinned: boolean
   pinVersion: string
@@ -147,6 +151,8 @@ export interface DialogSummary {
   // A group's topics when isForumEnabled, and the topic this device shows (null: «모두»).
   forum?: import('./forum').ForumState
   forumSelected?: string | null
+  // Topics this device is deleting; `failed` once it stopped and waits to be asked again.
+  forumDeleting?: { id: string; failed: boolean }[]
   top: MessagePosition | null
 }
 
@@ -176,7 +182,9 @@ export interface ChatMessage {
   version: string
   system: boolean
   // A channel post mirrored into the channel's discussion room (server onChannelPostCreated).
-  channelPost?: { channelId: string; postId: string; channelName: string }
+  // The shape the post was published in (PostAspectRatio: 원본 / 1:1 / 4:5 / 16:9), so its picture in the
+  // discussion room keeps its place before it is drawn. «원본» has none until the picture itself says.
+  channelPost?: { channelId: string; postId: string; channelName: string; ratio?: number }
   reactions: ReactionSummary[]
   attachments?: AttachmentSummary[]
   caption?: string
@@ -343,6 +351,7 @@ export type DesktopEvent =
   | { type: 'media-progress'; accountUid: string; requestId: string; loaded: number; total: number | null }
   | { type: 'shortcut'; command: ShortcutCommand }
   | { type: 'open-notification-chat'; accountUid: string; chatId: string }
+  | { type: 'open-notification-inquiry'; accountUid: string; channelId: string; inquiryId: string }
   | { type: 'search-changed'; accountUid: string; chatId: string; search: SearchSnapshot }
   | { type: 'error'; message: string }
   // A picked video is being compressed before the send box opens.
@@ -379,6 +388,9 @@ export interface DesktopBridge {
   setChatFlags(accountUid: string, chatId: string, patch: { muted?: boolean; archived?: boolean; category?: string | null }): Promise<'done'>
   setGroupForum(accountUid: string, chatId: string, enabled: boolean): Promise<'done'>
   addForumCategory(accountUid: string, chatId: string, name: string): Promise<'done'>
+  copyImage(png: Uint8Array): Promise<void>
+  renameForumCategory(accountUid: string, chatId: string, categoryId: string, name: string): Promise<'done'>
+  deleteForumCategory(accountUid: string, chatId: string, categoryId: string): Promise<'done'>
   restoreChat(accountUid: string, chatId: string): Promise<'done'>
   prepareMemoChat(accountUid: string): Promise<string>
   blockedUsers(accountUid: string): Promise<import('./account-tools').BlockedUser[]>
@@ -409,7 +421,7 @@ export interface DesktopBridge {
   closeInquiryList(accountUid: string, requestId: string): Promise<void>
   openInquiryThread(accountUid: string, request: import('./channel-inquiries').InquiryThreadRequest): Promise<void>
   closeInquiryThread(accountUid: string, requestId: string): Promise<void>
-  sendInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryTextRequest): Promise<'sent' | 'unconfirmed'>
+  sendInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryTextRequest & { replyToId?: string }): Promise<'sent' | 'unconfirmed'>
   pickInquiryPhoto(accountUid: string): Promise<Uint8Array | null>
   sendInquiryPhoto(accountUid: string, request: import('./channel-inquiries').InquiryPhotoRequest, bytes: Uint8Array): Promise<'sent' | 'unconfirmed'>
   pickInquiryAttachment(accountUid: string, request: import('./channel-inquiries').InquiryThreadRequest, mode: import('./channel-inquiries').InquiryAttachmentMode): Promise<import('./uploads').AttachmentDraft | null>
@@ -424,10 +436,29 @@ export interface DesktopBridge {
   beginRoundVideo(accountUid: string, target: import('./voice-capture').VoiceCaptureTarget): Promise<import('./voice-capture').VoiceCaptureGrant>
   sendRoundVideo(accountUid: string, request: import('./round-video').RoundVideoSendRequest, bytes: Uint8Array): Promise<void>
   beginInquiryRoundVideo(accountUid: string, target: import('./channel-inquiries').InquiryVoiceTarget): Promise<import('./voice-capture').VoiceCaptureGrant>
-  sendInquiryRoundVideo(accountUid: string, request: import('./channel-inquiries').InquiryVoiceTarget & { messageId: string; duration: number; thumb: string }, bytes: Uint8Array): Promise<'sent' | 'unconfirmed'>
+  sendInquiryRoundVideo(accountUid: string, request: import('./channel-inquiries').InquiryVoiceTarget & { messageId: string; duration: number; thumb: string; replyToId?: string }, bytes: Uint8Array): Promise<'sent' | 'unconfirmed'>
   activateInquiryVoice(accountUid: string, target: import('./channel-inquiries').InquiryVoiceTarget): Promise<import('./voice-capture').VoiceCaptureGrant>
   editInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryTextRequest): Promise<void>
   deleteInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryTargetRequest): Promise<void>
+  reactInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryReactionRequest): Promise<void>
+  pinInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryTargetRequest & { pinned: boolean }): Promise<void>
+  setInquiryAutoDelete(accountUid: string, request: import('./channel-inquiries').InquiryAutoDeleteRequest): Promise<void>
+  scheduleInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryScheduleRequest): Promise<void>
+  cancelInquiryScheduled(accountUid: string, request: import('./channel-inquiries').InquiryTargetRequest): Promise<void>
+  inquiryForwardTargets(accountUid: string, source: ForwardSource): Promise<ForwardTarget[]>
+  forwardInquiryText(accountUid: string, request: ForwardRequest): Promise<void>
+  forwardInquiryMedia(accountUid: string, request: ForwardRequest): Promise<void>
+  forwardInquiryBatch(accountUid: string, request: import('./forward-batch').ForwardBatchRequest): Promise<void>
+  inquiryForwardRooms(accountUid: string, source: ForwardSource): Promise<import('./channel-inquiries').InquiryForwardRoom[]>
+  forwardToInquiries(accountUid: string, request: import('./channel-inquiries').InquiryForwardRequest): Promise<void>
+  hideInquiryMessages(accountUid: string, inquiryId: string, messageIds: string[]): Promise<'done'>
+  // A profile picture opened from a profile, and the earlier ones this device remembers of that person.
+  openProfilePhotos(accountUid: string, peerUid: string): Promise<{ count: number }>
+  openRecaptchaTerms(which: 'privacy' | 'terms'): Promise<void>
+  showProfilePhoto(accountUid: string, peerUid: string, index: number): Promise<{ url: string } | null>
+  closeProfilePhotos(accountUid: string): Promise<void>
+  sendInquirySticker(accountUid: string, request: import('./channel-inquiries').InquiryTargetRequest, stickerId: string): Promise<'sent' | 'unconfirmed'>
+  sendInquiryPackSticker(accountUid: string, request: import('./channel-inquiries').InquiryTargetRequest, setId: string, itemId: string): Promise<'sent' | 'unconfirmed'>
   clearInquiryHistory(accountUid: string, request: import('./channel-inquiries').InquiryThreadRequest): Promise<'done' | 'unconfirmed'>
   refreshDiscussionJoin(accountUid: string): Promise<void>
   prepareDiscussionJoin(accountUid: string, request: DiscussionJoinRequest): Promise<void>

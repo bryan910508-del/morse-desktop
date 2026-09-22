@@ -82,7 +82,10 @@ function PostCard({ accountUid, post, channel }: { accountUid: string; post: Cha
           {post.mediaCount > 1 && <span className="channel-home-post-count">1/{post.mediaCount}</span>}
         </span>
         : image && (image.status === 'loading' || image.status === 'idle')
-          ? <span className="channel-home-post-image placeholder"><Spinner size={18} /></span>
+          // immediateThumbnailData: the post's own blurred thumb holds the place, at the picture's own shape.
+          ? <span className={`channel-home-post-image${image.blur ? '' : ' placeholder'}`} style={image.width && image.height ? { aspectRatio: String(aspect(image.width, image.height)) } : undefined}>
+            {image.blur ? <img className="blurred" src={image.blur} alt="" draggable={false} decoding="async" /> : <Spinner size={18} />}
+          </span>
           : <span className="channel-home-post-media">{image?.video ? <Film size={16} /> : <ImageIcon size={16} />}{tr('첨부 {0}개', [post.mediaCount])}</span>)}
       {post.text && <span className="channel-home-post-text">{post.text}</span>}
     </button>

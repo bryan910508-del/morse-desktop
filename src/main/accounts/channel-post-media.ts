@@ -5,6 +5,7 @@ import type { ReadCredentials } from '../network/firestore-rpc'
 import { downloadChannelPostMedia } from '../network/channel-post-media'
 import { mediaType } from '../media/media-type'
 import { channelMediaResponse } from '../media/channel-media-response'
+import { mediaCacheFor } from './media-cache'
 import { tr } from '../../shared/i18n'
 
 interface Selection { request: ChannelPostMediaRequest; path: string; abort: AbortController; token: string; bytes: Buffer | null; mime: string; deadline: number }
@@ -51,24 +52,37 @@ export class ChannelPostMediaSession {
   }
   private async download(media: Selection, signal: AbortSignal): Promise<void> {
     const video = media.request.presentation === 'video', maxBytes = video ? 50 * 1024 * 1024 - 1 : 8 * 1024 * 1024
+    // FileLoader::start() asks tryLoadLocal() first: media this account already fetched is shown from the account's
+    // cache file, with no grant, no metadata read and no download. Opening the same post picture or video again is
+    // then immediate, as it is in Telegram.
+    const cache = mediaCacheFor(this.auth), stored = await cache?.read(media.path, maxBytes)
+    if (stored) {
+      try { signal.throwIfAborted(); this.validate(media) } catch (error) { stored.fill(0); throw error }
+      try { this.accept(media, stored, video); return } catch { stored.fill(0) /* An unusable copy is fetched again. */ }
+    }
     const downloaded = await downloadChannelPostMedia(this.auth, media.path, media.request.postId, signal, () => this.validate(media), maxBytes, (loaded, total) => {
       this.validate(media)
       if (this.value?.selectionId === media.request.selectionId) { this.value.loaded = loaded; this.value.total = total; this.changed() }
     })
     try {
       signal.throwIfAborted(); this.validate(media)
-      if (video) {
-        const type = mediaType(downloaded)
-        if (type.kind !== 'video') throw new Error('Unsupported channel video container')
-        media.mime = type.contentType
-      } else {
-        const info = backgroundImageInfo(downloaded)
-        if (info.width * info.height > 8 * 1024 * 1024) throw new Error('Channel image dimensions too large')
-        media.mime = info.type
-      }
-      media.bytes = downloaded
-      this.value = { ...media.request, status: 'ready', url: `morse://app/${this.route}/${media.token}`, message: '', loaded: downloaded.length, total: downloaded.length }
+      this.accept(media, downloaded, video)
+      cache?.write(media.path, downloaded)
     } catch (error) { downloaded.fill(0); throw error }
+  }
+  // The same format and size checks whether the bytes were downloaded or read from the cache file.
+  private accept(media: Selection, bytes: Buffer, video: boolean): void {
+    if (video) {
+      const type = mediaType(bytes)
+      if (type.kind !== 'video') throw new Error('Unsupported channel video container')
+      media.mime = type.contentType
+    } else {
+      const info = backgroundImageInfo(bytes)
+      if (info.width * info.height > 8 * 1024 * 1024) throw new Error('Channel image dimensions too large')
+      media.mime = info.type
+    }
+    media.bytes = bytes
+    this.value = { ...media.request, status: 'ready', url: `morse://app/${this.route}/${media.token}`, message: '', loaded: bytes.length, total: bytes.length }
   }
   response(token: string, request: Request): Response {
     const media = this.selected

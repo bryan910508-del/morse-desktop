@@ -1,28 +1,39 @@
-import { createHash } from 'node:crypto'
-import type { ChannelInquiriesSnapshot, InquiryAttachmentMode, InquiryAttachmentRequest, InquiryVoiceRequest, InquiryListRequest, InquiryListSnapshot, InquiryMessageItem, InquiryMessageKind, InquiryPhotoRequest, InquiryRole, InquirySummary,
-  InquiryTargetRequest, InquiryTextRequest, InquiryThreadRequest, InquiryThreadSnapshot } from '../../shared/channel-inquiries'
+import { createHash, randomUUID } from 'node:crypto'
+import type { ChannelInquiriesSnapshot, InquiryAttachmentMode, InquiryAttachmentRequest, InquiryAutoDeleteRequest, InquiryVoiceRequest, InquiryListRequest, InquiryListSnapshot, InquiryMessageItem, InquiryMessageKind, InquiryPhotoRequest, InquiryReactionRequest, InquiryRole, InquirySummary,
+  InquiryScheduleRequest, InquiryTargetRequest, InquiryTextRequest, InquiryThreadRequest, InquiryThreadSnapshot } from '../../shared/channel-inquiries'
+import { inquiryChatMessage, inquiryQueueChatId } from '../../shared/channel-inquiries'
+import type { ForwardMediaSource } from '../media/forward-media'
+import type { PreparedForwardMedia } from '../storage/forward-media-protocol'
+import { maxScheduleAheadMs } from '../../shared/deferred-send'
+import { readCursor, type ReadCursor } from '../../shared/read-receipts'
+import { DeferredMessages, deferredCollections, deferredFields, type DeferredWireValue } from './deferred-messages'
+import { ExpiredMessages, nextExpiry } from './expired-messages'
 import type { MediaRequest } from '../../shared/media'
-import { positionMilliseconds } from '../../shared/model'
+import { positionMilliseconds, type ReplyPreview } from '../../shared/model'
 import { mediaResources, type MediaResource } from '../media/media-document'
 import { messageMediaMetadata } from '../media/message-media-metadata'
 import { DocumentWriteFailure, FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
-import { autoDeleteNoticeFields, boolField, documents, documentVersion, numberField, ReadFailure, stringField, timestamp, type FirestoreDocument, type WireObject } from '../network/firestore-values'
+import { autoDeleteNoticeFields, boolField, documents, documentVersion, mapField, messageReactions, numberField, pinnedMessageIds, ReadFailure, stringField, timestamp, type FirestoreDocument, type WireObject } from '../network/firestore-values'
 import { autoDeleteNoticeText, autoDeleteWirePrefix } from '../../shared/auto-delete-notice'
-import { uploadInquiryAttachment, uploadInquiryPhoto } from '../network/inquiry-photo-upload-api'
+import { setMessageReaction } from '../network/message-reaction-api'
+import { autoDeleteSecondsValue } from '../../shared/chat-auto-delete'
+import { freePinLimit } from '../../shared/pinned-messages'
+import { inquiryAttachmentExtension, uploadInquiryAttachment, uploadInquiryPhoto } from '../network/inquiry-photo-upload-api'
 import { AttachmentStaging } from '../media/attachment-staging'
 import { forwardMediaFormat } from '../media/forward-media-format'
 import { mediaType } from '../media/media-type'
 import { maxVoiceCaptureBytes } from '../../shared/voice-capture'
+import { stickerSidePx } from '../../shared/stickers'
 import type { AttachmentDraft, VideoFacts } from '../../shared/uploads'
 import { callMorseFunction, MorseCallableFailure } from '../network/morse-callable'
 import type { PeoplePhotoResolver } from './channel-people-photos'
 import { tr } from '../../shared/i18n'
 
-interface Inquiry extends InquirySummary { role: InquiryRole; cutoff: number | null }
+interface Inquiry extends InquirySummary { role: InquiryRole; cutoff: number | null; autoDeleteSeconds: number; autoDeleteMyOnly: boolean; outboxRead: ReadCursor | null }
 interface ListState { request: InquiryListRequest; stop: (() => void) | null; value: InquiryListSnapshot }
 // The listened documents stay so an explicit photo selection can be resolved against the same row.
-interface ThreadState { request: InquiryThreadRequest; stop: (() => void) | null; inquiry: Inquiry | null; marked: string; marking: boolean
-  rows: Map<string, FirestoreDocument>; value: InquiryThreadSnapshot }
+interface ThreadState { request: InquiryThreadRequest; stop: (() => void) | null; roomStop: (() => void) | null; inquiry: Inquiry | null; marked: string; marking: boolean
+  rows: Map<string, FirestoreDocument>; value: InquiryThreadSnapshot; expiryTimer?: ReturnType<typeof setTimeout>; expired?: ExpiredMessages }
 
 const kinds: readonly string[] = ['text', 'image', 'video', 'voice', 'file', 'sticker', 'location', 'event']
 const labels: Record<string, string> = { image: tr('사진'), video: tr('동영상'), voice: tr('음성 메시지'), sticker: tr('스티커') }
@@ -30,6 +41,18 @@ function time(fields: Record<string, WireObject>, key: string): number | null {
   const raw = fields[key]?.timestampValue
   if (!raw) return null
   try { return positionMilliseconds(timestamp(raw, '')) } catch { return null }
+}
+// ChannelInquiryChatView inquiryLastReadAtByRole / markMorseInquiryRead: the room document keeps lastReadAt and
+// lastReadMessageId per uid, as a chat does; what this account sent is read up to where the other side has come.
+function inquiryOutboxRead(f: Record<string, WireObject>, peer: string): ReadCursor | null {
+  if (!peer) return null
+  const raw = mapField(f, 'lastReadAt')[peer]?.timestampValue
+  if (!raw) return null
+  try {
+    const id = stringField(mapField(f, 'lastReadMessageId'), peer, 160)
+    const cursor = readCursor(timestamp(raw, id))
+    return cursor.at > 0 ? cursor : null
+  } catch { return null }
 }
 function decodeInquiry(doc: FirestoreDocument, uid: string): Inquiry {
   const prefix = `${documents}/channelInquiries/`, id = doc.name.slice(prefix.length), f = doc.fields
@@ -42,7 +65,10 @@ function decodeInquiry(doc: FirestoreDocument, uid: string): Inquiry {
   return { id, role, peerUid: role === 'owner' ? subscriberId : '', channelId: stringField(f, 'channelId', 160), channelName, peerName: role === 'owner' ? subscriberName : channelName,
     // A media message keeps its download URL in lastMessage (iOS stores the URL in text as well).
     lastMessage: (raw => /^https:\/\/firebasestorage\.googleapis\.com\//.test(raw) ? tr('사진') : raw)(stringField(f, 'lastMessage', 100000).slice(0, 300)), lastMessageAt: time(f, 'lastMessageAt'),
-    unread: Math.max(0, Math.trunc(numberField(f, role === 'owner' ? 'unreadForOwner' : 'unreadForSubscriber'))), cutoff: time(f, 'historyRevokedAt') }
+    unread: Math.max(0, Math.trunc(numberField(f, role === 'owner' ? 'unreadForOwner' : 'unreadForSubscriber'))), cutoff: time(f, 'historyRevokedAt'),
+    // The room's own auto-delete policy; the server stamps every accepted message with its deleteAt.
+    autoDeleteSeconds: autoDeleteSecondsValue(Math.trunc(numberField(f, 'autoDeleteSeconds'))), autoDeleteMyOnly: boolField(f, 'autoDeleteMyOnly'),
+    outboxRead: inquiryOutboxRead(f, role === 'owner' ? subscriberId : ownerId) }
 }
 export function decodeInquiryMessage(doc: FirestoreDocument, inquiry: Pick<Inquiry, 'id' | 'cutoff'>, uid: string): InquiryMessageItem | null {
   const prefix = `${documents}/channelInquiries/${inquiry.id}/messages/`, id = doc.name.slice(prefix.length), f = doc.fields
@@ -65,10 +91,28 @@ export function decodeInquiryMessage(doc: FirestoreDocument, inquiry: Pick<Inqui
     : kind === 'event' ? stringField(f, 'eventTitle', 512) || tr('일정') : labels[kind] ?? tr('메시지')
   const attachments = mediaResources(doc, inquiry.id, kind, false, 'inquiry').map(resource => resource.summary)
   const circular = boolField(f, 'isCircleVideo'), metadata = attachments.length ? messageMediaMetadata(doc, kind, attachments.length, circular) : null
+  const replyToId = stringField(f, 'replyToId', 160).trim()
+  const reactions = messageReactions(doc, uid)
   return { id, own: stringField(f, 'senderId', 160) === uid, senderType: stringField(f, 'senderType', 32) === 'owner' ? 'owner' : 'subscriber', kind,
+    ...(replyToId && replyToId !== id ? { replyToId } : {}),
     text: kind === 'text' ? stringField(f, 'text', 30000) : caption, label, createdAt, edited: boolField(f, 'isEdited'),
     version: documentVersion(doc), ...(attachments.length ? { attachments } : {}),
-    ...(metadata && Object.keys(metadata).length ? { mediaMetadata: metadata } : {}), ...(circular && kind === 'video' ? { circular: true as const } : {}) }
+    ...(metadata && Object.keys(metadata).length ? { mediaMetadata: metadata } : {}), ...(circular && kind === 'video' ? { circular: true as const } : {}),
+    ...(reactions.length ? { reactions } : {}) }
+}
+
+// HistoryMessageReply: the answered message as the bubble quotes it. A room holds its latest messages, so the
+// original is looked for among them; one that is no longer there says so, exactly as a chat's quote does.
+export function attachInquiryReplies(items: InquiryMessageItem[], peerName: string): InquiryMessageItem[] {
+  if (!items.some(item => item.replyToId)) return items
+  const byId = new Map(items.map(item => [item.id, item]))
+  return items.map(item => {
+    if (!item.replyToId) return item
+    const original = byId.get(item.replyToId)
+    const reply: ReplyPreview = !original || original.system ? { state: 'unavailable' }
+      : { state: 'ready', senderName: original.own ? tr('나') : peerName || tr('상대방'), kind: original.kind, text: original.text || original.label }
+    return { ...item, reply }
+  })
 }
 
 // What a video or file message says besides its URL, as ChannelInquiryService.sendMessage sends it:
@@ -85,6 +129,14 @@ export function inquiryVoiceFields(url: string, duration: number, waveform: numb
   return { type: 'voice', mediaUrl: url, voiceDuration: Math.max(1, Math.round(duration)), voiceWaveform: waveform.map(level => Math.round(level * 1000) / 1000) }
 }
 
+// The queue document of a scheduled inquiry message: what a chat queues, naming the room. The server reads the
+// text through the same canonicalMessage, so nothing else of the shape differs (talky-scheduled-online-messages).
+export function inquiryQueueFields(request: InquiryScheduleRequest, uid: string): Record<string, DeferredWireValue> {
+  const chatId = inquiryQueueChatId(request.inquiryId)
+  return { ...deferredFields({ chatId, messageId: request.messageId, kind: 'scheduled', text: request.text, scheduledAt: request.scheduledAt, silent: false, reply: null }, uid, request.text, ''),
+    inquiryId: { stringValue: request.inquiryId } }
+}
+
 // ChannelInquiryService on Desktop: the owner's list for one channel and one open room, both live.
 export class ChannelInquiries {
   // The video or file picked for the open room, held here until it is sent or put down.
@@ -97,13 +149,20 @@ export class ChannelInquiries {
   private thread: ThreadState | null = null
   private locked = false
   private closed = false
+  // The room's own queue of «예약 전송», watched like a chat's while the room is open.
+  private readonly scheduled: DeferredMessages
   constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly allowed: () => void,
-    private readonly author: () => { authorName: string; authorPhotoURL: string | null }, private readonly foreground: () => boolean, private readonly changed: () => void) {}
+    private readonly author: () => { authorName: string; authorPhotoURL: string | null }, private readonly foreground: () => boolean, private readonly changed: () => void,
+    // «나에게만 삭제»: a message this device hides, kept on the server for the other side.
+    private readonly hidden: (inquiryId: string, messageId: string) => boolean = () => false) {
+    this.scheduled = new DeferredMessages(uid, auth.signal, () => this.changed())
+  }
 
   get snapshot(): ChannelInquiriesSnapshot | null {
     if (!this.list && !this.thread) return null
     return { list: this.list ? { ...this.list.value, items: this.list.value.items.map(item => ({ ...item, photo: this.people?.(item.peerUid, this.photos.get(item.id) ?? null) ?? null })) } : null,
-      thread: this.thread ? { ...this.thread.value, items: this.thread.value.items.map(item => ({ ...item })) } : null }
+      thread: this.thread ? { ...this.thread.value, items: this.thread.value.items.map(item => ({ ...item })),
+        scheduled: this.scheduled.snapshot(inquiryQueueChatId(this.thread.request.inquiryId))?.items ?? [] } : null }
   }
   private get source(): FirestoreReader {
     if (this.closed) throw new Error(tr('계정이 변경되었습니다.'))
@@ -185,8 +244,8 @@ export class ChannelInquiries {
 
   openThread(request: InquiryThreadRequest): void {
     this.closeThread()
-    const state: ThreadState = { request, stop: null, inquiry: null, marked: '', marking: false, rows: new Map(),
-      value: { ...request, channelId: '', role: 'subscriber', title: '', channelName: '', status: 'loading', items: [], message: '' } }
+    const state: ThreadState = { request, stop: null, roomStop: null, inquiry: null, marked: '', marking: false, rows: new Map(),
+      value: { ...request, channelId: '', role: 'subscriber', title: '', channelName: '', status: 'loading', items: [], message: '', pinnedIds: [], autoDeleteSeconds: 0, autoDeleteMyOnly: false, scheduled: [], outboxRead: null } }
     this.thread = state
     this.changed()
     void this.startThread(state)
@@ -200,7 +259,30 @@ export class ChannelInquiries {
       if (!doc) { state.value = { ...state.value, status: 'error', message: tr('문의를 찾을 수 없습니다.') }; this.changed(); return }
       const inquiry = decodeInquiry(doc, this.uid)
       state.inquiry = inquiry
-      state.value = { ...state.value, channelId: inquiry.channelId, role: inquiry.role, title: inquiry.peerName, channelName: inquiry.channelName }
+      state.value = { ...state.value, channelId: inquiry.channelId, role: inquiry.role, title: inquiry.peerName, channelName: inquiry.channelName, pinnedIds: pinnedMessageIds(doc.fields), outboxRead: inquiry.outboxRead }
+      // Only a scheduled queue exists for a room: an inquiry has no «온라인시 보내기».
+      this.scheduled.bind(inquiryQueueChatId(state.request.inquiryId), reader, ['scheduled'])
+      // checkTTLs(): the open room takes an expired message from both sides, as ChatRoomView does for a chat.
+      state.expired = new ExpiredMessages(
+        entry => reader.deleteInquiryMessage(state.request.inquiryId, entry.id, this.signal()),
+        () => this.thread === state && !this.closed && !this.locked)
+      // The room document carries what both sides change — «모두에게 고정» above all — so it is followed, not read once.
+      state.roomStop = reader.watch({ documents: { documents: [doc.name] } }, this.auth.signal, {
+        snapshot: rows => {
+          const room = rows.get(doc.name)
+          if (this.thread !== state || !room) return
+          try {
+            const current = decodeInquiry(room, this.uid)
+            state.inquiry = { ...current, cutoff: current.cutoff }
+            state.value = { ...state.value, title: current.peerName, channelName: current.channelName, pinnedIds: pinnedMessageIds(room.fields),
+              autoDeleteSeconds: current.autoDeleteSeconds, autoDeleteMyOnly: current.autoDeleteMyOnly, outboxRead: current.outboxRead }
+            this.changed()
+          } catch { /* The room stays as it was read. */ }
+        },
+        // A stream renewal reads the same document again; what is known stays until then.
+        reconnecting: () => {},
+        state: () => {}
+      }, 1, 2 * 1024 * 1024)
       // ChannelInquiryService.listenToMessages: the latest 300 messages.
       state.stop = reader.watch({ query: { parent: doc.name, structuredQuery: { from: [{ collectionId: 'messages' }],
         orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' }, { field: { fieldPath: '__name__' }, direction: 'DESCENDING' }], limit: { value: 300 } } } }, this.auth.signal, {
@@ -208,9 +290,10 @@ export class ChannelInquiries {
           if (this.thread !== state || !state.inquiry) return
           const current = state.inquiry
           state.rows = new Map(rows)
-          const items = [...rows.values()].flatMap(row => { try { const item = decodeInquiryMessage(row, current, this.uid); return item ? [item] : [] } catch { return [] } })
+          const items = [...rows.values()].flatMap(row => { try { const item = decodeInquiryMessage(row, current, this.uid); return item && !this.hidden(current.id, item.id) ? [item] : [] } catch { return [] } })
           items.sort((a, b) => (a.createdAt ?? Number.MAX_SAFE_INTEGER) - (b.createdAt ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id))
-          state.value = { ...state.value, status: 'ready', items, message: '' }
+          state.value = { ...state.value, status: 'ready', items: attachInquiryReplies(items, state.value.title), message: '' }
+          this.expireMessages(state)
           this.changed(); this.markRead(state)
         },
         state: status => {
@@ -227,7 +310,8 @@ export class ChannelInquiries {
   }
   closeThread(requestId?: string): void {
     if (!this.thread || (requestId && this.thread.request.requestId !== requestId)) return
-    this.thread.stop?.(); this.thread = null; this.attachments.clear()
+    clearTimeout(this.thread.expiryTimer); this.thread.expired?.close()
+    this.thread.stop?.(); this.thread.roomStop?.(); this.thread = null; this.attachments.clear(); this.scheduled.clear()
     this.changed()
   }
   // The microphone is granted to a recording only while its room is open, as a chat's is to its chat.
@@ -237,6 +321,33 @@ export class ChannelInquiries {
     if (!state || state.request.requestId !== request.requestId || state.request.inquiryId !== request.inquiryId || !state.inquiry || state.value.status !== 'ready') throw new Error(tr('문의를 다시 열어 주세요.'))
     return state
   }
+
+  // scheduleNextTTLs(): the room comes back exactly when its next message expires, drops what has expired from the
+  // screen and takes it from the server too, so both sides lose it at the same moment.
+  private expireMessages(state: ThreadState): void {
+    clearTimeout(state.expiryTimer); state.expiryTimer = undefined
+    if (this.thread !== state || !state.inquiry || state.value.status !== 'ready') return
+    const now = Date.now(), current = state.inquiry
+    const items = state.value.items.filter(item => { const doc = state.rows.get(`${documents}/channelInquiries/${current.id}/messages/${item.id}`); return !doc || (time(doc.fields, 'deleteAt') ?? Number.MAX_SAFE_INTEGER) > now })
+    if (items.length !== state.value.items.length) state.value = { ...state.value, items }
+    state.expired?.sweep(state.rows.values())
+    const next = nextExpiry(state.rows.values(), now)
+    if (next !== null) state.expiryTimer = setTimeout(() => { if (this.thread === state) { this.expireMessages(state); this.changed() } }, Math.min(2147483647, Math.max(1, next - now + 1)))
+  }
+
+  // A message hidden on this device leaves the open room at once, as it leaves a chat's history.
+  refreshHidden(): void {
+    const state = this.thread
+    if (!state?.inquiry || state.value.status !== 'ready') return
+    const current = state.inquiry
+    const items = state.value.items.filter(item => !this.hidden(current.id, item.id))
+    if (items.length === state.value.items.length) return
+    state.value = { ...state.value, items }
+    this.changed()
+  }
+
+  // The room being read right now, so nothing announces what is already on screen.
+  get openThreadId(): string | null { return this.thread && !this.locked && !this.closed ? this.thread.request.inquiryId : null }
 
   activity(): void { if (this.thread) this.markRead(this.thread) }
 
@@ -248,6 +359,23 @@ export class ChannelInquiries {
     const item = state.value.items.find(entry => entry.id === request.messageId)
     if (!doc || !item?.attachments?.length || documentVersion(doc) !== request.version || item.version !== request.version) return null
     return mediaResources(doc, inquiryId, item.kind, false, 'inquiry')[request.index] ?? null
+  }
+
+  // A message of the open room as a forward source: what a chat message carries, and the objects it points at, so
+  // the same preparation a chat forward uses downloads and re-sends them (Telegram forwards by re-sending content).
+  forwardSource(inquiryId: string, messageId: string, version: string): ForwardMediaSource {
+    const state = this.thread
+    if (this.closed || this.locked || !state?.inquiry || state.request.inquiryId !== inquiryId || state.value.status !== 'ready') throw new Error(tr('문의를 다시 열어 주세요.'))
+    const item = state.value.items.find(entry => entry.id === messageId)
+    const doc = state.rows.get(`${documents}/channelInquiries/${inquiryId}/messages/${messageId}`)
+    if (!item || !doc || item.system || item.version !== version || documentVersion(doc) !== version) throw new Error(tr('원본이 변경되었거나 만료되었습니다. 최신 메시지를 다시 선택해 주세요.'))
+    const parts = item.attachments?.length ? mediaResources(doc, inquiryId, item.kind, false, 'inquiry') : []
+    const resources = (item.attachments ?? []).map(part => {
+      const resource = parts[part.index]
+      if (!resource?.path || !resource.summary.available) throw new Error(tr('첨부 원본을 확인하지 못했습니다.'))
+      return resource
+    })
+    return { message: inquiryChatMessage(item, inquiryId), resources }
   }
 
   // ChannelInquiryChatView uploadAndSendImage: the bytes reach storage first, then the same
@@ -264,7 +392,7 @@ export class ChannelInquiries {
         sha256: createHash('sha256').update(bytes).digest('hex'), md5: createHash('md5').update(bytes).digest('base64') },
       AbortSignal.any([this.auth.signal, AbortSignal.timeout(180000)]), () => {}, validate)
     const payload = { inquiryId: request.inquiryId, clientMessageId: request.messageId, senderId: this.uid, senderType: state.value.role,
-      type: 'image', text: url, mediaUrl: url, ...(request.caption ? { imageCaption: request.caption } : {}) }
+      type: 'image', text: url, mediaUrl: url, ...(request.caption ? { imageCaption: request.caption } : {}), ...this.replyFields(state, request.replyToId) }
     for (let attempt = 0; ; attempt++) {
       validate()
       try { await callMorseFunction(this.auth, 'sendMorseInquiryMessage', payload, AbortSignal.timeout(65000)); return 'sent' }
@@ -275,6 +403,23 @@ export class ChannelInquiries {
         if (this.closed) return 'unconfirmed'
       }
     }
+  }
+  // A sticker of this device's library, sent into a room as it is sent into a chat: the object goes to the room's
+  // own folder and the message is a «sticker» of the usual 512 by 512 (ChatRoomView.sendStickerMessage).
+  async sendSticker(request: InquiryTargetRequest, sticker: { extension: 'png' | 'gif' | 'webp' | 'mp4'; bytes: Buffer }): Promise<'sent' | 'unconfirmed'> {
+    const state = this.requireThread(request)
+    const validate = (): void => {
+      this.allowed()
+      if (this.closed || this.locked || this.thread !== state) throw new Error(tr('문의를 다시 열어 주세요.'))
+    }
+    validate()
+    const url = await uploadInquiryAttachment(this.auth, this.uid,
+      { inquiryId: request.inquiryId, messageId: request.messageId, bytes: sticker.bytes, extension: sticker.extension, noun: tr('스티커'),
+        sha256: createHash('sha256').update(sticker.bytes).digest('hex'), md5: createHash('md5').update(sticker.bytes).digest('base64') },
+      AbortSignal.any([this.auth.signal, AbortSignal.timeout(180000)]), () => {}, validate)
+    const payload = { inquiryId: request.inquiryId, clientMessageId: request.messageId, senderId: this.uid, senderType: state.value.role,
+      type: 'sticker', text: '', mediaUrl: url, mediaWidthPx: stickerSidePx, mediaHeightPx: stickerSidePx }
+    try { await this.callSend(payload, validate); return 'sent' } catch (error) { throw error instanceof Error ? error : new Error(tr('스티커를 보내지 못했습니다.')) }
   }
   // ChannelInquiryChatView also sends videos and files. One is picked into this room's staging; a
   // video must be one (the picker also lists photos, which go through the photo send instead).
@@ -312,7 +457,7 @@ export class ChannelInquiries {
           sha256: createHash('sha256').update(part.bytes).digest('hex'), md5: createHash('md5').update(part.bytes).digest('base64') },
         AbortSignal.any([this.auth.signal, AbortSignal.timeout(600000)]), () => {}, validate)
       const payload = { inquiryId: request.inquiryId, clientMessageId: request.messageId, senderId: this.uid, senderType: state.value.role, mediaUrl: url,
-        ...inquiryAttachmentFields(kind, part.name, part.size, request.caption, video) }
+        ...inquiryAttachmentFields(kind, part.name, part.size, request.caption, video), ...this.replyFields(state, request.replyToId) }
       for (let attempt = 0; ; attempt++) {
         validate()
         try { await callMorseFunction(this.auth, 'sendMorseInquiryMessage', payload, AbortSignal.timeout(65000)); this.attachments.clear(request.draftId); return 'sent' }
@@ -327,7 +472,7 @@ export class ChannelInquiries {
   }
   // ChannelInquiryChatView.uploadAndSendVideo(isCircle: true): a video message recorded here, stored as MP4 and
   // sent as a round video with its square size, whole seconds and thumbnail.
-  async sendRoundVideo(request: InquiryTargetRequest, bytes: Uint8Array, facts: { duration: number; thumb: string }, side: number): Promise<'sent' | 'unconfirmed'> {
+  async sendRoundVideo(request: InquiryTargetRequest & { replyToId?: string }, bytes: Uint8Array, facts: { duration: number; thumb: string }, side: number): Promise<'sent' | 'unconfirmed'> {
     const state = this.requireThread(request)
     const validate = (): void => {
       this.allowed()
@@ -342,7 +487,8 @@ export class ChannelInquiries {
         sha256: createHash('sha256').update(source).digest('hex'), md5: createHash('md5').update(source).digest('base64') },
       AbortSignal.any([this.auth.signal, AbortSignal.timeout(600000)]), () => {}, validate)
     const payload = { inquiryId: request.inquiryId, clientMessageId: request.messageId, senderId: this.uid, senderType: state.value.role, mediaUrl: url,
-      ...inquiryAttachmentFields('video', 'video-message.mp4', source.length, '', { duration: facts.duration, width: side, height: side, thumb: facts.thumb }), isCircleVideo: true }
+      ...inquiryAttachmentFields('video', 'video-message.mp4', source.length, '', { duration: facts.duration, width: side, height: side, thumb: facts.thumb }), isCircleVideo: true,
+      ...this.replyFields(state, request.replyToId) }
     for (let attempt = 0; ; attempt++) {
       validate()
       try { await callMorseFunction(this.auth, 'sendMorseInquiryMessage', payload, AbortSignal.timeout(65000)); return 'sent' }
@@ -371,7 +517,7 @@ export class ChannelInquiries {
         sha256: createHash('sha256').update(source).digest('hex'), md5: createHash('md5').update(source).digest('base64') },
       AbortSignal.any([this.auth.signal, AbortSignal.timeout(180000)]), () => {}, validate)
     const payload = { inquiryId: request.inquiryId, clientMessageId: request.messageId, senderId: this.uid, senderType: state.value.role,
-      ...inquiryVoiceFields(url, request.duration, request.waveform) }
+      ...inquiryVoiceFields(url, request.duration, request.waveform), ...this.replyFields(state, request.replyToId) }
     for (let attempt = 0; ; attempt++) {
       validate()
       try { await callMorseFunction(this.auth, 'sendMorseInquiryMessage', payload, AbortSignal.timeout(65000)); return 'sent' }
@@ -393,9 +539,10 @@ export class ChannelInquiries {
   }
 
   // sendMorseInquiryMessage accepts one message per client id, so an unconfirmed attempt is repeated with the same id.
-  async send(request: InquiryTextRequest): Promise<'sent' | 'unconfirmed'> {
+  async send(request: InquiryTextRequest & { replyToId?: string }): Promise<'sent' | 'unconfirmed'> {
     const state = this.requireThread(request)
-    const payload = { inquiryId: request.inquiryId, clientMessageId: request.messageId, senderId: this.uid, senderType: state.value.role, type: 'text', text: request.text }
+    const payload = { inquiryId: request.inquiryId, clientMessageId: request.messageId, senderId: this.uid, senderType: state.value.role, type: 'text', text: request.text,
+      ...this.replyFields(state, request.replyToId) }
     for (let attempt = 0; ; attempt++) {
       this.allowed()
       try { await callMorseFunction(this.auth, 'sendMorseInquiryMessage', payload, AbortSignal.timeout(65000)); return 'sent' }
@@ -407,12 +554,106 @@ export class ChannelInquiries {
       }
     }
   }
+  // The message a send answers must be one of this room, and not a notice line: what the room shows, the send says.
+  private replyFields(state: ThreadState, replyToId?: string): { replyToId?: string } {
+    if (!replyToId) return {}
+    const original = state.value.items.find(item => item.id === replyToId)
+    if (!original || original.system) throw new Error(tr('답장할 메시지를 다시 선택해 주세요.'))
+    return { replyToId }
+  }
+
+  // A message forwarded into a room, from a chat or from another room. Telegram re-sends the content, so it goes in
+  // through the room's own send (sendMorseInquiryMessage) — the room does not have to be open, and the server decides
+  // the sender's side from the room document, as it does for every message of a room.
+  async deliverForward(inquiryId: string, content: { kind: 'text'; text: string } | { kind: 'media'; media: PreparedForwardMedia }, validate: () => void): Promise<void> {
+    this.allowed(); validate()
+    const doc = await this.source.getDocument(`${documents}/channelInquiries/${inquiryId}`, this.signal())
+    if (!doc) throw new Error(tr('문의를 찾을 수 없습니다.'))
+    const inquiry = decodeInquiry(doc, this.uid)
+    validate()
+    if (content.kind === 'text') { await this.callSend({ inquiryId, clientMessageId: randomUUID().toUpperCase(), senderId: this.uid, senderType: inquiry.role, type: 'text', text: content.text }, validate); return }
+    const media = content.media
+    if (media.kind === 'sticker') throw new Error(tr('스티커는 문의방으로 전달할 수 없습니다.'))
+    const noun = media.kind === 'video' ? tr('동영상') : media.kind === 'voice' ? tr('음성 메시지') : media.kind === 'file' ? tr('파일') : tr('사진')
+    for (const [index, part] of media.parts.entries()) {
+      validate()
+      const messageId = randomUUID().toUpperCase()
+      const url = await uploadInquiryAttachment(this.auth, this.uid,
+        { inquiryId, messageId, bytes: part.bytes, extension: inquiryAttachmentExtension(part.extension), noun, sha256: part.sha256, md5: part.md5 },
+        AbortSignal.any([this.auth.signal, AbortSignal.timeout(600000)]), () => {}, validate)
+      // Only the first message of an album carries the caption, as one message carried it before.
+      const caption = index === 0 ? media.caption : ''
+      const common = { inquiryId, clientMessageId: messageId, senderId: this.uid, senderType: inquiry.role, mediaUrl: url }
+      const payload = media.kind === 'image' ? { ...common, type: 'image', text: url, ...(caption ? { imageCaption: caption } : {}) }
+        : media.kind === 'voice' ? { ...common, ...inquiryVoiceFields(url, media.metadata.voiceDuration ?? 1, media.metadata.voiceWaveform ?? []) }
+          : { ...common, ...inquiryAttachmentFields(media.kind === 'video' ? 'video' : 'file', part.name, part.bytes.length, caption,
+            media.kind === 'video' ? { duration: media.metadata.videoDuration ?? 0, width: media.metadata.videoWidthPx ?? 0, height: media.metadata.videoHeightPx ?? 0, thumb: media.metadata.thumbData ?? '' } : null) }
+      await this.callSend(payload, validate)
+    }
+  }
+  // One send of a room, repeated only while the answer is uncertain, as every send of a room is.
+  private async callSend(payload: Record<string, unknown>, validate: () => void): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      validate()
+      try { await callMorseFunction(this.auth, 'sendMorseInquiryMessage', payload, AbortSignal.timeout(65000)); return }
+      catch (error) {
+        if (!(error instanceof MorseCallableFailure && error.uncertain)) throw new Error(tr('문의방으로 전달하지 못했습니다. 연결과 채널 구독 상태를 확인해 주세요.'))
+        if (attempt >= 2) return
+        await new Promise(resolve => setTimeout(resolve, 1500 * (attempt + 1)))
+        if (this.closed) return
+      }
+    }
+  }
+  // «모두에게 고정» / «고정 해제»: the room document keeps the ids, as a chat does (AppState.pinMessageForAll).
+  async setPinned(request: InquiryTargetRequest & { pinned: boolean }): Promise<void> {
+    const state = this.requireThread(request)
+    if (!state.value.items.some(item => item.id === request.messageId && !item.system)) throw new Error(tr('고정할 메시지를 다시 선택해 주세요.'))
+    if (request.pinned && state.value.pinnedIds.length >= freePinLimit) throw new Error(tr('고정은 {0}개까지 할 수 있습니다. 먼저 하나를 해제해 주세요.', [freePinLimit]))
+    this.allowed()
+    try { await this.source.setInquiryPinnedForAll(request.inquiryId, request.messageId, request.pinned, this.signal()) }
+    catch (error) { throw new Error(error instanceof DocumentWriteFailure && error.uncertain ? tr('고정 결과를 확인하지 못했습니다. 잠시 후 대화를 확인해 주세요.') : tr('메시지를 고정하지 못했습니다.')) }
+  }
+  // The room's auto-delete policy, as a chat's. The change names its actor, which firestore.rules requires
+  // (autoDeletePolicyActorOk), and the server writes the notice line and stamps the messages.
+  async setAutoDelete(request: InquiryAutoDeleteRequest): Promise<void> {
+    const state = this.requireThread(request)
+    const inquiry = state.inquiry!
+    if (inquiry.autoDeleteSeconds === request.seconds && (request.seconds === 0 || inquiry.autoDeleteMyOnly === request.myOnly)) return
+    this.allowed()
+    try { await this.source.setInquiryAutoDelete(this.uid, request.inquiryId, request.seconds, request.myOnly, this.signal()) }
+    catch (error) { throw new Error(error instanceof DocumentWriteFailure && error.uncertain ? tr('자동 삭제 설정 결과를 확인하지 못했습니다. 잠시 후 대화를 확인해 주세요.') : tr('자동 삭제 설정을 저장할 수 없어요. 연결을 확인해 주세요.')) }
+  }
+  // «예약 전송»: the server sends the text into this room at its time (talky-scheduled-online-messages).
+  // The queue document names the room, and its chatId is the room's client id, as the rules require.
+  async schedule(request: InquiryScheduleRequest): Promise<void> {
+    this.requireThread(request)
+    if (request.scheduledAt <= Date.now() || request.scheduledAt > Date.now() + maxScheduleAheadMs) throw new Error(tr('예약 시간은 지금 이후 1년 안으로 골라 주세요.'))
+    this.allowed()
+    try { await this.source.createDeferredMessage('scheduledMessages', request.messageId, inquiryQueueFields(request, this.uid), this.signal()) }
+    catch (error) { throw new Error(error instanceof DocumentWriteFailure && error.uncertain ? tr('예약 결과를 확인하지 못했습니다. 예약된 메시지 목록을 확인해 주세요.') : tr('메시지를 예약하지 못했습니다.')) }
+  }
+  async cancelScheduled(request: InquiryTargetRequest): Promise<void> {
+    this.requireThread(request)
+    if (!this.scheduled.has(inquiryQueueChatId(request.inquiryId), 'scheduled', request.messageId)) throw new Error(tr('예약된 메시지를 다시 확인해 주세요.'))
+    this.allowed()
+    try { await this.source.deleteDeferredMessage(deferredCollections.scheduled, request.messageId, this.signal()) }
+    catch { throw new Error(tr('예약 취소에 실패했어요')) }
+  }
   async edit(request: InquiryTextRequest): Promise<void> {
     const state = this.requireThread(request), item = state.value.items.find(entry => entry.id === request.messageId)
     if (!item || !item.own || item.kind !== 'text') throw new Error(tr('내가 보낸 텍스트 메시지만 수정할 수 있습니다.'))
     this.allowed()
     try { await this.source.editInquiryMessage(request.inquiryId, request.messageId, request.text, this.signal()) }
     catch (error) { throw new Error(error instanceof DocumentWriteFailure && error.uncertain ? tr('수정 결과를 확인하지 못했습니다. 잠시 후 대화를 확인해 주세요.') : tr('메시지를 수정하지 못했습니다.')) }
+  }
+  // ChannelInquiryService.toggleReaction → setMorseMessageReaction with the inquiry: the whole selection of this
+  // account goes, and the message's watch brings the result back.
+  async react(request: InquiryReactionRequest): Promise<void> {
+    const state = this.requireThread(request), item = state.value.items.find(entry => entry.id === request.messageId)
+    if (!item || item.system) throw new Error(tr('최신 메시지를 다시 선택해 주세요.'))
+    this.allowed()
+    await setMessageReaction(this.auth, this.uid, { id: randomUUID(), chatId: inquiryQueueChatId(request.inquiryId), messageId: request.messageId, reactions: request.reactions },
+      this.signal(), request.inquiryId)
   }
   async remove(request: InquiryTargetRequest): Promise<void> {
     const state = this.requireThread(request), item = state.value.items.find(entry => entry.id === request.messageId)
@@ -443,9 +684,9 @@ export class ChannelInquiries {
     if (this.locked === locked) return
     this.locked = locked
     if (locked) {
-      this.attachments.clear()
+      this.attachments.clear(); this.scheduled.clear()
       if (this.list) { this.list.stop?.(); this.list.stop = null }
-      if (this.thread) { this.thread.stop?.(); this.thread.stop = null }
+      if (this.thread) { this.thread.stop?.(); this.thread.stop = null; clearTimeout(this.thread.expiryTimer); this.thread.expiryTimer = undefined }
       return
     }
     if (this.list) this.startList(this.list)
@@ -454,8 +695,9 @@ export class ChannelInquiries {
   close(): void {
     if (this.closed) return
     this.closed = true
-    this.list?.stop?.(); this.thread?.stop?.(); this.list = null; this.thread = null
-    this.attachments.clear()
+    clearTimeout(this.thread?.expiryTimer); this.thread?.expired?.close()
+    this.list?.stop?.(); this.thread?.stop?.(); this.thread?.roomStop?.(); this.list = null; this.thread = null
+    this.attachments.clear(); this.scheduled.clear()
     this.reader?.close(); this.reader = null
   }
 }

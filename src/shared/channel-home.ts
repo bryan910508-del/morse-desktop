@@ -29,7 +29,9 @@ export interface ChannelHomeChannel {
   listed: boolean; owned: boolean
 }
 // The post's first picture (a video's thumbnail) with its size, as ChannelFeedTimelineCachedImage shows it.
-export interface ChannelHomeImage { status: 'idle' | 'loading' | 'ready' | 'error'; url: string | null; width: number; height: number; video: boolean }
+export interface ChannelHomeImage { status: 'idle' | 'loading' | 'ready' | 'error'; url: string | null; width: number; height: number; video: boolean
+  // immediateThumbnailData: the post's own tiny blurred picture, drawn until the picture itself is ready.
+  blur: string }
 export interface ChannelHomePost {
   channelId: string; id: string; text: string; position: MessagePosition
   mediaCount: number; image: ChannelHomeImage | null

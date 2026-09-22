@@ -10,6 +10,7 @@ import './styles/info.css'
 import './styles/auth.css'
 import { desktop, useDesktop } from './app/store'
 import { installShortcuts } from './app/shortcuts'
+import { openInquiries } from './channels/channel-ui'
 import { flushDrafts } from './app/drafts'
 import { controller } from './app/ui'
 import { preventFileDropNavigation } from './app/drop'
@@ -72,6 +73,10 @@ function App() {
     else if (event.type === 'open-notification-chat') {
       if (desktop.value?.activeAccountUid === event.accountUid) controller.openChat(event.chatId)
       else pendingNotificationChat = { accountUid: event.accountUid, chatId: event.chatId, at: Date.now() }
+    }
+    // A 1:1 inquiry room opens beside its channel, the way its row in the list opens it.
+    else if (event.type === 'open-notification-inquiry') {
+      if (desktop.value?.activeAccountUid === event.accountUid) { controller.openChannel(event.channelId); openInquiries(event.channelId, event.inquiryId) }
     }
   }), [])
   if (!ready) return <div className="boot"><img src="/morse.png" alt="" />{failure ? <p>{failure}</p> : <span className="spinner" style={{ width: 22, height: 22 }} />}</div>

@@ -14,6 +14,7 @@ import { DeviceIdentity } from './device-identity'
 import { generateBackupCode } from './backup-code'
 import { authorizeWithApple } from './apple-authorization'
 import { FirebaseAuthenticationAPI } from './firebase-rest'
+import { recordConnectionStep } from '../platform/connection-diagnostics'
 import { tr } from '../../shared/i18n'
 
 // A Curve25519 key pair in the base64 form iOS CryptoService stores and the server keeps as publicKey.
@@ -280,16 +281,16 @@ export class AuthenticationController {
     let owner: CredentialOwner
     const transport = new SocketMessageTransport(this.version, {
       rejected: reason => { owner.rejection = reason },
-      state: state => this.connectionChanged(owner, state, ready, failed),
+      state: state => { recordConnectionStep('state', state); this.connectionChanged(owner, state, ready, failed) },
+      step: (step, detail) => recordConnectionStep(step, detail),
       message: message => {
         if (this.owner === owner && !controller.signal.aborted && owner.established && message.senderId !== record.profile.uid) {
           this.accounts.notificationHint(record.profile.uid, { chatId: message.chatId, id: message.id })
         }
       },
-      // Every registration follows an 'offline'/'connecting' transition, and
-      // AccountSession.setConnection already closes and re-opens every Firestore
-      // watch on that transition, so the whole account is re-read from the
-      // server (the desktop's getDifference). Nothing else to request here.
+      // A lapsed connection also stops every Firestore read's authorization, so each
+      // watch re-listens by itself and brings the account up to date (the desktop's
+      // getDifference); a renewal in place keeps them running. Nothing else to request here.
       needsReconciliation: () => {}
     })
     owner = { controller, record, tokens, established: false, rejection: '', refresh: null, transport }

@@ -1,4 +1,5 @@
-import { ownerRowId, subscriberRowId, type InquiryRow } from '../../shared/channel-inquiries'
+import { ownerRowId, subscriberRowId, type InquiryForwardRoom, type InquiryRole, type InquiryRow } from '../../shared/channel-inquiries'
+import type { InquiryNotice } from './inquiry-notifications'
 import { positionMilliseconds } from '../../shared/model'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
 import { boolField, documents, numberField, stringField, timestamp, type FirestoreDocument, type WireObject } from '../network/firestore-values'
@@ -78,7 +79,9 @@ export class InquiryRows {
   private visible: string[] = []
 
   constructor(private readonly uid: string, private readonly auth: ReadCredentials,
-    private readonly allowed: () => void, private readonly changed: () => void) {
+    private readonly allowed: () => void, private readonly changed: () => void,
+    // What each room's newest message is, for the banner this window shows in place of a push.
+    private readonly noticed: (rooms: InquiryNotice[]) => void = () => {}) {
     this.photos = new ChannelImages(auth, id => ({ name: `${documents}/channels/${id}`,
       fields: { photoURL: { stringValue: this.addresses.get(id) ?? '' } } } as unknown as FirestoreDocument), () => { if (!this.closed) this.changed() })
   }
@@ -99,6 +102,7 @@ export class InquiryRows {
           rows.clear()
           for (const [name, doc] of next) rows.set(name, doc)
           this.choosePhotos()
+          try { this.noticed(this.notices()) } catch { /* A banner is never worth losing the list over. */ }
           this.changed()
         },
         // A dropped listener leaves the rows that are already on screen; the next snapshot replaces them.
@@ -141,6 +145,49 @@ export class InquiryRows {
       const { rows } = buildInquiryRows(this.uid, this.subscriber.values(), this.owner.values())
       return rows.map(row => ({ ...row, photo: this.photos.snapshot(row.channelId) }))
     } catch { return [] }
+  }
+
+  // What each room says about its newest message: who sent it, what it was, and whether this side has read it.
+  notices(): InquiryNotice[] {
+    if (this.closed || this.locked) return []
+    const notices: InquiryNotice[] = []
+    const add = (doc: FirestoreDocument, role: InquiryRole): void => {
+      const f = doc.fields, id = doc.name.slice(doc.name.lastIndexOf('/') + 1), channelId = stringField(f, 'channelId', 160)
+      if (!id || !channelId || id.includes('/')) return
+      if (stringField(f, role === 'owner' ? 'channelOwnerId' : 'subscriberId', 160) !== this.uid) return
+      const title = role === 'owner'
+        ? (boolField(f, 'subscriberAccountDeleted') ? tr('탈퇴한 계정') : stringField(f, 'subscriberName', 512) || tr('구독자'))
+        : channelName(f)
+      notices.push({ inquiryId: id, channelId, title, preview: preview(f), at: time(f, 'lastMessageAt') ?? 0,
+        unread: Math.max(0, Math.trunc(numberField(f, role === 'owner' ? 'unreadForOwner' : 'unreadForSubscriber'))),
+        fromMe: stringField(f, 'lastSenderId', 160) === this.uid })
+    }
+    try {
+      for (const doc of this.subscriber.values()) add(doc, 'subscriber')
+      for (const doc of this.owner.values()) add(doc, 'owner')
+    } catch { return [] }
+    return notices
+  }
+
+  // The rooms a forward may go into: this account's own rooms, whichever side of them it is on. A subscriber's room
+  // is named by its channel, an owner's by the person asking, as each side already sees them in the list.
+  forwardRooms(): InquiryForwardRoom[] {
+    if (this.closed || this.locked) return []
+    const rooms: InquiryForwardRoom[] = []
+    const add = (doc: FirestoreDocument, role: InquiryRole): void => {
+      const f = doc.fields, id = doc.name.slice(doc.name.lastIndexOf('/') + 1), channelId = stringField(f, 'channelId', 160)
+      if (!id || !channelId || id.includes('/')) return
+      if (stringField(f, role === 'owner' ? 'channelOwnerId' : 'subscriberId', 160) !== this.uid) return
+      const title = role === 'owner'
+        ? (boolField(f, 'subscriberAccountDeleted') ? tr('탈퇴한 계정') : stringField(f, 'subscriberName', 512) || tr('구독자'))
+        : channelName(f)
+      rooms.push({ inquiryId: id, channelId, title, role })
+    }
+    try {
+      for (const doc of this.subscriber.values()) add(doc, 'subscriber')
+      for (const doc of this.owner.values()) add(doc, 'owner')
+    } catch { return [] }
+    return rooms
   }
 
   response(token: string, request: Request): Response { return this.photos.response(token, request) }

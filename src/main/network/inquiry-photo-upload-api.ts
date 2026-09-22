@@ -10,7 +10,10 @@ import { tr } from '../../shared/i18n'
 // download URL in the message. A photo is re-encoded to JPEG first; a video keeps its container; a
 // file travels as application/octet-stream with .bin, as iOS and the chat send it; a voice message is
 // AAC in M4A, stored as audio/mp4 (an inquiry keeps its real type, unlike a chat's voice upload).
-const inquiryAttachmentTypes: Record<string, string> = { jpg: 'image/jpeg', mp4: 'video/mp4', mov: 'video/quicktime', bin: 'application/octet-stream', m4a: 'audio/mp4' }
+// storage.rules inquiry_files: the participants of the room, under 50 MB, whatever the object is. A picture this
+// device composes is JPEG; one forwarded from elsewhere keeps the format it already has.
+const inquiryAttachmentTypes: Record<string, string> = { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif',
+  mp4: 'video/mp4', mov: 'video/quicktime', bin: 'application/octet-stream', m4a: 'audio/mp4' }
 export function inquiryAttachmentPath(inquiryId: string, messageId: string, extension: string): string {
   if (!/^[A-Za-z0-9_-]{3,330}$/.test(inquiryId) || !inquiryId.includes('_') || !inquiryAttachmentTypes[extension] ||
       !/^[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$/.test(messageId)) throw new Error(tr('문의를 다시 열어 주세요.'))
@@ -36,7 +39,12 @@ async function json(response: Response): Promise<Record<string, unknown>> {
 }
 
 export interface InquiryPhotoUpload { inquiryId: string; messageId: string; bytes: Uint8Array; sha256: string; md5: string }
-export interface InquiryAttachmentUpload extends InquiryPhotoUpload { extension: 'jpg' | 'mp4' | 'mov' | 'bin' | 'm4a'; noun: string }
+export type InquiryAttachmentExtension = 'jpg' | 'png' | 'webp' | 'gif' | 'mp4' | 'mov' | 'bin' | 'm4a'
+export const inquiryAttachmentExtension = (raw: string): InquiryAttachmentExtension => {
+  if (!Object.hasOwn(inquiryAttachmentTypes, raw)) throw new Error(tr('이 형식은 문의방으로 보낼 수 없습니다.'))
+  return raw as InquiryAttachmentExtension
+}
+export interface InquiryAttachmentUpload extends InquiryPhotoUpload { extension: InquiryAttachmentExtension; noun: string }
 
 export async function uploadInquiryPhoto(auth: ReadCredentials, uid: string, photo: InquiryPhotoUpload, signal: AbortSignal,
   progress: (value: number) => void, validate: () => void): Promise<string> {

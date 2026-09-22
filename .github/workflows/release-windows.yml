@@ -17,6 +17,15 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm run build
+      # electron-builder publishes each file on its own, and when the release of the tag does not exist yet two of
+      # them create it at the same moment: GitHub accepts one and refuses the other (422 already_exists), which ends
+      # the build and leaves the installer unpublished. The release is made once here, so every upload finds it.
+      - name: Start the release of this tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Morse Desktop $GITHUB_REF_NAME"
       - run: npx electron-builder --config electron-builder.release.cjs --win --x64 --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

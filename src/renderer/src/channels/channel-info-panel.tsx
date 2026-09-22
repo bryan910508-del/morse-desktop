@@ -15,6 +15,7 @@ import { showTextEditBox } from '../boxes/text-edit-box'
 import { ActionRow, InfoRow } from '../info/info-panel'
 import { showReportBox } from '../boxes/report-box'
 import { Avatar } from '../ui/avatar'
+import { showPhotoViewer } from '../ui/photo-viewer'
 import { Spinner } from '../ui/controls'
 import { confirmBox } from '../ui/layers'
 import { showChannelAccessBox } from './channel-access-box'
@@ -170,7 +171,8 @@ function ChannelInfoPanel({ accountUid, channelId }: { accountUid: string; chann
       {!ready ? <div className="empty-state">{channel?.status === 'loading' || !channel ? tr('채널 정보를 불러오는 중…') : tr('채널 정보를 확인할 수 없습니다.')}</div> : <>
         {coverUrl && <div className="channel-info-cover"><img src={coverUrl} alt="" draggable={false} /></div>}
         <div className="info-cover">
-          <Avatar name={ready.name} url={ready.avatar?.status === 'ready' ? ready.avatar.url : null} size={88} kind="channel" />
+          <Avatar name={ready.name} url={ready.avatar?.status === 'ready' ? ready.avatar.url : null} size={88} kind="channel"
+            onOpen={() => { if (ready.avatar?.status === 'ready' && ready.avatar.url) showPhotoViewer(ready.avatar.url, ready.name) }} />
           <h2 className="selectable">{ready.name}</h2>
           <span>{channelSubtitle(ready)}</span>
         </div>

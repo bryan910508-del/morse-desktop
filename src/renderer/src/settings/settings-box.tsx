@@ -15,6 +15,7 @@ import { controller } from '../app/ui'
 import { bytes, errorText } from '../app/format'
 import { trackWrite } from '../app/drafts'
 import { changeProfilePhoto } from '../app/photos'
+import { showPhotoViewer } from '../ui/photo-viewer'
 import { showChatBackgroundBox } from '../boxes/chat-background-box'
 import { showCloseFriendsBox } from '../boxes/close-friends-box'
 import { showFoldersBox } from '../boxes/chat-folder-boxes'
@@ -136,7 +137,8 @@ function ProfilePage({ accountUid }: { accountUid: string }) {
   const busy = photoBusy || upload.busy || state.saving
   return <>
     <div className="profile-edit-cover">
-      <Avatar name={self.displayName || 'M'} url={state.photo.status === 'ready' ? state.photo.url : null} size={96} />
+      <Avatar name={self.displayName || 'M'} url={state.photo.status === 'ready' ? state.photo.url : null} size={96}
+        onOpen={() => { if (state.photo.status === 'ready' && state.photo.url) showPhotoViewer(state.photo.url, self.displayName || tr('내 프로필 사진'), { accountUid, peerUid: self.uid }) }} />
       <div className="profile-edit-actions">
         <button className="button secondary" disabled={busy} onClick={() => { void changePhoto() }}>{photoBusy ? <Spinner size={14} /> : <Camera size={16} />}{tr('사진 변경')}</button>
         {self.hasPhoto && <button className="button flat danger" disabled={busy} onClick={() => { void clearPhoto() }}><Trash2 size={16} />{tr('사진 삭제')}</button>}

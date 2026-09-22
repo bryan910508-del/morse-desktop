@@ -1,11 +1,12 @@
 import { memo, useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Archive, ArchiveRestore, ArrowLeft, ArrowUpDown, Bell, BellOff, FolderPlus, Lock, LogOut, Mail, MailOpen, Menu, Pencil, Pin, PinOff, Search, StickyNote, Trash2, Users, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowLeft, ArrowUpDown, Bell, BellOff, CircleAlert, Clock3, FolderPlus, Lock, LogOut, Mail, MailOpen, Menu, Pencil, Pin, PinOff, Search, StickyNote, Trash2, Users, X } from 'lucide-react'
 import type { ContactSummary } from '../../../shared/contacts'
 import { folderContains, folderTitle, type ChatFolder } from '../../../shared/chat-folders'
 import type { ConnectionState, DialogSummary } from '../../../shared/model'
 import type { InquiryRow } from '../../../shared/channel-inquiries'
 import { openInquiries } from '../channels/channel-ui'
+import { useInquirySendState } from '../channels/inquiry-sends'
 import { leaveDiscussionRoom } from '../channels/discussion-leave'
 import type { PendingDirect } from '../../../shared/delivery'
 import { effectiveUnreadCount } from '../../../shared/manual-unread'
@@ -64,6 +65,28 @@ function ChatDeleteBox({ close, onChoose }: { close(): void; onChoose(forEveryon
   </Box>
 }
 
+// A subscriber's inquiry room, and an owner's folder of them (which opens that channel's list). The room marks a
+// message of mine that did not go and one on its way, as iOS MorseInquiryListRowModel does; a folder is not a room.
+function InquiryDialogRow({ accountUid, inquiry, style, index }: { accountUid: string; inquiry: InquiryRow; style: CSSProperties; index: number }) {
+  const sends = useInquirySendState(accountUid, inquiry.kind === 'ownerFolder' ? null : inquiry.inquiryId)
+  return <button type="button" className="dialog-row" style={style} data-row={index}
+    onClick={() => { controller.openChannelPanel(inquiry.channelId); openInquiries(inquiry.channelId, inquiry.inquiryId) }}>
+    <PeerAvatar id={inquiry.channelId} name={inquiry.title} image={inquiry.photo ?? null} surface="dialogs" />
+    <span className="dialog-row-body">
+      <span className="dialog-row-line">
+        <span className="dialog-row-name ellipsis">{inquiry.title}</span>
+        {sends.failed && <CircleAlert size={14} className="dialog-row-failed" aria-label={tr('보내지 못한 메시지가 있습니다')} />}
+        <span className="dialog-row-time">{dialogTime(inquiry.lastMessageAt)}</span>
+      </span>
+      <span className="dialog-row-line">
+        <span className="dialog-row-preview ellipsis">{inquiry.kind === 'ownerFolder' ? tr('1:1 문의 {0}개', [inquiry.rooms]) : tr('1:1 문의')} · {inquiry.preview || tr('메시지 없음')}</span>
+        {sends.sending && <Clock3 size={12} className="dialog-row-sending" aria-label={tr('보내는 중')} />}
+        {inquiry.unread > 0 && <span className="dialog-row-badge" aria-label={tr('읽지 않은 메시지 {0}개', [inquiry.unread])}>{inquiry.unread > 999 ? '999+' : inquiry.unread}</span>}
+      </span>
+    </span>
+  </button>
+}
+
 const DialogRow = memo(function DialogRow({ dialog, active, style, index, flags, onMenu }: {
   dialog: DialogSummary; active: boolean; style: CSSProperties; index: number; flags: ReturnType<typeof dialogFlags>; onMenu(dialog: DialogSummary, point: { x: number; y: number }): void
 }) {
@@ -84,6 +107,8 @@ const DialogRow = memo(function DialogRow({ dialog, active, style, index, flags,
         {dialog.kind === 'group' && <Users size={14} className="dialog-row-kind" aria-label={tr('그룹', [], 'kind')} />}
         {secret && <Lock size={13} className="dialog-row-kind secret" aria-label={tr('비밀 대화')} />}
         <span className="dialog-row-name ellipsis">{dialog.title}</span>
+        {/* iOS MorseChatListRowDisplay: a message of mine that did not go marks the row beside its name. */}
+        {!secret && dialog.sends?.failed && <CircleAlert size={14} className="dialog-row-failed" aria-label={tr('보내지 못한 메시지가 있습니다')} />}
         {dialog.muted && <BellOff size={13} className="dialog-row-status" aria-label={tr('알림 꺼짐')} />}
         <span className="dialog-row-time">{dialogTime(positionTime(dialog.top))}</span>
       </span>
@@ -91,6 +116,8 @@ const DialogRow = memo(function DialogRow({ dialog, active, style, index, flags,
         {typing ? <span className="dialog-row-preview typing ellipsis">{typing}</span>
           : <span className="dialog-row-preview ellipsis">{secret ? tr('이 기기에서는 열 수 없는 비밀 대화') : dialog.preview}</span>}
         {/* iOS latestReactionEmoji: someone's newest reaction to my message, before the unread count. */}
+        {/* …and a clock under the time while the newest of mine is still on its way (iOS/Android sendingClock). */}
+        {!secret && dialog.sends?.sending && <Clock3 size={12} className="dialog-row-sending" aria-label={tr('보내는 중')} />}
         {!secret && dialog.unseenReaction && <span className="dialog-row-reaction" aria-label={tr('새 반응 {0}', [dialog.unseenReaction.emoji])}>{dialog.unseenReaction.emoji}</span>}
         {flags.unread > 0 ? <span className={`dialog-row-badge${dialog.muted ? ' muted' : ''}`} aria-label={tr('읽지 않은 메시지 {0}개', [flags.unread])}>{flags.unread > 999 ? '999+' : flags.unread}</span>
           : flags.marked ? <span className={`dialog-row-badge mark${dialog.muted ? ' muted' : ''}`} aria-label={tr('읽지 않음 표시')} />
@@ -313,20 +340,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
             const row = rows[item.index]!, style: CSSProperties = { transform: `translateY(${item.start}px)` }
             if (row.kind === 'dialog') return <DialogRow key={item.key} dialog={row.dialog} active={row.dialog.id === selected} style={style} index={item.index} flags={dialogFlags(row.dialog)} onMenu={openMenu} />
             // A subscriber row opens its room; an owner row opens that channel's inquiry list.
-            if (row.kind === 'inquiry') return <button key={item.key} type="button" className="dialog-row" style={style} data-row={item.index}
-              onClick={() => { controller.openChannelPanel(row.inquiry.channelId); openInquiries(row.inquiry.channelId, row.inquiry.inquiryId) }}>
-              <PeerAvatar id={row.inquiry.channelId} name={row.inquiry.title} image={row.inquiry.photo ?? null} surface="dialogs" />
-              <span className="dialog-row-body">
-                <span className="dialog-row-line">
-                  <span className="dialog-row-name ellipsis">{row.inquiry.title}</span>
-                  <span className="dialog-row-time">{dialogTime(row.inquiry.lastMessageAt)}</span>
-                </span>
-                <span className="dialog-row-line">
-                  <span className="dialog-row-preview ellipsis">{row.inquiry.kind === 'ownerFolder' ? tr('1:1 문의 {0}개', [row.inquiry.rooms]) : tr('1:1 문의')} · {row.inquiry.preview || tr('메시지 없음')}</span>
-                  {row.inquiry.unread > 0 && <span className="dialog-row-badge" aria-label={tr('읽지 않은 메시지 {0}개', [row.inquiry.unread])}>{row.inquiry.unread > 999 ? '999+' : row.inquiry.unread}</span>}
-                </span>
-              </span>
-            </button>
+            if (row.kind === 'inquiry') return <InquiryDialogRow key={item.key} accountUid={accountUid} inquiry={row.inquiry} style={style} index={item.index} />
             if (row.kind === 'pending') return <button key={item.key} type="button" className={`dialog-row${row.pending.chatId === selected ? ' active' : ''}`} style={style} data-row={item.index} onClick={() => controller.openChat(row.pending.chatId)}>
               <PeerAvatar id={row.pending.chatId} name={row.pending.displayName} image={row.pending.avatar ?? null} surface="dialogs" />
               <span className="dialog-row-body">

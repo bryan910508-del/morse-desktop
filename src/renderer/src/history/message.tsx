@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState, type MouseEvent } from 'react'
-import { Camera, Check, CheckCheck, CircleAlert, Clock3, File as FileIcon, Image as ImageIcon, LockKeyhole, Megaphone, MessageSquareText, MessageSquareWarning, Mic, Pause, Play, Reply } from 'lucide-react'
+import { Camera, Check, CircleAlert, Clock3, File as FileIcon, Image as ImageIcon, LockKeyhole, Megaphone, MessageSquareText, MessageSquareWarning, Mic, Pause, Play, Reply } from 'lucide-react'
 import type { ChatMessage, ReplyPreview } from '../../../shared/model'
 import type { LocalOutgoing } from '../../../shared/delivery'
 import type { MessageStorySource } from '../../../shared/message-story-source'
@@ -177,9 +177,12 @@ function RoundVideo({ accountUid, chatId, message }: { accountUid: string; chatI
 
 // Telegram's automatic media download: a photo fills its tile as soon as it arrives, and a press
 // still opens the full-size view. Anything else, and a photo with the preference off, keeps the tile.
-export function MediaTile({ accountUid, chatId, message, part, label, single, ratio, onOpen }: {
+export function MediaTile({ accountUid, chatId, message, part, label, single, ratio, shape = 'fixed', onOpen }: {
   accountUid: string; chatId: string; message: ChatMessage; part: NonNullable<ChatMessage['attachments']>[number]
-  label: string; single: boolean; ratio: number | null; onOpen(message: ChatMessage, index: number): void
+  label: string; single: boolean; ratio: number | null
+  // 'natural': the shape given only holds the place; once the picture is there it keeps its own, as Telegram's does.
+  shape?: 'fixed' | 'natural'
+  onOpen(message: ChatMessage, index: number): void
 }) {
   const [preview, setPreview] = useState<string | null>(null)
   const [fetched, setFetched] = useState('')
@@ -213,7 +216,7 @@ export function MediaTile({ accountUid, chatId, message, part, label, single, ra
   const placeholder = preview || part.blind ? '' : carried || fetched
   // One photo keeps the shape it was taken in, the way Telegram shows it; an album stays a mosaic.
   return <button type="button" data-part-index={part.index} className={`media-tile${preview ? ' previewed' : ''}${placeholder ? ' placeholder' : ''}${single ? ' single' : ''}`}
-    disabled={!part.available} style={(preview || placeholder) && single && ratio ? { aspectRatio: String(ratio) } : undefined}
+    disabled={!part.available} style={(preview || placeholder) && single && ratio && (shape === 'fixed' || !preview) ? { aspectRatio: String(ratio) } : undefined}
     onClick={event => { event.stopPropagation(); onOpen(message, part.index) }}>
     {placeholder && <img className={`media-thumb${sharpThumb ? ' sharp' : ''}`} src={`data:image/jpeg;base64,${placeholder}`} alt="" aria-hidden="true"
       onLoad={event => { const image = event.currentTarget; setSharpThumb(part.kind === 'video' && (image.naturalWidth >= 240 || image.naturalHeight >= 240)) }} />}
@@ -266,10 +269,19 @@ export function Attachments({ accountUid, chatId, message, own, onOpen }: { acco
 // The link under the pointer when a message menu opens, for Telegram's «링크 복사» / «이메일 복사».
 export interface MessageLink { url: string; email: boolean }
 // The album item under the pointer, so «저장» saves that picture.
+// MorseOutgoingMessageStatusChrome .sent(read: true): iOS draws a read message as `checkmark.circle.fill` in readCheck,
+// and Android as the same filled circle with a white tick; sent stays one tick.
+export function ReadMark() {
+  return <svg className="read-mark" width="15" height="15" viewBox="0 0 16 16" role="img" aria-label={tr('읽음')}>
+    <circle cx="8" cy="8" r="7.5" fill="currentColor" />
+    <path d="M4.6 8.3 7 10.6l4.5-5" fill="none" stroke="#fff" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+}
+
 export interface MessageMenuTarget { link?: MessageLink; part?: number }
 
 export interface MessageViewProps {
-  accountUid: string; chatId: string; message: ChatMessage; own: boolean; layout: MessageLayout; read: 'sent' | 'partial' | 'read'
+  accountUid: string; chatId: string; message: ChatMessage; own: boolean; layout: MessageLayout; read: 'sent' | 'read'
   selecting: boolean; selected: boolean; highlighted: boolean
   onMenu(message: ChatMessage, point: { x: number; y: number }, target?: MessageMenuTarget): void; onReply(message: ChatMessage): void; onJumpReply(message: ChatMessage): void
   onOpenMedia(message: ChatMessage, index: number): void; onToggle(message: ChatMessage): void; onReaction(message: ChatMessage, emoji: string): void
@@ -286,7 +298,7 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
     const card = message.channelPost, part = message.attachments?.[0]
     return <div className="history-service" data-message-id={message.id}>
       <button type="button" className="channel-post-card" onClick={() => controller.openChannel(card.channelId, card.postId)}>
-        {part && <MediaTile accountUid={accountUid} chatId={chatId} message={message} part={part} label={tr('채널 게시물')} single ratio={null}
+        {part && <MediaTile accountUid={accountUid} chatId={chatId} message={message} part={part} label={tr('채널 게시물')} single ratio={card.ratio ?? null} shape="natural"
           onOpen={() => controller.openChannel(card.channelId, card.postId)} />}
         <span className="channel-post-card-body">
           <strong className="ellipsis"><Megaphone size={14} />{card.channelName || tr('채널 게시물')}</strong>
@@ -324,24 +336,30 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
   const emojiOnly = plainText && emojiOnlyText(message.text)
   const card = plainText && !emojiOnly ? linkCardFor(message.text) : null
   const shown = card?.share ? card.share.bodyText : text
+  const mediaOnly = media && !text && !plainLabel
+  // ChatMessageDateAndStatusNode: under reactions the date joins their LAST row when that row's width and the date's
+  // fit the bubble (`currentRowWidth + dateWidth <= constrainedWidth`), whatever the number of rows, and goes below
+  // otherwise — the date is the row's last item, pushed to its end. A picture alone and a sticker keep theirs on it.
+  const inlineMeta = message.reactions.length > 0 && !mediaOnly && !round && !emojiOnly
+  const meta = <span className={`bubble-meta${inlineMeta ? ' inline' : ''}`}>
+    {message.edited && !emojiOnly && <span>{tr('수정됨')}</span>}
+    <time dateTime={new Date(time).toISOString()}>{messageTime(time)}</time>
+    {own && (read === 'read' ? <ReadMark /> : <Check size={15} aria-label={tr('보냄')} />)}
+  </span>
   return <div className={rowClass(own, layout, `${selected ? ' selected' : ''}${highlighted ? ' highlight' : ''}${selecting ? ' selecting' : ''}`)}
     data-message-id={message.id} onContextMenu={openMenu} onClick={selecting ? () => props.onToggle(message) : undefined}
     onDoubleClick={event => { if (!selecting && !message.encrypted && (event.target as HTMLElement).closest('.bubble')) { window.getSelection()?.removeAllRanges(); props.onReply(message) } }}>
     {selecting && <span className="history-check"><RoundCheck checked={selected} /></span>}
     {layout.gutter && <span className="history-photo">{layout.photo && <UserAvatar uid={message.senderId} name={message.senderName || '?'} size={33} />}</span>}
-    <div className={`bubble${message.encrypted ? ' encrypted' : ''}${media && !text && !plainLabel ? ' media-only' : ''}${round ? ' round' : ''}${emojiOnly ? ' emoji-only' : ''}${card?.url ? ' has-link-card' : ''}`}>
+    <div className={`bubble${message.encrypted ? ' encrypted' : ''}${mediaOnly ? ' media-only' : ''}${round ? ' round' : ''}${emojiOnly ? ' emoji-only' : ''}${card?.url ? ' has-link-card' : ''}`}>
       {layout.name && !own && message.senderName && <div className="bubble-name ellipsis">{message.senderName}</div>}
       {!message.encrypted && message.storySource && <StorySource source={message.storySource} />}
       {!message.encrypted && message.reply && <ReplyQuote preview={message.reply} onOpen={() => props.onJumpReply(message)} />}
       {media && <Attachments accountUid={accountUid} chatId={chatId} message={message} own={own} onOpen={props.onOpenMedia} />}
       {emojiOnly ? <div className="bubble-emoji selectable" style={{ fontSize: emojiOnlyFontSize(message.text) }}>{message.text.trim()}</div>
-        : (text || plainLabel || !media) && <div className="bubble-text selectable">{plainLabel ? <em>{plainLabel}</em> : message.encrypted ? text : <LinkedText accountUid={accountUid} text={shown} disabled={selecting} />}{!card?.url && <span className={`bubble-meta-space${message.edited ? ' edited' : ''}${own ? ' own' : ''}`} />}</div>}
+        : (text || plainLabel || !media) && <div className="bubble-text selectable">{plainLabel ? <em>{plainLabel}</em> : message.encrypted ? text : <LinkedText accountUid={accountUid} text={shown} disabled={selecting} />}{!card?.url && !inlineMeta && <span className={`bubble-meta-space${message.edited ? ' edited' : ''}${own ? ' own' : ''}`} />}</div>}
       {card?.url && <LinkCard accountUid={accountUid} text={message.text} disabled={selecting} />}
-      <span className="bubble-meta">
-        {message.edited && !emojiOnly && <span>{tr('수정됨')}</span>}
-        <time dateTime={new Date(time).toISOString()}>{messageTime(time)}</time>
-        {own && (read === 'read' ? <CheckCheck size={15} className="read" aria-label={tr('읽음')} /> : read === 'partial' ? <CheckCheck size={15} aria-label={tr('일부 읽음')} /> : <Check size={15} aria-label={tr('보냄')} />)}
-      </span>
+      {!inlineMeta && meta}
       {message.reactions.length > 0 && <div className="bubble-reactions">{message.reactions.slice(0, 20).map(reaction => {
         // Telegram and iOS MorseReactionButton: one to three people show as small photos instead of a number.
         const faces = reaction.users && reaction.count <= 3 && reaction.users.length === reaction.count ? reaction.users : null
@@ -351,7 +369,7 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
           onContextMenu={event => { if (!reaction.users?.length) return; event.preventDefault(); event.stopPropagation(); showReactionPeople(reaction.emoji, reaction.count, reaction.users) }}>
           <span>{reaction.emoji}</span>{faces ? <span className="bubble-reaction-faces">{faces.map(user => <UserAvatar key={user.uid} uid={user.uid} name={user.name} size={20} />)}</span> : reaction.count}
         </button>
-      })}</div>}
+      })}{inlineMeta && meta}</div>}
     </div>
   </div>
 })
@@ -368,7 +386,7 @@ export const LocalMessageView = memo(function LocalMessageView({ accountUid, ite
       {item.progress && <div className="bubble-progress" role="progressbar" aria-valuenow={percent ?? 0} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${percent}%` }} /></div>}
       <span className="bubble-meta">
         <time>{messageTime(item.createdAt)}</time>
-        {failed ? <CircleAlert size={14} aria-label={tr('전송 실패')} /> : <Clock3 size={13} aria-label={item.state === 'uploading' ? tr('업로드 중') : tr('보내는 중')} />}
+        {failed ? <CircleAlert size={14} aria-label={tr('전송 실패')} /> : item.state === 'sent' ? <Check size={15} aria-label={tr('보냄')} /> : <Clock3 size={13} aria-label={item.state === 'uploading' ? tr('업로드 중') : tr('보내는 중')} />}
       </span>
     </div>
     {failed && item.reason && <div className="history-failed-reason">{item.reason}</div>}

@@ -7,7 +7,9 @@ import { tr } from '../../shared/i18n'
 
 export function selectionDigest(reactions: string[]): string { return createHash('sha256').update(JSON.stringify(reactions)).digest('hex') }
 
-export async function setMessageReaction(auth: ReadCredentials, uid: string, action: StoredMessageAction, signal: AbortSignal): Promise<void> {
+// `inquiryId`: the room is a channel inquiry, as iOS MorsePendingReactionSync sends it (chatId `sub_inq_<id>`); the
+// server then answers with that inquiry as its roomId.
+export async function setMessageReaction(auth: ReadCredentials, uid: string, action: Pick<StoredMessageAction, 'id' | 'chatId' | 'messageId' | 'reactions'>, signal: AbortSignal, inquiryId?: string): Promise<void> {
   const bounded = AbortSignal.any([signal, auth.signal, AbortSignal.timeout(65000)])
   let authorization: ReadAuthorization
   try { authorization = await auth.authorize(bounded, false); bounded.throwIfAborted() }
@@ -16,7 +18,7 @@ export async function setMessageReaction(auth: ReadCredentials, uid: string, act
     method: 'POST', signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken },
     body: JSON.stringify({ data: { chatId: action.chatId, messageId: action.messageId, expectedUid: uid,
-      reactionProtocolVersion: 2, clientRevision: action.id, reactions: action.reactions } }),
+      reactionProtocolVersion: 2, clientRevision: action.id, reactions: action.reactions, ...(inquiryId ? { inquiryId } : {}) } }),
   })
   if (!response.body) throw new MessageMutationFailure(tr('반응 응답을 확인하지 못했습니다.'))
   const reader = response.body.getReader(), chunks: Uint8Array[] = []
@@ -37,7 +39,7 @@ export async function setMessageReaction(auth: ReadCredentials, uid: string, act
     throw new MessageMutationFailure(definitive ? tr('반응을 적용할 수 없습니다. 대화 권한과 최신 메시지를 확인해 주세요.') : tr('반응 결과를 확인해야 합니다.'), definitive)
   }
   const result = object(body.result ?? body.data)
-  if (result.ok !== true || result.chatId !== action.chatId || result.roomId !== action.chatId ||
+  if (result.ok !== true || result.chatId !== action.chatId || result.roomId !== (inquiryId ?? action.chatId) ||
       result.messageId !== action.messageId || result.actorUid !== uid || result.clientRevision !== action.id ||
       typeof result.reactionVersion !== 'number' || !Number.isSafeInteger(result.reactionVersion) || result.reactionVersion < 0) throw new MessageMutationFailure(tr('반응 저장 응답을 확인하지 못했습니다.'))
   const reactions = object(result.reactions)

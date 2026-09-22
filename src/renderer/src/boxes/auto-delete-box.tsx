@@ -45,6 +45,27 @@ function ChatAutoDeleteBox({ accountUid, dialog, close }: { accountUid: string; 
   </Box>
 }
 
+// The same sheet for a 1:1 inquiry room: the policy lives on the room document, as a chat's does on the chat.
+function InquiryAutoDeleteBox({ accountUid, request, initial, close }: {
+  accountUid: string; request: { requestId: string; inquiryId: string }; initial: { seconds: number; myOnly: boolean }; close(): void
+}) {
+  const [seconds, setSeconds] = useState(initial.seconds)
+  const [myOnly, setMyOnly] = useState(initial.seconds > 0 && initial.myOnly)
+  function save(): void {
+    close()
+    void trackWrite(window.morse.setInquiryAutoDelete(accountUid, { ...request, seconds, myOnly: seconds > 0 && myOnly }))
+      .catch(reason => controller.toast(errorText(reason, tr('자동 삭제 설정을 저장할 수 없어요. 연결을 확인해 주세요.')), 'error'))
+  }
+  return <Box title={tr('이 문의의 자동 삭제')} width={400} onClose={close} className="auto-delete-box" buttons={<>
+    <button className="button flat" onClick={close}>{tr('취소')}</button>
+    <button className="button flat" onClick={save}>{tr('저장')}</button>
+  </>}>
+    <p className="box-note">{tr('저장하면 참여자 모두에게 같은 알림이 표시돼요.')}</p>
+    <DurationList value={seconds} onChange={value => { setSeconds(value); if (!value) setMyOnly(false) }} />
+    {seconds > 0 && <MyOnlyToggle checked={myOnly} onChange={setMyOnly} />}
+  </Box>
+}
+
 function updatePreferences(patch: Partial<Preferences>): void {
   void window.morse.updatePreferences(patch).then(next => desktop.replace(next)).catch(reason => controller.toast(errorText(reason, tr('설정을 저장하지 못했습니다.')), 'error'))
 }
@@ -65,6 +86,9 @@ function AutoDeleteDefaultsBox({ close }: { close(): void }) {
 
 export function showChatAutoDeleteBox(accountUid: string, dialog: DialogSummary): void {
   controller.showLayer(close => <ChatAutoDeleteBox accountUid={accountUid} dialog={dialog} close={close} />)
+}
+export function showInquiryAutoDeleteBox(accountUid: string, request: { requestId: string; inquiryId: string }, initial: { seconds: number; myOnly: boolean }): void {
+  controller.showLayer(close => <InquiryAutoDeleteBox accountUid={accountUid} request={request} initial={initial} close={close} />)
 }
 export function showAutoDeleteDefaultsBox(): void {
   controller.showLayer(close => <AutoDeleteDefaultsBox close={close} />)

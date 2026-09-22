@@ -10,7 +10,7 @@ import { callMorseFunction } from '../network/morse-callable'
 import { downloadChannelPostMedia } from '../network/channel-post-media'
 import { channelPostMedia, channelPostRevision } from '../media/channel-post-media-document'
 import { ChannelImages } from './channel-images'
-import { ChannelPostPictures } from './channel-post-pictures'
+import { ChannelPostPictures, type PictureSource } from './channel-post-pictures'
 import { decodeChannelPost, publicChannelPosts } from './channel-posts'
 import { decodeChannelSummary } from './channels'
 import { channelPostLikeState } from './channel-post-like-state'
@@ -86,12 +86,14 @@ export class ChannelHome {
     if (this.closed || !this.visible || !this.allowed() || !doc) throw new Error('Channel not in the channel tab')
     return doc
   }
-  private imageSource(key: string): { path: string; video: boolean; postId: string } {
+  // The feed draws the post's own picture, and its blurred thumb until that picture is there.
+  private imageSource(key: string): PictureSource {
     if (this.closed || !this.visible || !this.allowed()) throw new Error('Channel tab closed')
     const item = [...this.boosted, ...this.feed].find(post => `${post.channelId}/${post.post.id}` === key)
     const media = item ? channelPostMedia(item.doc, item.channelId).items[0] : undefined
     if (!item || !media?.path || media.kind === 'unsupported') throw new Error('Post picture unavailable')
-    return { path: media.path, video: media.kind === 'video', postId: item.post.id }
+    return { path: media.path, video: media.kind === 'video', postId: item.post.id,
+      blur: media.blur, width: media.width ?? 0, height: media.height ?? 0 }
   }
 
   get snapshot(): ChannelHomeSnapshot | null {

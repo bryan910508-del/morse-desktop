@@ -4,7 +4,7 @@ import type { CaptureMedia } from './platform/voice-captures'
 import { recordRendererVoiceStep, recordVoiceStep, voiceErrorCode } from './platform/voice-diagnostics'
 import { chatFolderInput, chatFolderOrder } from '../shared/chat-folders'
 import { autoDeleteSecondsValue, canChangeAutoDelete } from '../shared/chat-auto-delete'
-import { inquiryAttachmentRequest, inquiryVoiceRequest, inquiryVoiceTarget, inquiryEditRequest, inquiryListRequest, inquiryPhotoRequest, inquirySendRequest, inquiryTargetRequest, inquiryThreadRequest } from '../shared/channel-inquiries'
+import { inquiryAttachmentRequest, inquiryAutoDeleteRequest, inquiryForwardRequest, inquiryIdentifier, inquiryReplyTo, inquiryScheduleRequest, inquiryVoiceRequest, inquiryVoiceTarget, inquiryEditRequest, inquiryListRequest, inquiryPhotoRequest, inquiryPinRequest, inquiryReactionRequest, inquirySendRequest, inquiryTargetRequest, inquiryThreadRequest } from '../shared/channel-inquiries'
 import { voiceDraftStorageNavigation, voiceDraftStorageRemoval } from '../shared/voice-draft-storage'
 import { ownStoriesPageRequest } from '../shared/own-stories'
 import { contactPublicStoriesPageRequest } from '../shared/contact-public-stories'
@@ -118,7 +118,7 @@ import { groupPhotoRequest, groupPhotoClear } from '../shared/group-photo'
 import { visibleDialogPhotos } from '../shared/dialog-avatars'
 import { channelPostsRequest } from '../shared/channel-posts'
 import { groupAnnouncementEdit } from '../shared/group-announcement'
-import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, nativeTheme, powerMonitor, protocol, session, shell, systemPreferences } from 'electron'
+import { app, BrowserWindow, clipboard, ClipboardItem, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, protocol, session, shell, systemPreferences } from 'electron'
 import { mkdir, readFile, rm, stat as fileStat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -193,6 +193,7 @@ const accounts = new AccountRegistry(uid => ({
     appActive: () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused()),
     show: (content, click, dismiss) => notifications.show(uid, content, click, dismiss),
     open: chatId => openNotificationChat(uid, chatId),
+    openInquiry: (channelId, inquiryId) => openNotificationInquiry(uid, channelId, inquiryId),
     report: message => notifications.report(message)
   },
   mediaProgress: (requestId, loaded, total) => emit({ type: 'media-progress', accountUid: uid, requestId, loaded, total }),
@@ -488,6 +489,15 @@ function registerIPC(): void {
     if (typeof name !== 'string' || !name.trim() || name.trim().length > maxForumCategoryName) throw new Error(tr('카테고리 이름은 1~{0}자로 입력해 주세요.', [maxForumCategoryName]))
     return accounts.requireActive(identifier(uid)).addForumCategory(identifier(chatId), name.trim())
   })
+  handle('rename-forum-category', (uid, chatId, categoryId, name) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > maxForumCategoryName) throw new Error(tr('카테고리 이름은 1~{0}자로 입력해 주세요.', [maxForumCategoryName]))
+    return accounts.requireActive(identifier(uid)).renameForumCategory(identifier(chatId), identifier(categoryId), name.trim())
+  })
+  handle('delete-forum-category', (uid, chatId, categoryId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).deleteForumCategory(identifier(chatId), identifier(categoryId))
+  })
   handle('hide-messages', (uid, chatId, messageIds) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     if (!Array.isArray(messageIds) || !messageIds.length || messageIds.length > 100) throw new Error(tr('삭제할 메시지를 다시 선택해 주세요.'))
@@ -598,6 +608,11 @@ function registerIPC(): void {
   handle('send-inquiry-message', (uid, raw) => inquiries(uid).send(inquirySendRequest(raw)))
   handle('edit-inquiry-message', (uid, raw) => inquiries(uid).edit(inquiryEditRequest(raw)))
   handle('delete-inquiry-message', (uid, raw) => inquiries(uid).remove(inquiryTargetRequest(raw)))
+  handle('react-inquiry-message', (uid, raw) => inquiries(uid).react(inquiryReactionRequest(raw)))
+  handle('pin-inquiry-message', (uid, raw) => inquiries(uid).setPinned(inquiryPinRequest(raw)))
+  handle('set-inquiry-auto-delete', (uid, raw) => inquiries(uid).setAutoDelete(inquiryAutoDeleteRequest(raw)))
+  handle('schedule-inquiry-message', (uid, raw) => inquiries(uid).schedule(inquiryScheduleRequest(raw)))
+  handle('cancel-inquiry-scheduled', (uid, raw) => inquiries(uid).cancelScheduled(inquiryTargetRequest(raw)))
   handle('clear-inquiry-history', (uid, raw) => inquiries(uid).clear(inquiryThreadRequest(raw)))
   // ChannelInquiryChatView photo send: one picked file, re-encoded in the renderer before it is sent.
   handle('pick-inquiry-photo', async uid => {
@@ -694,10 +709,10 @@ function registerIPC(): void {
       if (!(bytes instanceof Uint8Array)) throw new Error(tr('다시 녹화해 주세요.'))
       const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
       const target = inquiryVoiceTarget({ requestId: value.requestId, inquiryId: value.inquiryId, captureId: value.captureId })
-      const message = inquiryTargetRequest({ requestId: value.requestId, inquiryId: value.inquiryId, messageId: value.messageId })
+      const message = { ...inquiryTargetRequest({ requestId: value.requestId, inquiryId: value.inquiryId, messageId: value.messageId }), ...inquiryReplyTo(value.replyToId) }
       if (!/^[0-9A-F]{8}-[0-9A-F]{4}-4[0-9A-F]{3}-[89AB][0-9A-F]{3}-[0-9A-F]{12}$/.test(message.messageId)) throw new Error(tr('영상 메시지를 다시 보내 주세요.'))
       const facts = roundVideoFacts({ duration: value.duration, thumb: value.thumb })
-      if (Object.keys(value).some(key => !['requestId', 'inquiryId', 'captureId', 'messageId', 'duration', 'thumb'].includes(key))) throw new Error(tr('영상 메시지 전송 요청을 확인해 주세요.'))
+      if (Object.keys(value).some(key => !['requestId', 'inquiryId', 'captureId', 'messageId', 'duration', 'thumb', 'replyToId'].includes(key))) throw new Error(tr('영상 메시지 전송 요청을 확인해 주세요.'))
       stage = 'complete'
       const capture = { id: target.captureId, chatId: target.inquiryId }
       if (voiceCaptures.mediaOf(capture) !== 'video') throw new Error(tr('녹음 상태를 다시 확인해 주세요.'))
@@ -885,6 +900,39 @@ function registerIPC(): void {
   handle('forward-batch', (uid, request) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 전달해 주세요.'))
     return accounts.requireActive(identifier(uid)).forwardBatch(forwardBatchRequest(request))
+  })
+  // A message of an open inquiry room, forwarded into chats: the same queue, with the room as the source.
+  handle('inquiry-forward-targets', (uid, source) => accounts.requireActive(identifier(uid)).inquiryForwardTargets(forwardSource(source)))
+  handle('forward-inquiry-text', (uid, request) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 전달해 주세요.'))
+    return accounts.requireActive(identifier(uid)).forwardInquiryText(forwardRequest(request))
+  })
+  handle('forward-inquiry-media', (uid, request) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 전달해 주세요.'))
+    return accounts.requireActive(identifier(uid)).forwardInquiryMedia(forwardRequest(request))
+  })
+  // The rooms a forward may go into, and the send itself: a room receives messages, it does not queue them.
+  handle('send-inquiry-sticker', (uid, raw, stickerId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).sendInquirySticker(inquiryTargetRequest(raw), identifier(stickerId))
+  })
+  handle('send-inquiry-pack-sticker', (uid, raw, setId, itemId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).sendInquiryPackSticker(inquiryTargetRequest(raw), identifier(setId), identifier(itemId))
+  })
+  handle('hide-inquiry-messages', (uid, inquiryId, messageIds) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    if (!Array.isArray(messageIds)) throw new Error(tr('삭제할 메시지를 다시 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).hideInquiryMessages(inquiryIdentifier(inquiryId), [...new Set(messageIds.map(identifier))])
+  })
+  handle('inquiry-forward-rooms', (uid, source) => accounts.requireActive(identifier(uid)).inquiryForwardRooms(forwardSource(source)))
+  handle('forward-to-inquiries', (uid, request) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 전달해 주세요.'))
+    return accounts.requireActive(identifier(uid)).forwardToInquiries(inquiryForwardRequest(request))
+  })
+  handle('forward-inquiry-batch', (uid, request) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 전달해 주세요.'))
+    return accounts.requireActive(identifier(uid)).forwardInquiryBatch(forwardBatchRequest(request))
   })
   handle('cancel-forward', (uid, id) => accounts.requireActive(identifier(uid)).cancelForward(identifier(id)))
   handle('set-dialog-pin', (uid, request) => {
@@ -1621,6 +1669,15 @@ function registerIPC(): void {
   handle('close-public-preview-photos', (uid, requestId) => {
     if (accounts.active?.profile.uid === identifier(uid)) accounts.active.channelPublicPreview.dismissPhotos(identifier(requestId))
   })
+  // Telegram's «Copy Image» / «Copy» (PhotoMedia::setToClipboard): the picture the window shows, as a PNG it drew,
+  // goes on the system clipboard as an image.
+  handle('copy-image', async png => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    if (!(png instanceof Uint8Array) || !png.byteLength || png.byteLength > 64 * 1024 * 1024) throw new Error(tr('이미지를 복사하지 못했습니다.'))
+    // Only a picture that decodes goes on the clipboard.
+    if (nativeImage.createFromBuffer(Buffer.from(png.buffer, png.byteOffset, png.byteLength)).isEmpty()) throw new Error(tr('이미지를 복사하지 못했습니다.'))
+    await clipboard.write([new ClipboardItem({ 'image/png': new Blob([new Uint8Array(png)], { type: 'image/png' }) })])
+  })
   handle('copy-listed-channel-share-text', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     const text = accounts.requireActive(identifier(uid)).channels.shareText(channelShareRequest(raw))
@@ -2289,11 +2346,23 @@ function registerIPC(): void {
     })
   })
   // iOS DataStorageView «캐시 정리»: the browser caches of this window, the pictures kept in memory and each account's
-  // picture cache file. Messages, drafts and files kept on purpose stay.
+  // picture and media cache files. Messages, drafts and files kept on purpose stay.
+  // Ui::UserpicButton Role::OpenPhoto → SessionController::openPhoto, with the peer's album under the arrows.
+  handle('open-profile-photos', (uid, peerUid) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).openProfilePhotos(identifier(peerUid))
+  })
+  handle('show-profile-photo', (uid, peerUid, index) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    if (typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || index > 100) throw new Error(tr('사진을 다시 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).peerPhotos.show(identifier(peerUid), index)
+  })
+  handle('close-profile-photos', uid => { accounts.get(identifier(uid))?.peerPhotos.close() })
   handle('cache-usage', async () => {
     const browser = mainWindow && !mainWindow.isDestroyed() ? await mainWindow.webContents.session.getCacheSize() : 0
     const pictures = await Promise.all(accounts.all.map(session => session.userpics.usage()))
-    return browser + pictures.reduce((sum, bytes) => sum + bytes, 0)
+    const media = await Promise.all(accounts.all.map(session => session.mediaFiles.usage()))
+    return browser + [...pictures, ...media].reduce((sum, bytes) => sum + bytes, 0)
   })
   handle('clear-cache', async () => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
@@ -2303,6 +2372,7 @@ function registerIPC(): void {
     }
     for (const session of accounts.all) session.clearMediaCaches()
     await Promise.all(accounts.all.map(session => session.userpics.clear()))
+    await Promise.all(accounts.all.map(session => session.mediaFiles.clear()))
     return 'done'
   })
   handle('replace-attachment-image', (uid, chatId, id, itemId, bytes) => {
@@ -2382,6 +2452,8 @@ function registerIPC(): void {
   handle('open-translation-settings', () => shell.openExternal('x-apple.systempreferences:com.apple.Localization-Settings.extension'))
   // A link pressed in a message (Telegram's UrlClickHandler::Open): only web, file transfer and mail addresses
   // leave the app, so a message can never start another program through a custom scheme.
+  // reCAPTCHA's notice lives on the sign-in screen now that the check itself is not shown: Google's two pages only.
+  handle('open-recaptcha-terms', which => shell.openExternal(which === 'terms' ? 'https://policies.google.com/terms' : 'https://policies.google.com/privacy'))
   handle('open-message-link', raw => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     if (typeof raw !== 'string' || !raw || raw.length > 4096) throw new Error(tr('링크를 열 수 없습니다.'))
@@ -2537,6 +2609,17 @@ function openNotificationChat(uid: string, chatId: string): void {
   if (switching) { accounts.setActive(uid); authentication.select(uid); void credentialVault.setActive(uid); void publish(); updatePresence() }
   // The window opens the chat once it shows this account.
   const send = (): void => { if (valid() && accounts.active === owner) emit({ type: 'open-notification-chat', accountUid: uid, chatId }) }
+  if (mainWindow?.webContents.isLoadingMainFrame()) mainWindow.webContents.once('did-finish-load', send)
+  else send()
+}
+// A 1:1 inquiry room opens beside its channel, as pressing its row in the list does.
+function openNotificationInquiry(uid: string, channelId: string, inquiryId: string): void {
+  const owner = accounts.get(uid)
+  const valid = (): boolean => Boolean(owner && accounts.get(uid) === owner && owner.readStatus === 'ready' && !screenLocked && shutdown === 'running')
+  if (!valid()) return
+  showWindow()
+  if (accounts.active !== owner) { accounts.setActive(uid); authentication.select(uid); void credentialVault.setActive(uid); void publish(); updatePresence() }
+  const send = (): void => { if (valid() && accounts.active === owner) emit({ type: 'open-notification-inquiry', accountUid: uid, channelId, inquiryId }) }
   if (mainWindow?.webContents.isLoadingMainFrame()) mainWindow.webContents.once('did-finish-load', send)
   else send()
 }
@@ -2800,6 +2883,8 @@ async function configureRenderer(): Promise<void> {
       ] : []
       // The accounts list shows every account's own photo.
       for (const session of accounts.all) holders.push(() => session.selfProfile.photoResponse(token, request))
+      // A picture opened from a profile, including an earlier one this device remembers.
+      if (active) holders.push(() => active.peerPhotos.response(token, request))
       for (const holder of holders) {
         const response = await holder()
         if (response.status !== 403) return response

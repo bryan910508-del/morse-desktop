@@ -44,6 +44,8 @@ import type { ChatFlagCommand } from './chat-flag-table'
 import type { ContactFlagCommand } from './contact-flag-table'
 import type { StickerCommand } from './sticker-table'
 import type { UserpicCommand } from './userpic-cache-table'
+import type { MediaCacheCommand } from './media-cache-table'
+import type { PeerPhotoCommand } from './peer-photo-table'
 import type { EventReminderCommand } from './event-reminder-table'
 import type { ReplyBinding } from '../../shared/reply-draft'
 import type { ContactDetailsCommand } from './contact-details-table'
@@ -87,6 +89,8 @@ export type DeliveryCommand =
   | ContactFlagCommand
   | StickerCommand
   | UserpicCommand
+  | MediaCacheCommand
+  | PeerPhotoCommand
   | EventReminderCommand
   | ContactDetailsCommand
   | ForwardCommand

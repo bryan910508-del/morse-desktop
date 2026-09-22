@@ -129,10 +129,15 @@ export class AccountPresence {
     const wanted: string[] = []
     for (const surface of surfaceOrder) for (const id of this.surfaces.get(surface) ?? []) if (!wanted.includes(id)) wanted.push(id)
     const target = new Set(wanted.slice(0, maxWatched))
+    // Only a value with its moment outlives the watch (MorsePeerPresenceStore, Telegram's stored present(until:) that
+    // ages by itself): an «online» nobody refreshes any more would stay online for as long as it is remembered.
+    let dropped = false
     for (const [id, stop] of this.watched) {
       if (target.has(id)) continue
       stop(); this.watched.delete(id); this.held.forget(id)
+      if (this.values.get(id)?.s === 'online') { this.values.delete(id); dropped = true }
     }
+    if (dropped) this.changed()
     for (const id of this.values.keys()) {
       if (this.values.size <= maxRemembered) break
       if (!this.watched.has(id)) this.values.delete(id)

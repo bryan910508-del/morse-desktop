@@ -54,3 +54,28 @@ test('a window that should be online writes itself back when another device sign
   state.connected = true; state.closed = true
   assert.equal(state.reassert(false), false)
 })
+
+// The server's Telegram buckets: beyond a month is «a long time ago», not an empty subtitle.
+test('a last seen beyond a month reads as a long time ago', () => {
+  assert.deepEqual(peerPresence({ s: 'longTimeAgo' }), { s: 'longTimeAgo' })
+  assert.deepEqual(presenceText(peerPresence({ s: 'longTimeAgo' })), { text: '오래 전', online: false })
+  assert.deepEqual(presenceText(peerPresence({ s: 'lastMonth' })), { text: '한 달 이내', online: false })
+  assert.equal(presenceText(peerPresence({ s: 'someday' })), null, 'an unknown code still shows nothing')
+})
+
+// MorsePeerPresenceStore (iOS 99981c96): a person no longer watched keeps a last seen with its moment, which goes on
+// ageing, but not an «online» that nothing refreshes any more.
+test('an online nobody watches any more is forgotten, a last seen is kept', () => {
+  const credentials = { signal: new AbortController().signal } as unknown as ConstructorParameters<typeof AccountPresence>[1]
+  let changes = 0
+  const presence = new AccountPresence('me1', credentials, () => { changes++ })
+  const state = presence as unknown as { watched: Map<string, () => void>; values: Map<string, unknown>; surfaces: Map<string, string[]>; reconcile(): void }
+  let stopped = 0
+  state.watched.set('peer1', () => { stopped++ }); state.values.set('peer1', online)
+  state.watched.set('peer2', () => { stopped++ }); state.values.set('peer2', present)
+  state.surfaces.set('dialogs', [])
+  state.reconcile()
+  assert.equal(stopped, 2, 'both watches end')
+  assert.deepEqual(presence.snapshot(), { peer2: present }, 'the online copy goes, the last seen stays')
+  assert.equal(changes, 1, 'the window is told once')
+})

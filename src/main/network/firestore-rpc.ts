@@ -737,6 +737,20 @@ export class FirestoreReader {
     await this.commitWrites([{ update: { name: `${documents}/channelInquiries/${inquiryId}`, fields }, currentDocument: { exists: false },
       updateTransforms: [{ fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' }] }], signal)
   }
+  // «모두에게 고정» in an inquiry room: channelInquiries/{id}.pinnedForAllMessageIds, the field a chat keeps,
+  // written by either participant (firestore.rules allows a participant every field the server does not own).
+  async setInquiryPinnedForAll(inquiryId: string, messageId: string, pinned: boolean, signal: AbortSignal): Promise<void> {
+    await this.commitWrites([{ update: { name: `${documents}/channelInquiries/${inquiryId}`, fields: {} }, updateMask: { fieldPaths: [] },
+      updateTransforms: [{ fieldPath: 'pinnedForAllMessageIds', [pinned ? 'appendMissingElements' : 'removeAllFromArray']: { values: [{ stringValue: messageId }] } }],
+      currentDocument: { exists: true } }], signal)
+  }
+  // The room's auto-delete policy, as a chat's (AppState.updateChatAutoDeletePolicy). firestore.rules
+  // autoDeletePolicyActorOk: a change of the policy must name its actor, or the write is refused.
+  async setInquiryAutoDelete(uid: string, inquiryId: string, seconds: number, myOnly: boolean, signal: AbortSignal): Promise<void> {
+    await this.commitWrites([{ update: { name: `${documents}/channelInquiries/${inquiryId}`, fields: {
+      autoDeleteSeconds: { integerValue: String(seconds) }, autoDeleteMyOnly: { booleanValue: myOnly }, autoDeleteLastSetByUid: { stringValue: uid }
+    } }, updateMask: { fieldPaths: ['autoDeleteSeconds', 'autoDeleteMyOnly', 'autoDeleteLastSetByUid'] }, currentDocument: { exists: true } }], signal)
+  }
   // ChannelInquiryService.editMessage / deleteMessage on an existing message.
   async editInquiryMessage(inquiryId: string, messageId: string, text: string, signal: AbortSignal): Promise<void> {
     await this.commitWrites([{ update: { name: `${documents}/channelInquiries/${inquiryId}/messages/${messageId}`, fields: { text: { stringValue: text }, isEdited: { booleanValue: true } } },
@@ -850,6 +864,21 @@ export class FirestoreReader {
         updateTransforms: [{ fieldPath: 'deletedAt', setToServerValue: 'REQUEST_TIME' }], currentDocument: { exists: false } },
       { delete: doc.name, currentDocument: { updateTime: doc.updateTime } },
     ], signal)
+  }
+  // Several messages of one room in one commit, each as deleteMessage writes it. `tombstone` false only takes away
+  // a message whose revokedForAll record is already there.
+  async deleteMessages(chatId: string, docs: FirestoreDocument[], uid: string, tombstone: boolean, signal: AbortSignal): Promise<void> {
+    const prefix = `${documents}/chats/${chatId}/messages/`
+    if (!docs.length || docs.some(doc => !doc.updateTime || !doc.name.startsWith(prefix) || doc.name.slice(prefix.length).includes('/'))) throw new MessageMutationFailure(tr('메시지 버전을 확인하지 못했습니다.'), true)
+    await this.commitMessage(docs.flatMap(doc => {
+      const messageId = doc.name.slice(prefix.length)
+      return [
+        ...(tombstone ? [{ update: { name: `${documents}/chats/${chatId}/revokedForAll/${messageId}`, fields: {
+          messageId: { stringValue: messageId }, deletedBy: { stringValue: uid } } },
+          updateTransforms: [{ fieldPath: 'deletedAt', setToServerValue: 'REQUEST_TIME' }], currentDocument: { exists: false } }] : []),
+        { delete: doc.name, currentDocument: { updateTime: doc.updateTime } },
+      ]
+    }), signal)
   }
   private async commitMessage(writes: WireObject[], signal: AbortSignal): Promise<void> {
     const bounded = this.bounded(signal)

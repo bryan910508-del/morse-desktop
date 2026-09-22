@@ -163,12 +163,14 @@ function PostView({ post, name, likes, likeBusy, pinned, onLike, onLikers, onMed
       {post.media.map(item => item.picture && item.available
         ? <button key={item.index} type="button" className="channel-post-picture" onClick={() => onMedia(item.index)}
           aria-label={item.kind === 'video' ? tr('동영상 {0} 열기', [item.index + 1]) : tr('사진 {0} 열기', [item.index + 1])}
-          style={item.picture.status === 'ready' && item.picture.width && item.picture.height ? { aspectRatio: String(item.picture.width / item.picture.height) } : undefined}>
+          style={item.picture.width && item.picture.height ? { aspectRatio: String(item.picture.width / item.picture.height) } : undefined}>
           {item.picture.status === 'ready' && item.picture.url
             ? <><img src={item.picture.url} alt="" draggable={false} decoding="async" />{item.picture.video && <span className="channel-post-play"><Film size={18} /></span>}</>
             : item.picture.status === 'error'
               ? <span className="channel-media-chip">{item.kind === 'video' ? <Film size={16} /> : <ImageIcon size={16} />}{item.kind === 'video' ? tr('동영상') : tr('사진')} {item.index + 1}</span>
-              : <Spinner size={18} />}
+              // The post's own blurred thumb is drawn while the picture is read, as Telegram draws it under a photo.
+              : item.picture.blur ? <img className="blurred" src={item.picture.blur} alt="" draggable={false} decoding="async" />
+                : <Spinner size={18} />}
         </button>
         : <button key={item.index} type="button" className="channel-media-chip" disabled={!item.available} onClick={() => onMedia(item.index)}>
           {item.kind === 'video' ? <Film size={16} /> : <ImageIcon size={16} />}{item.kind === 'video' ? tr('동영상') : item.kind === 'image' ? tr('사진') : tr('지원하지 않는 첨부')} {item.index + 1}

@@ -7,6 +7,7 @@ import type { ReadCredentials } from '../network/firestore-rpc'
 import { safeFileName, type MediaResource } from './media-document'
 import { restoreFile } from './compression'
 import { downloadMedia, MediaFailure } from './download-media'
+import { mediaCacheFor } from '../accounts/media-cache'
 import { tr } from '../../shared/i18n'
 
 interface OwnedMedia {
@@ -91,8 +92,24 @@ export class MediaSession {
 
   private async download(owner: OwnedMedia): Promise<MediaReady> {
     const signal = AbortSignal.any([owner.abort.signal, this.credentials.signal, AbortSignal.timeout(120000)])
-    let bytes = await downloadMedia(this.credentials, owner.resource, signal, () => this.requireCurrent(owner),
-      (loaded, total) => this.progress(owner.request.requestId, loaded, total))
+    // FileLoader::tryLoadLocal(): an attachment already fetched is opened from the account's cache file, with no
+    // request at all. A one-time-view attachment is never kept, so it is read and written only over the network.
+    const cache = owner.resource.summary.blind ? null : mediaCacheFor(this.credentials)
+    const path = owner.resource.path ?? ''
+    const stored = await cache?.read(path)
+    let bytes: Buffer | null = null
+    if (stored) {
+      if (!this.current(owner)) { stored.fill(0); this.requireCurrent(owner) }
+      // A kept copy that no longer reads as this attachment is fetched again.
+      if (owner.resource.summary.kind === 'file') bytes = stored
+      else { try { format(stored, owner.resource); bytes = stored } catch { stored.fill(0) } }
+      if (bytes) this.progress(owner.request.requestId, bytes.length, bytes.length)
+    }
+    if (!bytes) {
+      bytes = await downloadMedia(this.credentials, owner.resource, signal, () => this.requireCurrent(owner),
+        (loaded, total) => this.progress(owner.request.requestId, loaded, total))
+      if (this.current(owner)) cache?.write(path, bytes)
+    }
     if (!this.current(owner)) { bytes.fill(0); this.requireCurrent(owner) }
     owner.bytes = bytes
     this.requireCurrent(owner)
