@@ -192,3 +192,18 @@ test('the cleared boundaries arrive with the hidden moments and rebuild the list
   assert.equal(hidden.keepsCleared('a', at(2_000, '')), true)
 })
 
+
+// Saved Messages is the account's own room and Telegram's list always holds it. Here the notes screen
+// finds the room through the dialog list, so an emptied one must not drop out of it: iOS's «메시지
+// 비우기» clears it on the server, which writes the very boundary this rule reads.
+test('an emptied Saved Messages stays in the list, where an emptied 1:1 does not', () => {
+  const saved = 'memo_uid-1'
+  const revoked = { seconds: 2000, nanoseconds: 0, id: 'r' }
+  const room = (id: string) => ({ id, kind: 'direct', top: null } as unknown as DialogSummary)
+  assert.equal(emptyRevokedDirect(room('chat-a'), revoked, saved), true)
+  assert.equal(emptyRevokedDirect(room(saved), revoked, saved), false)
+  // Said of no account in particular, the rule is what it always was.
+  assert.equal(emptyRevokedDirect(room(saved), revoked), true)
+  // Another account's memo room is not this one's Saved Messages.
+  assert.equal(emptyRevokedDirect(room('memo_uid-2'), revoked, saved), true)
+})

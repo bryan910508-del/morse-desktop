@@ -1072,7 +1072,7 @@ export class AccountSession {
       const value = decodeDialog(doc, this.profile.uid)
       this.discussionHistory.apply(doc, value)
       // The server's boundary, before this device's own deletion moment replaces it.
-      if (emptyRevokedDirect(value.summary, value.cutoff) && value.cutoff && !this.hiddenChats.keepsCleared(value.summary.id, value.cutoff)) unlisted.add(value.summary.id)
+      if (emptyRevokedDirect(value.summary, value.cutoff, `memo_${this.profile.uid}`) && value.cutoff && !this.hiddenChats.keepsCleared(value.summary.id, value.cutoff)) unlisted.add(value.summary.id)
       withLocalDeletion(value, this.hiddenChats.cutoff(value.summary.id))
       this.topicDeletions.apply(value.summary)
       this.chatFlags.apply(value.summary)

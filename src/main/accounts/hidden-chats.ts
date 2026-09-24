@@ -112,6 +112,11 @@ export function withLocalDeletion(dialog: ReadDialog, deleted: MessagePosition |
 // message: Telegram does not list such a chat (Postbox ChatListIndexTable.includedIndex returns nil without a top
 // message; tdesktop History::shouldBeInChatList). iOS: MorseChatDialogMembership.shouldOmitRevokedDirectFromList.
 // `revoked` is the server's boundary (chats/{id}.historyRevokedAt), not this device's own deletion moment.
-export function emptyRevokedDirect(summary: DialogSummary, revoked: MessagePosition | null): boolean {
+// `savedId` is this account's own Saved Messages room, which is never hidden by this rule: Telegram's
+// list always holds it, and here the notes screen finds the room through the dialog list, so hiding an
+// emptied one would leave «저장한 메시지» with nothing to open. Emptying it is an ordinary thing to do —
+// iOS's «메시지 비우기» clears it on the server, which writes exactly the boundary this rule reads.
+export function emptyRevokedDirect(summary: DialogSummary, revoked: MessagePosition | null, savedId = ''): boolean {
+  if (savedId && summary.id === savedId) return false
   return summary.kind === 'direct' && revoked !== null && (!summary.top || comparePosition(summary.top, revoked) < 0)
 }

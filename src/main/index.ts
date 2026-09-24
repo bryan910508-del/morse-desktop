@@ -213,6 +213,8 @@ let mainWindow: BrowserWindow | null = null
 let snapshotRevision = 0
 let shutdown: 'running' | 'closing' | 'done' = 'running'
 let windowState: WindowState
+// Set once the start-up sequence has everything a window needs; see showWindow.
+let windowsReady = false
 let pendingClose: { id: string; finish(success: boolean): void } | null = null
 let screenLocked = false
 let screenIsLocked = false
@@ -2641,8 +2643,15 @@ function refreshScreenLock(): void {
   if (state === 'locked') screenIsLocked = true
   else if (state === 'active' || state === 'idle') screenIsLocked = false
 }
+// Nothing can be shown until the start-up sequence has built what a window needs, and the window it
+// opens is coming with it (createWindow at the end of app.whenReady). `settings` is set several awaits
+// earlier than the rest, so an activation landing in that gap — a dock click, a second launch, a
+// morse:// link — reached createWindow with windowState still undefined and ended the launch with «A
+// JavaScript error occurred in the main process: Cannot read properties of undefined (reading
+// 'initial')». A link that arrives first is kept in pendingSchemeLink and taken by the window when it
+// opens, so nothing is lost by refusing here.
 function showWindow(): void {
-  if (shutdown !== 'running') return
+  if (shutdown !== 'running' || !windowsReady) return
   if (!mainWindow || mainWindow.isDestroyed()) { createWindow(); return }
   windowState.show()
 }
@@ -3091,6 +3100,7 @@ else {
       void publish()
     })
     await configureRenderer()
+    windowsReady = true
     registerIPC(); createMenu(); createWindow()
     appUpdates.start()
     if (localKey.ready) startAccounts(); else void authentication.prepare()
