@@ -31,7 +31,7 @@ import type { ChannelPostMediaRequest } from '../../shared/channel-post-media'
 import { channelPostMedia, channelPostRevision } from '../media/channel-post-media-document'
 import { ChannelPostPictures, type PictureSource } from './channel-post-pictures'
 import type { ChannelPostsRequest, ChannelPostsSnapshot, ChannelPostText } from '../../shared/channel-posts'
-import { comparePosition } from '../../shared/model'
+import { comparePosition, type MessagePosition } from '../../shared/model'
 import { identifier } from '../../shared/validation'
 import type { FirestoreReader, ReadCredentials } from '../network/firestore-rpc'
 import { childId, documents, numberField, stringField, timestamp, type FirestoreDocument } from '../network/firestore-values'
@@ -93,6 +93,12 @@ export class ChannelPosts {
   private feedGeneration = 0
   constructor(private readonly uid: string, private readonly auth: ReadCredentials,
     private readonly source: (id: string) => { doc: FirestoreDocument; reader: FirestoreReader }, private readonly changed: () => void) { this.visibilityEditor = new ChannelPostVisibilityEditor(uid, auth, (request, exact) => this.visibilitySource(request, exact)); this.removalEditor = new ChannelPostRemovalEditor(uid, auth, (request, exact) => this.removalSource(request, exact)); this.pinResolutionEditor = new ChannelPostPinResolutionEditor(uid, auth, (request, exact) => this.pinResolutionSource(request, exact)); this.extraPinEditor = new ChannelPostExtraPinEditor(uid, auth, (request, exact) => this.extraPinSource(request, exact)); this.pinEditor = new ChannelPostPinEditor(uid, auth, (request, exact) => this.pinSource(request, exact)); this.textEditor = new ChannelPostTextEditor(uid, auth, (request, exact) => this.textSource(request, exact)); this.media = new ChannelPostMediaSession(auth, request => this.mediaSource(request), changed); this.pictures = new ChannelPostPictures(auth, key => this.pictureSource(key), changed, '__channel-post-picture'); this.likes = new ChannelPostLikeEditor(uid, auth, (request, exact) => this.likeSource(request, exact)); this.comments = new ChannelComments(uid, auth, (request, exact) => this.commentSource(request, exact), changed) }
+  // The open channel's posts among `ids`, with the moments they were posted (for its read mark).
+  seenPosts(channelId: string, ids: readonly string[]): { id: string; position: MessagePosition; own: boolean }[] {
+    const value = this.value
+    if (!value || value.status !== 'ready' || value.channelId !== channelId) return []
+    return value.posts.filter(post => ids.includes(post.id)).map(post => ({ id: post.id, position: { ...post.position }, own: post.own }))
+  }
   get snapshot(): ChannelPostsSnapshot | null {
     const value = this.value
     if (!value) return null

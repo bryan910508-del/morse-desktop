@@ -15,10 +15,19 @@ import type { MediaResource } from './media-document'
 // Telegram draws the stripped placeholder that travels inside a message, and when a message has
 // none it asks the server for the small size whatever the automatic download preference says
 // (history_view_photo.cpp, Photo::dataMediaCreated: wanted(PhotoSize::Small) guarded only by an
-// empty inlineThumbnailBytes). Morse keeps no small size, so the picture itself is fetched, a 32px
-// placeholder is kept, and the picture is dropped again - the preference decides whether the full
-// picture stays to be shown sharp, never whether a photo shows at all.
-const maxPreviewBytes = 4 * 1024 * 1024, maxPreviews = 24, maxThumbs = 300, maxThumbChars = 8000
+// empty inlineThumbnailBytes). That costs about ten kilobytes there. Morse has no small size, so the
+// only way to make a placeholder is to fetch the whole picture — which is the very thing the
+// automatic download limit exists to hold back, and doing it anyway spent a person's data on photos
+// they had asked not to receive. So nothing is fetched for a placeholder: what is kept here comes
+// from a picture that was fetched to be shown, and outlives it once the previews are evicted.
+//
+// The size of one picture and the size of the whole cache are separate limits in Telegram, and only
+// the second one is about memory: Storage::Cache::Settings keeps `maxDataSize = kDataSizeLimit - 1`
+// (an entry's length is three bytes, so 16 MiB) for a single entry and `totalSizeLimit` for
+// everything together. A count of pictures was standing in for the second limit here, and the first
+// one was 4 MB - under the size of an ordinary phone photograph, so such a photo was refused, no
+// placeholder was kept either, and the bubble showed an icon where the picture should be.
+const maxPreviewBytes = 16 * 1024 * 1024 - 1, previewBudget = 96 * 1024 * 1024, maxPreviews = 24, maxThumbs = 300, maxThumbChars = 8000
 
 interface Preview { token: string; bytes: Buffer; mime: string }
 function imageMime(bytes: Buffer): string | null {
@@ -33,6 +42,7 @@ export class PhotoPreviews {
   private readonly ready = new Map<string, Preview>()
   private readonly thumbs = new Map<string, string>()
   private readonly loading = new Map<string, Promise<string | null>>()
+  private held = 0
   private closed = false
 
   constructor(private readonly credentials: ReadCredentials,
@@ -53,39 +63,22 @@ export class PhotoPreviews {
 
   // One picture for one message of the open room. The caller decides whether to ask at all, which
   // is where the preference lives; a refusal here is silent, and the message keeps its tile.
-  async load(chatId: string, request: MediaRequest): Promise<string | null> {
-    if (this.closed) return null
+  // `limit` is what the person's automatic download setting allows for this room (Data::AutoDownload's
+  // bytes limit for the peer's source); a picture they asked for themselves comes with none and is
+  // held only by what a preview can keep.
+  async load(chatId: string, request: MediaRequest, limit = maxPreviewBytes): Promise<string | null> {
+    // A limit of zero is off (SetDisabledForSource): nothing is asked of the server at all.
+    if (this.closed || limit <= 0) return null
     const key = PhotoPreviews.key(chatId, request)
     const held = this.url(chatId, request)
     if (held) return held
     const running = this.loading.get(key)
     if (running) return running
-    const task = this.download(key, chatId, request).finally(() => { if (this.loading.get(key) === task) this.loading.delete(key) })
+    const task = this.download(key, chatId, request, limit).finally(() => { if (this.loading.get(key) === task) this.loading.delete(key) })
     this.loading.set(key, task)
     return task
   }
 
-  // The placeholder for a message that carried none. The picture is fetched once, shrunk, and let
-  // go again; what stays is a few hundred bytes the bubble draws blurred, as Telegram draws the
-  // small size when a message has no stripped thumbnail of its own.
-  async loadThumb(chatId: string, request: MediaRequest): Promise<string | null> {
-    if (this.closed) return null
-    const key = PhotoPreviews.key(chatId, request)
-    const held = this.thumbs.get(key)
-    if (held) return held
-    const running = this.loading.get(`thumb ${key}`)
-    if (running) return running
-    const task = this.shrink(key, chatId, request).finally(() => { if (this.loading.get(`thumb ${key}`) === task) this.loading.delete(`thumb ${key}`) })
-    this.loading.set(`thumb ${key}`, task)
-    return task
-  }
-  private async shrink(key: string, chatId: string, request: MediaRequest): Promise<string | null> {
-    const bytes = await this.fetch(chatId, request)
-    if (!bytes) return null
-    const thumb = this.remember(key, bytes)
-    bytes.fill(0)
-    return thumb
-  }
   // A placeholder is kept, never the picture it came from: 32px of it, as a JPEG, base64 for the
   // bubble. A picture this reader cannot shrink simply keeps its tile.
   private remember(key: string, bytes: Buffer): string | null {
@@ -106,8 +99,8 @@ export class PhotoPreviews {
     recordPhotoStep('thumb-ready', `chars-${thumb.length}`)
     return thumb
   }
-  private async download(key: string, chatId: string, request: MediaRequest): Promise<string | null> {
-    const bytes = await this.fetch(chatId, request)
+  private async download(key: string, chatId: string, request: MediaRequest, limit: number): Promise<string | null> {
+    const bytes = await this.fetch(chatId, request, limit)
     if (!bytes) return null
     // Keeping the placeholder as well means turning automatic download off later still shows this
     // photo, and costs nothing: the picture is already here.
@@ -115,17 +108,21 @@ export class PhotoPreviews {
     const mime = imageMime(bytes)
     if (this.closed || !mime) { bytes.fill(0); return null }
     recordPhotoStep('preview-ready', `${mime} ${bytes.length}`)
-    // The oldest preview leaves once the room has more pictures than the window keeps.
-    while (this.ready.size >= maxPreviews) {
+    // A picture already held under this key leaves first, so the budget counts it once.
+    this.forget(key)
+    // The oldest preview leaves once the pictures held here pass the budget, or once there are more
+    // of them than the window keeps.
+    while (this.ready.size >= maxPreviews || (this.ready.size && this.held + bytes.length > previewBudget)) {
       const oldest = this.ready.keys().next()
       if (oldest.done) break
       this.forget(oldest.value)
     }
+    this.held += bytes.length
     const preview: Preview = { token: randomUUID(), bytes, mime }
     this.ready.set(key, preview)
     return `morse://app/__photo-preview/${preview.token}`
   }
-  private async fetch(chatId: string, request: MediaRequest): Promise<Buffer | null> {
+  private async fetch(chatId: string, request: MediaRequest, limit: number): Promise<Buffer | null> {
     const resource = this.resolve(chatId, request)
     if (!resource?.path || !resource.summary.available || resource.summary.blind || resource.summary.kind !== 'image') {
       recordPhotoStep('preview-skipped', !resource ? 'no-resource' : !resource.path ? 'no-path'
@@ -136,7 +133,7 @@ export class PhotoPreviews {
     try {
       bytes = await downloadMedia(this.credentials, resource, this.credentials.signal,
         () => { if (this.closed || this.resolve(chatId, request)?.path !== resource.path) throw new Error('Preview target changed') },
-        () => {}, maxPreviewBytes)
+        () => {}, Math.min(limit, maxPreviewBytes))
     } catch (error) {
       // A picture over the preview cap lands here too; it stays one press away.
       recordPhotoStep('preview-failed', error instanceof Error ? error.message.slice(0, 60) : 'unknown')
@@ -153,6 +150,7 @@ export class PhotoPreviews {
     const preview = this.ready.get(key)
     if (!preview) return
     this.ready.delete(key)
+    this.held = Math.max(0, this.held - preview.bytes.length)
     preview.bytes.fill(0)
   }
 

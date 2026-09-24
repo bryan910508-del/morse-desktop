@@ -1,6 +1,8 @@
 import type { ReadCredentials } from './firestore-rpc'
 import { storageBucket } from '../media/media-document'
 import { storyVideoMime, storyVideoMetadata, storyVideoPath, storyVideoSession, type StoryVideoReceipt, type StoryVideoUploadSource } from '../media/story-video-upload-record'
+import { sendAgain } from './resend'
+import { recordStoryStep } from '../platform/story-diagnostics'
 import { tr } from '../../shared/i18n'
 export class StoryVideoUploadBlocked extends Error { constructor(readonly reason: 'unknown' | 'expired') { super(reason === 'unknown' ? tr('서버의 완료 상태는 확인했지만 미디어 완료 응답을 보관하지 못했습니다. 게시 가능 상태로 넘기지 않습니다.') : tr('업로드 세션이 만료되었습니다. 같은 경로에 새 업로드를 시작하지 않습니다.')) } }
 async function metadata(response: Response): Promise<unknown> {
@@ -17,7 +19,7 @@ export async function uploadStoryVideo(auth: ReadCredentials, photo: StoryVideoU
     validate(); signal.throwIfAborted()
     const bounded = AbortSignal.any([signal, AbortSignal.timeout(65000)]), credentials = await auth.authorize(bounded, false)
     validate(); bounded.throwIfAborted()
-    const response = await fetch(url, { method: 'POST', headers: { ...headers, Authorization: `Firebase ${credentials.idToken}`, 'X-Firebase-AppCheck': credentials.appCheckToken }, body: typeof body === 'string' ? body : body ? new Uint8Array(body) : undefined, signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store' })
+    const response = await sendAgain(bounded, () => fetch(url, { method: 'POST', headers: { ...headers, Authorization: `Firebase ${credentials.idToken}`, 'X-Firebase-AppCheck': credentials.appCheckToken }, body: typeof body === 'string' ? body : body ? new Uint8Array(body) : undefined, signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store' }), (code, attempt) => recordStoryStep('video-upload-resend', `${code} ${attempt}`))
     if ([401, 403].includes(response.status)) { await response.body?.cancel(); throw new Error(tr('미디어 업로드 권한을 확인하지 못했습니다.')) }
     return response
   }

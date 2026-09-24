@@ -135,6 +135,8 @@ button.info-row:hover { background: var(--card-pressed) }
 .settings-toggle:hover { background: var(--card-pressed) }
 .settings-toggle-text { flex: 1; min-width: 0; display: grid; gap: 2px; font-size: var(--t-body) }
 .settings-toggle-text small { font-size: var(--t-caption); line-height: 1.4; color: var(--text-weak) }
+.settings-select { display: flex; align-items: center; justify-content: space-between; gap: 14px; min-height: 44px; padding: 0 22px; font-size: var(--t-body) }
+.settings-select select { min-width: 140px; height: 32px; padding: 0 8px; border: 1px solid var(--divider); border-radius: 8px; background: var(--card); color: var(--text); font: inherit }
 .settings-radio { display: flex; align-items: center; gap: 14px; min-height: 44px; padding: 0 22px; font-size: var(--t-body); cursor: pointer }
 .settings-radio:hover { background: var(--card-pressed) }
 .settings-radio input { width: 18px; height: 18px; margin: 0; accent-color: var(--accent) }

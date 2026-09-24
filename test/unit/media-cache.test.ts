@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { MediaCacheStore, type MediaCacheCommand } from '../../src/main/storage/media-cache-table'
 import { isPlainDatabase } from '../../src/main/storage/encrypted-database'
+import { mediaResources } from '../../src/main/media/media-document'
+import type { FirestoreDocument } from '../../src/main/network/firestore-values'
 import { MediaCache, registerMediaCache } from '../../src/main/accounts/media-cache'
 import { ChannelPostPictures } from '../../src/main/accounts/channel-post-pictures'
 import { forgetImages, holdsImage } from '../../src/main/accounts/userpic-images'
@@ -118,4 +120,18 @@ test('a post picture in the account cache is drawn without any request, keeps on
     assert.equal((await pictures.response(token, new Request(ready!.url!))).status, 403, 'a closed channel answers nothing')
     store.close()
   } finally { forgetImages(); await dir.done() }
+})
+
+// A channel's discussion room can answer to two ids — the server keeps `discussionChatId`, which is
+// `channel_discuss_{channelId}` for a room it made and the older id for one that already existed — and
+// iOS uploads under the name the message itself carries. Media must be found under either.
+test('a discussion room finds its media under every name the room has', () => {
+  const bucket = 'talky-a38c3.firebasestorage.app'
+  const doc = (chatId: string, url: string): FirestoreDocument => ({ name: 'm1', fields: { type: { stringValue: 'image' }, chatId: { stringValue: chatId }, mediaUrl: { stringValue: url } } as FirestoreDocument['fields'] })
+  const under = (room: string) => `gs://${bucket}/chat_media/${room}/m1.jpg`
+  const names = ['old-room-id', 'channel_discuss_ch1']
+  assert.equal(mediaResources(doc('old-room-id', under('old-room-id')), names, 'image', false)[0]?.path, 'chat_media/old-room-id/m1.jpg')
+  assert.equal(mediaResources(doc('old-room-id', under('channel_discuss_ch1')), names, 'image', false)[0]?.path, 'chat_media/channel_discuss_ch1/m1.jpg')
+  assert.equal(mediaResources(doc('old-room-id', under('someone-elses-room')), names, 'image', false)[0]?.path, null, 'another room’s folder is still refused')
+  assert.equal(mediaResources(doc('r', under('r')), 'r', 'image', false)[0]?.path, 'chat_media/r/m1.jpg', 'one name still works')
 })

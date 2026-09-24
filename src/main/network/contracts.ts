@@ -61,7 +61,7 @@ export function incomingMessage(raw: unknown, exactPosition?: MessagePosition): 
   const chatId = identifier(body.chatId)
   const senderId = identifier(body.senderId)
   const kind = body.type ?? 'text'
-  if (!['text', 'image', 'video', 'voice', 'file', 'sticker', 'channelPost', 'location', 'event'].includes(String(kind))) {
+  if (!['text', 'image', 'video', 'voice', 'file', 'sticker', 'channelPost', 'location', 'event', 'poll'].includes(String(kind))) {
     throw new ProtocolFailure(tr('지원하지 않는 메시지입니다.'))
   }
   const milliseconds = body.createdAt

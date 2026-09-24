@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { usePostReads } from './post-reads'
 import { ArrowLeft, ChevronRight, CircleDashed, Compass, Film, Heart, Image as ImageIcon, Megaphone, MessageCircle, PenSquare, Plus, Search } from 'lucide-react'
 import { channelCategories, type ChannelCategoryId, type ChannelHomeChannel, type ChannelHomePost, type ChannelHomeSnapshot } from '../../../shared/channel-home'
 import { channelDiscoveryRequest, type ChannelDiscoveryRow } from '../../../shared/channel-discovery'
@@ -15,18 +16,14 @@ import { popupMenu, pointFor } from '../ui/popup-menu'
 import { showChannelCreateBox } from '../boxes/channel-create-box'
 import { showChannelDiscoveryBox } from './channel-discovery-box'
 import { ChannelStoryRing, showChannelStoryComposer, useChannelStoryVisibility } from './channel-stories'
-import { language, locale, tr } from '../../../shared/i18n'
+import { locale, tr } from '../../../shared/i18n'
+import { subscriberCountText } from '../../../shared/channel-subscriber-count'
 
 const noChannels: ChannelHomeChannel[] = []
 
-// ChannelFeedView.formatSubscribers. iOS's English and Russian strings put 만 (ten thousand) under «M»,
-// so those languages use the locale's own compact number instead.
+// ChannelFeedView.formatSubscribers, shared now with the channel subtitle and the discovery box.
 function subscribers(count: number | null): string {
-  if (count === null) return ''
-  if (count >= 1000 && language() !== 'ko') return new Intl.NumberFormat(locale(), { notation: 'compact', maximumFractionDigits: 1 }).format(count)
-  if (count >= 10000) return tr('{0}만명', [(count / 10000).toFixed(1)])
-  if (count >= 1000) return tr('{0}k명', [(count / 1000).toFixed(1)])
-  return tr('구독자 {0}명', [count.toLocaleString(locale())])
+  return count === null ? '' : subscriberCountText(count)
 }
 // ChannelFeedTimelinePostCard.relativeTime.
 function relativeTime(time: number, now = Date.now()): string {
@@ -67,7 +64,7 @@ function PostCard({ accountUid, post, channel }: { accountUid: string; post: Cha
     try { await window.morse.likeChannelHomePost(accountUid, post.channelId, post.id) }
     catch (reason) { setPending(null); controller.toast(errorText(reason, tr('좋아요를 바꾸지 못했습니다.')), 'error') }
   }
-  return <article className="channel-home-post">
+  return <article className="channel-home-post" data-channel-id={post.channelId} data-post-id={post.id}>
     <button type="button" className="channel-home-post-header" onClick={() => openChannel(accountUid, channel.id, channel.listed)}>
       <ChannelAvatar channel={channel} size={32} />
       <span className="channel-home-post-name ellipsis">{channel.name}</span>
@@ -114,6 +111,8 @@ function Feed({ accountUid, home }: { accountUid: string; home: ChannelHomeSnaps
     if (await confirmBox({ title: tr('채널이 이미 있어요'), text: tr('계정당 1개의 채널만 만들 수 있어요.'), confirm: tr('내 채널로 이동') })) controller.openChannel(mine.id)
   }
   const empty = !mine && !home.subscribed.length && !home.posts.length
+  const feedPosts = useRef<HTMLDivElement>(null)
+  usePostReads(accountUid, feedPosts, home.posts.length > 0)
   useChannelStoryVisibility(accountUid, [...(mine ? [mine.id] : []), ...home.subscribed.map(channel => channel.id)])
   return <>
     <div className="channel-home-actions">
@@ -149,7 +148,10 @@ function Feed({ accountUid, home }: { accountUid: string; home: ChannelHomeSnaps
             </div>)}
           </div>
         </section>}
-        {home.posts.map(post => { const channel = byId.get(post.channelId); return channel ? <PostCard key={`${post.promoted ? 'p' : 'f'}:${post.id}`} accountUid={accountUid} post={post} channel={channel} /> : null })}
+        {/* MorseChannelFeedReadTracker: a post of the feed on screen is read in its channel. */}
+        <div ref={feedPosts} style={{ display: 'contents' }}>
+          {home.posts.map(post => { const channel = byId.get(post.channelId); return channel ? <PostCard key={`${post.promoted ? 'p' : 'f'}:${post.id}`} accountUid={accountUid} post={post} channel={channel} /> : null })}
+        </div>
       </>}
   </>
 }

@@ -64,6 +64,7 @@ import { executeProfileUpload } from './profile-photo-upload-table'
 import { executeGroupPhotoUpload } from './group-photo-upload-table'
 import { UserpicStore } from './userpic-cache-table'
 import { MediaCacheStore } from './media-cache-table'
+import { draftPreviewChars } from '../../shared/chat-list-preview'
 
 const { directory, uid, scope, key } = workerData as { directory: string; uid: string; scope: string; key: string }
 identifier(uid)
@@ -301,6 +302,9 @@ function execute(command: DeliveryCommand): unknown {
       }) satisfies StoredIntent[]
     }
     case 'draft': return (db.prepare('SELECT text FROM local_drafts WHERE chat_id=?').get(identifier(command.chatId)) as { text: string } | undefined)?.text ?? ''
+    // The chat list's own line for every room that has something unsent; one line's worth of each.
+    case 'drafts': return Object.fromEntries((db.prepare(`SELECT chat_id,substr(text,1,${draftPreviewChars}) AS text FROM local_drafts WHERE text<>'' ORDER BY chat_id LIMIT 1000`)
+      .all() as { chat_id: string; text: string }[]).map(row => [row.chat_id, row.text]))
     case 'save-draft':
       db.prepare('INSERT INTO local_drafts(chat_id,text) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET text=excluded.text')
         .run(identifier(command.chatId), draftText(command.text)); return null

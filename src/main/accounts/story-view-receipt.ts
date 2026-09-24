@@ -20,7 +20,7 @@ export class StoryViewReceipt {
   constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly allowed: (network: boolean) => void,
     private readonly source: (request: StoryViewReceiptPrepare) => { ownerId: string; ownerName: string },
     private readonly observeAllowed: (request: StoryViewReceiptRequest) => void,
-    private readonly sendAllowed: (request: StoryViewReceiptRequest) => void, private readonly beforeSend: () => void,
+    private readonly sendAllowed: (request: StoryViewReceiptRequest) => void,
     private readonly store: <T>(command: StoryViewReceiptCommand, validate: () => void) => Promise<T>, private readonly changed: () => void) {}
   private validate(network = false): void { if (this.closed) throw new Error(tr('계정이 변경되었습니다.')); this.auth.signal.throwIfAborted(); this.allowed(network) }
   get snapshot(): StoryViewReceiptSnapshot {
@@ -91,7 +91,6 @@ export class StoryViewReceipt {
       }
       this.validate(true); this.sendAllowed(pending)
       if (pending.expiresAt <= Date.now()) throw new Error(tr('검토한 스토리가 만료되었습니다.'))
-      this.beforeSend()
       this.value.pending = await this.store<PendingStoryViewReceipt>({ kind: 'story-view-receipt-state', id: pending.id, expected: 'prepared', state: 'submitted' }, validate)
       let outcome: 'confirmed' | 'rejected' | null = null, reader: FirestoreReader | null = null
       try {

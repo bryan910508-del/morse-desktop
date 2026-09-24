@@ -3,6 +3,7 @@ import { positionAt, type ChatMessage } from './model'
 import { forwardSource, maxForwardTargets } from './forward'
 import { identifier, object } from './validation'
 import { autoDeleteSecondsValue } from './chat-auto-delete'
+import { chatListPreviewText } from './chat-list-preview'
 import { tr } from './i18n'
 
 // ChannelInquiryService: one 1:1 room per channel and subscriber (channelInquiries/{channelId}_{subscriberId}).
@@ -76,12 +77,12 @@ export function inquiryPinRequest(raw: unknown): InquiryTargetRequest & { pinned
   if (typeof value.pinned !== 'boolean') throw new Error(tr('고정할지 여부를 확인해 주세요.'))
   return { ...inquiryTargetRequest({ requestId: value.requestId, inquiryId: value.inquiryId, messageId: value.messageId }), pinned: value.pinned }
 }
-// The room's policy: the durations the server accepts, and «내 메시지에만» only while it is on.
-export interface InquiryAutoDeleteRequest extends InquiryThreadRequest { seconds: number; myOnly: boolean }
+// The room's policy: one of the durations the server accepts.
+export interface InquiryAutoDeleteRequest extends InquiryThreadRequest { seconds: number }
 export function inquiryAutoDeleteRequest(raw: unknown): InquiryAutoDeleteRequest {
-  const value = object(raw); keys(value, ['requestId', 'inquiryId', 'seconds', 'myOnly'])
-  if (typeof value.seconds !== 'number' || autoDeleteSecondsValue(value.seconds) !== value.seconds || typeof value.myOnly !== 'boolean') throw new Error(tr('자동 삭제 시간을 다시 선택해 주세요.'))
-  return { ...inquiryThreadRequest({ requestId: value.requestId, inquiryId: value.inquiryId }), seconds: value.seconds, myOnly: value.seconds > 0 && value.myOnly }
+  const value = object(raw); keys(value, ['requestId', 'inquiryId', 'seconds'])
+  if (typeof value.seconds !== 'number' || autoDeleteSecondsValue(value.seconds) !== value.seconds) throw new Error(tr('자동 삭제 시간을 다시 선택해 주세요.'))
+  return { ...inquiryThreadRequest({ requestId: value.requestId, inquiryId: value.inquiryId }), seconds: value.seconds }
 }
 export function inquiryEditRequest(raw: unknown): InquiryTextRequest {
   const value = object(raw); keys(value, ['requestId', 'inquiryId', 'messageId', 'text'])
@@ -120,6 +121,33 @@ export function inquiryChatMessage(item: InquiryMessageItem, inquiryId: string):
 // «예약 전송» in an inquiry room. The queue document names the room, and its chatId is the client's
 // id of that room, which firestore.rules requires: chatId == 'sub_inq_' + inquiryId.
 export const inquiryQueueChatId = (inquiryId: string): string => `sub_inq_${inquiryId}`
+
+// An inquiry room's list line as the server writes it (functions morse-message-preview.js lastMessagePreview): a text
+// as written, every other kind as an English label, shown here with the words the history uses for the same kinds
+// (history/message.tsx), as Telegram names a kind in the chat list (lng_in_dlg_photo, lng_in_dlg_audio ...). A line
+// written before the server described media is a storage URL, shown as a photo. Only an inquiry's line comes here:
+// in a chat's line a text that reads "Event" is someone's own word.
+// The address is read rather than matched: a written `https://…googleapis.com:443/…` is the same
+// address, and a pattern anchored on the «.com/» after the host does not see it, which would put the
+// whole storage address in the room's line. `new URL()` normalises the default port away, and an
+// address it cannot read is simply not one.
+function storageAddress(raw: string): boolean {
+  try { const url = new URL(raw); return url.protocol === 'https:' && url.hostname === 'firebasestorage.googleapis.com' } catch { return false }
+}
+export function inquiryPreviewText(raw: string): string {
+  switch (raw) {
+    case '📷 Photo': return tr('사진')
+    case '🎬 Video': return tr('동영상')
+    case '🎤 Voice message': return tr('음성 메시지')
+    case '📎 File': return tr('파일')
+    case 'Sticker': return tr('스티커')
+    case 'Location': return tr('위치')
+    case 'Event': return tr('일정')
+    // A line another client wrote carries its own language's label, told apart by the picture it
+    // starts with, as a chat's line is (chat-list-preview.ts).
+    default: return storageAddress(raw) ? tr('사진') : chatListPreviewText(raw)
+  }
+}
 // The room a client id names, if it names one. A forward out of a room carries the room this way, so nothing
 // mistakes it for a chat of the same name.
 export function inquiryOfQueueChatId(chatId: unknown): string {

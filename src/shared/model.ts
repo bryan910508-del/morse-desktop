@@ -53,12 +53,12 @@ export interface Preferences {
   storyStealth: boolean
   showUnreadBadge: boolean
   autoDeleteDefaultSeconds: number
-  autoDeleteOnlyMyMessages: boolean
   // MorseMessenger iOS chatAutoTranslateGemini: "전체번역" in every chat but memo.
   autoTranslateChats: boolean
-  // Telegram's automatic media download: a received photo shows in the bubble without being asked
-  // for. Morse keeps no small size for a photo, so this fetches the picture itself within a cap.
-  autoDownloadPhotos: boolean
+  // Telegram's automatic media download (Data::AutoDownload): a received photo shows in the bubble
+  // without being asked for, while it is under the limit kept for the kind of peer it came from.
+  // Morse keeps no small size for a photo, so this fetches the picture itself within that limit.
+  autoDownloadPhotos: import('./auto-download').AutoDownloadLimits
   // Telegram's record button (Core::Settings::recordVideoMessages): a click switches between a voice and a
   // video message, and the choice is kept.
   recordVideoMessages: boolean
@@ -90,8 +90,8 @@ export interface Preferences {
 }
 export const defaultPreferences: Preferences = {
   theme: 'system', messageFontSize: 14, chatBackground: defaultChatBackground, enterToSend: true, notifications: true, showNotificationPreview: false,
-  storyStealth: false, closeToTray: false, showUnreadBadge: true, autoDeleteDefaultSeconds: 0, autoDeleteOnlyMyMessages: false, autoTranslateChats: false,
-  autoDownloadPhotos: true, recordVideoMessages: false, sendTypingIndicator: true, disableTypingIndicators: false,
+  storyStealth: false, closeToTray: false, showUnreadBadge: true, autoDeleteDefaultSeconds: 0, autoTranslateChats: false,
+  autoDownloadPhotos: { user: 8 * 1024 * 1024, group: 8 * 1024 * 1024, channel: 8 * 1024 * 1024 }, recordVideoMessages: false, sendTypingIndicator: true, disableTypingIndicators: false,
   notifyPersonal: true, notifyGroup: true, notifyChannel: true, notificationSound: true, inAppNotifications: true, badgeMode: 'messages', spellCheck: true,
   photoSendQuality: 'auto', videoSendQuality: 'auto', powerSavingAuto: true, powerSavingAlwaysOn: false, compressMediaUploads: false, reduceMessageAnimations: false, language: null
 }
@@ -129,6 +129,8 @@ export interface DialogSummary {
   outboxRead: ReadCursor | null
   // A message of mine in this room that did not go, and whether the newest one of mine is still on its way.
   sends?: { sending: boolean; failed: boolean }
+  // What this device was writing in the room and has not sent (Telegram's lng_from_draft line).
+  draft?: string
   readSync: ReadSyncState
   pinned: boolean
   pinVersion: string
@@ -156,7 +158,28 @@ export interface DialogSummary {
   top: MessagePosition | null
 }
 
-export type MessageKind = 'text' | 'image' | 'video' | 'voice' | 'file' | 'sticker' | 'channelPost' | 'location' | 'event' | 'unsupported'
+export type MessageKind = 'text' | 'image' | 'video' | 'voice' | 'file' | 'sticker' | 'channelPost' | 'location' | 'event'
+  | 'poll' | 'unsupported'
+
+// 투표. 질문과 선택지는 만들 때 굳고 바뀌지 않는다. 집계(voteCounts, totalVoters, closed)는 서버만 쓰고,
+// 클라이언트가 보낸 값은 서버가 버린다 — 여기서도 문서가 말하는 것을 그대로 읽되 신뢰의 출처는 서버다.
+// 내 표(mine)는 익명 투표에서도 읽을 수 있다. 남의 표는 공개 투표일 때만 보인다.
+export interface MessagePoll {
+  question: string
+  options: string[]
+  anonymous: boolean
+  multipleAnswers: boolean
+  quiz: boolean
+  correctOption: number | null
+  // 표를 바꾸거나 거둘 수 있는가. false 면 서버가 POLL_REVOTE_FORBIDDEN 으로 거절한다.
+  canRevote: boolean
+  // 선택지를 섞어 보여 주라는 표시. 서버가 담은 배열 차례는 그대로다 — voteCounts[i] 가 options[i] 에 붙는다.
+  shuffleOptions: boolean
+  voteCounts: number[]
+  totalVoters: number
+  closed: boolean
+  mine: number[] | null
+}
 export type ReplyPreview = { state: 'loading' | 'unavailable' | 'error' } |
   { state: 'ready'; senderName: string; kind: MessageKind; text: string }
 export interface ChatMessage {
@@ -188,6 +211,7 @@ export interface ChatMessage {
   reactions: ReactionSummary[]
   attachments?: AttachmentSummary[]
   caption?: string
+  poll?: MessagePoll
 }
 
 export interface TextSendWire extends StoryReplyWireFields {
@@ -415,7 +439,9 @@ export interface DesktopBridge {
   saveChatFolder(accountUid: string, folder: import('./chat-folders').ChatFolder, create: boolean): Promise<'done' | 'unconfirmed'>
   deleteChatFolder(accountUid: string, folderId: string): Promise<'done' | 'unconfirmed'>
   reorderChatFolders(accountUid: string, folderIds: string[]): Promise<'done' | 'unconfirmed'>
-  setChatAutoDelete(accountUid: string, chatId: string, seconds: number, myOnly: boolean): Promise<'done' | 'unconfirmed'>
+  setChatAutoDelete(accountUid: string, chatId: string, seconds: number): Promise<'done' | 'unconfirmed'>
+  accountAutoDeleteDefault(accountUid: string): Promise<number>
+  setAccountAutoDeleteDefault(accountUid: string, seconds: number): Promise<'done' | 'unconfirmed'>
   openSubscriberInquiry(accountUid: string, channelId: string): Promise<string>
   openInquiryList(accountUid: string, request: import('./channel-inquiries').InquiryListRequest): Promise<void>
   closeInquiryList(accountUid: string, requestId: string): Promise<void>
@@ -440,6 +466,8 @@ export interface DesktopBridge {
   activateInquiryVoice(accountUid: string, target: import('./channel-inquiries').InquiryVoiceTarget): Promise<import('./voice-capture').VoiceCaptureGrant>
   editInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryTextRequest): Promise<void>
   deleteInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryTargetRequest): Promise<void>
+  // Posts of a channel on screen: the channel's read mark (users/{uid}/channelReadMarks) moves to the furthest.
+  channelPostsSeen(accountUid: string, channelId: string, postIds: string[]): Promise<void>
   reactInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryReactionRequest): Promise<void>
   pinInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryTargetRequest & { pinned: boolean }): Promise<void>
   setInquiryAutoDelete(accountUid: string, request: import('./channel-inquiries').InquiryAutoDeleteRequest): Promise<void>
@@ -582,7 +610,9 @@ export interface DesktopBridge {
   readStoryComposerPhoto(accountUid: string, target: import('./story-composer-drafts').StoryComposerDraftTarget): Promise<import('./story-composer-photo').StoryComposerPhotoRecord>
   pickStoryComposerPhoto(accountUid: string, target: import('./story-composer-photo').StoryComposerPhotoTarget): Promise<{ id: string; bytes: Uint8Array } | null>
   saveStoryComposerPhoto(accountUid: string, request: import('./story-composer-photo').StoryComposerPhotoWrite, full?: Uint8Array, thumbnail?: Uint8Array): Promise<import('./story-composer-photo').StoryComposerPhotoRecord>
+  readStoryComposerDraft(accountUid: string, target: import('./story-composer-drafts').StoryComposerDraftTarget): Promise<import('./story-composer-drafts').StoryComposerDraftRecord>
   saveStoryComposerDraft(accountUid: string, request: import('./story-composer-drafts').StoryComposerDraftWrite): Promise<import('./story-composer-drafts').StoryComposerDraftRecord>
+  readNoteDraft(accountUid: string, target: import('./space-note-drafts').NoteDraftTarget): Promise<import('./space-note-drafts').NoteDraftRecord>
   saveNoteDraft(accountUid: string, request: import('./space-note-drafts').NoteDraftWrite): Promise<import('./space-note-drafts').NoteDraftRecord>
   searchNotePage(accountUid: string, request: import('./space-note-search').NotePageSearch): Promise<import('./space-note-search').NotePageSearchResult>
   pageSpaceNotes(accountUid: string, request: import('./space-notes').SpaceNotesPageRequest): Promise<void>
@@ -597,8 +627,10 @@ export interface DesktopBridge {
   openContactStoryPhotoAudio(accountUid: string, request: import('./contact-story-photo-audio').ContactStoryPhotoAudioRequest): Promise<void>
   closeContactStoryPhotoAudio(accountUid: string, id: string): Promise<void>
   openContactAudienceStoryVideo(accountUid: string, request: import('./contact-audience-story-video').ContactAudienceStoryVideoRequest): Promise<void>
+  preloadContactAudienceStoryVideo(accountUid: string, request: import('./contact-audience-story-video').ContactAudienceStoryVideoRequest): Promise<void>
   closeContactAudienceStoryVideo(accountUid: string, id: string): Promise<void>
   openContactAudienceStoryPhoto(accountUid: string, request: import('./contact-audience-story-photo').ContactAudienceStoryPhotoRequest): Promise<void>
+  preloadContactAudienceStoryPhoto(accountUid: string, request: import('./contact-audience-story-photo').ContactAudienceStoryPhotoRequest): Promise<void>
   closeContactAudienceStoryPhoto(accountUid: string, id: string): Promise<void>
   readContactAudienceStories(accountUid: string, request: import('./contact-audience-stories').ContactAudienceStoriesRequest): Promise<import('./contact-audience-stories').ContactAudienceStoriesResult>
   pageContactAudienceStories(accountUid: string, request: import('./contact-audience-stories').ContactAudienceStoriesPageRequest): Promise<import('./contact-audience-stories').ContactAudienceStoriesResult>
@@ -606,8 +638,10 @@ export interface DesktopBridge {
   openContactStoryAudience(accountUid: string, request: import('./contact-story-audience').ContactStoryAudienceRequest): Promise<void>
   closeContactStoryAudience(accountUid: string, id: string): Promise<void>
   openContactPublicStoryVideo(accountUid: string, request: import('./contact-public-story-video').ContactPublicStoryVideoRequest): Promise<void>
+  preloadContactPublicStoryVideo(accountUid: string, request: import('./contact-public-story-video').ContactPublicStoryVideoRequest): Promise<void>
   closeContactPublicStoryVideo(accountUid: string, selectionId: string): Promise<void>
   openContactPublicStoryPhoto(accountUid: string, request: import('./contact-public-story-photo').ContactPublicStoryPhotoRequest): Promise<void>
+  preloadContactPublicStoryPhoto(accountUid: string, request: import('./contact-public-story-photo').ContactPublicStoryPhotoRequest): Promise<void>
   closeContactPublicStoryPhoto(accountUid: string, selectionId: string): Promise<void>
   readContactPublicStories(accountUid: string, request: import('./contact-public-stories').ContactPublicStoriesRequest): Promise<import('./contact-public-stories').ContactPublicStoriesResult>
   pageContactPublicStories(accountUid: string, request: import('./contact-public-stories').ContactPublicStoriesPageRequest): Promise<import('./contact-public-stories').ContactPublicStoriesResult>
@@ -774,7 +808,7 @@ export interface DesktopBridge {
   openMedia(accountUid: string, chatId: string, request: MediaRequest): Promise<MediaReady>
   closeMedia(accountUid: string, requestId: string): Promise<void>
   // Telegram's automatic media download: the picture of one photo message, if it can be previewed.
-  photoPreview(accountUid: string, chatId: string, request: import('./media').MediaRequest): Promise<string | null>
+  photoPreview(accountUid: string, chatId: string, request: import('./media').MediaRequest, asked: boolean): Promise<string | null>
   photoThumb(accountUid: string, chatId: string, request: import('./media').MediaRequest): Promise<string | null>
   saveMedia(accountUid: string, requestId: string): Promise<boolean>
   pickAttachment(accountUid: string, chatId: string, mode: AttachmentMode): Promise<AttachmentDraft | null>

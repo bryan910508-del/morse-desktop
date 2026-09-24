@@ -19,9 +19,11 @@ export function canChangeAutoDelete(dialog: Pick<DialogSummary, 'kind' | 'partic
   if (dialog.kind !== 'group' || dialog.participantUids.length < 3) return true
   return Boolean(dialog.createdBy) && dialog.createdBy === uid
 }
-// autodelete.myMsgFormat / autodelete.allMsgFormat
-export function autoDeleteSummary(seconds: number, myOnly: boolean): string {
+// The period covers every message in the room, whoever sent it: the server stamps deleteAt without looking at the
+// sender (RailwayBackend/morse-message-authority.js:172) and Telegram has no per-sender scope either —
+// messages.setHistoryTTL sets the TTL of all messages in the chat.
+export function autoDeleteSummary(seconds: number): string {
   const option = autoDeleteOptions.find(item => item.seconds > 0 && item.seconds === seconds)
   if (!option) return tr('자동 삭제 꺼짐')
-  return myOnly ? tr('내 메시지가 {0} 후 삭제됨', [option.short]) : tr('메시지가 {0} 후 삭제됨', [option.short])
+  return tr('메시지가 {0} 후 삭제됨', [option.short])
 }

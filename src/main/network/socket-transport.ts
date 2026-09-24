@@ -21,6 +21,13 @@ export interface TransportEvents {
   reactionUpdated?(body: unknown): void
 }
 
+// The long poll is worth trying only on a network where the websocket has never once connected.
+// Six tries at five seconds is about half a minute of saying so before the slower way is used.
+export const fallbackAfter = 6
+export function shouldFallBack(everConnected: boolean, fallback: boolean, failures: number): boolean {
+  return !everConnected && !fallback && failures >= fallbackAfter
+}
+
 export class SocketMessageTransport {
   private socket: Socket | null = null
   private generation = 0
@@ -36,6 +43,11 @@ export class SocketMessageTransport {
   private renewing = false
   // What the server said it can do when it registered this socket (registered.capabilities).
   private capabilities: string[] = []
+  // A network that does not carry websockets at all: nothing has ever connected, and enough tries have
+  // failed to say so. Then, and only then, the long poll is used again.
+  private fallback = false
+  private everConnected = false
+  private connectFailures = 0
 
   constructor(private readonly version: string, private readonly events: TransportEvents) {}
   get ready(): boolean { return this.currentState === 'ready' }
@@ -52,9 +64,17 @@ export class SocketMessageTransport {
     this.stop('offline')
     this.credentials = credentials
     const generation = this.generation
+    // Measured against this server on 2026-09-23, after a drop: starting each connection as a long poll
+    // took 20 to 110 seconds to come back («xhr poll error», then a 20 second «timeout» per try), and
+    // falling back to the poll after a websocket failure was worse still — once 290 seconds. Connecting
+    // as a websocket and giving it five seconds came back in 3 to 31. Telegram waits no longer either:
+    // its connect timeout grows from one second to eight (kMinConnectedTimeout 1000,
+    // kMaxConnectedTimeout 8000). The long poll is kept for a network where the websocket never works
+    // at all — see fallbackAfter — not as the way every connection starts.
     const socket = io(serverContract.socketURL, {
       autoConnect: false, reconnection: true, reconnectionAttempts: Infinity,
-      reconnectionDelay: 2000, reconnectionDelayMax: 30000, randomizationFactor: 0.5
+      reconnectionDelay: 1000, reconnectionDelayMax: 30000, randomizationFactor: 0.5,
+      transports: this.fallback ? ['polling', 'websocket'] : ['websocket'], timeout: 5000
     })
     this.socket = socket
     const active = (): boolean => generation === this.generation && socket === this.socket
@@ -113,14 +133,31 @@ export class SocketMessageTransport {
         if (active() && cycle === this.registrationCycle && this.currentState === 'registering') void register()
       }, delay)
     }
-    socket.on('connect', () => { if (active()) void register() })
+    // Which transport carries the connection, so a long-poll that an edge closes every couple of
+    // minutes can be told apart from a websocket the network really dropped.
+    socket.on('connect', () => {
+      if (!active()) return
+      this.everConnected = true; this.connectFailures = 0
+      this.events.step?.('transport', socket.io.engine?.transport?.name ?? '')
+      socket.io.engine?.once('upgrade', () => { if (active()) this.events.step?.('transport-upgraded', socket.io.engine?.transport?.name ?? '') })
+      void register()
+    })
     socket.on('disconnect', reason => {
       if (!active()) return
       this.events.step?.('disconnect', String(reason))
       this.invalidateRegistration()
       this.transition('offline')
     })
-    socket.on('connect_error', error => { if (active()) { this.events.step?.('connect-error', error?.message ?? ''); this.transition('connecting') } })
+    socket.on('connect_error', error => {
+      if (!active()) return
+      this.events.step?.('connect-error', error?.message ?? '')
+      this.transition('connecting')
+      this.connectFailures += 1
+      if (!shouldFallBack(this.everConnected, this.fallback, this.connectFailures)) return
+      this.fallback = true
+      this.events.step?.('transport-fallback')
+      this.connect(credentials, forceRefresh)
+    })
     socket.on('registered', (body: unknown) => {
       if (!active() || (this.currentState !== 'registering' && !this.renewing)) return
       const value = body as Record<string, unknown> | null

@@ -19,7 +19,7 @@ export class StoryReactionChange {
   private value: StoryReactionChangeSnapshot = { status: 'loading', busy: false, canSend: false, canCheck: false, observation: null, pending: null, message: '' }
   constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly allowed: (network: boolean) => void,
     private readonly source: (request: StoryReactionChangePrepare) => { ownerId: string; ownerName: string },
-    private readonly sendAllowed: (request: StoryReactionChangeRequest) => void, private readonly beforeSend: () => void,
+    private readonly sendAllowed: (request: StoryReactionChangeRequest) => void,
     private readonly store: <T>(command: StoryReactionChangeCommand, validate: () => void) => Promise<T>, private readonly changed: () => void) {}
   private validate(network = false): void { if (this.closed) throw new Error(tr('계정이 변경되었습니다.')); this.auth.signal.throwIfAborted(); this.allowed(network) }
   get snapshot(): StoryReactionChangeSnapshot {
@@ -89,7 +89,6 @@ export class StoryReactionChange {
       }
       this.validate(true); this.sendAllowed(pending)
       if (pending.expiresAt <= Date.now()) throw new Error(tr('검토한 스토리가 만료되었습니다.'))
-      this.beforeSend()
       this.value.pending = await this.store<PendingStoryReactionChange>({ kind: 'story-reaction-change-state', id: pending.id, expected: 'prepared', state: 'submitted' }, validate)
       let outcome: 'confirmed' | 'rejected' | null = null, reader: FirestoreReader | null = null
       try {

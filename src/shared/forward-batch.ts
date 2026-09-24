@@ -16,7 +16,9 @@ export function forwardBatchRequest(raw: unknown): ForwardBatchRequest {
   if (new Set(sources.map(source => source.messageId)).size !== sources.length || sources.some(source => source.chatId !== sources[0]!.chatId)) throw new Error(tr('같은 대화의 서로 다른 메시지를 선택해 주세요.'))
   const targets = value.targets.map(raw => {
     const target = object(raw), chatId = identifier(target.chatId)
-    if (chatId === sources[0]!.chatId || chatId.startsWith('memo_') || !Array.isArray(target.messageIds) || target.messageIds.length !== sources.length) throw new Error(tr('전달 대상과 메시지 수를 확인해 주세요.'))
+    // Saved Messages takes several messages at once like any other room; only the room they are already
+    // in is refused.
+    if (chatId === sources[0]!.chatId || !Array.isArray(target.messageIds) || target.messageIds.length !== sources.length) throw new Error(tr('전달 대상과 메시지 수를 확인해 주세요.'))
     return { chatId, messageIds: target.messageIds.map(identifier) }
   }).sort((a, b) => a.chatId.localeCompare(b.chatId, 'en'))
   if (new Set(targets.map(target => target.chatId)).size !== targets.length || new Set(targets.flatMap(target => target.messageIds)).size !== sources.length * targets.length) throw new Error(tr('전달 식별자가 중복되었습니다.'))

@@ -1,5 +1,7 @@
 import { object, identifier } from '../../shared/validation'
 import type { AccountProfile } from '../../shared/model'
+import { sendAgain } from '../network/resend'
+import { recordConnectionStep } from '../platform/connection-diagnostics'
 import { AuthenticationFailure, type AppCheckProof, type AuthTokens, type DesktopAuthConfiguration } from './contracts'
 import type { ReadAuthorization } from '../network/firestore-rpc'
 import { appleReturnURL, type AppleIdentity } from './apple-answer'
@@ -64,7 +66,7 @@ export class FirebaseAuthenticationAPI {
   private async request(url: string, headers: Record<string, string>, body: string, signal: AbortSignal, kind: RequestKind = 'plain'): Promise<Record<string, unknown>> {
     const combined = AbortSignal.any([signal, AbortSignal.timeout(35000)])
     try {
-      const response = await fetch(url, { method: 'POST', headers, body, signal: combined, redirect: 'error', credentials: 'omit', cache: 'no-store' })
+      const response = await sendAgain(combined, () => fetch(url, { method: 'POST', headers, body, signal: combined, redirect: 'error', credentials: 'omit', cache: 'no-store' }), (code, attempt) => recordConnectionStep('token-resend', `${code} ${attempt}`))
       // Bound the decoded response, including chunked responses with no length.
       if (!response.body) throw new AuthenticationFailure('protocol')
       const reader = response.body.getReader()

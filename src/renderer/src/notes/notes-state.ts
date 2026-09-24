@@ -1,6 +1,8 @@
-import { useSyncExternalStore } from 'react'
+import { useEffect, useSyncExternalStore } from 'react'
 import { desktop } from '../app/store'
 import { controller } from '../app/ui'
+import { errorText } from '../app/format'
+import { tr } from '../../../shared/i18n'
 import { waitFor } from '../app/contacts'
 
 // SpaceNotes keeps one open list per account; the list widget and the note
@@ -13,6 +15,18 @@ const subscribe = (listener: () => void): (() => void) => { listeners.add(listen
 export function useNotesRequest(accountUid: string): string | null {
   const value = useSyncExternalStore(subscribe, () => session)
   return value?.accountUid === accountUid ? value.requestId : null
+}
+
+// A narrow window shows one column at a time, so the list column is unmounted the moment a note is
+// opened. Telegram's narrow mode swaps which column is drawn and keeps the dialogs it has loaded; the
+// list here is opened while the notes section is the one on screen, whichever column that is, so the
+// note being edited still has the list its editing is bound to.
+export function useNotesSession(accountUid: string, active: boolean): void {
+  useEffect(() => {
+    if (!active) return
+    void openNotesList(accountUid).catch(reason => controller.toast(errorText(reason, tr('노트를 불러오지 못했습니다.')), 'error'))
+    return () => closeNotesList(accountUid)
+  }, [accountUid, active])
 }
 
 export async function openNotesList(accountUid: string): Promise<string> {

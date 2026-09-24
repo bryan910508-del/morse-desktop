@@ -20,7 +20,18 @@ export function executeMessageAction(db: Database.Database, command: MessageActi
         if (old.digest !== digest) throw Object.assign(new Error('Action conflict'), { deliveryCode: 'conflict' })
         return null
       }
-      if (db.prepare("SELECT 1 FROM message_actions WHERE chat_id=? AND message_id=? AND state IN ('queued','uncertain')").get(chatId, request.messageId)) throw Object.assign(new Error('Action pending'), { deliveryCode: 'conflict' })
+      // A reaction is the last selection the account made on that message, so a newer one replaces whatever is
+      // still waiting — iOS does the same (MorsePendingReactionSync.enqueue drops the intents of that message before
+      // adding its own). Without this a reaction whose outcome could not be proven ('uncertain') would refuse every
+      // later reaction on that message for good: it is not dismissible until it is inspected, and inspecting a
+      // reaction can never resolve it. An edit or a delete still refuses, being a conditional write on one version.
+      const pending = db.prepare("SELECT id,payload FROM message_actions WHERE chat_id=? AND message_id=? AND state IN ('queued','uncertain')")
+        .get(chatId, request.messageId) as { id: string; payload: string } | undefined
+      if (pending) {
+        const waiting = JSON.parse(pending.payload) as { kind?: string }
+        if (request.kind !== 'reaction' || waiting.kind !== 'reaction') throw Object.assign(new Error('Action pending'), { deliveryCode: 'conflict' })
+        db.prepare("UPDATE message_actions SET state='dismissed',payload=NULL,reason='' WHERE id=?").run(pending.id)
+      }
       const count = db.prepare('SELECT COUNT(*) AS count FROM message_actions WHERE payload IS NOT NULL').get() as { count: number }
       if (count.count >= 100) throw Object.assign(new Error('Action queue full'), { deliveryCode: 'capacity' })
       db.prepare("INSERT INTO message_actions(id,chat_id,message_id,digest,payload,state) VALUES(?,?,?,?,?,'queued')")

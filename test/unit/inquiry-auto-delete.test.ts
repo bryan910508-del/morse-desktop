@@ -28,26 +28,26 @@ function stubbedReader(): { reader: FirestoreReader; sent: () => CommitRequest |
   return { reader, sent: () => captured }
 }
 
-test('only the durations the server accepts are asked for, and «내 메시지만» needs the policy on', () => {
+test('only the durations the server accepts are asked for, and the sender scope is gone', () => {
   const requestId = randomUUID(), inquiryId = 'ch1_sub1'
   for (const seconds of autoDeleteChoices) {
-    assert.deepEqual(inquiryAutoDeleteRequest({ requestId, inquiryId, seconds, myOnly: false }), { requestId, inquiryId, seconds, myOnly: false })
+    assert.deepEqual(inquiryAutoDeleteRequest({ requestId, inquiryId, seconds }), { requestId, inquiryId, seconds })
   }
-  assert.deepEqual(inquiryAutoDeleteRequest({ requestId, inquiryId, seconds: 604800, myOnly: true }), { requestId, inquiryId, seconds: 604800, myOnly: true })
-  assert.deepEqual(inquiryAutoDeleteRequest({ requestId, inquiryId, seconds: 0, myOnly: true }), { requestId, inquiryId, seconds: 0, myOnly: false }, 'off applies to nobody')
-  assert.throws(() => inquiryAutoDeleteRequest({ requestId, inquiryId, seconds: 7200, myOnly: false }), /자동 삭제/)
-  assert.throws(() => inquiryAutoDeleteRequest({ requestId, inquiryId, seconds: '604800', myOnly: false }), /자동 삭제/)
-  assert.throws(() => inquiryAutoDeleteRequest({ requestId, inquiryId, seconds: 604800 }), /자동 삭제/)
-  assert.throws(() => inquiryAutoDeleteRequest({ requestId, inquiryId, seconds: 604800, myOnly: false, extra: 1 }))
+  assert.throws(() => inquiryAutoDeleteRequest({ requestId, inquiryId, seconds: 7200 }), /자동 삭제/)
+  assert.throws(() => inquiryAutoDeleteRequest({ requestId, inquiryId, seconds: '604800' }), /자동 삭제/)
+  assert.throws(() => inquiryAutoDeleteRequest({ requestId, inquiryId }), /자동 삭제/)
+  // The period covers every message whoever sent it, so a request that still carries the old scope is refused.
+  assert.throws(() => inquiryAutoDeleteRequest({ requestId, inquiryId, seconds: 604800, myOnly: false }))
+  assert.throws(() => inquiryAutoDeleteRequest({ requestId, inquiryId, seconds: 604800, extra: 1 }))
 })
 
 test('the policy is written on the room with its actor, and serializes for Firestore', async () => {
   const { reader, sent } = stubbedReader()
-  await reader.setInquiryAutoDelete('me1', 'ch1_sub1', 86400, true, new AbortController().signal)
+  await reader.setInquiryAutoDelete('me1', 'ch1_sub1', 86400, new AbortController().signal)
   const write = sent()?.writes[0]
   assert.equal(write?.update?.name, `${documents}/channelInquiries/ch1_sub1`)
   assert.equal(write?.update?.fields.autoDeleteSeconds?.integerValue, '86400')
-  assert.equal(write?.update?.fields.autoDeleteMyOnly?.booleanValue, true)
+  assert.equal(write?.update?.fields.autoDeleteMyOnly?.booleanValue, false, 'the stored flag stays in the contract and is always false')
   assert.equal(write?.update?.fields.autoDeleteLastSetByUid?.stringValue, 'me1', 'without the actor the rules refuse the change')
   assert.deepEqual(write?.updateMask?.fieldPaths, ['autoDeleteSeconds', 'autoDeleteMyOnly', 'autoDeleteLastSetByUid'], 'nothing else of the room is touched')
   assert.equal(write?.currentDocument?.exists, true, 'a room that is gone is never created by a policy change')

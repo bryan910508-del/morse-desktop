@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, session, shell, type IpcMainEvent } from 'electron'
+import { app, BrowserWindow, ipcMain, net, session, shell, type IpcMainEvent } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, rename, stat } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -27,6 +27,15 @@ const maxLogBytes = 256 * 1024
 // The exchange normally ends in a few seconds; the hidden try gives up first, and the window in view has the rest of
 // the 35 seconds FirebaseRest allows a proof.
 const hiddenDeadline = 12000, visibleDeadline = 20000
+// A page that never loaded used nothing up: a name that would not resolve or a network that changed
+// under it is the machine's moment, not a refusal, and the sign-in waiting on it should not be failed
+// for it. The log has three ERR_NAME_NOT_RESOLVED and one ERR_NETWORK_CHANGED in a single day.
+const transientRetryDelay = 1500
+// How long a machine that has just woken is given to have its network back before trying anyway.
+const offlineWait = 15000
+// Firebase refreshes an App Check token before it runs out. Acquiring only when a caller already needs
+// it makes that caller wait for the whole exchange — 12 seconds when it times out — so it starts early.
+const renewBefore = 10 * 60000
 const guardedSessions = new WeakSet<Electron.Session>()
 
 // Local diagnostics for a failed security check: the failed step, a short reason,
@@ -45,11 +54,37 @@ async function recordProofFailure(entry: ProofFailureEntry): Promise<void> {
   } catch { /* Diagnostics are best effort. */ }
 }
 
+// How long the exchange took and which try carried it. No token, request or account data.
+async function recordProofTiming(detail: string, elapsedMs: number, platform: 'macOS' | 'Windows'): Promise<void> {
+  await recordProofFailure({ step: 'acquired' as ProofFailureStep, detail, blockedHosts: [], responses: [], elapsedMs, platform })
+}
+
+// The machine waking is when this is most often asked for, and Chromium answers ERR_INTERNET_DISCONNECTED
+// in 90 milliseconds while the link is still coming up: the log has eleven of those in the thirteen
+// seconds after a 761 second sleep, and then the exchange itself took 2.3. Waiting for the network to be
+// there beats spending tries against one that is not.
+async function whenOnline(signal: AbortSignal, deadlineMs: number): Promise<void> {
+  const until = Date.now() + deadlineMs
+  while (!net.isOnline() && Date.now() < until) {
+    if (signal.aborted) throw new AuthenticationFailure('cancelled')
+    await wait(500, signal)
+  }
+}
+
+function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((done, fail) => {
+    const timer = setTimeout(() => { signal.removeEventListener('abort', stop); done() }, milliseconds)
+    const stop = (): void => { clearTimeout(timer); fail(new AuthenticationFailure('cancelled')) }
+    signal.addEventListener('abort', stop, { once: true }); if (signal.aborted) stop()
+  })
+}
+
 // Web-origin attestation, not hardware or native binary attestation. The
 // application server remains the authority for the token signature and App ID.
 export class HostedWebAppProof implements DesktopAppProofProvider {
   private cached: AppCheckProof | null = null
   private stored: Promise<void> | null = null
+  private renewal: Promise<unknown> | null = null
   private flight: Flight | null = null
   constructor(private readonly origin: string, private readonly appId: string,
     private readonly platform: 'macOS' | 'Windows', private readonly store: ProofTokenStore | null = null) {}
@@ -64,7 +99,10 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
     })()
     await this.stored
     if (signal.aborted) throw new AuthenticationFailure('cancelled')
-    if (this.cached && this.cached.expiresAt > Date.now() + 120000) return this.cached
+    if (this.cached && this.cached.expiresAt > Date.now() + 120000) {
+      if (this.cached.expiresAt <= Date.now() + renewBefore) this.renewAhead()
+      return this.cached
+    }
     let flight = this.flight
     if (!flight || flight.controller.signal.aborted) {
       const controller = new AbortController()
@@ -98,12 +136,34 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
   // the window open — the same check, in view — so a sign-in is never worse off than before. The whole exchange stays
   // inside the 35 seconds the caller allows.
   private async acquire(signal: AbortSignal): Promise<AppCheckProof> {
-    try { return await this.attempt(signal, false, hiddenDeadline) }
-    catch (error) {
-      const step = (error as { proofStep?: ProofFailureStep }).proofStep
+    const started = Date.now()
+    const stepOf = (error: unknown): ProofFailureStep | undefined => (error as { proofStep?: ProofFailureStep }).proofStep
+    const done = (proof: AppCheckProof, how: string): AppCheckProof => { void recordProofTiming(how, Date.now() - started, this.platform); return proof }
+    try {
+      await whenOnline(signal, offlineWait)
+      try { return done(await this.attempt(signal, false, hiddenDeadline), 'hidden') }
+      catch (error) {
+        const step = stepOf(error)
+        if (signal.aborted || (step !== 'load-failed' && step !== 'renderer-gone')) throw error
+        await whenOnline(signal, offlineWait)
+        await wait(transientRetryDelay, signal)
+        return done(await this.attempt(signal, false, hiddenDeadline), 'hidden-again')
+      }
+    } catch (error) {
+      const step = stepOf(error)
       if (signal.aborted || !step || !['page-error', 'timeout', 'invalid-response'].includes(step)) throw error
-      return this.attempt(signal, true, visibleDeadline)
+      return done(await this.attempt(signal, true, visibleDeadline), 'visible')
     }
+  }
+
+  // The renewal runs on its own: whoever asked for the token gets the one in hand, and the exchange
+  // that replaces it happens behind them.
+  private renewAhead(): void {
+    if (this.renewal) return
+    const controller = new AbortController()
+    const task = Promise.resolve().then(() => this.acquire(controller.signal)).catch(() => {})
+      .finally(() => { if (this.renewal === task) this.renewal = null })
+    this.renewal = task
   }
 
   private attempt(signal: AbortSignal, visible: boolean, deadlineMs: number): Promise<AppCheckProof> {

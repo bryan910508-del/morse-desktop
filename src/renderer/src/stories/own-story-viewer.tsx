@@ -22,7 +22,7 @@ import { storyAgo, storyKind, StoryMediaView, usePageHidden, useStoryProgress, t
 import { UserAvatar } from '../ui/user-avatar'
 import { locale, tr } from '../../../shared/i18n'
 
-const privacies: StoryPrivacy[] = ['everyone', 'contacts', 'closeFriends']
+const privacies: StoryPrivacy[] = ['everyone', 'contacts']
 const privacyIcons: Record<StoryPrivacy, ReactNode> = { everyone: <Globe size={16} />, contacts: <Users size={16} />, closeFriends: <Star size={16} /> }
 const moveLabels: Record<StoryPrivacy, string> = { everyone: tr('전체 공개로 변경'), contacts: tr('연락처만 보기로 변경'), closeFriends: tr('친한 친구만 보기로 변경') }
 const noContacts: ContactSummary[] = []

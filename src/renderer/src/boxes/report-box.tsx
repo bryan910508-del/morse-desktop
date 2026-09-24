@@ -10,9 +10,9 @@ import { tr } from '../../../shared/i18n'
 
 // iOS UserReportView and ChannelReportView: a reason, an optional description, and for a person the choice to
 // block them as well (on by default).
-function ReportBox({ accountUid, target, title, block, close }: { accountUid: string; target: ReportTarget; title: string; block: BlockTarget | null; close(): void }) {
+function ReportBox({ accountUid, target, title, block, initialExtra, close }: { accountUid: string; target: ReportTarget; title: string; block: BlockTarget | null; initialExtra: string; close(): void }) {
   const user = target.type === 'user'
-  const [category, setCategory] = useState(''), [extra, setExtra] = useState(''), [alsoBlock, setAlsoBlock] = useState(true)
+  const [category, setCategory] = useState(''), [extra, setExtra] = useState(initialExtra), [alsoBlock, setAlsoBlock] = useState(true)
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
   async function submit(): Promise<void> {
     if (!category || busy) return
@@ -42,6 +42,8 @@ function ReportBox({ accountUid, target, title, block, close }: { accountUid: st
   </Box>
 }
 
-export function showReportBox(accountUid: string, target: ReportTarget, title: string, block: BlockTarget | null = null): void {
-  controller.showLayer(close => <ReportBox accountUid={accountUid} target={target} title={title} block={block} close={close} />)
+// `initialExtra`: 신고 대상을 가리키는 좌표를 미리 적어 둔다. 메시지 신고가 그렇다 — 신고되는 것은 보낸
+// 사람이고(규칙의 신고 종류에 message 가 없다), 어느 메시지인지는 설명에 적혀야 검토할 수 있다.
+export function showReportBox(accountUid: string, target: ReportTarget, title: string, block: BlockTarget | null = null, initialExtra = ''): void {
+  controller.showLayer(close => <ReportBox accountUid={accountUid} target={target} title={title} block={block} initialExtra={initialExtra} close={close} />)
 }

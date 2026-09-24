@@ -20,11 +20,12 @@ import { Box, confirmBox } from '../ui/layers'
 import { trackWrite } from '../app/drafts'
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { dialogFlags, reconcileDialogs, reconcilePin, reconcileUnread, setPinned, setUnread, useDialogOverrides } from './dialog-overrides'
-import { ChannelHome } from '../channels/channel-home'
+import { chatListDraft } from '../../../shared/chat-list-preview'
 import { loadChatFolders, receiveChatFolders, toggleChatPinnedInFolder, useChatFolders } from '../app/chat-folders'
 import { removeChatFolder, showFolderEditBox, showFolderPickerBox, showFoldersBox } from '../boxes/chat-folder-boxes'
 import { StoriesRow } from '../stories/stories-row'
 import { tr } from '../../../shared/i18n'
+import { useShownConnection } from '../app/connection'
 import { useListTyping } from '../app/typing'
 
 const noDialogs: DialogSummary[] = []
@@ -32,7 +33,10 @@ const noPending: PendingDirect[] = []
 const noContacts: ContactSummary[] = []
 const noInquiryRows: InquiryRow[] = []
 export const folders: { id: Folder; label: string }[] = [
-  { id: 'all', label: tr('전체') }, { id: 'personal', label: tr('개인') }, { id: 'groups', label: tr('그룹') }, { id: 'channels', label: tr('채널', [], 'folder') }, { id: 'unread', label: tr('읽지 않음') }
+  // A channel is not a chat list filter: Telegram's strip is «All chats» plus the folders a person
+  // made, and a Morse channel has its own section, reachable from the menu, a post card or a
+  // discussion room.
+  { id: 'all', label: tr('전체') }, { id: 'personal', label: tr('개인') }, { id: 'groups', label: tr('그룹') }, { id: 'unread', label: tr('읽지 않음') }
 ]
 const connectionLabels: Record<ConnectionState, string> = {
   ready: '', offline: tr('연결 대기 중'), connecting: tr('연결 중…'), registering: tr('계정 확인 중…'), suspended: tr('연결 일시 중지'), rejected: tr('다시 로그인해 주세요')
@@ -54,12 +58,14 @@ function inFolder(dialog: DialogSummary, folder: Folder): boolean {
 
 // Telegram's "Delete chat" asks a private room's owner which side to clear; the message pin box
 // sets the pattern for a choice like this one.
-function ChatDeleteBox({ close, onChoose }: { close(): void; onChoose(forEveryone: boolean): void }) {
+function ChatDeleteBox({ close, onChoose, title, text, selfLabel }: {
+  close(): void; onChoose(forEveryone: boolean): void; title?: string; text?: string; selfLabel?: string
+}) {
   const choose = (forEveryone: boolean): void => { close(); onChoose(forEveryone) }
-  return <Box title={tr('대화 삭제')} width={360} onClose={close} buttons={<button className="button flat" onClick={close}>{tr('취소')}</button>}>
-    <p className="box-text">{tr('나에게만 지우면 이 기기에서 기록이 지워지고, 새 메시지가 오면 그 메시지부터 다시 보여요. 모두에게서 지우면 상대방 목록과 기록에서도 사라지고 되돌릴 수 없어요.')}</p>
+  return <Box title={title ?? tr('대화 삭제')} width={360} onClose={close} buttons={<button className="button flat" onClick={close}>{tr('취소')}</button>}>
+    <p className="box-text">{text ?? tr('나에게만 지우면 이 기기에서 기록이 지워지고, 새 메시지가 오면 그 메시지부터 다시 보여요. 모두에게서 지우면 상대방 목록과 기록에서도 사라지고 되돌릴 수 없어요.')}</p>
     <div className="pin-type-actions">
-      <button type="button" className="button secondary block" onClick={() => choose(false)}>{tr('나에게만 삭제')}</button>
+      <button type="button" className="button secondary block" onClick={() => choose(false)}>{selfLabel ?? tr('나에게만 삭제')}</button>
       <button type="button" className="button primary block danger" onClick={() => choose(true)}>{tr('모두에게 삭제')}</button>
     </div>
   </Box>
@@ -92,6 +98,8 @@ const DialogRow = memo(function DialogRow({ dialog, active, style, index, flags,
 }) {
   const secret = dialog.kind === 'secret'
   const typing = useListTyping(dialog.id, dialog.kind === 'group')
+  // RowPainter::Paint: an unsent draft stands in for the last message, while the row has nothing unread.
+  const draft = chatListDraft(dialog, flags.unread, flags.marked)
   // Dialogs::Row online badge (iOS MorseListOnlineIndicator) for a 1:1 peer who is online.
   const online = useDesktop(snapshot => {
     const me = snapshot?.activeAccountUid, peer = dialog.kind === 'direct' && me ? dialog.participantUids.find(uid => uid !== me) : undefined
@@ -114,7 +122,8 @@ const DialogRow = memo(function DialogRow({ dialog, active, style, index, flags,
       </span>
       <span className="dialog-row-line">
         {typing ? <span className="dialog-row-preview typing ellipsis">{typing}</span>
-          : <span className="dialog-row-preview ellipsis">{secret ? tr('이 기기에서는 열 수 없는 비밀 대화') : dialog.preview}</span>}
+          : draft ? <span className="dialog-row-preview draft ellipsis"><b>{tr('작성 중')}: </b>{draft}</span>
+            : <span className="dialog-row-preview ellipsis">{secret ? tr('이 기기에서는 열 수 없는 비밀 대화') : dialog.preview}</span>}
         {/* iOS latestReactionEmoji: someone's newest reaction to my message, before the unread count. */}
         {/* …and a clock under the time while the newest of mine is still on its way (iOS/Android sendingClock). */}
         {!secret && dialog.sends?.sending && <Clock3 size={12} className="dialog-row-sending" aria-label={tr('보내는 중')} />}
@@ -132,7 +141,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
   const dialogs = useDesktop(snapshot => snapshot?.dialogs ?? noDialogs)
   const status = useDesktop(snapshot => snapshot?.dialogStatus ?? 'loading')
   const message = useDesktop(snapshot => snapshot?.dialogMessage ?? '')
-  const connection = useDesktop(snapshot => snapshot?.connection ?? 'offline')
+  const shownConnection = useShownConnection()
   // A room whose pair already has a dialog is that dialog (PendingDirect.supersededBy): it is not a row.
   const pendingRooms = useDesktop(snapshot => snapshot?.pendingDirects ?? noPending)
   const pending = useMemo(() => pendingRooms.filter(item => !item.supersededBy), [pendingRooms])
@@ -160,15 +169,19 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
   useEffect(() => { reconcilePin(accountUid, pinState) }, [accountUid, pinState])
   useEffect(() => { reconcileUnread(accountUid, unreadState) }, [accountUid, unreadState])
 
+  // «저장한 메시지» is not a chat in this list: it lives in the notes screen, where iOS keeps it
+  // (ChatListView+Table: the `.memo` row opens the notes hub, never a chat room).
+  const savedId = `memo_${accountUid}`
+  const listed = useMemo(() => dialogs.filter(dialog => dialog.id !== savedId), [dialogs, savedId])
   const folderCounts = useMemo(() => {
     const counts = new Map<Folder, number>()
-    for (const tab of folders) if (tab.id !== 'channels') counts.set(tab.id, dialogs.filter(dialog => !dialog.archived && inFolder(dialog, tab.id) && effectiveUnreadCount(dialog) > 0).length)
+    for (const tab of folders) counts.set(tab.id, listed.filter(dialog => !dialog.archived && inFolder(dialog, tab.id) && effectiveUnreadCount(dialog) > 0).length)
     return counts
-  }, [dialogs])
-  const customCounts = useMemo(() => new Map(customFolders.map(item => [item.id, dialogs.filter(dialog => {
+  }, [listed])
+  const customCounts = useMemo(() => new Map(customFolders.map(item => [item.id, listed.filter(dialog => {
     const unread = effectiveUnreadCount(dialog)
     return unread > 0 && folderContains(dialog, item, { uid: accountUid, contacts: contactSet }, unread)
-  }).length])), [customFolders, dialogs, accountUid, contactSet])
+  }).length])), [customFolders, listed, accountUid, contactSet])
 
   const inquiryRows = useDesktop(snapshot => snapshot?.inquiryRows) ?? noInquiryRows
   const updateReady = useDesktop(snapshot => snapshot?.appUpdate?.status === 'ready')
@@ -179,7 +192,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
     const matches = (title: string): boolean => !needle || searchFold(title).includes(needle)
     const result: Row[] = []
     if (!archived && !needle && folder === 'all') {
-      const stored = dialogs.filter(dialog => dialog.archived)
+      const stored = listed.filter(dialog => dialog.archived)
       if (stored.length) result.push({ kind: 'archive', count: stored.length, unread: stored.filter(dialog => effectiveUnreadCount(dialog) > 0).length })
       // iOS ChatListView's notes row (MorseDialogRow.memo), pinned at the top by default.
       result.push({ kind: 'notes' })
@@ -187,7 +200,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
     } else if (needle && !archived) for (const item of pending) if (matches(item.displayName)) result.push({ kind: 'pending', pending: item })
     const context = { uid: accountUid, contacts: contactSet }, inCustom = custom && !archived && !needle ? custom : null
     const pinnedChats: Row[] = [], timedChats: Row[] = []
-    for (const dialog of dialogs) {
+    for (const dialog of listed) {
       if (!matches(dialog.title)) continue
       if (inCustom) { if (!folderContains(dialog, inCustom, context, effectiveUnreadCount(dialog))) continue }
       else if (!needle && (dialog.archived !== archived || !inFolder(dialog, folder))) continue
@@ -210,7 +223,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       result.sort((a, b) => { const x = key(a), y = key(b); return x === y ? 0 : x < y ? -1 : 1 })
     }
     return result
-  }, [dialogs, pending, inquiryRows, query, folder, archived, overridesVersion, custom, contactSet, accountUid])
+  }, [listed, pending, inquiryRows, query, folder, archived, overridesVersion, custom, contactSet, accountUid])
 
   const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => scroll.current, estimateSize: () => 62, overscan: 10, getItemKey: index => rowKey(rows[index]!) })
 
@@ -233,7 +246,9 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       status === 'ready' && !dialog.id.startsWith('memo_')
         ? dialog.discussion && dialog.channelId
           ? { label: tr('토론방 나가기'), icon: <LogOut size={18} />, danger: true, onSelect: () => { void deleteChat(dialog) } }
-          : { label: tr('대화 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void deleteChat(dialog) } } : null
+          : dialog.kind === 'group'
+            ? { label: tr('그룹 나가기'), icon: <LogOut size={18} />, danger: true, onSelect: () => { void deleteChat(dialog) } }
+            : { label: tr('대화 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void deleteChat(dialog) } } : null
     ])
   }
 
@@ -248,17 +263,43 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       catch (reason) { controller.toast(errorText(reason, tr('토론방에서 나가지 못했습니다.')), 'error') }
       return
     }
-    const group = dialog.kind === 'group', mine = dialog.createdBy === accountUid
-    // A private room can be cleared for both sides; a group only by the person who created it, and
-    // everyone else leaves it from the info panel instead.
-    if (dialog.kind === 'direct' || (group && mine)) {
+    // Telegram leaves a group when its chat is removed from the list: the removal sends channels.leaveChannel or
+    // messages.deleteChatUser(userId: inputUserSelf) (Telegram-iOS 6ad963e5b62d354da79040f388ae2b9132fb17b8,
+    // ManagedCloudChatRemoveMessagesOperations.swift:266, 269, 309) and asks "Are you sure you want to leave %@?".
+    // "Delete for all members" stays with the creator, as it does there (ChatListController.swift:5492) and as our
+    // server requires (firebase/functions/morse-release-authority.js:432).
+    if (dialog.kind === 'group') {
+      if (dialog.createdBy === accountUid) {
+        controller.showLayer(close => <ChatDeleteBox close={close} title={tr('그룹에서 나가기')} selfLabel={tr('그룹 나가기')}
+          text={tr('나가면 이 그룹의 새 메시지를 받지 않고 목록에서 사라져요. 모두에게서 지우면 참여자 모두의 목록과 기록에서 사라지고 되돌릴 수 없어요.')}
+          onChoose={forEveryone => { void (forEveryone ? runDelete(dialog, true) : leaveGroupRoom(dialog)) }} />)
+        return
+      }
+      await leaveGroupRoom(dialog)
+      return
+    }
+    if (dialog.kind === 'direct') {
       controller.showLayer(close => <ChatDeleteBox close={close} onChoose={forEveryone => { void runDelete(dialog, forEveryone) }} />)
       return
     }
-    const text = group ? tr('이 대화와 기록을 이 기기에서만 지웁니다. 새 메시지가 오면 그 메시지부터 다시 보여요. 그룹에서 나가려면 정보 화면의 그룹 나가기를 사용해 주세요.')
-      : tr('이 대화와 기록을 이 기기에서만 지웁니다. 새 메시지가 오면 그 메시지부터 다시 보여요.')
-    if (!await confirmBox({ title: tr('대화 삭제'), text, confirm: tr('나에게만 삭제'), danger: true })) return
+    if (!await confirmBox({ title: tr('대화 삭제'), confirm: tr('나에게만 삭제'), danger: true,
+      text: tr('이 대화와 기록을 이 기기에서만 지웁니다. 새 메시지가 오면 그 메시지부터 다시 보여요.') })) return
     await runDelete(dialog, false)
+  }
+  // The group profile's own leave, reached from the list as Telegram's removal reaches it.
+  async function leaveGroupRoom(dialog: DialogSummary): Promise<void> {
+    const participantCount = dialog.participantUids.length, owner = dialog.createdBy === accountUid
+    const text = participantCount === 1 ? tr('혼자 참여 중입니다. 나가면 아무도 남지 않아 참여자 추가로 다시 들어올 수 없습니다. 그룹과 메시지는 삭제되지 않습니다.')
+      : owner ? tr('방장으로 참여 중입니다. 다른 참여자가 남아 있으면 서버의 참여자 순서에 따라 방장이 자동으로 넘어갑니다.')
+      : tr('그룹에서 나가면 새 메시지를 받을 수 없습니다.')
+    if (!await confirmBox({ title: tr('{0}에서 나가기', [dialog.title]), text, confirm: tr('나가기'), danger: true })) return
+    if (ui().chatId === dialog.id) controller.closeChat()
+    try {
+      const result = await trackWrite(window.morse.leaveGroup(accountUid,
+        { id: crypto.randomUUID(), chatId: dialog.id, version: dialog.version, title: dialog.title, owner, participantCount }))
+      controller.toast(result === 'done' ? tr('그룹에서 나갔습니다.')
+        : tr('나가기 결과를 아직 확인하지 못했습니다. 잠시 후 대화 목록을 확인해 주세요.'))
+    } catch (reason) { controller.toast(errorText(reason, tr('그룹에서 나가지 못했습니다.')), 'error') }
   }
   async function runDelete(dialog: DialogSummary, forEveryone: boolean): Promise<void> {
     // tdesktop DeleteMessagesBox::deleteAndClear: Core::App().closeChatFromWindows(peer), then deleteConversation.
@@ -299,18 +340,15 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
     requestAnimationFrame(() => scroll.current?.querySelector<HTMLElement>(`[data-row="${next}"]`)?.focus())
   }
 
-  const connectionLabel = connectionLabels[connection]
+  const connectionLabel = connectionLabels[shownConnection]
   return <div className="dialogs" aria-label={tr('대화 목록')}>
     <div className="top-bar">
       <button className="icon-button" aria-label={tr('메뉴 열기')} onClick={() => controller.setMainMenu(true)}><Menu size={22} /></button>
       <label className="search-field">
         <Search size={17} />
-        <input ref={search} value={query} placeholder={folder === 'channels' && !archived ? tr('채널 이름·키워드 검색') : tr('검색')} aria-label={folder === 'channels' && !archived ? tr('채널 검색') : tr('대화 검색')} maxLength={200} data-region-focus
+        <input ref={search} value={query} placeholder={tr('검색')} aria-label={tr('대화 검색')} maxLength={200} data-region-focus
           onChange={event => controller.setQuery(event.target.value)}
-          // iOS channel tab: searching opens ChannelExplorePane.
-          onFocus={() => { if (folder === 'channels' && !archived) controller.setChannelExplore(true) }}
           onKeyDown={event => {
-            if (folder === 'channels' && !archived) { if (event.key === 'Escape') { controller.setQuery(''); controller.setChannelExplore(false); search.current?.blur() } return }
             if (event.key === 'ArrowDown') { event.preventDefault(); scroll.current?.querySelector<HTMLElement>('[data-row="0"]')?.focus() }
             else if (event.key === 'Enter' && rows[0]) { const row = rows[0]; if (row.kind === 'dialog') controller.openChat(row.dialog.id); else if (row.kind === 'pending') controller.openChat(row.pending.chatId) }
           }} />
@@ -318,7 +356,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       </label>
       {lockEnabled && !query && <button className="icon-button" aria-label={tr('앱 잠그기')} title={tr('앱 잠그기')} onClick={() => { void window.morse.appLock.lock() }}><Lock size={20} /></button>}
     </div>
-    {connectionLabel && <div className="dialogs-connection" role="status">{connection !== 'offline' && connection !== 'rejected' && <Spinner size={12} />}{connectionLabel}</div>}
+    {connectionLabel && <div className="dialogs-connection" role="status">{shownConnection !== 'offline' && shownConnection !== 'rejected' && <Spinner size={12} />}{connectionLabel}</div>}
     {!query && !archived && <StoriesRow accountUid={accountUid} />}
     {!query && !archived && <div className="dialogs-folders" role="tablist" aria-label={tr('대화 폴더')}>
       {folders.map(tab => <button key={tab.id} role="tab" type="button" className="dialogs-folder" aria-selected={folder === tab.id} onClick={() => controller.setFolder(tab.id)}
@@ -331,7 +369,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       </button>)}
     </div>}
     {archived && !query && <div className="dialogs-subheader"><button className="icon-button small" aria-label={tr('대화 목록으로')} onClick={() => controller.setArchived(false)}><ArrowLeft size={18} /></button>{tr('보관함')}</div>}
-    {folder === 'channels' && !archived ? <ChannelHome accountUid={accountUid} query={query} /> : <div ref={scroll} className="dialogs-scroll" onKeyDown={keyboard}>
+    <div ref={scroll} className="dialogs-scroll" onKeyDown={keyboard}>
       {status !== 'ready' && !rows.length ? <div className="dialogs-empty" role="status">
         {status === 'loading' ? <Spinner size={22} /> : <><p>{message || tr('대화 목록을 불러오지 못했습니다.')}</p><button className="button secondary" onClick={() => { void window.morse.refreshDialogs(accountUid).catch(() => {}) }}>{tr('다시 불러오기')}</button></>}
       </div> : !rows.length ? <div className="dialogs-empty">{query ? <p>{tr('‘{0}’에 맞는 대화가 없습니다.', [query])}</p> : <><strong>{folder === 'all' ? tr('아직 대화가 없습니다') : tr('이 폴더에 대화가 없습니다')}</strong></>}</div>
@@ -364,7 +402,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
             </button>
           })}
         </div>}
-    </div>}
+    </div>
     {/* Dialogs::Widget «Update Telegram»: shown once the new version has been downloaded; restarting installs it. */}
     {updateReady && <button type="button" className="dialogs-update" onClick={() => { void window.morse.installAppUpdate().catch(() => {}) }}>{tr('Morse 업데이트')}</button>}
   </div>

@@ -1,6 +1,6 @@
 import { loadBlockedUsers, setBlocked, useBlockedUsers } from '../app/blocked-users'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ArrowLeft, AtSign, Bell, Flag, Images, LayoutGrid, Camera, FileText, ImageOff, LogOut, MessageCircle, Pencil, Star, Trash2, UserMinus, UserPlus, Users, X, ShieldOff, Timer } from 'lucide-react'
+import { ArrowLeft, AtSign, Bell, Flag, Images, LayoutGrid, Camera, FileText, ImageOff, LogOut, MessageCircle, Pencil, Radio, Star, Trash2, UserMinus, UserPlus, Users, X, ShieldOff, Timer } from 'lucide-react'
 import { cropPhoto } from '../boxes/photo-crop-box'
 import type { DialogSummary } from '../../../shared/model'
 import type { ContactProfileSnapshot } from '../../../shared/contacts'
@@ -12,7 +12,6 @@ import { controller } from '../app/ui'
 import { errorText } from '../app/format'
 import { trackWrite } from '../app/drafts'
 import { deleteContact, onContactProfileReleased } from '../app/contacts'
-import { loadCloseFriends, setCloseFriend, useCloseFriends } from '../app/close-friends'
 import { changeGroupPhoto } from '../app/photos'
 import { showAddMembersBox } from '../boxes/group-boxes'
 import { showTextEditBox } from '../boxes/text-edit-box'
@@ -73,7 +72,6 @@ function ContactProfile({ accountUid, uid, fromChat }: { accountUid: string; uid
   const snapshot = useDesktop(state => state?.contacts?.profile ?? null)
   const inContacts = useDesktop(state => Boolean(state?.contacts?.items.some(item => item.uid === uid)))
   const presence = usePresence(uid)
-  const closeFriends = useCloseFriends(accountUid)
   const personalUrl = useDesktop(state => state?.contacts?.items.find(item => item.uid === uid)?.personalPhotoURL ?? null)
   // The list row's picture of this person (the same address) while the profile's own read finishes.
   const listUrl = useDesktop(state => { const avatar = state?.contacts?.items.find(item => item.uid === uid)?.avatar; return avatar?.status === 'ready' ? avatar.url : null })
@@ -89,7 +87,6 @@ function ContactProfile({ accountUid, uid, fromChat }: { accountUid: string; uid
   }, [accountUid, uid, requestId])
   // Another action borrowed main's single profile selection; select this peer again.
   useEffect(() => onContactProfileReleased(() => { if (desktop.value?.contacts?.profile?.requestId !== requestId) setRequestId(crypto.randomUUID()) }), [requestId])
-  useEffect(() => { if (inContacts) void loadCloseFriends(accountUid).catch(() => {}) }, [accountUid, inContacts])
   const profile = own && own.status !== 'loading' ? own : last.current?.uid === uid ? last.current : null
   if (!profile) return <div className="empty-state"><Spinner size={22} /></div>
   if (profile.status !== 'ready') return <div className="empty-state">{profile.message || tr('프로필을 확인할 수 없습니다.')}</div>
@@ -136,7 +133,6 @@ function ContactProfile({ accountUid, uid, fromChat }: { accountUid: string; uid
     } catch (reason) { controller.toast(errorText(reason, tr('개인 사진을 지우지 못했습니다.')), 'error') }
     finally { setPhotoBusy(false) }
   }
-  const friend = closeFriends?.has(uid) ?? false
   const blocked = blockedUsers?.some(user => user.uid === uid) ?? false
   async function toggleBlock(target: ContactProfileSnapshot): Promise<void> {
     if (!blocked && !await confirmBox({ title: tr('사용자 차단'), text: tr('{0}님을 차단할까요? 설정 → 개인정보에서 언제든 해제할 수 있어요.', [target.displayName]), confirm: tr('차단'), danger: true })) return
@@ -166,7 +162,6 @@ function ContactProfile({ accountUid, uid, fromChat }: { accountUid: string; uid
       }} />
       <ActionRow icon={photoBusy ? <Spinner size={20} /> : <Camera size={20} />} label={personal?.photoId ? tr('개인 사진 바꾸기') : tr('개인 사진 설정')} disabled={!live || !personal || photoBusy} onClick={() => { if (live) void setPersonalPhoto(live) }} />
       {personal?.photoId && <ActionRow icon={<ImageOff size={20} />} label={tr('개인 사진 삭제')} disabled={photoBusy} onClick={() => { if (live) void clearPersonalPhoto(live) }} />}
-      {closeFriends && <ActionRow icon={<Star size={20} />} label={friend ? tr('친한 친구에서 빼기') : tr('친한 친구에 추가')} onClick={() => { void setCloseFriend(accountUid, uid, !friend) }} />}
       <ActionRow icon={<Trash2 size={20} />} label={tr('연락처 삭제')} danger disabled={!live} onClick={() => { if (live) void remove(live) }} />
     </div>}
     <div className="info-section">
@@ -195,6 +190,8 @@ function GroupInfo({ accountUid, dialog, onProfile }: { accountUid: string; dial
   if (!current || current.status === 'loading') return <div className="empty-state"><Spinner size={22} /></div>
   if (current.status !== 'ready') return <div className="empty-state">{current.message || tr('그룹 정보를 확인할 수 없습니다.')}</div>
   const members = current.members, version = current.version
+  const roomPhoto = dialog.avatar?.status === 'ready' ? dialog.avatar.url : null
+  const cover = photo?.status === 'ready' ? photo.url : current.discussion ? roomPhoto : null
   const self = members.find(member => member.self && !member.withdrawn)
   const owner = Boolean(self?.owner), plain = !current.discussion
   const capacity = Math.max(0, 100 - dialog.participantUids.length)
@@ -252,11 +249,18 @@ function GroupInfo({ accountUid, dialog, onProfile }: { accountUid: string; dial
   }
   return <>
     <div className="info-cover">
-      <Avatar name={current.groupName ?? dialog.title} url={photo?.status === 'ready' ? photo.url : null} size={88}
-        onOpen={() => { if (photo?.status === 'ready' && photo.url) showPhotoViewer(photo.url, current.groupName ?? dialog.title) }} />
+      {/* A channel's discussion room has no picture of its own to load — the room only keeps the address
+          the server copied into it when it was made. The chat list row already falls back to the channel's
+          own picture (DiscussionAvatars), so this shows the same one rather than nothing. */}
+      <Avatar name={current.groupName ?? dialog.title} url={cover} size={88}
+        onOpen={() => { if (cover) showPhotoViewer(cover, current.groupName ?? dialog.title) }} />
       <h2 className="selectable">{current.groupName ?? dialog.title}</h2>
       <span>{tr('{0} · 참여자 {1}명', [current.discussion ? tr('채널 토론방') : tr('그룹', [], 'kind'), members.length])}</span>
     </div>
+    {/* iOS GroupProfileView's channel menu «보기» (openChannelDetail): a discussion room leads back to its channel. */}
+    {!plain && dialog.channelId && <div className="info-section">
+      <ActionRow icon={<Radio size={20} />} label={tr('채널 보기')} onClick={() => controller.openChannel(dialog.channelId!)} />
+    </div>}
     {plain && (current.groupAnnouncement !== null || current.canEditGroupAnnouncement) && <div className="info-section">
       {current.groupAnnouncement?.trim() ? <InfoRow icon={<FileText size={20} />} value={current.groupAnnouncement} label={tr('소개')} /> : <p className="info-note">{tr('등록된 소개가 없습니다.')}</p>}
     </div>}
@@ -273,7 +277,7 @@ function GroupInfo({ accountUid, dialog, onProfile }: { accountUid: string; dial
     <div className="info-members">{members.map(member => <button key={member.uid} type="button" className="member-row"
       disabled={member.self || (!removable(member) && (member.withdrawn || (!member.canOpenContact && !member.canAddContact)))}
       onClick={event => openMember(member, pointFor(event, event.currentTarget))}>
-      <UserAvatar uid={member.uid} name={member.displayName} size={40} kind={member.withdrawn ? 'deleted' : undefined} />
+      <UserAvatar uid={member.uid} name={member.displayName} size={40} kind={member.withdrawn ? 'deleted' : undefined} roomOnly={current.discussion} />
       <span className="member-row-text"><strong className="ellipsis">{member.displayName}</strong><small>{member.withdrawn ? tr('탈퇴한 계정') : member.self ? tr('나') : ''}</small></span>
       {member.owner && <span className="member-badge">{tr('방장')}</span>}
     </button>)}</div>
@@ -336,7 +340,7 @@ export function InfoPanel({ accountUid, chatId }: { accountUid: string; chatId: 
       </div>}
       {!profile && dialog && <div className="info-section">
         <InfoRow icon={<MessageCircle size={20} />} value={dialog.kind === 'group' ? tr('그룹 대화') : dialog.kind === 'secret' ? tr('비밀 대화') : tr('개인 대화')} label={tr('대화 종류')} />
-        {dialog.kind !== 'secret' && <InfoRow icon={<Timer size={20} />} value={autoDeleteSummary(dialog.autoDeleteSeconds ?? 0, Boolean(dialog.autoDeleteMyOnly))}
+        {dialog.kind !== 'secret' && <InfoRow icon={<Timer size={20} />} value={autoDeleteSummary(dialog.autoDeleteSeconds ?? 0)}
           label={canChangeAutoDelete(dialog, accountUid) ? tr('자동 삭제 · 눌러서 변경') : tr('자동 삭제')} onClick={canChangeAutoDelete(dialog, accountUid) ? () => showChatAutoDeleteBox(accountUid, dialog) : undefined} />}
       </div>}
       </>}

@@ -317,7 +317,7 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList }: { account
     const previous = items[index - 1], next = items[index + 1], time = item.createdAt ?? 0
     const joins = (a: InquiryMessageItem | undefined, b: InquiryMessageItem | undefined): boolean => Boolean(a && b && a.own === b.own &&
       a.createdAt !== null && b.createdAt !== null && sameDay(a.createdAt, b.createdAt) && b.createdAt - a.createdAt < attachWindowMs)
-    const layout: MessageLayout = { date: !previous || !sameDay(previous.createdAt ?? 0, time), unread: false, top: joins(previous, item), bottom: joins(item, next), name: false, photo: false, gutter: false }
+    const layout: MessageLayout = { date: !previous || !sameDay(previous.createdAt ?? 0, time), unread: false, top: joins(previous, item), bottom: joins(item, next), name: false, photo: false, gutter: false, roomOnly: false }
     const message = inquiryChatMessage(item, inquiryId), overlay = reacting[item.id]
     return { item, message: overlay ? { ...message, reactions: overlay.reactions } : message, layout }
   }), [items, inquiryId, reacting])
@@ -376,7 +376,8 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList }: { account
       item.own && item.kind === 'text' && ready ? { label: tr('수정'), icon: <Pencil size={18} />, onSelect: () => edit(item) } : null,
       !item.system && ready ? 'separator' : null,
       !item.system && ready ? { label: tr('삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void remove([item]) } } : null
-    ], { header: !item.system && ready ? <ReactionStrip onPick={emoji => { popupMenu.close(); react(item, emoji) }} /> : undefined })
+    ], { header: !item.system && ready ? <ReactionStrip accountUid={accountUid} mine={(reacting[item.id]?.reactions ?? item.reactions ?? []).filter(entry => entry.selected).map(entry => entry.emoji)}
+      onPick={emoji => { popupMenu.close(); react(item, emoji) }} /> : undefined })
   }
   // The newest pinned message rides above the room, as PinnedBar does above a chat.
   const pinnedItem = pinnedIds.length ? items.find(item => item.id === pinnedIds[pinnedIds.length - 1]) ?? null : null
@@ -401,8 +402,8 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList }: { account
       {fromList && <button className="icon-button" aria-label={tr('문의 목록으로')} onClick={() => showInquiryThread(channelId, null)}><ArrowLeft size={20} /></button>}
       <strong className="side-title ellipsis">{thread?.title || tr('1:1 문의')}</strong>
       <button className="icon-button" aria-label={tr('더 보기')} disabled={!ready} onClick={event => popupMenu.open(pointFor(event, event.currentTarget), [
-        { label: thread?.autoDeleteSeconds ? autoDeleteSummary(thread.autoDeleteSeconds, thread.autoDeleteMyOnly) : tr('자동 삭제'), icon: <Timer size={18} />,
-          onSelect: () => showInquiryAutoDeleteBox(accountUid, { requestId, inquiryId }, { seconds: thread?.autoDeleteSeconds ?? 0, myOnly: Boolean(thread?.autoDeleteMyOnly) }) },
+        { label: thread?.autoDeleteSeconds ? autoDeleteSummary(thread.autoDeleteSeconds) : tr('자동 삭제'), icon: <Timer size={18} />,
+          onSelect: () => showInquiryAutoDeleteBox(accountUid, { requestId, inquiryId }, { seconds: thread?.autoDeleteSeconds ?? 0 }) },
         'separator',
         { label: tr('대화 기록 모두 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void clear() } }
       ])}><EllipsisVertical size={20} /></button>
@@ -432,7 +433,7 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList }: { account
                   onOpenMedia={(opened, index) => showMediaViewer(accountUid, inquiryId, opened, index, item.own ? tr('나') : thread?.title ?? '')} />
               </div>)}
               {waiting.map(entry => <div key={entry.id} className="history-row inquiry-thread-row">
-                <LocalMessageView accountUid={accountUid} item={inquiryLocal(entry, inquiryId)} layout={{ date: false, unread: false, top: false, bottom: false, name: false, photo: false, gutter: false }} onMenu={(_item, point) => pendingMenu(entry, point)} />
+                <LocalMessageView accountUid={accountUid} item={inquiryLocal(entry, inquiryId)} layout={{ date: false, unread: false, top: false, bottom: false, name: false, photo: false, gutter: false, roomOnly: false }} onMenu={(_item, point) => pendingMenu(entry, point)} />
               </div>)}
             </>}
     </div>

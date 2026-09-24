@@ -1,7 +1,8 @@
 import { autoDeleteSecondsValue } from '../../shared/chat-auto-delete'
 import { autoDeleteNoticeText, autoDeleteWirePrefix, type AutoDeleteNotice } from '../../shared/auto-delete-notice'
+import { chatListPreviewText } from '../../shared/chat-list-preview'
 import { messageStorySource } from './message-story-source'
-import type { ChatMessage, DialogSummary, MessagePosition } from '../../shared/model'
+import type { ChatMessage, DialogSummary, MessagePoll, MessagePosition } from '../../shared/model'
 import { comparePosition, positionMilliseconds } from '../../shared/model'
 import { identifier, object } from '../../shared/validation'
 import { idleReadSync, outboxReadTill, readCursor } from '../../shared/read-receipts'
@@ -121,6 +122,13 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
   const peer = other ? mapField(info, other) : {}
   const title = id === `memo_${uid}` ? tr('내 메모') : kind === 'group' ? stringField(f, 'name', 512) || tr('이름 없는 그룹') :
     boolField(peer, 'accountDeleted') ? tr('탈퇴한 계정') : stringField(peer, 'displayName', 512) || stringField(f, 'name', 512) || tr('알 수 없음')
+  // A channel's discussion room speaks for the channel, not for the person who owns it: iOS names the
+  // owner's messages after the room (MorseGroupChatSenderDisplay.displayName — «채널 토론방 방장 uid는
+  // 방 이름으로»), and the server keeps that copy in the room itself (syncDiscussionChatMetadataAfterChannelUpdate
+  // writes the channel's name and picture into participantInfo.{ownerId}). A room whose copy was never
+  // written would otherwise show the owner's own name on every post.
+  const discussionOwner = boolField(f, 'isChannelDiscussion') || id.startsWith('channel_discuss_') ? stringField(f, 'createdBy', 160) : ''
+  if (discussionOwner && participantNames[discussionOwner]) participantNames[discussionOwner] = title
   const cutoff = kind === 'direct' ? timeField(f, 'historyRevokedAt', '') : null
   const top = timeField(f, 'lastMessageAt', id)
   const readTimes = mapField(f, 'lastReadAt'), readIds = mapField(f, 'lastReadMessageId')
@@ -135,6 +143,9 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
   else if (preview.startsWith('__deleted__:') || (cutoff && top && comparePosition(top, cutoff) < 0)) preview = ''
   else if (preview.startsWith(autoDeleteWirePrefix)) preview = ''
   else if (preview === '__TALKY_SECRET__') preview = tr('비밀 메시지')
+  // A media label is stored in whatever language wrote it, and shown in this window's own; the kind the
+  // server writes beside it says which lines are labels at all.
+  else preview = chatListPreviewText(preview, stringField(f, 'lastMessageType', 64))
   return { summary: { id, version: documentVersion(doc), kind: kind as DialogSummary['kind'], title, participantUids: participants,
     preview: preview.slice(0, 300), top, unreadCount: Math.max(0, Math.trunc(numberField(mapField(f, 'unreadCounts'), uid))),
     markedUnread: boolField(mapField(f, 'manualUnread'), uid), readPositions, outboxRead: outboxReadTill(readPositions, participants.filter(participant => participant !== uid)), readSync: idleReadSync,
@@ -179,9 +190,61 @@ export function pinnedMessageIds(fields: Record<string, WireObject>): string[] {
 const postAspects: Record<string, number> = { '1:1': 1, '4:5': 4 / 5, '16:9': 16 / 9 }
 export function postAspectRatio(raw: string): number | null { return postAspects[raw] ?? null }
 export function historyReadable(dialog: ReadDialog): boolean { return dialog.summary.historyAccess === undefined || dialog.summary.historyAccess === 'ready' }
+// The ids this room answers to. A channel's discussion room can have two: the server keeps
+// `channels/{id}.discussionChatId`, which is `channel_discuss_{channelId}` for a room the function
+// made itself and the older id for a room that already existed (functions
+// onChannelCreatedEnsureDiscussion). A message written under the other name is still this room's.
+export function roomNames(dialog: ReadDialog): string[] {
+  const channelId = dialog.summary.discussion ? dialog.summary.channelId : ''
+  return channelId ? [...new Set([dialog.summary.id, `channel_discuss_${channelId}`])] : [dialog.summary.id]
+}
+// The names this room's media folder may carry: the ids the room answers to, and the name the
+// message itself was written with — iOS uploads under the message's own chatId
+// (MorsePendingMediaUploadManager: `chat_media/\(message.chatId)`). Every one is a value the server wrote.
+export function roomMediaNames(doc: FirestoreDocument, dialog: ReadDialog): string[] {
+  const names = roomNames(dialog)
+  if (!dialog.summary.discussion) return names
+  const declared = stringField(doc.fields, 'chatId', 160)
+  return declared ? [...new Set([...names, declared])] : names
+}
+
 export function decodeMessage(doc: FirestoreDocument, dialog: ReadDialog, now = Date.now()): ChatMessage | null {
   if (!historyReadable(dialog)) return null
   const position = rawPosition(doc, dialog.summary.id), f = doc.fields
+// 투표는 만들 때 굳은 값과 서버가 쓰는 집계를 함께 담는다. 집계는 클라이언트가 정하지 못하므로
+// (서버 canonicalMessage 가 0 에서 시작시키고 setMorseMessagePollVote 만 갱신한다) 여기서는 문서를 그대로
+// 읽되 길이만 선택지에 맞춘다. 내 표는 messages/{id}/pollVotes/{uid} 에 있고 따로 읽는다.
+function messagePoll(f: Record<string, WireObject>): MessagePoll | undefined {
+  const question = stringField(f, 'pollQuestion', 300)
+  const rawOptions = object(field(f, 'pollOptions').arrayValue ?? {}).values
+  if (!question || !Array.isArray(rawOptions) || rawOptions.length < 2) return undefined
+  const options = rawOptions.slice(0, 10).map(value => String(object(value ?? {}).stringValue ?? '').slice(0, 100))
+  if (options.some(option => !option)) return undefined
+  const rawCounts = object(field(f, 'pollVoteCounts').arrayValue ?? {}).values
+  const counts = options.map((_, index) => {
+    const value = Array.isArray(rawCounts) ? object(rawCounts[index] ?? {}) : {}
+    return Math.max(0, Math.trunc(Number(value.integerValue ?? value.doubleValue ?? 0)) || 0)
+  })
+  const quiz = boolField(f, 'pollIsQuiz')
+  const correct = Math.trunc(numberField(f, 'pollCorrectOption'))
+  return {
+    question,
+    options,
+    // 서버는 이 다섯을 언제나 적는다 (morse-message-authority.js canonical). 필드가 없는 문서는 이 기능보다
+    // 오래된 것이고, 그때는 익명으로 읽는다 — 확실하지 않은데 누가 찍었는지 보여 주는 쪽이 더 나쁘다.
+    anonymous: field(f, 'pollIsAnonymous').booleanValue !== false,
+    multipleAnswers: boolField(f, 'pollMultipleAnswers'),
+    quiz,
+    correctOption: quiz && correct >= 0 && correct < options.length ? correct : null,
+    canRevote: field(f, 'pollCanRevote').booleanValue !== false,
+    shuffleOptions: boolField(f, 'pollShuffleOptions'),
+    voteCounts: counts,
+    totalVoters: Math.max(0, Math.trunc(numberField(f, 'pollTotalVoters'))),
+    closed: boolField(f, 'pollIsClosed'),
+    mine: null,
+  }
+}
+
   if (dialog.cutoff && comparePosition(position, dialog.cutoff) < 0) return null
   const deleteAt = timeField(f, 'deleteAt', position.id)
   if (deleteAt && positionMilliseconds(deleteAt) <= now) return null
@@ -190,16 +253,17 @@ export function decodeMessage(doc: FirestoreDocument, dialog: ReadDialog, now = 
   const encrypted = messageFlag(f, 'isEncrypted') || dialog.summary.kind === 'secret' || text === '__TALKY_SECRET__'
   const declaredKind = stringField(f, 'type', 64)
   const rawKind = messageFlag(f, 'isCircleVideo') && (!declaredKind || declaredKind === 'text') ? 'video' : declaredKind || 'unsupported'
-  const kind = ['text', 'image', 'video', 'voice', 'file', 'sticker', 'channelPost', 'location', 'event'].includes(rawKind) ? rawKind : 'unsupported'
+  const kind = ['text', 'image', 'video', 'voice', 'file', 'sticker', 'channelPost', 'location', 'event', 'poll'].includes(rawKind) ? rawKind : 'unsupported'
   const senderId = stringField(f, 'senderId', 160)
   const system = messageFlag(f, 'isSystem') || text.startsWith(autoDeleteWirePrefix)
   if (!senderId && !system) throw new ReadFailure('data')
   const replyId = encrypted || system ? '' : stringField(f, 'replyToId', 160).trim() || stringField(f, 'reply_to', 160).trim()
   if (replyId) identifier(replyId)
+  const declaredChat = stringField(f, 'chatId', 160)
   // A channel post card is a system message that carries the post's own picture; every other system line carries none.
   const card = kind === 'channelPost' ? { channelId: stringField(f, 'channelId', 160), postId: stringField(f, 'channelPostId', 160), channelName: stringField(f, 'channelName', 512),
     ...(postAspectRatio(stringField(f, 'aspectRatio', 16)) ? { ratio: postAspectRatio(stringField(f, 'aspectRatio', 16))! } : {}) } : null
-  const attachments = system && !card ? [] : mediaResources(doc, dialog.summary.id, kind, encrypted).map(resource => resource.summary)
+  const attachments = system && !card ? [] : mediaResources(doc, roomMediaNames(doc, dialog), kind, encrypted).map(resource => resource.summary)
   const circular = messageFlag(f, 'isCircleVideo')
   return { id: position.id, chatId: dialog.summary.id, senderId,
     senderName: dialog.summary.kind === 'group' && !system ? dialog.participantNames[senderId] || tr('참여자') : undefined,
@@ -212,8 +276,9 @@ export function decodeMessage(doc: FirestoreDocument, dialog: ReadDialog, now = 
     storySource: encrypted || system ? null : messageStorySource(doc),
     replyToId: replyId || undefined,
     categoryId: encrypted || system ? undefined : stringField(f, 'categoryId', 160) || undefined,
+    ...(kind === 'poll' ? { poll: messagePoll(f) } : {}),
     readEligible: Boolean(senderId) && !encrypted && stringField(f, 'status', 32) !== 'failed' &&
-      (!system || kind === 'channelPost') && (!stringField(f, 'chatId', 160) || stringField(f, 'chatId', 160) === dialog.summary.id) }
+      (!system || kind === 'channelPost') && (!declaredChat || roomNames(dialog).includes(declaredChat)) }
 }
 // The values the server writes behind an auto-delete notice, when it wrote them.
 export function autoDeleteNoticeFields(f: Record<string, WireObject>): AutoDeleteNotice | null {

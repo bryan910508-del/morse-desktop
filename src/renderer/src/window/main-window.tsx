@@ -13,8 +13,10 @@ import { HistoryWidget } from '../history/history-widget'
 import { ChatSearchPanel } from '../history/chat-search'
 import { InfoPanel } from '../info/info-panel'
 import { ChannelSection } from '../channels/channel-section'
+import { ChannelsWidget } from '../channels/channels-widget'
 import { ChannelSidePanel } from '../channels/channel-info-panel'
 import { NotesWidget } from '../notes/notes-widget'
+import { useNotesSession } from '../notes/notes-state'
 import { NoteEditor } from '../notes/note-editor'
 import { MainMenu } from './main-menu'
 import { LockScreen } from './lock-screen'
@@ -77,7 +79,7 @@ function SessionWindow({ accountUid }: { accountUid: string }) {
   const noteId = useUi(state => state.noteId)
   const right = useUi(state => state.right)
   const mainMenu = useUi(state => state.mainMenu)
-  const notes = section === 'notes'
+  const notes = section === 'notes', channels = section === 'channels'
   // The open room became the pair's dialog under another id: show that dialog (a dialog is its peer).
   const movedTo = useDesktop(snapshot => chatId ? snapshot?.pendingDirects.find(item => item.chatId === chatId)?.supersededBy ?? null : null)
   useEffect(() => { if (movedTo) controller.openChat(movedTo) }, [movedTo])
@@ -98,14 +100,15 @@ function SessionWindow({ accountUid }: { accountUid: string }) {
         if (state.right) { controller.setRight(null); return true }
         if (state.dialogsQuery) { controller.setQuery(''); return true }
         if (state.chatId || state.channelId) { controller.closeChat(); return true }
-        if (state.section === 'notes') { if (state.noteId) controller.openNote(null); else controller.showChats(); return true }
+        if (state.section === 'notes') { if (state.noteId || state.chatId) controller.showNotes(); else controller.showChats(); return true }
+        if (state.section === 'channels') { controller.showChats(); return true }
         if (state.archived) { controller.setArchived(false); return true }
         return false
       case 'find-dialog': if (oneColumn && (state.chatId || state.channelId)) controller.closeChat(); controller.focusSearch(); return true
       case 'find-message': if (state.chatId) controller.setRight('search'); return true
       case 'focus-composer': controller.focusComposer(); return true
       case 'show-chats': controller.showChats('all'); return true
-      case 'show-channels': controller.showChats('channels'); return true
+      case 'show-channels': controller.showChannels(); return true
       case 'next-region': focusRegion(1); return true
       case 'previous-region': focusRegion(-1); return true
       case 'previous-dialog': case 'next-dialog': {
@@ -120,10 +123,12 @@ function SessionWindow({ accountUid }: { accountUid: string }) {
     }
   })
 
+  useNotesSession(accountUid, notes)
+
   return <AvatarScope accountUid={accountUid} enabled surface="dialogs"><AvatarScope accountUid={accountUid} enabled surface="contacts">
     <div className={`window${oneColumn ? ' one-column' : ''}`}>
       {showLeft && <aside className="column-left" data-region style={oneColumn ? undefined : { width: left }}>
-        {notes ? <NotesWidget accountUid={accountUid} /> : <DialogsWidget accountUid={accountUid} />}
+        {notes ? <NotesWidget accountUid={accountUid} /> : channels ? <ChannelsWidget accountUid={accountUid} /> : <DialogsWidget accountUid={accountUid} />}
       </aside>}
       {showLeft && showMain && <ColumnResizer left={left} />}
       {showMain && <main className="column-main" data-region>

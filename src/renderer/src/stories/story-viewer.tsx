@@ -207,7 +207,12 @@ async function openPeer(accountUid: string, uid: string): Promise<PeerStories> {
   const profileRequestId = crypto.randomUUID()
   try {
     await window.morse.openContactProfile(accountUid, uid, profileRequestId)
-    const profile = await waitFor(() => { const value = desktop.value?.contacts?.profile; return value?.requestId === profileRequestId && value.status !== 'loading' ? value : null }, 10000, tr('연락처를 불러오지 못했습니다.'))
+    // Data::Stories::loadAround opens a peer's stories from the peer the session already holds. The row
+    // on the contact list is that peer here, so the stories open with it and the profile read goes on
+    // behind them; only someone who is not on the list is waited for.
+    const known = desktop.value?.contacts?.items.find(item => item.uid === uid)
+    if (known) return await readLists(accountUid, uid, known.displayName, profileRequestId)
+    const profile = await waitFor(() => { const value = desktop.value?.contacts?.profile; return value?.requestId === profileRequestId && value.status !== 'loading' ? value : null }, 30000, tr('연락처를 불러오지 못했습니다.'))
     if (profile.status !== 'ready') throw new Error(profile.message || tr('연락처를 확인할 수 없습니다.'))
     return await readLists(accountUid, uid, profile.displayName, profileRequestId)
   } catch (error) { await releaseContactProfile(accountUid, profileRequestId); throw error }
@@ -250,6 +255,23 @@ function contactSource(accountUid: string, peer: PeerStories, item: StoryItem, k
   }
 }
 
+// Media::Stories::Controller::preloadNext fetches the stories around the one on screen
+// (kPreloadNextMediaCount 3) so that moving on shows a story that is already there. Only stories on
+// the page this list already has are fetched, since turning a page would move the open list itself.
+const preloadAhead = 3
+async function preloadStory(accountUid: string, peer: PeerStories, item: StoryItem): Promise<void> {
+  const kind = storyKind(item)
+  if (kind === 'none' || kind === 'photo-audio') return
+  const base = { selectionId: crypto.randomUUID(), requestId: await storyListId(accountUid, peer, item), storyId: item.id, version: item.version, profileRequestId: peer.profileRequestId }
+  const audience = item.privacy === 'contacts' && item.audienceId ? { audienceId: item.audienceId, privacy: 'contacts' as const } : null
+  if (kind === 'video') {
+    const mode = item.audio === 'attached' ? 'with-audio' as const : 'original' as const
+    return audience ? window.morse.preloadContactAudienceStoryVideo(accountUid, { ...base, mode, ...audience }) : window.morse.preloadContactPublicStoryVideo(accountUid, { ...base, mode })
+  }
+  const presentation = kind === 'poster' ? 'video-poster' as const : 'image' as const
+  return audience ? window.morse.preloadContactAudienceStoryPhoto(accountUid, { ...base, presentation, ...audience }) : window.morse.preloadContactPublicStoryPhoto(accountUid, { ...base, presentation })
+}
+
 function ContactStoryMedia({ accountUid, peer, item, ...props }: { accountUid: string; peer: PeerStories; item: StoryItem; paused: boolean; muted: boolean; onDuration(milliseconds: number): void; onTime(fraction: number): void; onEnded(): void; onShown(): void }) {
   const kind = storyKind(item)
   const [source] = useState(() => contactSource(accountUid, peer, item, kind))
@@ -286,6 +308,7 @@ function StoryViewer({ accountUid, peers, startIndex, close }: { accountUid: str
   const [paused, setPaused] = useState(false), [muted, setMuted] = useState(false), [reacting, setReacting] = useState(false)
   const [reply, setReply] = useState(''), [typing, setTyping] = useState(false), [replying, setReplying] = useState(false)
   const [myReaction, setMyReaction] = useState<string | null>(null)
+  const [shownIndex, setShownIndex] = useState(-1)
   const hidden = usePageHidden()
   const current = useRef<PeerStories | null>(null)
   const receipts = useRef(new Set<string>()), receiptChain = useRef<Promise<void>>(Promise.resolve())
@@ -333,6 +356,22 @@ function StoryViewer({ accountUid, peers, startIndex, close }: { accountUid: str
       if (value) { closeLists(accountUid, value); void releaseContactProfile(accountUid, value.profileRequestId) }
     }
   }, [uid])
+
+  // Controller::preloadNext, run once this story is on screen: fetching the next ones must not take
+  // the connection away from the one the viewer is waiting for.
+  useEffect(() => {
+    if (!peer || !item || shownIndex !== itemIndex) return
+    let alive = true
+    const targets = peer.items.slice(itemIndex + 1, itemIndex + 1 + preloadAhead).filter(next => next.page === item.page && next.privacy === item.privacy)
+    void (async () => {
+      for (const next of targets) {
+        if (!alive) return
+        // A story that could not be fetched ahead is simply opened when it is reached.
+        await preloadStory(accountUid, peer, next).catch(() => {})
+      }
+    })()
+    return () => { alive = false }
+  }, [peer, itemIndex, shownIndex])
 
   // Re-read the lists before a story whose 30 second list window has passed.
   useEffect(() => {
@@ -423,7 +462,7 @@ function StoryViewer({ accountUid, peers, startIndex, close }: { accountUid: str
         {error ? <div className="media-viewer-loading" role="alert"><p>{error}</p></div>
           : !peer || !item ? <div className="media-viewer-loading" role="status"><Spinner size={30} /></div>
             : <ContactStoryMedia key={key!} accountUid={accountUid} peer={peer} item={item} paused={stopped} muted={muted}
-              onDuration={setDuration} onTime={setProgress} onEnded={next} onShown={() => markViewed(peer, item)} />}
+              onDuration={setDuration} onTime={setProgress} onEnded={next} onShown={() => { setShownIndex(itemIndex); markViewed(peer, item) }} />}
       </div>
       <button type="button" className="story-tap previous" aria-label={tr('이전')} tabIndex={-1} onClick={previous} />
       <button type="button" className="story-tap next" aria-label={tr('다음')} tabIndex={-1} onClick={next} />

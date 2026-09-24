@@ -53,16 +53,15 @@ function serving(body: Buffer): { fetches: () => number; restore: () => void } {
   return { fetches: () => count, restore: () => { globalThis.fetch = original } }
 }
 
-test('a photo with no placeholder of its own gets one, and only the placeholder is kept', async () => {
+test('nothing is fetched to make a placeholder', async () => {
   const server = serving(png)
   try {
     const previews = new PhotoPreviews(credentials(), () => resource())
-    const expected = Buffer.from(`thumb:${png.length}`).toString('base64')
-    assert.equal(await previews.loadThumb('chat1', request), expected)
-    assert.equal(previews.thumb('chat1', request), expected)
-    assert.equal(previews.url('chat1', request), null, 'the picture it came from is not kept')
-    assert.equal(await previews.loadThumb('chat1', request), expected)
-    assert.equal(server.fetches(), 1, 'a held placeholder is not fetched again')
+    // The limit for this room holds the picture back, so neither the picture nor a placeholder made
+    // from it is fetched: Telegram's small size costs ten kilobytes, and this would cost the whole photo.
+    assert.equal(await previews.load('chat1', request, 0), null)
+    assert.equal(previews.thumb('chat1', request), null)
+    assert.equal(server.fetches(), 0, 'a held back photo costs nothing')
     previews.close()
   } finally { server.restore() }
 })
@@ -71,26 +70,26 @@ test('two bubbles asking at once share one fetch', async () => {
   const server = serving(png)
   try {
     const previews = new PhotoPreviews(credentials(), () => resource())
-    const [first, second] = await Promise.all([previews.loadThumb('chat1', request), previews.loadThumb('chat1', request)])
+    const [first, second] = await Promise.all([previews.load('chat1', request), previews.load('chat1', request)])
     assert.equal(first, second)
     assert.equal(server.fetches(), 1)
     previews.close()
   } finally { server.restore() }
 })
 
-test('a picture shown by automatic download leaves its placeholder behind for when it is turned off', async () => {
+test('a picture that was shown leaves its placeholder behind for when its preview is gone', async () => {
   const server = serving(png)
   try {
     const previews = new PhotoPreviews(credentials(), () => resource())
     assert.match(await previews.load('chat1', request) ?? '', /^morse:\/\/app\/__photo-preview\//)
-    assert.ok(previews.thumb('chat1', request))
-    assert.equal(await previews.loadThumb('chat1', request), previews.thumb('chat1', request))
+    const thumb = previews.thumb('chat1', request)
+    assert.ok(thumb, 'the picture that was fetched to be shown left a placeholder')
     assert.equal(server.fetches(), 1, 'the placeholder came from the picture already here')
     previews.close()
   } finally { server.restore() }
 })
 
-test('reading a placeholder asks no one, and nothing is shrunk from what is not a picture', async () => {
+test('reading a placeholder asks no one, and what is not a picture leaves none', async () => {
   let asked = 0
   const reading = new PhotoPreviews(credentials(), () => { asked++; return resource() })
   assert.equal(reading.thumb('chat1', request), null)
@@ -99,27 +98,55 @@ test('reading a placeholder asks no one, and nothing is shrunk from what is not 
   const server = serving(Buffer.from('<html>not a picture</html>'))
   try {
     const previews = new PhotoPreviews(credentials(), () => resource())
-    assert.equal(await previews.loadThumb('chat1', request), null)
+    assert.equal(await previews.load('chat1', request), null)
     assert.equal(previews.thumb('chat1', request), null)
     previews.close()
   } finally { server.restore() }
-  for (const value of [resource({ blind: true }), resource({ kind: 'video' }), resource({ available: false }), null]) {
-    const previews = new PhotoPreviews(credentials(), () => value)
-    assert.equal(await previews.loadThumb('chat1', request), null)
-    previews.close()
-  }
 })
 
 test('locking or leaving the account forgets every placeholder', async () => {
   const server = serving(png)
   try {
     const previews = new PhotoPreviews(credentials(), () => resource())
-    await previews.loadThumb('chat1', request)
+    await previews.load('chat1', request)
+    assert.ok(previews.thumb('chat1', request))
     previews.clear()
     assert.equal(previews.thumb('chat1', request), null)
-    await previews.loadThumb('chat1', request)
+    await previews.load('chat1', request)
     previews.close()
     assert.equal(previews.thumb('chat1', request), null)
-    assert.equal(await previews.loadThumb('chat1', request), null)
+    assert.equal(await previews.load('chat1', request), null)
+  } finally { server.restore() }
+})
+
+// Telegram keeps one cache entry up to `Settings::maxDataSize` (an entry's length is three bytes, so
+// 16 MiB) and bounds the cache itself by `totalSizeLimit`. A 4 MB cap on one picture refused an
+// ordinary phone photograph, and with it went the placeholder: the bubble showed an icon.
+test('a photograph larger than four megabytes is shown, not refused', async () => {
+  const large = Buffer.concat([png, Buffer.alloc(5 * 1024 * 1024, 3)])
+  const server = serving(large)
+  try {
+    const previews = new PhotoPreviews(credentials(), () => resource())
+    const url = await previews.load('chat1', request)
+    assert.match(url ?? '', /^morse:\/\/app\/__photo-preview\//)
+    assert.equal(previews.url('chat1', request), url)
+    assert.ok(previews.thumb('chat1', request), 'its placeholder is kept too')
+    assert.equal(previews.response(url!.split('/').pop()!, new Request(url!)).status, 200)
+    previews.close()
+  } finally { server.restore() }
+})
+
+// Data::AutoDownload: the limit kept for the kind of peer decides whether a photo is fetched without
+// being asked for. The same picture, asked for by the person, comes with no limit but the preview cap.
+test('a photo over the room’s limit is not fetched until it is asked for', async () => {
+  const large = Buffer.concat([png, Buffer.alloc(2 * 1024 * 1024, 5)])
+  const server = serving(large)
+  try {
+    const previews = new PhotoPreviews(credentials(), () => resource())
+    assert.equal(await previews.load('chat1', request, 1024 * 1024), null, 'over the limit, so it waits')
+    assert.equal(previews.url('chat1', request), null)
+    assert.equal(previews.thumb('chat1', request), null, 'nothing is kept from a picture that was not read')
+    assert.match(await previews.load('chat1', request) ?? '', /^morse:\/\/app\/__photo-preview\//, 'asked for, it is fetched')
+    previews.close()
   } finally { server.restore() }
 })

@@ -4,7 +4,7 @@ import type { ReadCredentials, ReadAuthorization } from './firestore-rpc'
 import { tr } from '../../shared/i18n'
 export class GroupCreateFailure extends Error { constructor(readonly uncertain: boolean) { super(uncertain ? tr('그룹 생성 결과를 확인해야 합니다.') : tr('그룹 생성 요청이 거절되었습니다.')) } }
 export async function createGroup(auth: ReadCredentials, uid: string, request: GroupCreateRequest, signal: AbortSignal, validate: () => void,
-  autoDelete: { seconds: number; myOnly: boolean } = { seconds: 0, myOnly: false }): Promise<void> {
+  autoDelete: { seconds: number } = { seconds: 0 }): Promise<void> {
   const bounded = AbortSignal.any([auth.signal, signal, AbortSignal.timeout(65000)])
   let authorization: ReadAuthorization
   try { bounded.throwIfAborted(); validate(); authorization = await auth.authorize(bounded, false); bounded.throwIfAborted(); validate() }
@@ -14,7 +14,7 @@ export async function createGroup(auth: ReadCredentials, uid: string, request: G
       method: 'POST', signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken },
       body: JSON.stringify({ data: { chatId: request.chatId, name: request.name, participantUids: [uid, ...request.participantUids],
-        ...(autoDelete.seconds > 0 ? { autoDeleteSeconds: autoDelete.seconds, autoDeleteMyOnly: autoDelete.myOnly } : {}) } })
+        ...(autoDelete.seconds > 0 ? { autoDeleteSeconds: autoDelete.seconds, autoDeleteMyOnly: false } : {}) } })
     })
     if (!response.body) throw new GroupCreateFailure(true)
     const reader = response.body.getReader(), chunks: Uint8Array[] = []

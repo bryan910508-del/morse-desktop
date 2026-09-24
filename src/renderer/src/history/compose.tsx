@@ -25,7 +25,6 @@ import { showScheduleBox } from './deferred-send'
 import { showEventBox } from './event-box'
 import { tr } from '../../../shared/i18n'
 
-const kindLabels: Record<string, string> = { image: tr('사진'), video: tr('동영상'), voice: tr('음성 메시지'), file: tr('파일'), sticker: tr('스티커'), channelPost: tr('채널 게시물'), location: tr('위치'), event: tr('일정'), unsupported: tr('메시지') }
 
 // HistoryView::ComposeControls: local draft saved on every change, immediate
 // send into the durable outbox, reply/edit bars and the voice record bar.
@@ -203,7 +202,8 @@ export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, 
     } }
   ])
   const replyText = reply.status === 'loading' ? tr('원본을 불러오는 중…') : reply.status === 'unavailable' ? tr('원본 메시지를 볼 수 없습니다. 답장을 해제해 주세요.') : reply.status === 'error' ? tr('원본을 확인하지 못했습니다.')
-    : reply.preview?.state === 'ready' ? `${reply.preview.kind !== 'text' ? `${kindLabels[reply.preview.kind] ?? ''} ` : ''}${reply.preview.text}` : ''
+    // The bar shows the original's own preview, which already names its kind (ReplyContext.originalPreview).
+    : reply.preview?.state === 'ready' ? reply.preview.text : ''
 
   const roundVideo: RoundVideoTarget = {
     surface: 'chat',

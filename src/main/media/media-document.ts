@@ -30,7 +30,13 @@ function storageRoots(scope: MediaScope, kind: AttachmentKind): string[] {
   if (scope === 'inquiry') return ['inquiry_files', 'inquiry_media', 'inquiry_videos']
   return kind === 'file' || kind === 'voice' ? ['chat_files'] : ['chat_media', 'chat_videos']
 }
-function storagePath(raw: string, chatId: string, kind: AttachmentKind, scope: MediaScope = 'chat'): string | null {
+// A room's media sits in a folder named after the room. A channel's discussion room can answer to two
+// names — the server keeps `channels/{id}.discussionChatId`, which is `channel_discuss_{channelId}` for
+// a room it made itself but the older id for a room that already existed (functions
+// onChannelCreatedEnsureDiscussion) — and iOS uploads under whichever name the message itself carries
+// (MorsePendingMediaUploadManager: `chat_media/\(message.chatId)`). So the folder must match one of the
+// names this room is known by, not only the one the dialog was read under.
+function storagePath(raw: string, chatId: string | readonly string[], kind: AttachmentKind, scope: MediaScope = 'chat'): string | null {
   try {
     let path: string
     if (raw.startsWith(`gs://${storageBucket}/`)) path = raw.slice(storageBucket.length + 6)
@@ -42,14 +48,17 @@ function storagePath(raw: string, chatId: string, kind: AttachmentKind, scope: M
       path = decodeURIComponent(url.pathname.slice(prefix.length))
     }
     const parts = path.split('/')
-    const roots = storageRoots(scope, kind)
-    if (parts.length !== 3 || !roots.includes(parts[0]!) || parts[1] !== chatId ||
+    const roots = storageRoots(scope, kind), names = typeof chatId === 'string' ? [chatId] : chatId
+    // This module is reached from the delivery worker (channel-post-creation-table), and a worker thread
+    // cannot require electron — anything that does kills it the moment it starts. So nothing here may
+    // reach the diagnostics, which write through app.getPath('logs'). See workerSafeModules.
+    if (parts.length !== 3 || !roots.includes(parts[0]!) || !names.includes(parts[1]!) ||
         parts.some(part => !part || part === '.' || part === '..' || /[\x00-\x1f\x7f\\]/.test(part)) || /\.e2e$/i.test(path)) return null
     return path
   } catch { return null }
 }
 
-export function mediaResources(doc: FirestoreDocument, chatId: string, rawKind: string, encrypted: boolean, scope: MediaScope = 'chat'): MediaResource[] {
+export function mediaResources(doc: FirestoreDocument, chatId: string | readonly string[], rawKind: string, encrypted: boolean, scope: MediaScope = 'chat'): MediaResource[] {
   // onChannelPostCreated mirrors a channel post into its discussion room with the post's picture in thumbnailUrl,
   // under the channel's own folder. iOS draws that picture in the card (MorseChatUIKitNativeChannelPostRow).
   if (!encrypted && rawKind === 'channelPost') {

@@ -66,7 +66,7 @@ import { noteEditComparisonRequest } from '../shared/space-note-edit-comparison'
 import { noteEditDraftStart, noteEditDraftTarget, noteEditDraftWrite } from '../shared/space-note-edit-drafts'
 import { notePinRequest } from '../shared/space-note-pin'
 import { noteCreationPrepare, noteCreationAction } from '../shared/space-note-creation'
-import { noteDraftWrite } from '../shared/space-note-drafts'
+import { noteDraftTarget, noteDraftWrite } from '../shared/space-note-drafts'
 import { spaceNoteSelection } from '../shared/space-notes'
 import { publicChannelPhotosRequest, publicChannelPreviewRequest } from '../shared/channel-public-preview'
 import { channelDiscoveryRequest } from '../shared/channel-discovery'
@@ -164,6 +164,7 @@ import { AppLock } from './platform/app-lock'
 import { LocalDataKey } from './platform/local-data-key'
 import { setLocalDataKey } from './storage/delivery-client'
 import { recordAvatarStep } from './platform/avatar-diagnostics'
+import { watchForStalls } from './platform/heartbeat'
 import { ChatTranslator } from './platform/translation'
 import { MediaHelper } from './platform/media-helper'
 import { schemeLinkTarget } from '../shared/text-links'
@@ -585,15 +586,27 @@ function registerIPC(): void {
     await accounts.requireActive(identifier(uid)).accountTools.deleteAccount()
     await authentication.forgetDeleted(identifier(uid))
   })
-  handle('set-chat-auto-delete', (uid, chatId, seconds, myOnly) => {
+  handle('set-chat-auto-delete', (uid, chatId, seconds) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     const session = accounts.requireActive(identifier(uid)), id = identifier(chatId)
-    if (typeof seconds !== 'number' || autoDeleteSecondsValue(seconds) !== seconds || typeof myOnly !== 'boolean') throw new Error(tr('자동 삭제 시간을 다시 선택해 주세요.'))
+    if (typeof seconds !== 'number' || autoDeleteSecondsValue(seconds) !== seconds) throw new Error(tr('자동 삭제 시간을 다시 선택해 주세요.'))
     const dialog = session.dialogs().find(item => item.id === id)
     if (!dialog || !canChangeAutoDelete(dialog, session.profile.uid)) throw new Error(tr('이 대화의 자동 삭제 설정을 바꿀 수 없습니다.'))
-    const nextMyOnly = seconds > 0 && myOnly
-    if ((dialog.autoDeleteSeconds ?? 0) === seconds && (seconds === 0 || Boolean(dialog.autoDeleteMyOnly) === nextMyOnly)) return 'done'
-    return session.accountTools.setChatAutoDelete(id, seconds, nextMyOnly)
+    // An unchanged period writes nothing, as Telegram sends nothing when the picked value equals the current one
+    // (PeerAutoremoveSetupScreen.swift:206-233), so no room is told a policy changed that did not.
+    if ((dialog.autoDeleteSeconds ?? 0) === seconds) return 'done'
+    return session.accountTools.setChatAutoDelete(id, seconds)
+  })
+  // The account's default for new chats, kept in users/{uid}/private/chatSettings so every device of that
+  // account sees the same value — iOS MorseAccountAutoDeleteDefault, Telegram messages.get/setDefaultHistoryTTL.
+  handle('account-auto-delete-default', (uid) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).autoDeleteDefault()
+  })
+  handle('set-account-auto-delete-default', (uid, seconds) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    if (typeof seconds !== 'number' || autoDeleteSecondsValue(seconds) !== seconds) throw new Error(tr('자동 삭제 시간을 다시 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).setAutoDeleteDefault(seconds)
   })
   const inquiries = (uid: unknown) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
@@ -608,6 +621,10 @@ function registerIPC(): void {
   handle('send-inquiry-message', (uid, raw) => inquiries(uid).send(inquirySendRequest(raw)))
   handle('edit-inquiry-message', (uid, raw) => inquiries(uid).edit(inquiryEditRequest(raw)))
   handle('delete-inquiry-message', (uid, raw) => inquiries(uid).remove(inquiryTargetRequest(raw)))
+  handle('channel-posts-seen', (uid, channelId, ids) => {
+    if (screenLocked || !Array.isArray(ids) || !ids.length || ids.length > 50) return
+    accounts.active?.profile.uid === identifier(uid) && accounts.active.channelPostsSeen(identifier(channelId), [...new Set(ids.map(identifier))])
+  })
   handle('react-inquiry-message', (uid, raw) => inquiries(uid).react(inquiryReactionRequest(raw)))
   handle('pin-inquiry-message', (uid, raw) => inquiries(uid).setPinned(inquiryPinRequest(raw)))
   handle('set-inquiry-auto-delete', (uid, raw) => inquiries(uid).setAutoDelete(inquiryAutoDeleteRequest(raw)))
@@ -1355,12 +1372,21 @@ function registerIPC(): void {
       return await account.saveStoryComposerPhoto(request, bytes, pair.thumbnail)
     } finally { bytes?.fill(0); if (input instanceof Uint8Array) input.fill(0); if (thumbnail instanceof Uint8Array) thumbnail.fill(0); backgroundPhotos.release(request.sourceId) }
   })
+  // A draft is opened before it is written, the way the post, comment and edit drafts are.
+  handle('read-story-composer-draft', (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).readStoryComposerDraft(storyComposerDraftTarget(raw))
+  })
   handle('save-story-composer-draft', (uid, raw) => {
     const account = accounts.requireActive(identifier(uid)), request = storyComposerDraftWrite(raw)
     if (request.draft === null) { storySavedAudio.clear();storySavedVideos.clear() }
     const result = account.saveStoryComposerDraft(request)
     return request.draft === null ? result.finally(() => { storySavedAudio.clear();storySavedVideos.clear() }) : result
   }, true)
+  handle('read-note-draft', (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).readNoteDraft(noteDraftTarget(raw))
+  })
   handle('save-note-draft', (uid, raw) => accounts.requireActive(identifier(uid)).saveNoteDraft(noteDraftWrite(raw)), true)
   handle('search-note-page', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
@@ -1405,6 +1431,33 @@ function registerIPC(): void {
     return active.contactStoryPhotoAudio.open(request)
   })
   handle('close-contact-story-photo-audio', (uid, id) => accounts.requireActive(identifier(uid)).contactStoryPhotoAudio.dismiss(identifier(id)), true)
+  // Media::Stories::Controller::preloadNext reads the stories around the one on screen before they are
+  // opened. These do that fetch: nothing on screen is replaced, and what is read waits in the account's
+  // cache for the moment the viewer moves on.
+  handle('preload-contact-public-story-photo', (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    const request = contactPublicStoryPhotoRequest(raw), active = accounts.requireActive(identifier(uid))
+    active.contactPublicStories.photoSource(request)
+    return active.contactPublicStoryPhoto.preload(request)
+  })
+  handle('preload-contact-public-story-video', (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    const request = contactPublicStoryVideoRequest(raw), active = accounts.requireActive(identifier(uid))
+    active.contactPublicStories.videoSource(request)
+    return active.contactPublicStoryVideo.preload(request)
+  })
+  handle('preload-contact-audience-story-photo', (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    const request = contactAudienceStoryPhotoRequest(raw), active = accounts.requireActive(identifier(uid))
+    active.contactAudienceStories.photoSource(request); active.contactStoryAudience.extendForMedia(request.audienceId, request.profileRequestId, request.privacy)
+    return active.contactAudienceStoryPhoto.preload(request)
+  })
+  handle('preload-contact-audience-story-video', (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    const request = contactAudienceStoryVideoRequest(raw), active = accounts.requireActive(identifier(uid))
+    active.contactAudienceStories.videoSource(request); active.contactStoryAudience.extendForMedia(request.audienceId, request.profileRequestId, request.privacy)
+    return active.contactAudienceStoryVideo.preload(request)
+  })
   handle('open-contact-audience-story-video', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     const request = contactAudienceStoryVideoRequest(raw), active = accounts.requireActive(identifier(uid))
@@ -2322,11 +2375,13 @@ function registerIPC(): void {
   })
   handle('refresh-dialogs', uid => accounts.requireActive(identifier(uid)).refresh())
   handle('open-media', (uid, chatId, request) => accounts.requireActive(identifier(uid)).openMedia(identifier(chatId), mediaRequest(request)))
-  // Telegram's automatic media download: the renderer asks per photo message, and the preference
-  // decides whether it asks at all. A picture that cannot be previewed answers with nothing.
-  handle('photo-preview', (uid, chatId, request) => {
+  // Telegram's automatic media download: the renderer asks for every photo, and the limit kept for that
+  // kind of peer decides whether it is fetched (Data::AutoDownload). `asked` is the person pressing the
+  // picture themselves, which passes no limit. A picture that cannot be previewed answers with nothing.
+  handle('photo-preview', (uid, chatId, request, asked) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).photoPreview(identifier(chatId), mediaRequest(request))
+    if (typeof asked !== 'boolean') throw new Error(tr('사진을 다시 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).photoPreview(identifier(chatId), mediaRequest(request), asked ? null : settings.preferences.autoDownloadPhotos)
   })
   // The placeholder for a photo whose message carried none: fetched once, kept as a few hundred
   // bytes, and drawn blurred. Telegram fetches the small size here whatever the preference says.
@@ -2988,6 +3043,7 @@ else {
     })()
   })
   void app.whenReady().then(async () => {
+    watchForStalls()
     if (app.isPackaged) for (const scheme of ['morse', 'talky']) app.setAsDefaultProtocolClient(scheme)
     if (!['darwin', 'win32'].includes(process.platform)) throw new Error(tr('macOS와 Windows에서 사용할 수 있습니다.'))
     settings = new SettingsStore(app.getPath('userData'))

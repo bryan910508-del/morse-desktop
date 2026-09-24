@@ -18,6 +18,7 @@ import { popupMenu, pointFor } from '../ui/popup-menu'
 import { CommentsThread } from './channel-comments-panel'
 import { showChannelMedia } from './channel-media-viewer'
 import { locale, tr } from '../../../shared/i18n'
+import { subscriberCountText } from '../../../shared/channel-subscriber-count'
 
 interface LikeOverride { revision: string; selected: boolean; count: number }
 
@@ -193,7 +194,7 @@ function ChannelDiscoveryBox({ accountUid, initialLink, close }: { accountUid: s
             <div className="info-cover">
               <Avatar name={metadata.name} url={avatarUrl} size={72} kind="channel" />
               <h2 className="selectable">{metadata.name}</h2>
-              <span>{metadata.subscriberCount !== null ? tr('구독자 {0}명', [metadata.subscriberCount.toLocaleString(locale())]) : tr('공개 채널')}{metadata.ownerName ? ` · ${metadata.ownerName}` : ''}</span>
+              <span>{metadata.subscriberCount !== null ? subscriberCountText(metadata.subscriberCount) : tr('공개 채널')}{metadata.ownerName ? ` · ${metadata.ownerName}` : ''}</span>
             </div>
             {metadata.description && <p className="channel-preview-description selectable">{metadata.description}</p>}
             {metadata.tags && metadata.tags.length > 0 && <p className="channel-preview-tags">{metadata.tags.map(tag => `#${tag}`).join(' ')}</p>}
@@ -232,7 +233,7 @@ function ChannelDiscoveryBox({ accountUid, initialLink, close }: { accountUid: s
                   {search.rows.map(row => <button key={row.id} type="button" className="peer-row" onClick={() => openRow(row.id, row.version)}>
                     <Avatar name={row.name} size={42} kind="channel" />
                     <span className="peer-row-text"><strong className="ellipsis">{row.name}</strong>
-                      <small className="ellipsis">{[row.subscriberCount !== null ? tr('구독자 {0}명', [row.subscriberCount.toLocaleString(locale())]) : '', row.tags?.length ? row.tags.map(tag => `#${tag}`).join(' ') : row.description].filter(Boolean).join(' · ')}</small></span>
+                      <small className="ellipsis">{[row.subscriberCount !== null ? subscriberCountText(row.subscriberCount) : '', row.tags?.length ? row.tags.map(tag => `#${tag}`).join(' ') : row.description].filter(Boolean).join(' · ')}</small></span>
                   </button>)}
                   {search.limited && <p className="box-note channel-discovery-limit">{tr('결과가 많아 일부만 표시합니다. 더 구체적으로 검색해 보세요.')}</p>}
                 </div>}

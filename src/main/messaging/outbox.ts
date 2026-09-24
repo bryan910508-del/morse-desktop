@@ -61,7 +61,8 @@ import type { ChatBackgroundCommand } from '../storage/chat-background-table'
 import type { ProfileUploadCommand } from '../storage/profile-photo-upload-table'
 import { maxQueuedMessages } from '../../shared/delivery'
 import { outgoingText } from '../../shared/validation'
-import { DeliveryCommandFailure, DeliveryRepository } from '../storage/delivery-client'
+import { DeliveryCommandFailure, DeliveryRepository, LocalDataKeyUnavailable } from '../storage/delivery-client'
+import { recordDeliveryStep } from '../platform/delivery-diagnostics'
 import type { DeliveryCommand, StoredIntent } from '../storage/delivery-protocol'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
 import { documents, stringField } from '../network/firestore-values'
@@ -69,6 +70,7 @@ import { NotEmitted, ServerRejection } from '../network/contracts'
 import { outgoingCategory } from '../../shared/forum'
 import { stickerContentType, stickerSidePx, type StickerKind } from '../../shared/stickers'
 import { definiteRejections, deliveryReason, retryableRejections, textDigest } from './text-identity'
+import { draftPreviewChars } from '../../shared/chat-list-preview'
 import { directChatId } from './direct-chat-id'
 import { tr } from '../../shared/i18n'
 
@@ -102,6 +104,7 @@ export class OutboxPump {
   private initialized = false
   private closed = false
   private storageFailed = false
+  private storageReason: 'key' | 'storage' = 'storage'
   private generation = new AbortController()
   private task: Promise<void> | null = null
   private rerun = false
@@ -129,7 +132,7 @@ export class OutboxPump {
     previousClose: Promise<void>, private readonly context: () => ReadContext,
     private readonly changed: (chatId: string, snapshot: OutgoingSnapshot) => void,
     private readonly pendingChanged: () => void,
-    private readonly newChatAutoDelete: () => { seconds: number; myOnly: boolean } = () => ({ seconds: 0, myOnly: false })) {
+    private readonly newChatAutoDelete: () => { seconds: number } = () => ({ seconds: 0 })) {
     this.opening = (async () => {
       await previousClose
       if (this.closed || auth.signal.aborted) return
@@ -141,7 +144,13 @@ export class OutboxPump {
       this.joinChat = participation?.chatId ?? null
       this.initialized = true
       if (!this.closed) { this.resume(); void this.publish(); this.pendingChanged() }
-    })().catch(() => { this.blockStorage() })
+    })().catch(error => {
+      // Until now the reason was dropped here, so a refused keychain and a worker that never started
+      // looked the same from the outside: «앱을 다시 열어 주세요» and nothing written down.
+      const key = error instanceof LocalDataKeyUnavailable
+      recordDeliveryStep('open-failed', key ? 'key' : error instanceof DeliveryCommandFailure ? `ready-${error.code}` : error instanceof Error ? error.name : 'unknown')
+      this.blockStorage(key ? 'key' : 'storage')
+    })
   }
   // A dialog is its peer (Telegram PeerId): a room whose pair already has a dialog under another id is that
   // dialog. It is reported with supersededBy, so it is not listed and a window showing it moves over.
@@ -199,13 +208,21 @@ export class OutboxPump {
     if (!await this.store<boolean>({ kind: 'direct-discard', chatId })) throw new Error(tr('이미 전송을 시작한 대화는 여기서 삭제할 수 없습니다.'))
     this.known.delete(chatId); await this.refreshPending()
   }
-  private queueAvailable(chatId: string): boolean {
-    const state = this.context()
+  // What this device can write into the queue: the storage is open and the room is one this account
+  // may write to. The connection is not part of it — Telegram decides whether a person may write from
+  // rights alone (HistoryWidget's _canSendMessages comes from Data::CanSendAnyOf(peer, restrictions);
+  // neither it nor send() looks at the connection), and a message written while the connection is
+  // coming back is queued and goes when it returns. That is what this outbox already does: enqueue
+  // writes to the delivery store and the pump, which does check the connection, sends it later.
+  private writable(chatId: string): boolean {
     return !this.closed && !this.auth.signal.aborted && !this.storageFailed && this.initialized &&
-      this.auth.sender.ready && state.ready && this.targetExists(chatId) && this.joinChat !== chatId
+      this.targetExists(chatId) && this.joinChat !== chatId
+  }
+  private queueAvailable(chatId: string): boolean {
+    return this.writable(chatId) && this.auth.sender.ready && this.context().ready
   }
   private composeAllowed(chatId: string): boolean { return this.context().dialogs.get(chatId)?.composeAccess !== false }
-  private eligible(chatId: string): boolean { return this.queueAvailable(chatId) && this.composeAllowed(chatId) }
+  private eligible(chatId: string): boolean { return this.writable(chatId) && this.composeAllowed(chatId) }
   private active(signal: AbortSignal): boolean {
     return !this.closed && !signal.aborted && !this.auth.signal.aborted && this.context().ready && this.auth.sender.ready && !this.storageFailed
   }
@@ -216,7 +233,9 @@ export class OutboxPump {
     if ((this.closed && command.kind !== 'release-unemitted') || this.storageFailed || !this.repository) throw new Error(tr('전송 저장소를 사용할 수 없습니다.'))
     validate()
     try { return await this.repository.call<T>(command) }
-    catch (error) { if (!(error instanceof DeliveryCommandFailure) || error.code === 'storage') this.blockStorage(); throw error }
+    // A command that failed is not a storage that is gone: only a store that has given up stops the
+    // account from writing, as Telegram keeps its cache database after an operation returns an error.
+    catch (error) { if (!this.repository?.usable) this.blockStorage('storage'); throw error }
   }
   // Read synchronization owns a separate coordinator/table and shares only the
   // account/session-scoped worker's storage lifetime and close barrier.
@@ -299,8 +318,8 @@ export class OutboxPump {
   }
   private frame(chatId: string, rows: StoredIntent[], revision: number): OutgoingSnapshot {
     const visible = !this.closed && !this.auth.signal.aborted && this.targetExists(chatId)
-    return { revision, canCompose: this.eligible(chatId), canDiscard: this.queueAvailable(chatId), policyHeld: !this.composeAllowed(chatId), writingBlocked: this.joinChat === chatId || !this.composeAllowed(chatId), message: this.storageFailed ? tr('전송 저장소를 사용할 수 없습니다. 앱을 다시 열어 주세요.') :
-      !this.initialized ? tr('전송 기록을 불러오는 중…') : this.joinChat === chatId ? tr('토론방 참여 기록을 확인한 뒤 작성할 수 있습니다.') : !this.composeAllowed(chatId) ? this.context().dialogs.get(chatId)?.composeMessage || tr('토론방 작성 조건을 확인해 주세요.') : !this.eligible(chatId) ? tr('대화와 연결을 확인한 뒤 전송할 수 있습니다.') : '',
+    return { revision, canCompose: this.eligible(chatId), canDiscard: this.queueAvailable(chatId), policyHeld: !this.composeAllowed(chatId), writingBlocked: this.joinChat === chatId || !this.composeAllowed(chatId), message: this.storageFailed ? (this.storageReason === 'key' ? tr('키체인 접근을 허용한 뒤 앱을 다시 열어 주세요.') : tr('전송 저장소를 사용할 수 없습니다. 앱을 다시 열어 주세요.')) :
+      !this.initialized ? tr('전송 기록을 불러오는 중…') : this.joinChat === chatId ? tr('토론방 참여 기록을 확인한 뒤 작성할 수 있습니다.') : !this.composeAllowed(chatId) ? this.context().dialogs.get(chatId)?.composeMessage || tr('토론방 작성 조건을 확인해 주세요.') : !this.eligible(chatId) ? tr('이 대화에는 지금 메시지를 보낼 수 없습니다.') : '',
       items: visible ? [...rows.filter(row => row.chatId === chatId), ...[...this.sent.values()].map(entry => entry.row)
         .filter(row => row.chatId === chatId && !rows.some(other => other.id === row.id))].map(row => this.sent.has(row.id) && !rows.some(other => other.id === row.id) ? {
         id: row.id, chatId, text: pendingText(row), replyToId: row.wire.replyToId, createdAt: row.createdAt, state: 'sent' as const, reason: '', busy: false,
@@ -331,11 +350,13 @@ export class OutboxPump {
   forget(chatId: string): void { this.views.delete(chatId) }
   private async publish(): Promise<void> {
     const revision = ++this.revision
-    let rows: StoredIntent[] = []
+    let rows: StoredIntent[] = [], drafts: Record<string, string> = {}
     if (this.initialized && !this.closed && !this.storageFailed) {
       try { rows = await this.store<StoredIntent[]>({ kind: 'list' }) } catch { /* frame exposes the storage failure */ }
+      try { drafts = await this.store<Record<string, string>>({ kind: 'drafts' }) } catch { /* a row simply shows its last message */ }
     }
     this.noteChatSends(rows)
+    this.noteChatDrafts(drafts)
     for (const chatId of this.views) this.changed(chatId, this.frame(chatId, rows, revision))
   }
   // iOS MorseChatListRowDisplay hasFailedOutgoing / hasSendingOutgoing: a room's row marks a message of mine that
@@ -360,9 +381,27 @@ export class OutboxPump {
     const entry = this.chatSends.get(chatId)
     return { failed: Boolean(entry?.failed), sending: Boolean(entry?.newest && (top === null || entry.newest > top)) }
   }
-  private blockStorage(): void {
+  // Telegram's chat list shows what this account was writing in a room it left (dialogs_layout.cpp
+  // paints lng_from_draft in place of the last message). The drafts are this device's own, so they are
+  // kept here beside the sends and read back without touching the store.
+  private chatDrafts = new Map<string, string>()
+  private noteChatDrafts(next: Record<string, string>): void {
+    const entries = Object.entries(next)
+    const same = entries.length === this.chatDrafts.size && entries.every(([id, text]) => this.chatDrafts.get(id) === text)
+    this.chatDrafts = new Map(entries)
+    if (!same) this.pendingChanged()
+  }
+  private noteChatDraft(chatId: string, text: string): void {
+    const kept = text.slice(0, draftPreviewChars)
+    if ((this.chatDrafts.get(chatId) ?? '') === kept) return
+    if (kept) this.chatDrafts.set(chatId, kept); else this.chatDrafts.delete(chatId)
+    this.pendingChanged()
+  }
+  chatDraft(chatId: string): string { return this.chatDrafts.get(chatId) ?? '' }
+  private blockStorage(reason: 'key' | 'storage'): void {
     if (this.storageFailed || this.closed) return
-    this.storageFailed = true; this.pause(); void this.publish()
+    recordDeliveryStep('blocked', reason)
+    this.storageFailed = true; this.storageReason = reason; this.pause(); void this.publish()
   }
   async draft(chatId: string): Promise<string> {
     await this.opening
@@ -454,9 +493,11 @@ export class OutboxPump {
     // This authorizes local draft persistence only, never remote transmission.
     if (!this.known.has(chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
     await this.store({ kind: 'save-draft', chatId, text })
+    // The row keeps up with the keystrokes instead of waiting for the next publish to read them back.
+    this.noteChatDraft(chatId, text)
   }
   async enqueue(chatId: string, rawText: string, id: string, reply: ReplyBinding | null = null, validateReply: () => void = () => {}, silent = false): Promise<void> {
-    if (!this.eligible(chatId)) throw new Error(tr('대화와 연결을 확인한 뒤 전송해 주세요.'))
+    if (!this.eligible(chatId)) throw new Error(tr('이 대화에는 지금 메시지를 보낼 수 없습니다.'))
     // Send menu «무음 전송»: the recipient gets no notification sound.
     const wire: TextSendWire = { id, chatId, senderId: this.uid, type: 'text', text: outgoingText(rawText), isSilent: silent, isEncrypted: false, protocolVersion: 3 }
     const pending = this.pending.get(chatId)
@@ -464,7 +505,7 @@ export class OutboxPump {
       wire.peerUid = pending.peerUid; wire.chatType = 'direct'
       // AppState new chat: the device default applies when this message creates the chat.
       const policy = this.newChatAutoDelete()
-      if (policy.seconds > 0) { wire.autoDeleteSeconds = policy.seconds; wire.autoDeleteMyOnly = policy.myOnly }
+      if (policy.seconds > 0) { wire.autoDeleteSeconds = policy.seconds; wire.autoDeleteMyOnly = false }
     }
     if (reply) wire.replyToId = reply.messageId
     const category = outgoingCategory(this.context().dialogs.get(chatId))
@@ -476,7 +517,7 @@ export class OutboxPump {
     }
     const rows = await this.store<StoredIntent[]>({ kind: 'list' })
     if (rows.length >= maxQueuedMessages && !rows.some(row => row.id === id)) throw new Error(tr('전송 대기 메시지가 100개입니다. 먼저 대기 목록을 정리해 주세요.'))
-    if (!this.eligible(chatId)) throw new Error(tr('연결 상태가 변경되었습니다.'))
+    if (!this.eligible(chatId)) throw new Error(tr('이 대화에는 지금 메시지를 보낼 수 없습니다.'))
     if (reply) validateReply()
     await this.store({ kind: 'enqueue', wire, expectedDraft: rawText, reply })
     if (pending) await this.refreshPending()

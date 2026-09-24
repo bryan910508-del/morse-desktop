@@ -5,6 +5,7 @@ import { constants } from 'node:fs'
 import { basename } from 'node:path'
 import { maxAlbumPhotos, type AttachmentDraft, type AttachmentFile, type AttachmentMode, type AttachmentDropMode, type VideoFacts } from '../../shared/uploads'
 import { rangeResponse } from './range-response'
+import { outgoingPhotoPlaceholder } from './outgoing-placeholder'
 import { backgroundImageInfo } from '../../shared/background-photo-bytes'
 import type { MediaSendWire } from '../../shared/model'
 import type { UploadDescriptor } from '../storage/upload-protocol'
@@ -66,16 +67,16 @@ export class AttachmentStaging {
       try { const info = backgroundImageInfo(new Uint8Array(part.bytes)); return { width: info.width, height: info.height } } catch { return null }
     }) : []
     const measured = sizes.length && sizes.every(Boolean) ? sizes as { width: number; height: number }[] : []
-    // Telegram sends a tiny blurred placeholder with the message, so a photo shows its shape and
-    // colours before anything is downloaded. Morse carries none for photos, so this one is made
-    // here, at 32px, and travels in thumbData; a picture that cannot be read simply travels without.
-    const placeholder = ((): string => {
-      if (first.item.kind !== 'image') return ''
-      try {
-        const small = nativeImage.createFromBuffer(first.bytes).resize({ width: 32, quality: 'good' }).toJPEG(50).toString('base64')
-        return small.length <= 8000 ? small : ''
-      } catch { return '' }
-    })()
+    // The placeholder the photo travels with, made by the ladder iOS and Android both walk
+    // (outgoing-placeholder.ts). It follows the LONG side, so a tall photo is not shrunk twice over,
+    // and a picture that cannot be read simply travels without one.
+    const placeholder = first.item.kind !== 'image' ? '' : outgoingPhotoPlaceholder((side, quality) => {
+      const image = nativeImage.createFromBuffer(first.bytes)
+      const { width, height } = image.getSize()
+      if (!width || !height) return null
+      const fit = width >= height ? { width: Math.max(1, Math.min(width, side)) } : { height: Math.max(1, Math.min(height, side)) }
+      return image.resize({ ...fit, quality: 'good' }).toJPEG(quality)
+    })
     const wire: MediaSendWire = { id, chatId, senderId: uid, type: first.item.kind,
       text: first.item.kind === 'file' ? first.item.name : '', mediaUrl: '', isSilent: false, isEncrypted: false, protocolVersion: 3,
       ...(measured.length ? { mediaWidthPx: measured[0]!.width, mediaHeightPx: measured[0]!.height } : {}),

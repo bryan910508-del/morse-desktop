@@ -8,8 +8,8 @@ import { useDesktopEvent } from '../app/store'
 import { dialogTime, errorText } from '../app/format'
 import { Spinner } from '../ui/controls'
 import { tr } from '../../../shared/i18n'
+import { messageKindLabel } from '../../../shared/message-kinds'
 
-const kinds = { text: '', image: tr('사진'), video: tr('동영상'), voice: tr('음성 메시지'), file: tr('파일'), sticker: tr('스티커'), location: tr('위치'), event: tr('일정'), channelPost: tr('채널 게시물'), unsupported: '' }
 
 // Search in chat: results listed beside the history; selecting jumps there.
 export function ChatSearchPanel({ accountUid, chatId }: { accountUid: string; chatId: string }) {
@@ -63,7 +63,7 @@ export function ChatSearchPanel({ accountUid, chatId }: { accountUid: string; ch
         <p className="side-note" role="status">{value.status === 'loading' ? tr('검색 중…') : tr('결과 {0}개', [value.hits.length])}{value.limited ? tr(' · 표시 한도에 도달했습니다') : ''}</p>
         {value.hits.map(hit => <button key={hit.id} type="button" className="search-hit" disabled={jumping !== null} onClick={() => { void jump(hit.id) }}>
           <span className="search-hit-line"><strong className="ellipsis">{hit.sender}</strong><time>{dialogTime(positionMilliseconds(hit.position))}</time></span>
-          <span className="search-hit-text ellipsis">{kinds[hit.kind] ? `${kinds[hit.kind]} · ` : ''}{hit.snippet}</span>
+          <span className="search-hit-text ellipsis">{messageKindLabel(hit.kind) ? `${messageKindLabel(hit.kind)} · ` : ''}{hit.snippet}</span>
         </button>)}
         {value.status === 'loading' && <div className="empty-state"><Spinner size={20} /></div>}
         {value.status === 'ready' && value.hasMore && !value.limited && <button className="button flat block" onClick={() => { void more() }}>{tr('이전 기록 더 검색')}</button>}

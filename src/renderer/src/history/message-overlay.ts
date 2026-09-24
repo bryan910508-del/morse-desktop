@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import type { ChatMessage } from '../../../shared/model'
+import type { ChatMessage, MessagePoll } from '../../../shared/model'
 import type { MessageActionsSnapshot, ReactionSummary } from '../../../shared/message-actions'
 import { controller } from '../app/ui'
 import { errorText } from '../app/format'
@@ -8,6 +8,7 @@ import { tr } from '../../../shared/i18n'
 // HistoryItem local state: an edit, delete or reaction is shown immediately.
 // The durable action queue in main applies it; a failure restores the item.
 type Change = { id: string; kind: 'edit'; text: string; version: string } | { id: string; kind: 'delete'; version: string } | { id: string; kind: 'reaction'; reactions: ReactionSummary[]; version: string }
+  | { id: string; kind: 'poll-vote'; poll: MessagePoll; version: string }
 const changes = new Map<string, Change>()
 let revision = 0
 const listeners = new Set<() => void>()
@@ -21,6 +22,7 @@ export function overlayMessage(message: ChatMessage): ChatMessage | null {
   if (!change || change.version !== message.version) return message
   if (change.kind === 'delete') return null
   if (change.kind === 'edit') return { ...message, text: change.text, edited: true }
+  if (change.kind === 'poll-vote') return { ...message, poll: change.poll }
   return { ...message, reactions: change.reactions }
 }
 
@@ -58,7 +60,7 @@ export function reconcileActions(accountUid: string, chatId: string, snapshot: M
   }
 }
 
-async function mutate(accountUid: string, message: ChatMessage, change: Change, request: { kind: 'edit'; text: string } | { kind: 'delete' } | { kind: 'reaction'; reactions: string[] }): Promise<void> {
+async function mutate(accountUid: string, message: ChatMessage, change: Change, request: { kind: 'edit'; text: string } | { kind: 'delete' } | { kind: 'reaction'; reactions: string[] } | { kind: 'poll-vote'; options: number[] }): Promise<void> {
   const id = key(message.chatId, message.id)
   changes.set(id, change); touch()
   try { await window.morse.mutateMessage(accountUid, message.chatId, { id: change.id, messageId: message.id, version: message.version, ...request }) }
@@ -74,6 +76,24 @@ export function editMessage(accountUid: string, message: ChatMessage, text: stri
 }
 export function deleteMessage(accountUid: string, message: ChatMessage): Promise<void> {
   return mutate(accountUid, message, { id: crypto.randomUUID(), kind: 'delete', version: message.version }, { kind: 'delete' })
+}
+// A vote shows at once, with this account's own choice and its own tally moved, and gives way to the
+// room's copy when that copy changes. Telegram does the same (TelegramMediaPoll is replaced when the
+// server's results arrive), and the counts shown meanwhile are only ever this account's own change.
+export function votePoll(accountUid: string, message: ChatMessage, options: number[]): Promise<void> {
+  const poll = message.poll
+  if (!poll || poll.closed) return Promise.resolve()
+  const chosen = [...new Set(options)].sort((a, b) => a - b)
+  const mine = poll.mine ?? []
+  const voteCounts = poll.voteCounts.map((count, index) => {
+    const had = mine.includes(index), has = chosen.includes(index)
+    return Math.max(0, count + (has && !had ? 1 : !has && had ? -1 : 0))
+  })
+  // totalVoters counts people, not votes: it moves only when this account joins or leaves the poll.
+  const totalVoters = Math.max(0, poll.totalVoters + (chosen.length && !mine.length ? 1 : !chosen.length && mine.length ? -1 : 0))
+  const change: Change = { id: crypto.randomUUID(), kind: 'poll-vote', version: message.version,
+    poll: { ...poll, mine: chosen, voteCounts, totalVoters } }
+  return mutate(accountUid, message, change, { kind: 'poll-vote', options: chosen })
 }
 export function toggleReaction(accountUid: string, message: ChatMessage, emoji: string): Promise<void> {
   const selected = new Set(message.reactions.filter(reaction => reaction.selected).map(reaction => reaction.emoji))

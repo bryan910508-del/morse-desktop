@@ -35,7 +35,7 @@ function ChannelCreateBox({ accountUid, close }: { accountUid: string; close(): 
       try {
         await waitFor(() => desktop.value?.channels?.items.some(item => item.id === id && item.status === 'ready') ? true : null, 20000)
         controller.openChannel(id)
-      } catch { controller.showChats('channels') }
+      } catch { controller.showChannels() }
       finally { release() }
     } catch (reason) { setError(errorText(reason, tr('채널을 만들지 못했습니다.'))); setBusy(false) }
   }

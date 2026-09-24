@@ -14,7 +14,8 @@ import { userpicCacheFor } from './userpic-cache'
 import type { ContactPhotoCommand } from '../storage/contact-photo-table'
 import { maxContactPhotoStorage, type ContactPhotoBinding, type ContactPhotoEdit, type ContactPhotoStorage, type ContactPhotoRemoval } from '../../shared/contact-photo'
 import type { BackgroundPhotoOwner } from '../platform/background-photos'
-import { DeliveryCommandFailure } from '../storage/delivery-client'
+import { DeliveryCommandFailure, uncertainDeliveryCodes } from '../storage/delivery-client'
+import { recordContactStep } from '../platform/contact-diagnostics'
 import { locale, tr } from '../../shared/i18n'
 
 interface Selection { uid: string; requestId: string }
@@ -34,6 +35,7 @@ function emptyProfile(selection: Selection, status: ContactProfileSnapshot['stat
 
 // Contact membership comes from the owner's collection. Only an explicitly
 // selected, current member gets profile and reciprocal-membership subscriptions.
+let watchSteps = 0
 export class ContactsSession {
   private reader: FirestoreReader | null = null
   private generation = 0
@@ -102,10 +104,17 @@ export class ContactsSession {
     if (!version || !displayName || displayName.length > 512) throw new Error(tr('현재 연락처 이름과 버전을 확인해 주세요.'))
     return { displayName, version }
   }
+  // Telegram opens a person's stories from the peer the session already holds (Data::Stories::loadAround
+  // takes _owner->peer(peerId) and asks stories.getPeerStories with it); it never waits for a fresh read
+  // of that person first. The selection is still this device's handle on the story, and the person must
+  // still be a contact — only the wait for a profile read that a poor connection can hold up is gone.
   directPeer(requestId: string): { uid: string; displayName: string } {
     const peer = this.peer
-    if (!peer || peer.selection.requestId !== requestId || !this.has(peer.selection.uid) || peer.value.status !== 'ready') throw new Error(tr('최신 연락처 프로필을 다시 선택해 주세요.'))
-    return { uid: peer.selection.uid, displayName: peer.value.displayName }
+    if (!peer || peer.selection.requestId !== requestId || !this.has(peer.selection.uid) || peer.value.status === 'unavailable') throw new Error(tr('최신 연락처 프로필을 다시 선택해 주세요.'))
+    if (peer.value.status === 'ready') return { uid: peer.selection.uid, displayName: peer.value.displayName }
+    const item = this.items.get(peer.selection.uid)
+    if (!item) throw new Error(tr('최신 연락처 프로필을 다시 선택해 주세요.'))
+    return { uid: peer.selection.uid, displayName: this.nameOf(item) }
   }
   private publish(): void { if (!this.closed) { this.listAvatars?.prune(); this.changed() } }
   private nameOf(item: ContactSummary): string { return contactNames(item, this.labels.get(item.uid), this.profileNames.name(item.uid)).displayName }
@@ -253,7 +262,10 @@ export class ContactsSession {
         this.publish()
       },
       state: (state, error) => {
-        if (!current() || state === 'ready') return
+        if (!current()) return
+        // Opening a story waits for this profile; the step and the try it happened on say whether the wait timed out.
+        recordContactStep('profile-watch', `${state} ${++watchSteps}`)
+        if (state === 'ready') return
         this.cancelDeleteGrace(tr('프로필 연결이 변경되어 삭제 대기를 취소했습니다. 이 요청은 서버에 보내지 않았습니다.'))
         peer.photo.clear(); peer.value = emptyProfile(selection, state === 'error' ? 'error' : 'loading',
           error ? tr('프로필을 불러오지 못했습니다. 연결과 연락처 관계를 확인해 주세요.') : '')
@@ -322,7 +334,7 @@ export class ContactsSession {
         await this.personalPhotos.save(peer.selection.uid, edit, bytes, owner.validate)
         result.outcome = 'saved'; result.message = edit.photoId ? tr('이 기기의 현재 계정에 개인 사진을 저장했습니다. 연락처 목록과 프로필에 표시됩니다.') : tr('개인 사진을 해제했습니다. 상대의 공개 범위에 따라 원래 사진을 표시합니다.')
       } catch (error) {
-        const definite = error instanceof DeliveryCommandFailure && error.code !== 'storage'
+        const definite = error instanceof DeliveryCommandFailure && !uncertainDeliveryCodes.has(error.code)
         result.outcome = definite ? 'rejected' : 'uncertain'
         result.message = error instanceof DeliveryCommandFailure && error.code === 'capacity' ? tr('개인 사진 저장 한도에 도달했습니다. 설정의 저장공간 → 연락처 개인 사진에서 보관 사진을 정리한 뒤 다시 선택해 주세요.') : tr('사진 저장 결과를 확인하지 못했습니다. 편집을 닫고 연락처를 새로고침해 확인해 주세요.')
         throw error

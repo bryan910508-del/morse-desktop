@@ -1,9 +1,11 @@
 import { memo, useEffect, useRef, useState, type MouseEvent } from 'react'
-import { Camera, Check, CircleAlert, Clock3, File as FileIcon, Image as ImageIcon, LockKeyhole, Megaphone, MessageSquareText, MessageSquareWarning, Mic, Pause, Play, Reply } from 'lucide-react'
+import { Camera, Check, CircleAlert, Clock3, Download, File as FileIcon, Image as ImageIcon, LockKeyhole, Megaphone, MessageSquareText, MessageSquareWarning, Mic, NotebookPen, Pause, Play, Reply } from 'lucide-react'
 import type { ChatMessage, ReplyPreview } from '../../../shared/model'
 import type { LocalOutgoing } from '../../../shared/delivery'
 import type { MessageStorySource } from '../../../shared/message-story-source'
 import { positionMilliseconds } from '../../../shared/model'
+import { decodeMemoNote } from '../../../shared/memo-note'
+import { messageKindLabel, unsupportedMessageNotice } from '../../../shared/message-kinds'
 import { duration as formatDuration, messageTime } from '../app/format'
 import { RoundCheck, Spinner } from '../ui/controls'
 import { pointFor } from '../ui/popup-menu'
@@ -16,12 +18,10 @@ import { endPlayback, startPlayback } from './playback-bar'
 import { showReactionPeople } from './reaction-people'
 import { showStickerPackSheet } from './sticker-pack-sheet'
 import { emojiOnlyFontSize, emojiOnlyText, LinkCard, linkCardFor, LinkedText } from './linked-text'
+import { PollCard } from './attachment-cards'
 import { locale, tr } from '../../../shared/i18n'
 
-export interface MessageLayout { date: boolean; unread: boolean; top: boolean; bottom: boolean; name: boolean; photo: boolean; gutter: boolean }
-const kindLabels: Record<ChatMessage['kind'], string> = {
-  text: '', image: tr('사진'), video: tr('동영상'), voice: tr('음성 메시지'), file: tr('파일'), sticker: tr('스티커'), channelPost: tr('채널 게시물'), location: tr('위치'), event: tr('일정'), unsupported: tr('지원하지 않는 형식의 메시지')
-}
+export interface MessageLayout { date: boolean; unread: boolean; top: boolean; bottom: boolean; name: boolean; photo: boolean; gutter: boolean; roomOnly: boolean }
 
 function rowClass(own: boolean, layout: Pick<MessageLayout, 'top' | 'bottom'>, extra = ''): string {
   return `history-message ${own ? 'own' : 'peer'}${layout.top ? ' attached-top' : ''}${layout.bottom ? ' attached-bottom' : ''}${extra}`
@@ -30,7 +30,10 @@ function rowClass(own: boolean, layout: Pick<MessageLayout, 'top' | 'bottom'>, e
 function ReplyQuote({ preview, onOpen }: { preview: ReplyPreview; onOpen(): void }) {
   if (preview.state !== 'ready') return <div className="bubble-quote"><strong>{tr('답장')}</strong><span className="ellipsis">{preview.state === 'loading' ? tr('원본을 불러오는 중…') : tr('원본 메시지를 볼 수 없습니다')}</span></div>
   return <button type="button" className="bubble-quote" onClick={event => { event.stopPropagation(); onOpen() }} title={tr('원본 메시지로 이동')}>
-    <strong className="ellipsis">{preview.senderName}</strong><span className="ellipsis">{preview.kind !== 'text' ? kindLabels[preview.kind] : ''}{preview.kind !== 'text' && preview.text ? ' · ' : ''}{preview.text}</span>
+    {/* The quote is the original's own one-line preview and nothing else, as Telegram's is
+        (HistoryView::Reply draws item->toPreview). ReplyContext.originalPreview already begins it with
+        the kind's name, so naming the kind again here read «사진 · 사진 · 사진 설명». */}
+    <strong className="ellipsis">{preview.senderName}</strong><span className="ellipsis">{preview.text}</span>
   </button>
 }
 
@@ -190,22 +193,30 @@ export function MediaTile({ accountUid, chatId, message, part, label, single, ra
   // but a video only while its thumbnail is under 240px both ways (Gif, kUseNonBlurredThreshold): the
   // 320px thumbnail a Telegram client sends shows sharp, in its low resolution.
   const [sharpThumb, setSharpThumb] = useState(false)
-  const automatic = useDesktop(snapshot => snapshot?.preferences.autoDownloadPhotos ?? true)
+  // Telegram draws a circled download arrow on a photo it has not fetched and a cancel with a radial
+  // ring while it fetches (history_view_photo.cpp: historyFileThumbDownload / historyFileThumbCancel),
+  // so a picture held back by the automatic download setting can be asked for where it is. Pressing it
+  // fetches it into the bubble; once it is there, pressing opens it.
+  const [asked, setAsked] = useState(false)
+  // The automatic attempt came back with nothing: the limit for this room's kind of peer is off, or the
+  // picture is over it (Data::AutoDownload). It is one press away.
+  const [held, setHeld] = useState(false)
   const showable = part.kind === 'image' && part.available && !part.blind
   // Telegram draws the tiny placeholder that came with the message, blurred, until the picture
   // itself is there. A message carrying none is the case Telegram answers by asking the server for
   // the small size whatever the preference says, so a photo is never a blank tile; Morse keeps no
   // small size, so the main process fetches the picture once and keeps only a 32px placeholder.
   const carried = message.mediaMetadata?.thumbData ?? ''
-  const wanted = automatic && showable
-  const wantedThumb = !automatic && !carried && showable
+  const wantedThumb = held && !asked && !carried && showable
+  // Every photo is asked for once; main answers with nothing when this room's limit holds it back, and
+  // the person's own press asks again without one.
   useEffect(() => {
-    if (!wanted || preview) return
+    if (!showable || preview) return
     let alive = true
-    void window.morse.photoPreview(accountUid, chatId, { requestId: crypto.randomUUID(), messageId: message.id, version: message.version, index: part.index })
-      .then(next => { if (alive && next) setPreview(next) }).catch(() => {})
+    void window.morse.photoPreview(accountUid, chatId, { requestId: crypto.randomUUID(), messageId: message.id, version: message.version, index: part.index }, asked)
+      .then(next => { if (!alive) return; if (next) setPreview(next); else setHeld(true) }).catch(() => { if (alive) setHeld(true) })
     return () => { alive = false }
-  }, [wanted, preview, accountUid, chatId, message.id, message.version, part.index])
+  }, [showable, asked, preview, accountUid, chatId, message.id, message.version, part.index])
   useEffect(() => {
     if (!wantedThumb || fetched) return
     let alive = true
@@ -214,14 +225,24 @@ export function MediaTile({ accountUid, chatId, message, part, label, single, ra
     return () => { alive = false }
   }, [wantedThumb, fetched, accountUid, chatId, message.id, message.version, part.index])
   const placeholder = preview || part.blind ? '' : carried || fetched
+  // The picture is not here and was not asked for: the press fetches it, as Telegram's download button
+  // does, instead of opening a viewer that would have to fetch it anyway.
+  const fetches = showable && !preview && held && !asked
   // One photo keeps the shape it was taken in, the way Telegram shows it; an album stays a mosaic.
   return <button type="button" data-part-index={part.index} className={`media-tile${preview ? ' previewed' : ''}${placeholder ? ' placeholder' : ''}${single ? ' single' : ''}`}
-    disabled={!part.available} style={(preview || placeholder) && single && ratio && (shape === 'fixed' || !preview) ? { aspectRatio: String(ratio) } : undefined}
-    onClick={event => { event.stopPropagation(); onOpen(message, part.index) }}>
+    // Telegram gives a photo its place from the size that came with the message, before any of it is
+    // here (Photo::countOptimalSize reads the photo's own width and height), so the bubble does not
+    // change shape when the picture arrives — and a picture waiting to be asked for keeps that shape
+    // instead of collapsing to a band.
+    disabled={!part.available} style={single && ratio && (shape === 'fixed' || !preview) ? { aspectRatio: String(ratio) } : undefined}
+    aria-label={fetches ? tr('사진 내려받기') : undefined}
+    onClick={event => { event.stopPropagation(); if (fetches) setAsked(true); else onOpen(message, part.index) }}>
     {placeholder && <img className={`media-thumb${sharpThumb ? ' sharp' : ''}`} src={`data:image/jpeg;base64,${placeholder}`} alt="" aria-hidden="true"
       onLoad={event => { const image = event.currentTarget; setSharpThumb(part.kind === 'video' && (image.naturalWidth >= 240 || image.naturalHeight >= 240)) }} />}
     {preview ? <img src={preview} alt={label} onError={() => setPreview(null)} />
-      : part.blind ? <LockKeyhole size={26} /> : part.kind === 'video' ? <Play size={30} /> : part.kind === 'voice' ? <Mic size={26} /> : <ImageIcon size={26} />}
+      : part.blind ? <LockKeyhole size={26} /> : part.kind === 'video' ? <Play size={30} /> : part.kind === 'voice' ? <Mic size={26} />
+        : asked ? <span className="media-download" aria-hidden="true"><Spinner size={22} /></span>
+          : fetches ? <span className="media-download" aria-hidden="true"><Download size={22} /></span> : <ImageIcon size={26} />}
     <span>{label}</span>
   </button>
 }
@@ -262,7 +283,7 @@ export function Attachments({ accountUid, chatId, message, own, onOpen }: { acco
   const width = metadata?.mediaWidthPx ?? metadata?.videoWidthPx, height = metadata?.mediaHeightPx ?? metadata?.videoHeightPx
   const ratio = width && height ? width / height : null
   return <div className={`media-grid count-${Math.min(parts.length, 4)}`}>{parts.map(part => <MediaTile key={part.index} accountUid={accountUid} chatId={chatId} message={message} part={part} single={single} ratio={ratio}
-    label={part.blind ? tr('가려진 {0}', [kindLabels[part.kind]]) : part.kind === 'video' && metadata?.videoDuration !== undefined ? formatDuration(metadata.videoDuration) : message.circular && part.kind === 'video' ? tr('원형 영상') : kindLabels[part.kind]}
+    label={part.blind ? tr('가려진 {0}', [messageKindLabel(part.kind)]) : part.kind === 'video' && metadata?.videoDuration !== undefined ? formatDuration(metadata.videoDuration) : message.circular && part.kind === 'video' ? tr('원형 영상') : messageKindLabel(part.kind)}
     onOpen={onOpen} />)}</div>
 }
 
@@ -296,18 +317,24 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
   // the way iOS draws it (MorseChatUIKitNativeChannelPostRow) and Telegram shows a channel's post in the group.
   if (message.channelPost) {
     const card = message.channelPost, part = message.attachments?.[0]
+    // The picture answers for itself — it is fetched where it is, and opens the post once it is here —
+    // while the card's words lead to the channel. One button around both made the picture unreachable:
+    // every press on it left the room (and a button inside a button is not a control a reader can use).
     return <div className="history-service" data-message-id={message.id}>
-      <button type="button" className="channel-post-card" onClick={() => controller.openChannel(card.channelId, card.postId)}>
-        {part && <MediaTile accountUid={accountUid} chatId={chatId} message={message} part={part} label={tr('채널 게시물')} single ratio={card.ratio ?? null} shape="natural"
+      <div className="channel-post-card">
+        {/* ChannelPostMediaView.singleImage: the card is always the shape the post chose — 4:5 when it
+            chose none — and the picture is fitted inside it, never cropped. Its place is the same before
+            the picture is here and after, so the card does not change shape as it loads. */}
+        {part && <MediaTile accountUid={accountUid} chatId={chatId} message={message} part={part} label={tr('채널 게시물')} single ratio={card.ratio ?? 4 / 5} shape="fixed"
           onOpen={() => controller.openChannel(card.channelId, card.postId)} />}
-        <span className="channel-post-card-body">
+        <button type="button" className="channel-post-card-body" onClick={() => controller.openChannel(card.channelId, card.postId)}>
           <strong className="ellipsis"><Megaphone size={14} />{card.channelName || tr('채널 게시물')}</strong>
           {message.text && <span className="channel-post-card-text">{message.text}</span>}
-        </span>
-      </button>
+        </button>
+      </div>
     </div>
   }
-  if (message.system) return <div className="history-service" data-message-id={message.id}><span className="service-pill selectable">{message.text || kindLabels[message.kind] || tr('시스템 메시지')}</span></div>
+  if (message.system) return <div className="history-service" data-message-id={message.id}><span className="service-pill selectable">{message.text || messageKindLabel(message.kind) || tr('시스템 메시지')}</span></div>
   const time = positionMilliseconds(message.position)
   const openMenu = (event: MouseEvent<HTMLElement>): void => {
     if (selecting || message.encrypted) return
@@ -323,24 +350,36 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
   }
   const translated = !message.encrypted && message.kind === 'text' && translation?.status === 'shown' && translation.source === message.text && (translation.manual || props.autoTranslate) ? translation.text : null
   const media = !message.encrypted && message.kind !== 'text' && (message.attachments?.length ?? 0) > 0
+  // A poll is a card with no attachment, so it never reached `Attachments`, which draws only what a
+  // message carries — a received poll showed as a bubble reading «투표» and nothing else. It is drawn
+  // here beside the attachments instead, inside the ordinary bubble, as Telegram draws one.
+  const poll = !message.encrypted && message.kind === 'poll' && message.poll ? message.poll : null
   // A caption with nothing to read (spaces, zero-width characters) is no caption: it would only add an empty
   // line and keep the picture in a bubble.
   const caption = message.caption ?? '', blankCaption = !/[^\s\u200B-\u200D\u2060\uFEFF]/.test(caption)
   const text = message.encrypted ? tr('이 기기에서 열 수 없는 비밀 메시지입니다.') : message.kind === 'text' ? translated ?? message.text : media && blankCaption ? '' : caption
   // Telegram draws a video message on its own, never inside a bubble.
   const round = media && ((message.kind === 'video' && message.circular) || message.kind === 'sticker')
-  const plainLabel = !message.encrypted && message.kind !== 'text' && !media ? kindLabels[message.kind] : ''
+  // A bubble has room for the whole notice, and Telegram puts it in the message's own text; every other
+  // place has one line, and gets the name (message-kinds.ts).
+  const plainLabel = !message.encrypted && message.kind !== 'text' && !media && !poll
+    ? (message.kind === 'unsupported' ? unsupportedMessageNotice() : messageKindLabel(message.kind)) : ''
   // A text message made only of emoji is drawn large with no bubble; a shared channel keeps the words before its
   // address and shows the channel as a card (iOS MorseChatManualTextBubble).
   const plainText = !message.encrypted && message.kind === 'text' && translated === null
-  const emojiOnly = plainText && emojiOnlyText(message.text)
-  const card = plainText && !emojiOnly ? linkCardFor(message.text) : null
+  // A note iOS kept in the memo room's own messages, drawn as the note it is rather than as its wire
+  // (MorseChatUIKitNativeBubbleRow: memoContentRow, gated on the room being memo_{uid}). It carries no
+  // link card, as iOS leaves its linkURL nil.
+  const memo = plainText && chatId.startsWith('memo_') ? decodeMemoNote(message.text) : null
+  const emojiOnly = plainText && !memo && emojiOnlyText(message.text)
+  const card = plainText && !memo && !emojiOnly ? linkCardFor(message.text) : null
   const shown = card?.share ? card.share.bodyText : text
   const mediaOnly = media && !text && !plainLabel
   // ChatMessageDateAndStatusNode: under reactions the date joins their LAST row when that row's width and the date's
   // fit the bubble (`currentRowWidth + dateWidth <= constrainedWidth`), whatever the number of rows, and goes below
   // otherwise — the date is the row's last item, pushed to its end. A picture alone and a sticker keep theirs on it.
   const inlineMeta = message.reactions.length > 0 && !mediaOnly && !round && !emojiOnly
+  const metaSpace = <span className={`bubble-meta-space${message.edited ? ' edited' : ''}${own ? ' own' : ''}`} />
   const meta = <span className={`bubble-meta${inlineMeta ? ' inline' : ''}`}>
     {message.edited && !emojiOnly && <span>{tr('수정됨')}</span>}
     <time dateTime={new Date(time).toISOString()}>{messageTime(time)}</time>
@@ -350,14 +389,20 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
     data-message-id={message.id} onContextMenu={openMenu} onClick={selecting ? () => props.onToggle(message) : undefined}
     onDoubleClick={event => { if (!selecting && !message.encrypted && (event.target as HTMLElement).closest('.bubble')) { window.getSelection()?.removeAllRanges(); props.onReply(message) } }}>
     {selecting && <span className="history-check"><RoundCheck checked={selected} /></span>}
-    {layout.gutter && <span className="history-photo">{layout.photo && <UserAvatar uid={message.senderId} name={message.senderName || '?'} size={33} />}</span>}
+    {layout.gutter && <span className="history-photo">{layout.photo && <UserAvatar uid={message.senderId} name={message.senderName || '?'} size={33} roomOnly={layout.roomOnly} />}</span>}
     <div className={`bubble${message.encrypted ? ' encrypted' : ''}${mediaOnly ? ' media-only' : ''}${round ? ' round' : ''}${emojiOnly ? ' emoji-only' : ''}${card?.url ? ' has-link-card' : ''}`}>
       {layout.name && !own && message.senderName && <div className="bubble-name ellipsis">{message.senderName}</div>}
       {!message.encrypted && message.storySource && <StorySource source={message.storySource} />}
       {!message.encrypted && message.reply && <ReplyQuote preview={message.reply} onOpen={() => props.onJumpReply(message)} />}
       {media && <Attachments accountUid={accountUid} chatId={chatId} message={message} own={own} onOpen={props.onOpenMedia} />}
-      {emojiOnly ? <div className="bubble-emoji selectable" style={{ fontSize: emojiOnlyFontSize(message.text) }}>{message.text.trim()}</div>
-        : (text || plainLabel || !media) && <div className="bubble-text selectable">{plainLabel ? <em>{plainLabel}</em> : message.encrypted ? text : <LinkedText accountUid={accountUid} text={shown} disabled={selecting} />}{!card?.url && !inlineMeta && <span className={`bubble-meta-space${message.edited ? ' edited' : ''}${own ? ' own' : ''}`} />}</div>}
+      {poll && <PollCard accountUid={accountUid} message={message} poll={poll} />}
+      {memo ? <div className="bubble-memo selectable">
+        {memo.title.trim() && <strong><NotebookPen size={14} aria-hidden />{memo.title.trim()}{!memo.body && metaSpace}</strong>}
+        {/* The date sits at the bubble's end, so the room it needs belongs to the note's last line. */}
+        {memo.body ? <span>{memo.body}{metaSpace}</span> : !memo.title.trim() && metaSpace}
+      </div>
+        : emojiOnly ? <div className="bubble-emoji selectable" style={{ fontSize: emojiOnlyFontSize(message.text) }}>{message.text.trim()}</div>
+        : (text || plainLabel || !media) && <div className="bubble-text selectable">{plainLabel ? <em className={message.kind === 'unsupported' ? 'unsupported' : undefined}>{plainLabel}</em> : message.encrypted ? text : <LinkedText accountUid={accountUid} text={shown} disabled={selecting} />}{!card?.url && !inlineMeta && <span className={`bubble-meta-space${message.edited ? ' edited' : ''}${own ? ' own' : ''}`} />}</div>}
       {card?.url && <LinkCard accountUid={accountUid} text={message.text} disabled={selecting} />}
       {!inlineMeta && meta}
       {message.reactions.length > 0 && <div className="bubble-reactions">{message.reactions.slice(0, 20).map(reaction => {
@@ -367,7 +412,7 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
           aria-pressed={reaction.selected} aria-label={`${reaction.emoji} ${reaction.count}${reaction.users?.length ? ` · ${reaction.users.map(user => user.name).join(', ')}` : ''}`} disabled={selecting || !message.version}
           onClick={event => { event.stopPropagation(); props.onReaction(message, reaction.emoji) }}
           onContextMenu={event => { if (!reaction.users?.length) return; event.preventDefault(); event.stopPropagation(); showReactionPeople(reaction.emoji, reaction.count, reaction.users) }}>
-          <span>{reaction.emoji}</span>{faces ? <span className="bubble-reaction-faces">{faces.map(user => <UserAvatar key={user.uid} uid={user.uid} name={user.name} size={20} />)}</span> : reaction.count}
+          <span>{reaction.emoji}</span>{faces ? <span className="bubble-reaction-faces">{faces.map(user => <UserAvatar key={user.uid} uid={user.uid} name={user.name} size={20} roomOnly={layout.roomOnly} />)}</span> : reaction.count}
         </button>
       })}{inlineMeta && meta}</div>}
     </div>

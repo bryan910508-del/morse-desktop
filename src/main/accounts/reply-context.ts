@@ -2,6 +2,7 @@ import type { MessageKind, MessagePosition, ReplyPreview } from '../../shared/mo
 import { decodeMessage, documents, expiry, historyLimit, pageSize, stringField, type FirestoreDocument, type ReadDialog } from '../network/firestore-values'
 import type { FirestoreReader } from '../network/firestore-rpc'
 import { tr } from '../../shared/i18n'
+import { messageKindLabel } from '../../shared/message-kinds'
 
 interface Original {
   position: MessagePosition
@@ -16,10 +17,6 @@ interface Group {
   originals: Map<string, Original>
   stop(): void
 }
-const labels: Record<MessageKind, string> = {
-  text: tr('메시지'), image: tr('사진'), video: tr('동영상'), voice: tr('음성 메시지'), file: tr('파일'), sticker: tr('스티커'),
-  channelPost: tr('채널 게시물'), location: tr('위치'), event: tr('일정'), unsupported: tr('지원하지 않는 형식의 메시지')
-}
 
 // Keep only a bounded excerpt and navigation/expiry metadata. Original media,
 // nested reply chains and these excerpts never become history rows or read targets.
@@ -27,7 +24,7 @@ export function replyOriginal(doc: FirestoreDocument, dialog: ReadDialog): Origi
   const message = decodeMessage(doc, dialog)
   const storedChatId = stringField(doc.fields, 'chatId', 160)
   if (!message || message.encrypted || (storedChatId && storedChatId !== dialog.summary.id)) return null
-  const label = message.kind === 'image' && (message.attachments?.length ?? 0) > 1 ? tr('사진 {0}장', [message.attachments!.length]) : labels[message.kind]
+  const label = message.kind === 'image' && (message.attachments?.length ?? 0) > 1 ? tr('사진 {0}장', [message.attachments!.length]) : messageKindLabel(message.kind)
   const detail = message.kind === 'file' ? message.attachments?.[0]?.name : message.caption
   const text = message.system ? tr('시스템 메시지') : message.kind === 'text' ? message.text : detail ? `${label} · ${detail}` : label
   return { position: message.position, senderId: message.senderId, system: message.system, kind: message.kind,

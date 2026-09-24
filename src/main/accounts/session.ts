@@ -1,3 +1,4 @@
+import { autoDownloadLimit, autoDownloadSource, type AutoDownloadLimits } from '../../shared/auto-download'
 import { AccountToolsApi } from '../api/account-tools'
 import { VoiceDraftStorage } from './voice-draft-storage'
 import { StoryReplyDraft } from './story-reply-draft'
@@ -130,6 +131,7 @@ import { maxStickerBytes, stickerContentType, type StickerItem, type StickerKind
 import type { ContactFlagCommand } from '../storage/contact-flag-table'
 import { generalCategoryId, type ForumCategory } from '../../shared/forum'
 import { deleteTopicMessages, TopicDeletions, TopicDeletionStop } from './forum-topic-deletion'
+import { ChannelReadMarks } from './channel-read-marks'
 import type { ChatFlagCommand } from '../storage/chat-flag-table'
 import { maxHiddenMessagesPerCall, type HiddenMessageCommand } from '../storage/hidden-message-table'
 import { roundVideoSide, type RoundVideoSendRequest } from '../../shared/round-video'
@@ -141,7 +143,7 @@ import type { EventReminderRequest } from '../../shared/chat-event'
 import { maxScheduleAheadMs, type DeferredKind, type DeferredMessagesSnapshot, type DeferredSendRequest } from '../../shared/deferred-send'
 import { freePinLimit, premiumPinLimit, type PinMessageRequest, type PinnedMessagesSnapshot } from '../../shared/pinned-messages'
 import { canReply, type ReplyBinding, type ReplyDraftSnapshot } from '../../shared/reply-draft'
-import { canForwardMessage, canForwardMedia, canForwardText, type ForwardProgress, type ForwardRequest, type ForwardSource, type ForwardTarget } from '../../shared/forward'
+import { canForwardMessage, canForwardMedia, canForwardText, savedMessagesFirst, type ForwardProgress, type ForwardRequest, type ForwardSource, type ForwardTarget } from '../../shared/forward'
 import { prepareForwardMedia, type ForwardMediaSource } from '../media/forward-media'
 import { inquiryIdentifier, inquiryOfQueueChatId, inquiryQueueChatId, type InquiryForwardRequest, type InquiryForwardRoom } from '../../shared/channel-inquiries'
 import { outgoingText } from '../../shared/validation'
@@ -152,6 +154,7 @@ import { MediaCache, registerMediaCache } from './media-cache'
 import { InquiryNotifications } from './inquiry-notifications'
 import { PeerPhotoAlbum } from './peer-photo-album'
 import { peerProfilesFor } from './peer-profiles'
+import { StoryMediaCache } from './story-media-cache'
 
 export interface AccountEvents {
   storyStealth(): boolean
@@ -239,6 +242,8 @@ export class AccountSession {
   readonly channelMembershipApi: ChannelMembershipApi
   readonly storyBarApi: StoryBarApi
   readonly accountTools: AccountToolsApi
+  /// The account's new-chat auto-delete default, read once per session; null until that read lands.
+  private accountAutoDeleteSeconds: number | null = null
   // "나에게만 삭제": the moment each room was deleted on this device (hidden_chats).
   private readonly hiddenChats: HiddenChats
   private readonly hiddenMessages: HiddenMessages
@@ -251,6 +256,7 @@ export class AccountSession {
   // markMorseReactionSeen acknowledgements sent (chatId -> messageId:reactionVersion), hidden from the list at once.
   private readonly seenReactions = new Map<string, string>()
   private readonly topicDeletions: TopicDeletions
+  private readonly channelReadMarks: ChannelReadMarks
   readonly channelInquiries: ChannelInquiries
   // The chat list's 1:1 inquiry rooms, watched for the whole session.
   readonly inquiryRows: InquiryRows
@@ -285,6 +291,7 @@ export class AccountSession {
   readonly channelPhotoUpload: ChannelPhotoUpload
   readonly groupPhotoUpload: GroupPhotoUpload
   private readonly groupPhoto: GroupPhoto
+  readonly storyMedia = new StoryMediaCache()
   readonly dialogAvatars: DialogAvatars
   private readonly groupPhotoEditor: GroupPhotoEditor
   private readonly groupAnnouncement: GroupAnnouncementEditor
@@ -305,6 +312,11 @@ export class AccountSession {
     // Every media loader of this account reaches the account's file cache the same way.
     this.mediaFiles = new MediaCache(command => this.delivery.mediaCacheState(command))
     registerMediaCache(credentials, this.mediaFiles)
+    this.channelReadMarks = new ChannelReadMarks((channelId, position, postId) => {
+      const reader = this.reader
+      if (this.closed || this.locked || !reader) return Promise.reject(new Error('Account not ready'))
+      return reader.writeChannelReadMark(this.profile.uid, channelId, position, postId, this.credentials.signal)
+    })
     this.topicDeletions = new TopicDeletions((chatId, categoryId, stop) => this.deleteTopic(chatId, categoryId, stop),
       () => !this.closed && !this.locked && this.connection === 'ready' && Boolean(this.reader),
       () => { if (this.closed) return; if (this.chatsCurrent && this.pinsCurrent) this.rebuild(); else this.events.changed() })
@@ -313,14 +325,14 @@ export class AccountSession {
       (peer, raw) => this.peerPhotos.remember(peer, raw))
     this.contacts = new ContactsSession(profile.uid, credentials, () => { if (!this.closed) { this.dialogAvatars?.prune(); this.contactPublicStories?.prune(); this.contactStoryAudience?.prune(); this.contactAudienceStories?.prune(); this.contactAudienceStoryPhoto?.prune(); this.contactAudienceStoryVideo?.prune(); this.contactStoryPhotoAudio?.prune(); this.contactStoryReaction?.prune(); this.storyReactionChange?.prune(); this.storyViewReceipt?.prune(); this.contactPublicStoryPhoto?.prune(); this.contactPublicStoryVideo?.prune(); events.changed() } }, (command, validate) => this.delivery.contactState(command, validate), (peer, raw) => this.peerPhotos.remember(peer, raw))
     this.channels = new ChannelsSession(profile.uid, credentials, () => { this.channelJoinDecisions?.prune(); this.channelAccess?.prune(); this.channelPhotoUpload?.prune(); this.channelHome?.listChanged(); if (!this.closed) events.changed() })
-    this.ownStories = new OwnStories(profile.uid, credentials, () => !this.closed && !this.locked && this.connection === 'ready', () => { if (!this.closed) events.changed() })
-    this.spaceNotes = new SpaceNotesReader(profile.uid, credentials, () => !this.closed && !this.locked && this.connection === 'ready', () => { if (!this.closed) events.changed() })
-    this.channelDiscovery = new ChannelDiscovery(credentials, () => !this.closed && !this.locked && this.connection === 'ready', () => { if (!this.closed) events.changed() })
+    this.ownStories = new OwnStories(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
+    this.spaceNotes = new SpaceNotesReader(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
+    this.channelDiscovery = new ChannelDiscovery(credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
     this.channelHome = new ChannelHome(profile.uid, credentials, { items: () => this.channels.snapshot.items, status: () => this.channels.listStatus, document: id => this.channels.currentDocument(id) },
-      () => !this.closed && !this.locked && this.connection === 'ready', () => { if (!this.closed) events.changed() })
-    this.channelStories = new ChannelStories(profile.uid, credentials, () => !this.closed && !this.locked && this.connection === 'ready', () => { if (!this.closed) events.changed() })
-    this.channelPublicPreview = new ChannelPublicPreview(profile.uid, credentials, () => !this.closed && !this.locked && this.connection === 'ready', request => this.channelDiscovery.selection(request), () => { if (!this.closed) events.changed() })
-    this.contactDiscovery = new ContactDiscovery(profile.uid, credentials, () => !this.closed && !this.locked && this.connection === 'ready',
+      () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
+    this.channelStories = new ChannelStories(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
+    this.channelPublicPreview = new ChannelPublicPreview(profile.uid, credentials, () => !this.closed && !this.locked, request => this.channelDiscovery.selection(request), () => { if (!this.closed) events.changed() })
+    this.contactDiscovery = new ContactDiscovery(profile.uid, credentials, () => !this.closed && !this.locked,
       () => { if (!this.closed) events.changed() }, () => this.contacts.refresh())
     this.participantAdd = new ParticipantContactAdd(profile.uid, credentials, (target, doc) => this.resolveChatContact(target, doc), () => this.contacts.refresh())
     this.groupName = new GroupNameEditor(credentials, (request, exact) => this.groupNameSource(request, exact))
@@ -340,9 +352,9 @@ export class AccountSession {
     this.groupPhotoEditor = new GroupPhotoEditor(credentials, (request, exact) => this.groupPhotoSource(request, exact, true))
     this.groupAnnouncement = new GroupAnnouncementEditor(credentials, (request, exact) => this.groupAnnouncementSource(request, exact))
     this.dialogPins = new DialogPins(profile.uid, credentials, (request, exact) => this.pinSource(request, exact), () => { if (!this.closed) events.changed() })
-    const newChatAutoDelete = (): { seconds: number; myOnly: boolean } => {
-      const preferences = events.notifications.preferences()
-      return { seconds: preferences.autoDeleteDefaultSeconds, myOnly: preferences.autoDeleteOnlyMyMessages }
+    // The account's value once it has been read; until then this device's old preference, which the read adopts.
+    const newChatAutoDelete = (): { seconds: number } => {
+      return { seconds: this.accountAutoDeleteSeconds ?? events.notifications.preferences().autoDeleteDefaultSeconds }
     }
     this.delivery = new OutboxPump(profile.uid, directory, credentials, previousClose,
       () => ({ ready: this.status === 'ready' && !this.closed, reader: this.reader,
@@ -385,36 +397,36 @@ export class AccountSession {
       return this.contacts.directPeer(request.profileRequestId).uid
     }, () => { if (!this.closed) { this.contactAudienceStories?.prune(); this.contactAudienceStoryPhoto?.prune(); this.contactAudienceStoryVideo?.prune(); this.contactStoryPhotoAudio?.prune(); this.contactStoryReaction?.prune(); this.storyReactionChange?.prune(); this.storyViewReceipt?.prune(); events.changed() } })
     this.contactAudienceStories = new ContactAudienceStories(profile.uid, credentials, request => {
-      if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
+      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
       const current = this.contactStoryAudience.storySource(request.audienceId, request.profileRequestId, request.privacy), peer = this.contacts.directPeer(request.profileRequestId)
       if (current.uid !== peer.uid) throw new Error(tr('현재 청중과 연락처가 변경되었습니다.'))
       return { ...peer, expiresAt: current.expiresAt }
     })
     this.contactAudienceStoryVideo = new ContactAudienceStoryVideo(profile.uid, credentials, request => this.contactAudienceStories.videoSource(request), request => {
-      if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
+      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
       return this.contactStoryAudience.storySource(request.audienceId, request.profileRequestId, request.privacy).uid
-    }, () => { if (!this.closed) events.changed() })
+    }, this.storyMedia, () => { if (!this.closed) events.changed() })
     this.contactAudienceStoryPhoto = new ContactAudienceStoryPhoto(profile.uid, credentials, request => this.contactAudienceStories.photoSource(request), request => {
-      if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
+      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
       return this.contactStoryAudience.storySource(request.audienceId, request.profileRequestId, request.privacy).uid
-    }, () => { if (!this.closed) events.changed() })
+    }, this.storyMedia, () => { if (!this.closed) events.changed() })
     this.contactPublicStories = new ContactPublicStories(profile.uid, credentials, request => {
-      if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
+      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
       return this.contacts.directPeer(request.profileRequestId)
     })
     this.contactPublicStoryPhoto = new ContactPublicStoryPhoto(profile.uid, credentials, request => this.contactPublicStories.photoSource(request), profileRequestId => {
-      if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
+      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
       return this.contacts.directPeer(profileRequestId).uid
-    }, () => { if (!this.closed) events.changed() })
+    }, this.storyMedia, () => { if (!this.closed) events.changed() })
     this.contactPublicStoryVideo = new ContactPublicStoryVideo(profile.uid, credentials, request => this.contactPublicStories.videoSource(request), profileRequestId => {
-      if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
+      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
       return this.contacts.directPeer(profileRequestId).uid
-    }, () => { if (!this.closed) events.changed() })
+    }, this.storyMedia, () => { if (!this.closed) events.changed() })
     this.contactStoryPhotoAudio = new ContactStoryPhotoAudio(profile.uid, credentials, request => {
       const photo = { selectionId: request.selectionId, profileRequestId: request.profileRequestId, requestId: request.requestId, storyId: request.storyId, version: request.version, presentation: 'image' as const }
       return request.privacy === 'everyone' ? this.contactPublicStories.photoSource(photo) : this.contactAudienceStories.photoSource({ ...photo, privacy: request.privacy, audienceId: request.audienceId! })
     }, request => {
-      if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
+      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
       return request.privacy === 'everyone' ? this.contacts.directPeer(request.profileRequestId).uid : this.contactStoryAudience.storySource(request.audienceId!, request.profileRequestId, request.privacy).uid
     }, () => { if (!this.closed) events.changed() })
     this.contactStoryReaction = new ContactStoryReaction(profile.uid, credentials, request => request.privacy === 'everyone' ? this.contactPublicStories.reactionSource(request) : this.contactAudienceStories.reactionSource(request))
@@ -430,8 +442,8 @@ export class AccountSession {
     (pending, validate) => this.delivery.detachStoryReply(pending, validate),
     (command, validate) => this.delivery.storyReplyDraftState(command, validate), () => { if (!this.closed) events.changed() })
     void Promise.resolve().then(() => this.storyReplyDraft.refresh()).catch(() => {})
-    this.storyViewReceipt = new StoryViewReceipt(profile.uid, credentials, network => {
-      if (this.closed || this.locked || (network && this.connection !== 'ready')) throw new Error(tr('현재 연결과 스토리 숨김 열람 설정을 확인해 주세요.'))
+    this.storyViewReceipt = new StoryViewReceipt(profile.uid, credentials, () => {
+      if (this.closed || this.locked) throw new Error(tr('현재 연결과 스토리 숨김 열람 설정을 확인해 주세요.'))
     }, request => {
       if (events.storyStealth()) throw new Error(tr('이 기기의 숨김 열람 설정이 켜져 있습니다.'))
       const source = request.privacy === 'everyone' ? this.contactPublicStories.reactionSource(request) : this.contactAudienceStories.reactionSource(request)
@@ -443,14 +455,10 @@ export class AccountSession {
     }, request => {
       if (events.storyStealth()) throw new Error(tr('이 기기의 숨김 열람 설정이 켜져 있습니다.'))
       if (!this.contacts.has(request.ownerId)) throw new Error(tr('현재 연락처를 다시 확인해 주세요.'))
-    }, () => {
-      this.contactStoryPhotoAudio.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); 
-      this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryReaction.pause(); 
-      this.contactPublicStories.pause(); this.contactAudienceStories.pause(); this.contactStoryAudience.pause()
     }, (command, validate) => this.delivery.storyViewReceiptState(command, validate), () => { if (!this.closed) events.changed() })
     void Promise.resolve().then(() => this.storyViewReceipt.refresh()).catch(() => {})
-    this.storyReactionChange = new StoryReactionChange(profile.uid, credentials, network => {
-      if (this.closed || this.locked || (network && this.connection !== 'ready')) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
+    this.storyReactionChange = new StoryReactionChange(profile.uid, credentials, () => {
+      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
     }, request => {
       const source = request.privacy === 'everyone' ? this.contactPublicStories.reactionSource(request) : this.contactAudienceStories.reactionSource(request)
       const peer = this.contacts.directPeer(request.profileRequestId)
@@ -458,10 +466,6 @@ export class AccountSession {
       return { ownerId: source.ownerId, ownerName: peer.displayName }
     }, request => {
       if (!this.contacts.has(request.ownerId)) throw new Error(tr('현재 연락처를 다시 확인해 주세요.'))
-    }, () => {
-      this.contactStoryPhotoAudio.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); 
-      this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryReaction.pause(); 
-      this.contactPublicStories.pause(); this.contactAudienceStories.pause(); this.contactStoryAudience.pause()
     }, (command, validate) => this.delivery.storyReactionChangeState(command, validate), () => { if (!this.closed) events.changed() })
     void Promise.resolve().then(() => this.storyReactionChange.refresh()).catch(() => {})
     this.storyViewRecords = new StoryViewRecords(profile.uid, credentials, request => { this.ownStories.captionDraftSource(request) })
@@ -572,7 +576,7 @@ export class AccountSession {
     this.closeFriendsApi = new CloseFriendsApi(profile.uid, credentials, connected, uid => this.contacts.closeFriendCandidate(uid),
       uid => { try { return this.contacts.has(uid) ? this.contacts.closeFriendCandidate(uid).displayName : null } catch { return null } })
     this.channelMembershipApi = new ChannelMembershipApi(profile.uid, credentials, connected)
-    this.storyBarApi = new StoryBarApi(profile.uid, credentials, connected, uid => this.contacts.has(uid))
+    this.storyBarApi = new StoryBarApi(profile.uid, credentials, () => { if (this.closed || this.locked) throw new Error(tr('계정 연결을 확인해 주세요.')) }, uid => this.contacts.has(uid))
     this.accountTools = new AccountToolsApi(profile.uid, credentials, connected)
     this.channelInquiries = new ChannelInquiries(profile.uid, credentials, connected, () => this.selfProfile.commentAuthor(), () => events.canRead(), () => { if (!this.closed) events.changed() },
       (inquiryId, messageId) => this.hiddenMessages.has(inquiryQueueChatId(inquiryId), messageId))
@@ -612,13 +616,30 @@ export class AccountSession {
     this.discussionAvatars.setLocked(locked)
     if (locked) this.photoPreviews.clear()
     if (this.chatsCurrent && this.pinsCurrent) this.rebuild()
-    if (locked) this.dialogAvatars.clear()
+    if (locked) { this.dialogAvatars.clear(); this.storyMedia.clear() }
     this.voiceDraftStorage.invalidate();this.backgroundStorage.invalidate()
     if (locked) { this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); this.groupName.pause(); this.groupAnnouncement.pause(); this.groupPhoto.clear(); this.groupPhotoEditor.pause(); this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause() }
     if (locked) { this.ownStories.pause(); this.spaceNotes.pause(); this.channelPublicPreview.pause(); this.channelDiscovery.pause(); this.contactDiscovery.pause(); this.participantAdd.pause(); this.dialogPins.pause(); this.manualUnread.pause(); this.draftReply.clear(); this.cancelForwardPreparation() }
     else if (this.selected && this.reader) this.draftReply.bind(this.selected.dialog, this.reader)
   }
   pendingDirects() { return this.delivery.pendingDirects() }
+  // The account's default for new chats, as iOS reads it from users/{uid}/private/chatSettings and Telegram reads
+  // its own with messages.getDefaultHistoryTTL. The device preference stands in until the read lands.
+  async autoDeleteDefault(): Promise<number> {
+    if (this.accountAutoDeleteSeconds === null) await this.refreshAutoDeleteDefault()
+    return this.accountAutoDeleteSeconds ?? this.events.notifications.preferences().autoDeleteDefaultSeconds
+  }
+  async setAutoDeleteDefault(seconds: number): Promise<'done' | 'unconfirmed'> {
+    const result = await this.accountTools.setAccountAutoDeleteDefault(seconds)
+    this.accountAutoDeleteSeconds = seconds
+    return result
+  }
+  private async refreshAutoDeleteDefault(): Promise<void> {
+    try {
+      this.accountAutoDeleteSeconds = await this.accountTools.accountAutoDeleteDefault(
+        this.events.notifications.preferences().autoDeleteDefaultSeconds)
+    } catch { /* the device value stands until a later read succeeds */ }
+  }
   async startContactChat(requestId: string): Promise<string> {
     if (this.closed || this.locked || this.connection !== 'ready' || this.status !== 'ready') throw new Error(tr('대화 목록과 연결을 확인해 주세요.'))
     const peer = this.contacts.directPeer(requestId)
@@ -744,10 +765,10 @@ export class AccountSession {
       // A new 1:1 chat has no chat document until its first message; its row, header and info
       // follow the peer's live profile like Telegram's UserData instead of the name saved when it was opened.
       const pending = this.delivery.pendingDirects().find(item => item.chatId === chatId)
-      if (this.closed || this.locked || this.connection !== 'ready' || !reader || !pending || pending.peerUid === this.profile.uid || !this.contacts.has(pending.peerUid)) throw new Error(tr('현재 새 대화를 확인해 주세요.'))
+      if (this.closed || this.locked || !reader || !pending || pending.peerUid === this.profile.uid || !this.contacts.has(pending.peerUid)) throw new Error(tr('현재 새 대화를 확인해 주세요.'))
       return { uid: pending.peerUid, reader, personalURL: this.contacts.personalPhotos.url(pending.peerUid) }
     }
-    if (this.closed || this.locked || this.connection !== 'ready' || this.status !== 'ready' || !doc?.updateTime || !dialog || !reader ||
+    if (this.closed || this.locked || this.status !== 'ready' || !doc?.updateTime || !dialog || !reader ||
       dialog.summary.kind !== 'direct' || chatId === `memo_${this.profile.uid}` || dialog.summary.participantUids.length !== 2 ||
       !dialog.summary.participantUids.includes(this.profile.uid)) throw new Error(tr('현재 개인 대화를 확인해 주세요.'))
     const uid = dialog.summary.participantUids.find(uid => uid !== this.profile.uid)
@@ -758,7 +779,7 @@ export class AccountSession {
   }
   private dialogAvatarSource(chatId: string): FirestoreDocument {
     const doc = this.chatRows.get(`${documents}/chats/${chatId}`), dialog = this.index.get(chatId)
-    if (this.closed || this.locked || this.connection !== 'ready' || this.status !== 'ready' || !doc?.updateTime || !dialog || dialog.summary.kind !== 'group' ||
+    if (this.closed || this.locked || this.status !== 'ready' || !doc?.updateTime || !dialog || dialog.summary.kind !== 'group' ||
       !dialog.summary.participantUids.includes(this.profile.uid)) throw new Error(tr('현재 그룹을 확인해 주세요.'))
     const info = participantSnapshot('dialog-avatar', doc, dialog, () => false)
     if (!info.groupPhoto || !info.members.some(member => member.self && !member.withdrawn)) throw new Error(tr('현재 그룹 사진을 확인해 주세요.'))
@@ -886,11 +907,12 @@ export class AccountSession {
       const own = this.dialogAvatars.snapshot(dialog.id)
       const avatar = own ?? (dialog.discussion && dialog.channelId ? this.discussionAvatars.snapshot(dialog.channelId) : null)
       const sends = this.delivery.chatSendState(dialog.id, dialog.top ? positionMilliseconds(dialog.top) : null)
-      if (!dialog.discussion || !dialog.channelId) return { ...dialog, readSync: this.reads.state(dialog.id), avatar, sends }
+      const draft = this.delivery.chatDraft(dialog.id)
+      if (!dialog.discussion || !dialog.channelId) return { ...dialog, readSync: this.reads.state(dialog.id), avatar, sends, draft }
       const channel = this.channels.currentDocument(dialog.channelId) ?? this.discussionAvatars.document(dialog.channelId)
       let contentProtected = true
       try { contentProtected = !channel || channelDocumentType(channel.fields) !== 'public' } catch { /* An unreadable type protects, as a failed read does on iOS. */ }
-      return { ...dialog, readSync: this.reads.state(dialog.id), avatar, contentProtected, sends }
+      return { ...dialog, readSync: this.reads.state(dialog.id), avatar, contentProtected, sends, draft }
     })
   }
   private pinSource(request: DialogPinRequest, exact: boolean): FirestoreDocument | undefined {
@@ -960,13 +982,19 @@ export class AccountSession {
   setConnection(state: ConnectionState): void {
     if (this.closed) return
     this.connection = state
-    if (state !== 'ready') { this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause(); this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); }
+    // A contact's stories are read from Firestore and their reaction and view receipt are written there, so
+    // they are not stopped by the socket going down; only what is sent through the socket waits for it.
+    if (state !== 'ready') { this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause(); this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); }
     else { void this.channelJoinDecisions.refresh().catch(() => {}); void this.channelAccess.refresh().catch(() => {}); void this.channelPhotoUpload.refresh().catch(() => {}); void this.groupPhotoUpload.refresh().catch(() => {}); void this.discussionJoin.refresh().catch(() => {}) }
-    this.selfProfile.connection(state === 'ready')
-    this.contacts.connection(state === 'ready')
-    this.channels.connection(state === 'ready')
-    if (state === 'ready') this.channelHome.resume(); else this.channelHome.pause(false)
-    if (state !== 'ready') { this.ownStories.pause(); this.spaceNotes.pause(); this.channelPublicPreview.pause(); this.channelDiscovery.pause(); this.contactDiscovery.pause() }
+    // What is read and shown — the contacts, the profiles, their pictures — is not told about a socket that went
+    // down: telling them would throw away what is on screen (Contacts.invalidate clears the pictures) and Telegram
+    // keeps its userpics through a reconnect. They are started again when the connection is back.
+    if (state === 'ready') {
+      this.selfProfile.connection(true); this.contacts.connection(true); this.channels.connection(true); this.channelHome.resume()
+    }
+    // My own stories, the notes, a public channel's preview and the searches are read from Firestore too:
+    // Dialogs::Stories keeps the row it has while the connection comes back, and the list beside it keeps
+    // its rows. Emptying them here is what made the story row and the notes page go blank on a blip.
     // Telegram keeps the chats list, the open history and every topic while it reconnects (the title only says
     // «Connecting...»); nothing is thrown away because a socket went down. The server drops this socket when the
     // login token expires and on every network blip, so what was read stays: the reads retry on their own and keep
@@ -1074,6 +1102,7 @@ export class AccountSession {
     if (openId && index.has(openId) && !this.list.some(dialog => dialog.id === openId)) this.unlistedOpen = openId
     if (this.unlistedOpen && (!index.has(this.unlistedOpen) || this.list.some(dialog => dialog.id === this.unlistedOpen))) this.unlistedOpen = null
     this.status = 'ready'; this.message = ''
+    if (this.accountAutoDeleteSeconds === null) void this.refreshAutoDeleteDefault()
     this.reminders()
     this.delivery.resume()
     this.reads.resume()
@@ -1241,7 +1270,13 @@ export class AccountSession {
   }
   private forwardDestination(chatId: string, sourceChatId: string): ForwardTarget | null {
     const dialog = this.contextDialog(chatId), row = this.chatRows.get(`${documents}/chats/${chatId}`)
-    if (!dialog || dialog.composeAccess === false || !row || chatId === sourceChatId || chatId.startsWith('memo_') || dialog.kind === 'secret' || !dialog.participantUids.includes(this.profile.uid)) return null
+    if (!dialog || dialog.composeAccess === false || !row || chatId === sourceChatId || dialog.kind === 'secret' || !dialog.participantUids.includes(this.profile.uid)) return null
+    // Saved Messages is the first place a message can be forwarded to. Telegram adds it to the
+    // recipient list before the chats and then puts it at the top
+    // (ChatsListBoxController::rebuildRows: appendRow(history(session().user())), then
+    // peerListPartitionRows(isSelf)). It is a room with one participant, so the pair checks below,
+    // which are about the other person, do not apply to it.
+    if (chatId === `memo_${this.profile.uid}`) return { chatId, title: tr('저장한 메시지'), kind: dialog.kind, preview: dialog.preview }
     if (dialog.kind === 'direct') {
       const peers = [...new Set(dialog.participantUids)].filter(uid => uid !== this.profile.uid)
       if (dialog.participantUids.length !== 2 || peers.length !== 1 || boolField(mapField(mapField(row.fields, 'participantInfo'), peers[0]!), 'accountDeleted')) return null
@@ -1250,7 +1285,13 @@ export class AccountSession {
   }
   forwardTargets(source: ForwardSource): ForwardTarget[] {
     if (!this.contextMessage(source.chatId, source.messageId, source.version)?.forward) throw new Error(tr('전달할 최신 메시지를 다시 선택해 주세요.'))
-    return this.list.flatMap(dialog => { const target = this.forwardDestination(dialog.id, source.chatId); return target ? [target] : [] })
+    return this.savedFirst(this.list.flatMap(dialog => { const target = this.forwardDestination(dialog.id, source.chatId); return target ? [target] : [] }), source.chatId)
+  }
+  // peerListPartitionRows(isSelf): Saved Messages leads the list. It is not in the chat list any more,
+  // so it is offered here on its own rather than taken from that list.
+  private savedFirst(targets: ForwardTarget[], sourceChatId: string): ForwardTarget[] {
+    const savedId = `memo_${this.profile.uid}`
+    return savedMessagesFirst(targets, savedId, sourceChatId, this.forwardDestination(savedId, sourceChatId), Boolean(this.contextDialog(savedId)))
   }
   // A message of an open inquiry room forwarded into chats. The room is named by its client id (sub_inq_<id>), so
   // the queue keeps it apart from any chat, and the content is re-sent exactly as a chat's forward is.
@@ -1262,7 +1303,7 @@ export class AccountSession {
   inquiryForwardTargets(source: ForwardSource): ForwardTarget[] {
     const message = this.inquiryForwardSource(source).message
     if (this.locked || !canForwardMessage(message)) throw new Error(tr('전달할 최신 메시지를 다시 선택해 주세요.'))
-    return this.list.flatMap(dialog => { const target = this.forwardDestination(dialog.id, source.chatId); return target ? [target] : [] })
+    return this.savedFirst(this.list.flatMap(dialog => { const target = this.forwardDestination(dialog.id, source.chatId); return target ? [target] : [] }), source.chatId)
   }
   forwardInquiryText(request: ForwardRequest): Promise<void> {
     if (this.closed || this.locked) throw new Error(tr('계정과 화면 잠금 상태를 확인해 주세요.'))
@@ -1492,15 +1533,21 @@ export class AccountSession {
     if (this.selected?.dialog.summary.id !== chatId || !this.index.has(chatId)) return null
     return this.selected.mediaResource(request) ?? (this.search?.dialog.summary.id === chatId ? this.search.mediaResource(request) : null)
   }
-  photoPreview(chatId: string, request: MediaRequest): Promise<string | null> {
+  // Data::AutoDownload: the limit is the one kept for the kind of peer the picture came from
+  // (SourceFromPeer), and zero means the picture waits to be asked for. A picture the person asked for
+  // themselves passes no limits and is held only by what a preview can keep.
+  photoPreview(chatId: string, request: MediaRequest, limits: AutoDownloadLimits | null): Promise<string | null> {
     if (this.closed || this.locked) return Promise.resolve(null)
-    return this.photoPreviews.load(chatId, request)
+    if (!limits) return this.photoPreviews.load(chatId, request)
+    const dialog = this.index.get(chatId)?.summary ?? null
+    return this.photoPreviews.load(chatId, request, autoDownloadLimit({ autoDownloadPhotos: limits }, autoDownloadSource(dialog, !dialog)))
   }
-  // A message that carried no placeholder of its own still gets one, whatever the automatic
-  // download preference says - Telegram asks the server for the small size in exactly that case.
+  // The placeholder kept from a picture this account already fetched, for a bubble whose preview has
+  // since been evicted. It never fetches: a photo held back by the automatic download limit is not
+  // fetched to be blurred either.
   photoThumb(chatId: string, request: MediaRequest): Promise<string | null> {
     if (this.closed || this.locked) return Promise.resolve(null)
-    return this.photoPreviews.loadThumb(chatId, request)
+    return Promise.resolve(this.photoPreviews.thumb(chatId, request))
   }
   photoPreviewResponse(token: string, request: Request): Response { return this.photoPreviews.response(token, request) }
   // Telegram's row menu keeps these apart: "Clear history" leaves the room in the list, "Delete
@@ -1544,6 +1591,14 @@ export class AccountSession {
       this.hiddenChats.endClear(chatId)
       if (!this.closed && this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() }
     }
+  }
+  // Posts of a channel on screen in the channel section or the channel tab feed (MorseChannelPostReadMarks.noteSeen):
+  // the channel's read mark moves to the furthest of them, once this account is in the channel's discussion room.
+  channelPostsSeen(channelId: string, ids: string[]): void {
+    if (this.closed || this.locked || this.connection !== 'ready' || !this.reader || !ids.length) return
+    const joined = [...this.index.values()].some(value => value.summary.discussion && value.summary.channelId === channelId)
+    const posts = [...this.channels.posts.seenPosts(channelId, ids), ...this.channelHome.seenPosts(channelId, ids)]
+    this.channelReadMarks.seen(channelId, posts, joined)
   }
   // reactionUpdated from the socket: the open room shows the message's new reactions at once (contract §3). The list's
   // unseen-reaction badge still comes with the room document.
@@ -2244,7 +2299,7 @@ export class AccountSession {
   discard(chatId: string, id: string) { return this.delivery.discard(chatId, id) }
   async close(purge: boolean): Promise<void> {
     if (this.closed) return
-    this.closed = true; this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.photoPreviews.close(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
+    this.closed = true; this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.photoPreviews.close(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
     this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); 
     await storyClose
     await noteClose
@@ -2252,6 +2307,7 @@ export class AccountSession {
     await peopleClose
     await this.voiceDraftStorage.close();await this.backgroundStorage.close()
     await this.postCreation.close()
+    this.storyMedia.close()
     await this.contactPublicStoryVideo.close()
     await this.contactPublicStoryPhoto.close()
     await this.contactStoryReaction.close()

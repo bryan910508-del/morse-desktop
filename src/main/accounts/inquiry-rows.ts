@@ -1,4 +1,4 @@
-import { ownerRowId, subscriberRowId, type InquiryForwardRoom, type InquiryRole, type InquiryRow } from '../../shared/channel-inquiries'
+import { inquiryPreviewText, ownerRowId, subscriberRowId, type InquiryForwardRoom, type InquiryRole, type InquiryRow } from '../../shared/channel-inquiries'
 import type { InquiryNotice } from './inquiry-notifications'
 import { positionMilliseconds } from '../../shared/model'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
@@ -8,17 +8,14 @@ import { tr } from '../../shared/i18n'
 
 // ChannelInquiryLimits: a subscriber's rooms and an owner's rooms across every channel they own.
 const maxSubscriberRooms = 200, maxOwnerRooms = 500
-const managedMedia = /^https:\/\/firebasestorage\.googleapis\.com\//
 
 function time(fields: Record<string, WireObject>, key: string): number | null {
   const raw = fields[key]?.timestampValue
   if (!raw) return null
   try { return positionMilliseconds(timestamp(raw, '')) } catch { return null }
 }
-// A media message keeps its download URL in lastMessage, the way iOS stores it in text as well.
 function preview(fields: Record<string, WireObject>): string {
-  const raw = stringField(fields, 'lastMessage', 100000).slice(0, 300)
-  return managedMedia.test(raw) ? tr('사진') : raw
+  return inquiryPreviewText(stringField(fields, 'lastMessage', 100000).slice(0, 300))
 }
 function channelName(fields: Record<string, WireObject>): string {
   return boolField(fields, 'channelDeleted') ? tr('알 수 없는 채널') : stringField(fields, 'channelName', 512) || tr('채널')

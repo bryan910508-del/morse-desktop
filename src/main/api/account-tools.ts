@@ -2,6 +2,7 @@ import type { ReportRequest } from '../../shared/reports'
 import type { AccountPrivacy, BlockTarget, BlockedUser, DataExport, LastSeenPrivacy, SignInSession } from '../../shared/account-tools'
 import { normalizeBackupCode } from '../../shared/auth'
 import type { AccountAuthorization } from '../messaging/outbox'
+import { autoDeleteSecondsValue } from '../../shared/chat-auto-delete'
 import { maxFolderChats, maxFolders, type ChatFolder } from '../../shared/chat-folders'
 import { DocumentWriteFailure, FirestoreReader } from '../network/firestore-rpc'
 import { boolField, childId, documents, numberField, stringField, type FirestoreDocument, type WireObject } from '../network/firestore-values'
@@ -124,6 +125,22 @@ export class AccountToolsApi {
       try { return [decodeChatFolder(doc, this.uid)] } catch { return [] }
     }).sort((a, b) => a.order - b.order || a.id.localeCompare(b.id)).slice(0, maxFolders))
   }
+  // The account's default for new chats. An account that has never stored one adopts this device's old value once,
+  // so moving the setting off the device does not quietly turn it off.
+  async accountAutoDeleteDefault(deviceSeconds: number): Promise<number> {
+    return this.read(async (reader, signal) => {
+      const doc = await reader.getDocument(`${documents}/users/${this.uid}/private/chatSettings`, signal)
+      const fields = doc?.fields ?? {}
+      if (fields.defaultAutoDeleteSeconds !== undefined) return autoDeleteSecondsValue(Math.trunc(numberField(fields, 'defaultAutoDeleteSeconds')))
+      const legacy = autoDeleteSecondsValue(deviceSeconds)
+      if (legacy > 0) await reader.setAccountDefaultAutoDelete(this.uid, legacy, signal)
+      return legacy
+    })
+  }
+  setAccountAutoDeleteDefault(seconds: number): Promise<'done' | 'unconfirmed'> {
+    return this.documentWrite((reader, signal) => reader.setAccountDefaultAutoDelete(this.uid, seconds, signal),
+      tr('자동 삭제 설정을 저장할 수 없어요. 연결을 확인해 주세요.'))
+  }
   private async documentWrite(work: (reader: FirestoreReader, signal: AbortSignal) => Promise<void>, failure: string): Promise<'done' | 'unconfirmed'> {
     try { await this.read(work); return 'done' }
     catch (error) {
@@ -153,8 +170,8 @@ export class AccountToolsApi {
     return this.documentWrite((reader, signal) => reader.reorderChatFolders(this.uid, folderIds, signal), tr('폴더 순서를 저장하지 못했습니다.'))
   }
   // The server policy trigger posts the notice to the other participants.
-  setChatAutoDelete(chatId: string, seconds: number, myOnly: boolean): Promise<'done' | 'unconfirmed'> {
-    return this.documentWrite((reader, signal) => reader.setChatAutoDelete(this.uid, chatId, seconds, myOnly, signal), tr('자동 삭제 설정을 저장할 수 없어요. 연결을 확인해 주세요.'))
+  setChatAutoDelete(chatId: string, seconds: number): Promise<'done' | 'unconfirmed'> {
+    return this.documentWrite((reader, signal) => reader.setChatAutoDelete(this.uid, chatId, seconds, signal), tr('자동 삭제 설정을 저장할 수 없어요. 연결을 확인해 주세요.'))
   }
   // InviteLinkService.createLink uses its defaults: one use, valid for 24 hours.
   async createInviteLink(): Promise<{ token: string; url: string; expiresAt: number }> {

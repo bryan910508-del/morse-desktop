@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowLeft, Check, Copy, EllipsisVertical, File as FileIcon, Forward, Images, Info, Pencil, Reply, RotateCcw, Search, Trash2, X, Timer, Languages, Link, Pin, PinOff, Download, Sticker } from 'lucide-react'
+import { ArrowDown, ArrowLeft, Bookmark, Check, Copy, Download, EllipsisVertical, File as FileIcon, Flag, Forward, Images, Info, Languages, Link, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Sticker, Timer, Trash2, X } from 'lucide-react'
 import type { ChatMessage, DialogSummary, HistorySnapshot } from '../../../shared/model'
 import type { LocalOutgoing, OutgoingSnapshot } from '../../../shared/delivery'
 import type { ReplyDraftSnapshot } from '../../../shared/reply-draft'
@@ -26,6 +26,7 @@ import { Avatar, PeerAvatar } from '../ui/avatar'
 import { Spinner } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
 import { popupMenu, pointFor, type MenuEntry } from '../ui/popup-menu'
+import { showReportBox } from '../boxes/report-box'
 import { showShareBox } from '../boxes/share-box'
 import { showSendFilesBox } from '../boxes/send-files-box'
 import { showMediaViewer } from '../media/media-viewer'
@@ -47,13 +48,13 @@ import { usePresence } from '../app/presence'
 import { useTyping } from '../app/typing'
 import { PinnedBar, togglePin } from './pinned-bar'
 import { DeferredBar } from './deferred-send'
+import { useShownConnection } from '../app/connection'
 import { tr } from '../../../shared/i18n'
+import { reactionStrip, readRecentReactions, recordReaction } from './recent-reactions'
 
 const initialHistory: HistorySnapshot = { revision: -1, messages: [], before: null, hasMore: false, status: 'loading', message: '', newerAvailable: false }
 const initialOutgoing: OutgoingSnapshot = { revision: -1, items: [], canCompose: false, message: '' }
 const noReply: ReplyDraftSnapshot = { revision: -1, selection: null, status: 'none', preview: null }
-// Message reaction choices used by Morse.
-export const quickReactions = ['👍', '❤️', '😂', '😮', '😢', '👏', '🔥', '🙏']
 // history_view_element.cpp kAttachMessageToPreviousSecondsDelta.
 const attachWindowMs = 900 * 1000
 
@@ -67,8 +68,13 @@ function attachable(entry: Entry): boolean {
   return entry.kind === 'local' || (!entry.message.system && !entry.message.encrypted && entry.message.kind !== 'channelPost' && entry.message.kind !== 'unsupported')
 }
 
-export function ReactionStrip({ onPick }: { onPick(emoji: string): void }) {
-  return <div className="reaction-strip">{quickReactions.map(emoji => <button key={emoji} type="button" aria-label={tr('{0} 반응', [emoji])} onClick={() => onPick(emoji)}>{emoji}</button>)}</div>
+// The strip a message's menu carries. What was reacted with lately comes first, as Telegram's own strip
+// follows the server's recent list and iOS follows its stored one; `mine` are the reactions this account
+// has already left on the message, which are not recorded again.
+export function ReactionStrip({ accountUid, mine = [], onPick }: { accountUid: string; mine?: readonly string[]; onPick(emoji: string): void }) {
+  return <div className="reaction-strip">{reactionStrip(readRecentReactions(accountUid)).map(emoji =>
+    <button key={emoji} type="button" aria-label={tr('{0} 반응', [emoji])}
+      onClick={() => { recordReaction(accountUid, emoji, mine.includes(emoji)); onPick(emoji) }}>{emoji}</button>)}</div>
 }
 
 // HistoryWidget: top bar, virtualized history over the chat background, and
@@ -77,6 +83,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   const dialog = useDesktop(snapshot => dialogById(snapshot, chatId))
   const pending = useDesktop(snapshot => snapshot?.pendingDirects.find(item => item.chatId === chatId) ?? null)
   const connection = useDesktop(snapshot => snapshot?.connection ?? 'offline')
+  // The header says «연결 중…» only once the connection has been away a moment, as Telegram's does.
+  const shownConnection = useShownConnection()
   const deviceBackground = useDesktop(snapshot => snapshot?.preferences.chatBackground ?? defaultChatBackground)
   const right = useUi(state => state.right)
   const layerCount = useUi(state => state.layers.length)
@@ -196,6 +204,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   }, [history.messages, outgoing.items, overlayRevision, accountUid, forum, forumSelected])
   const entryTimes = useMemo(() => entries.map(entry => entry.time), [entries])
   const group = dialog?.kind === 'group'
+  // A channel's discussion room shows only what the room itself carries; see UserAvatar's roomOnly.
+  const roomOnly = Boolean(dialog?.discussion)
   const layouts = useMemo<MessageLayout[]>(() => entries.map((entry, index) => {
     const previous = entries[index - 1], next = entries[index + 1]
     const sender = (value: Entry): string => value.kind === 'local' ? accountUid : value.message.senderId
@@ -204,8 +214,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     const top = joins(previous, entry), bottomJoined = joins(entry, next)
     const incoming = entry.kind === 'message' && !entry.own && !entry.message.system
     return { date: !previous || !sameDay(previous.time, entry.time), unread: entry.kind === 'message' && entry.key === firstUnread.current,
-      top, bottom: bottomJoined, name: group && incoming && !top, photo: group && incoming && !bottomJoined, gutter: group && incoming }
-  }), [entries, group, accountUid])
+      top, bottom: bottomJoined, name: group && incoming && !top, photo: group && incoming && !bottomJoined, gutter: group && incoming, roomOnly }
+  }), [entries, group, accountUid, roomOnly])
 
   const virtual = useVirtualizer({
     count: entries.length, getScrollElement: () => scroll.current, overscan: 12, paddingStart: 10, paddingEnd: 8,
@@ -237,6 +247,19 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   // HistoryWidget paints a chat only after its rows are measured and scrolled into place,
   // so opening it does not show rows jumping from estimated heights.
   const [settled, setSettled] = useState(false)
+  // ListWidget::countItemsTop: `(_minHeight > full) ? (_minHeight - full) : 0`. Messages shorter than
+  // the visible area are pushed down by the difference, so a room with a few of them shows them above
+  // the composer instead of floating at the top of an empty window. It is a margin rather than the
+  // scroller's own alignment: `justify-content: flex-end` puts a taller list's overflow above the
+  // scroll origin, where it cannot be reached at all.
+  const [viewport, setViewport] = useState(0)
+  useLayoutEffect(() => {
+    const element = scroll.current
+    if (!element) return
+    const observer = new ResizeObserver(() => setViewport(element.clientHeight))
+    observer.observe(element); setViewport(element.clientHeight)
+    return () => observer.disconnect()
+  }, [])
   useLayoutEffect(() => {
     if (settled || history.status === 'loading') return
     if (!entries.length) { setSettled(true); return }
@@ -316,8 +339,14 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   // iOS DeleteConfirmOverlay / Telegram DeleteMessagesBox: for everyone where the room allows it, or for me only.
   const removeMessages = useCallback(async (messages: ChatMessage[]): Promise<void> => {
     if (!messages.length) return
-    const forEveryone = !chatId.startsWith('memo_') && messages.every(message => canMutate(message, dialogRef.current))
-    const choice = await chooseDeletion(messages.length, forEveryone, messages.every(message => message.senderId === accountUid))
+    // Saved Messages holds one copy and nobody else sees it, so there is nothing to choose between:
+    // Telegram's box there offers a plain Delete, and it takes the note off the server. Deleting it
+    // only in this window left it on the phone and brought it back on the next install.
+    const saved = chatId === `memo_${accountUid}`
+    const forEveryone = messages.every(message => canMutate(message, dialogRef.current))
+    const choice = saved ? (forEveryone && await confirmBox({ title: messages.length > 1 ? tr('메모 {0}개 삭제', [messages.length]) : tr('메모 삭제'),
+      text: tr('저장한 메시지에서 지웁니다. 다른 기기에서도 사라져요. 되돌릴 수 없어요.'), confirm: tr('삭제'), danger: true }) ? 'everyone' : null)
+      : await chooseDeletion(messages.length, forEveryone, messages.every(message => message.senderId === accountUid))
     if (!choice) return
     setSelection(null)
     if (choice === 'everyone') { for (const message of messages) void deleteMessage(accountUid, message); return }
@@ -354,10 +383,16 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
         savable?.kind === 'image' ? { label: tr('이미지 복사'), icon: <Copy size={18} />, onSelect: () => { void copyAttachmentImage(accountUid, chatId, message, savable.index) } } : null,
         canForwardMessage(message) ? { label: tr('전달'), icon: <Forward size={18} />, onSelect: () => showShareBox(accountUid, [message]) } : null,
         message.version && !message.system ? { label: tr('선택'), icon: <Check size={18} />, onSelect: () => setSelection([message.id]) } : null,
+        // iOS 의 메시지 메뉴와 같은 자리다. 신고되는 것은 보낸 사람이다 — firestore.rules 의 신고 종류에
+        // message 가 없다 — 그래서 어느 메시지인지는 설명에 적어 보낸다.
+        !own && !message.system && message.senderId ? { label: tr('신고'), icon: <Flag size={18} />, danger: true,
+          onSelect: () => showReportBox(accountUid, { type: 'user', targetId: message.senderId }, tr('메시지 신고'), null,
+            tr('신고한 메시지: 대화 {0}, 메시지 {1}', [chatId, message.id])) } : null,
         deletable ? 'separator' : null,
         deletable ? { label: tr('삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void removeMessages([message]) } } : null
       ]
-      popupMenu.open(point, entries, { header: mutable ? <ReactionStrip onPick={emoji => { popupMenu.close(); void toggleReaction(accountUid, message, emoji) }} /> : undefined })
+      popupMenu.open(point, entries, { header: mutable ? <ReactionStrip accountUid={accountUid} mine={message.reactions.filter(item => item.selected).map(item => item.emoji)}
+        onPick={emoji => { popupMenu.close(); void toggleReaction(accountUid, message, emoji) }} /> : undefined })
     }
     if (!translatable) open(false)
     else if (shown) open(true)
@@ -441,9 +476,13 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     ])
   }
 
-  const title = dialog?.title ?? pending?.displayName ?? tr('대화')
+  // Saved Messages is one thing with one name, wherever it is shown: the notes screen lists it and this
+  // header names it the same, as Telegram gives Saved Messages one name and one bookmark everywhere.
+  // Its stored chat title is whatever the client that made the room wrote there; iOS never shows it.
+  const saved = chatId === `memo_${accountUid}`
+  const title = saved ? tr('저장한 메시지') : dialog?.title ?? pending?.displayName ?? tr('대화')
   const typing = useTyping(chatId)
-  const subtitle = !dialog ? pending ? tr('새 대화') : '' : connection !== 'ready' ? tr('연결 중…') : secret ? tr('비밀 대화') : typing ? tr('입력 중...') : group ? tr('참여자 {0}명', [dialog.participantUids.length]) : peerPresence?.text ?? ''
+  const subtitle = !dialog ? pending ? tr('새 대화') : '' : shownConnection !== 'ready' ? tr('연결 중…') : secret ? tr('비밀 대화') : typing ? tr('입력 중...') : group ? tr('참여자 {0}명', [dialog.participantUids.length]) : peerPresence?.text ?? ''
   const surface = secret ? defaultChatBackground : background?.value ?? deviceBackground
   const scope = background?.value ? { kind: 'chat' as const, accountUid, chatId } : { kind: 'device' as const }
   const bodyNotice = !dialog ? pending ? tr('첫 메시지를 보내면 대화가 시작됩니다.') : tr('대화를 찾을 수 없습니다.')
@@ -459,7 +498,10 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
         <button className="button flat danger" disabled={!canDeleteSelection} onClick={() => { void removeMessages(selected) }}><Trash2 size={18} />{tr('삭제')}</button>
       </> : <>
         <button type="button" className="top-bar-peer" onClick={() => { if (dialog) controller.toggleRight('info') }}>
-          {dialog ? <PeerAvatar id={dialog.id} name={dialog.title} image={secret ? null : dialog.avatar} surface="dialogs" kind={secret ? 'secret' : undefined} size={36} priority /> : pending ? <PeerAvatar id={chatId} name={title} image={pending.avatar ?? null} surface="dialogs" size={36} priority /> : <Avatar name={title} size={36} />}
+          {/* A room of one's own has no one to show a picture of: the bookmark stands for it, and no photo is
+              asked for (the account has no peer here, so every such request could only fail). */}
+          {saved ? <span className="avatar avatar-saved" style={{ width: 36, height: 36 }} aria-hidden="true"><Bookmark size={18} /></span>
+            : dialog ? <PeerAvatar id={dialog.id} name={dialog.title} image={secret ? null : dialog.avatar} surface="dialogs" kind={secret ? 'secret' : undefined} size={36} priority /> : pending ? <PeerAvatar id={chatId} name={title} image={pending.avatar ?? null} surface="dialogs" size={36} priority /> : <Avatar name={title} size={36} />}
           <span className="top-bar-title"><strong className="ellipsis">{title}</strong>{subtitle && <span className={`ellipsis${typing && subtitle === tr('입력 중...') ? ' typing' : peerPresence?.online && subtitle === peerPresence.text ? ' online' : ''}`}>{subtitle}</span>}</span>
         </button>
         {dialog && !secret && <button className={`icon-button${right === 'search' ? ' active' : ''}`} aria-label={tr('대화 안 검색')} disabled={!historyReady} onClick={() => controller.toggleRight('search')}><Search size={20} /></button>}
@@ -481,7 +523,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
           onClick={() => { if (dialog && !secret && historyReady) showDateJumpBox(accountUid, chatId, scrollDate.value!.time) }}>{serviceDate(scrollDate.value.time)}</button>
       </div>}
       <div ref={scroll} className={`history-scroll${selection !== null ? ' selecting' : ''}`} onScroll={onScroll} tabIndex={-1} data-region-focus aria-busy={paging || history.status === 'loading'}>
-        <div className={`history-inner${settled ? '' : ' settling'}`} style={{ height: virtual.getTotalSize() }}>
+        <div className={`history-inner${settled ? '' : ' settling'}`} style={{ height: virtual.getTotalSize(), marginTop: Math.max(0, viewport - virtual.getTotalSize()) }}>
           {virtual.getVirtualItems().map(item => {
             const entry = entries[item.index]!, layout = layouts[item.index]!
             return <div key={item.key} data-index={item.index} ref={virtual.measureElement} className="history-row" style={{ transform: `translateY(${item.start}px)` }}>

@@ -20,6 +20,8 @@ function NewNoteBox({ accountUid, close }: { accountUid: string; close(): void }
     const id = crypto.randomUUID()
     try {
       const revision = crypto.randomUUID()
+      // The draft is opened before it is written, as the note editor opens the one it edits.
+      await window.morse.readNoteDraft(accountUid, { id: draftId })
       const record = await trackWrite(window.morse.saveNoteDraft(accountUid, { id: draftId, title, body, pinned: false, expected: draftRevision.current, revision }))
       draftRevision.current = record.revision
       if (record.revision !== revision) throw new Error(tr('노트 초안을 저장하지 못했습니다.'))

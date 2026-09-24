@@ -35,7 +35,9 @@
 .dialog-row-time { flex: none; font-size: 12px; color: var(--text-weak) }
 .dialog-row-time.sending { display: inline-flex; color: var(--text-weak) }
 .dialog-row-preview { flex: 1; min-width: 0; font-size: var(--t-caption); color: var(--text-weak) }
-.dialog-row-preview.draft b { font-weight: 500; color: var(--danger) }
+/* iOS colours a draft line with the palette's primary (MorseChatListItemRowView), and Telegram keeps
+   the «Draft:» word apart from the text (lng_dialogs_text_from_wrapped). */
+.dialog-row-preview.draft b { font-weight: 500; color: var(--accent) }
 .dialog-row-preview.typing { color: var(--accent) }
 .dialog-row-status { flex: none; display: inline-flex; color: var(--icon-muted) }
 /* iOS failedRed exclamationmark.circle.fill beside the name; the sending clock in the weak text colour. */
@@ -46,6 +48,7 @@
 .dialog-row-badge.muted { background: var(--swipe-mute) }
 .dialog-row-badge.mark { min-width: 10px; width: 10px; height: 10px; padding: 0 }
 .dialog-row.active :is(.dialog-row-name, .dialog-row-time, .dialog-row-preview, .dialog-row-kind, .dialog-row-status, .dialog-row-sending) { color: #fff }
+.dialog-row.active .dialog-row-preview.draft b { color: #fff }
 .dialog-row.active .dialog-row-badge { background: #fff; color: var(--accent) }
 .dialog-row.active .dialog-row-badge.muted { color: var(--swipe-mute) }
 .dialog-row .avatar-archive { background: var(--swipe-mute) }

@@ -1,8 +1,11 @@
 import { useCallback, useRef, useSyncExternalStore, type ReactNode } from 'react'
 
-// The left column shows chats (with folder tabs) or the Morse note list.
-export type Section = 'chats' | 'notes'
-export type Folder = 'all' | 'personal' | 'groups' | 'channels' | 'unread' | `folder:${string}`
+// The left column shows chats (with folder tabs), the Morse note list, or the channels.
+// Telegram keeps a channel out of the folder strip - «All chats» and the folders a person made are
+// the only tabs (ChatListFilterTabContainerNode), and iOS shows channels in their own tab
+// (ChannelFeedView), not as a chat list filter.
+export type Section = 'chats' | 'notes' | 'channels'
+export type Folder = 'all' | 'personal' | 'groups' | 'unread' | `folder:${string}`
 export interface LayerEntry { id: string; render(close: () => void): ReactNode; dismissible: boolean; onClose?: () => void }
 export interface ToastEntry { id: string; text: string; tone: 'default' | 'error'; action?: { label: string; run(): void } }
 export type RightPanel = null | 'info' | 'search' | 'comments' | 'inquiry'
@@ -66,7 +69,8 @@ export const controller = {
     set({ section: 'chats', chatId, channelId: null, noteId: null, mainMenu: false, right: state.right === 'info' ? 'info' : null, composerFocus: state.composerFocus + 1 })
   },
   closeChat(): void { set({ chatId: null, channelId: null, right: null }) },
-  openChannel(channelId: string, postId: string | null = null): void { set({ section: 'chats', folder: 'channels', channelId, channelPostId: postId, chatId: null, noteId: null, mainMenu: false, right: null }) },
+  openChannel(channelId: string, postId: string | null = null): void { set({ section: 'channels', channelId, channelPostId: postId, chatId: null, noteId: null, mainMenu: false, right: null }) },
+  showChannels(): void { set({ section: 'channels', chatId: null, noteId: null, right: null, mainMenu: false, dialogsQuery: '', channelExplore: false, archived: false }) },
   clearChannelPost(): void { if (state.channelPostId) set({ channelPostId: null }) },
   setChannelExplore(channelExplore: boolean): void { if (state.channelExplore !== channelExplore) set({ channelExplore }) },
   // A channel opened from a row that is not in the channels tab: ChatListView keeps the list where
@@ -74,7 +78,11 @@ export const controller = {
   openChannelPanel(channelId: string): void { set({ section: 'chats', channelId, chatId: null, noteId: null, mainMenu: false, right: null }) },
   showNotes(): void { set({ section: 'notes', chatId: null, channelId: null, right: null, mainMenu: false, dialogsQuery: '' }) },
   openNote(noteId: string | null): void { set({ section: 'notes', noteId, chatId: null, channelId: null, right: null, mainMenu: false }) },
-  showChats(folder: Folder = state.folder): void { set({ section: 'chats', folder, noteId: null, mainMenu: false, archived: false }) },
+  // «저장한 메시지» lives inside the notes screen, as iOS keeps the memo behind its notes hub
+  // (ChatListView+Table: a `.memo` row opens openNotesHub, never a chat room). The list beside it stays
+  // the note list, so the room opens without leaving the notes screen.
+  openSavedMessages(chatId: string): void { set({ section: 'notes', chatId, noteId: null, channelId: null, right: null, mainMenu: false, composerFocus: state.composerFocus + 1 }) },
+  showChats(folder: Folder = state.folder): void { set({ section: 'chats', folder, channelId: null, noteId: null, mainMenu: false, archived: false }) },
   setRight(right: RightPanel): void { set({ right }) },
   toggleRight(panel: Exclude<RightPanel, null>): void { set({ right: state.right === panel ? null : panel }) },
   setQuery(dialogsQuery: string): void { set({ dialogsQuery }) },

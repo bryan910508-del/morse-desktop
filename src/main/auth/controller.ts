@@ -191,12 +191,19 @@ export class AuthenticationController {
   async signInWithApple(): Promise<void> {
     await this.operationScope(false, async (api, controller) => {
       if (this.boundUid) throw new AuthenticationFailure('saved-account')
+      // How long a sign-in takes, step by step, so a slow one can be told apart from a slow link.
+      // Only the seconds each step took; nothing of the account is written.
+      let step = Date.now()
+      const took = (name: string): void => { recordConnectionStep(name, `${Date.now() - step}ms`); step = Date.now() }
       const apple = await authorizeWithApple(controller.signal)
+      took('sign-in-apple')
       this.assertCurrent(controller)
       this.set('verifying', tr('Apple 계정을 확인하고 있습니다.'))
       let tokens = await api.signInWithApple(apple, controller.signal)
+      took('sign-in-firebase')
       this.assertCurrent(controller)
       let profile = await this.morseProfile(api, tokens, controller.signal)
+      took('sign-in-profile')
       this.assertCurrent(controller)
       if (profile) this.admission?.admit(profile.uid)
       else {
@@ -330,10 +337,12 @@ export class AuthenticationController {
             return owner.transport.setReaction(payload, AbortSignal.any([signal, controller.signal]))
           }
         },
+        // Reading is not sending: Telegram downloads over its own connections, so a socket that went down does not
+        // stop a watch or a picture. Only the account being gone (another one, signed out, aborted) does.
         authorize: async (signal, force) => {
           const bounded = AbortSignal.any([signal, controller.signal])
           const assertOwner = (): void => {
-            if (bounded.aborted || this.owner !== owner || !owner.established || !owner.transport.ready) throw new AuthenticationFailure('cancelled')
+            if (bounded.aborted || this.owner !== owner || !owner.established) throw new AuthenticationFailure('cancelled')
           }
           assertOwner()
           const idToken = await this.idToken(owner, force)

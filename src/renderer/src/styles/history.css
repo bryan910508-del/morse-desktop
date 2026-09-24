@@ -26,12 +26,17 @@
   display: grid; gap: 8px; width: min(420px, 100%); padding: 8px; border-radius: var(--r-bubble);
   background: var(--bubble-in); color: var(--text); text-align: left
 }
-.channel-post-card:hover { background: var(--card-pressed) }
-/* A photo keeps the shape it was taken in, as Telegram draws one in a bubble: the card's picture fills its width,
-   keeps its own shape (the post's, when it chose one) and is never cropped to a tile. */
-.channel-post-card .media-tile { width: 100%; aspect-ratio: auto; min-height: 120px; max-height: 420px; border-radius: calc(var(--r-bubble) - 4px) }
-.channel-post-card .media-tile.previewed img { max-height: 420px; object-fit: contain }
-.channel-post-card-body { display: grid; gap: 2px; min-width: 0; padding: 0 4px 2px }
+.channel-post-card-body { text-align: left }
+.channel-post-card-body:hover strong { text-decoration: underline }
+/* The card keeps the shape the post chose (ChannelPostMediaView: always 4:5 unless the post said
+   otherwise) and the picture is fitted inside it on black — the shape before the picture arrives is the
+   shape after, and nothing is cropped. */
+.channel-post-card .media-tile { width: 100%; min-height: 120px; overflow: hidden; border-radius: calc(var(--r-bubble) - 4px); background: rgb(0 0 0 / .55) }
+/* The picture is fitted in the card's shape; the blurred placeholder under it still fills that shape,
+   the way Telegram draws the inline thumbnail over the photo's whole place. A card's tile sits on its
+   own — a photo in a bubble sits in .media-grid, which clips — so it clips the blur itself. */
+.channel-post-card .media-tile img:not(.media-thumb) { object-fit: contain }
+.channel-post-card-body { display: grid; gap: 2px; width: 100%; min-width: 0; padding: 0 4px 2px }
 .channel-post-card-body strong { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-caption); color: var(--accent) }
 .channel-post-card-text { font-size: var(--t-body); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere }
 .history-service { display: flex; justify-content: center; padding: 4px 16px }
@@ -69,7 +74,15 @@
 .bubble-name { margin-bottom: 2px; font-size: var(--t-caption); font-weight: 600; color: var(--accent) }
 .bubble-label { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; font-size: 12px; opacity: .8 }
 .bubble-text { white-space: pre-wrap }
+/* A note kept in the memo room's own messages (MorseChatUIKitNativeBubbleRow memoContentRow): a title
+   behind a small note mark, then the body, both inside the ordinary bubble. */
+.bubble-memo { display: flex; flex-direction: column; gap: 4px; white-space: pre-wrap }
+.bubble-memo strong { display: flex; align-items: center; gap: 5px; font-weight: 600 }
+.bubble-memo strong svg { flex: none; opacity: .9 }
+.bubble-memo span { opacity: .95 }
 .bubble-text em { font-style: normal; color: var(--text-weak) }
+/* UnsupportedMessageText puts EntityType::Italic over the whole notice. */
+.bubble-text em.unsupported { font-style: italic }
 .history-message.own .bubble-text em { color: rgb(255 255 255 / .8) }
 .bubble-link { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; cursor: pointer }
 .bubble-link:hover { text-decoration: underline }
@@ -151,13 +164,18 @@ button.bubble-quote:hover { background: var(--accent-border) }
 .media-tile.placeholder > svg, .media-tile.placeholder > span { position: relative; z-index: 1; color: #fff; text-shadow: 0 1px 3px rgb(0 0 0 / .55) }
 /* Telegram's automatic media download fills the tile with the picture itself. */
 .media-tile img { width: 100%; height: 100%; object-fit: cover }
+/* historyFileThumbDownload: a dark circle on the blurred photo, the press that fetches it. */
+.media-download { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: rgb(0 0 0 / .45); color: #fff }
+.media-tile:hover:not(:disabled) .media-download { background: rgb(0 0 0 / .6) }
 .media-tile.previewed { background: transparent }
 .media-tile.previewed > span { position: absolute; margin: 6px; padding: 1px 6px; border-radius: 8px; background: rgb(0 0 0 / .45); color: #fff }
 .media-tile.previewed { position: relative; place-content: stretch; justify-items: stretch }
 /* A single photo keeps its own shape within the bubble; an album keeps the cropped mosaic. The
    shape arrives as an inline ratio when the message carries the picture's size; without one the
-   tile keeps its usual shape, so a picture still loading never leaves an empty bubble. */
-.media-grid.count-1 .media-tile.previewed.single { max-height: 420px; min-height: 120px }
+   tile keeps its usual shape, so a picture still loading never leaves an empty bubble. The same
+   height bounds the tile whether the picture is here or not, so the bubble does not change size as
+   it arrives — Telegram settles a photo's geometry from the size the message carried, once. */
+.media-grid.count-1 .media-tile.single { max-height: 420px; min-height: 120px }
 .media-grid.count-1 .media-tile.previewed.single img { max-height: 420px; object-fit: contain }
 .history-message.own .media-tile { background: rgb(255 255 255 / .16) }
 .history-message.own .media-tile:hover:not(:disabled) { background: rgb(255 255 255 / .24) }
@@ -377,3 +395,38 @@ button.service-pill { cursor: pointer }
 .sticker-destination span { flex: 1; min-width: 0 }
 .sticker-destination small { color: var(--text-weak); font-size: var(--t-caption2) }
 .sticker-destination-loading { display: grid; place-items: center; min-height: 44px }
+
+/* 연락처 공유와 투표 카드. 말풍선 안에 들어가므로 말풍선 색을 그대로 쓰고, 카드 자체는 버튼이 아니다
+   — 투표 카드 안에 선택지가 들어가고 버튼 안의 버튼은 눌리지 않는다. */
+.attachment-card { display: grid; gap: 6px; width: min(340px, 100%); text-align: left }
+.contact-card { grid-template-columns: auto 1fr; align-items: center; gap: 10px }
+.attachment-card-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%;
+  background: rgb(127 127 127 / .18); color: var(--text-weak) }
+.attachment-card-text { display: grid; gap: 2px; min-width: 0 }
+.attachment-card-text small { color: var(--text-weak) }
+
+.poll-card-kind { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-weak);
+  text-transform: uppercase; letter-spacing: .02em }
+.poll-card-question { font-size: 15px; line-height: 1.35 }
+.poll-card-options { display: grid; gap: 8px; margin: 2px 0 0; padding: 0; list-style: none }
+.poll-card-option { display: grid; gap: 4px }
+.poll-card-option-line { display: flex; align-items: center; gap: 6px; min-width: 0 }
+.poll-card-option-text { flex: 1; min-width: 0; overflow-wrap: anywhere }
+.poll-card-option-percent { color: var(--text-weak); font-variant-numeric: tabular-nums }
+.poll-card-option.picked .poll-card-option-text { font-weight: 600 }
+/* 퀴즈의 정답은 결과를 볼 수 있을 때만 표시된다 (렌더러가 그때만 correct 를 붙인다). */
+.poll-card-option.correct .poll-card-option-text { color: var(--good, #2e9e5b) }
+.poll-card-bar { display: block; height: 4px; border-radius: 2px; background: rgb(127 127 127 / .22) }
+.poll-card-bar-fill { display: block; height: 100%; border-radius: 2px; background: var(--accent);
+  transition: width .18s ease }
+.poll-card-option.correct .poll-card-bar-fill { background: var(--good, #2e9e5b) }
+/* An option is a button while the poll still takes a vote, and plain text once it does not. */
+.poll-card-option-button { display: grid; gap: 4px; width: 100%; padding: 4px 6px; margin: -4px -6px; border: 0;
+  border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer }
+.poll-card-option-button:hover:not(:disabled) { background: rgb(127 127 127 / .12) }
+.poll-card-option-button:disabled { cursor: default }
+/* «Vote» appears only where several answers may be chosen, as Telegram's does. */
+.poll-card-vote { align-self: stretch; padding: 7px 10px; border: 0; border-radius: 8px; background: rgb(127 127 127 / .14);
+  color: var(--accent); font: inherit; font-weight: 600; cursor: pointer }
+.poll-card-vote:disabled { color: var(--text-weak); cursor: default }
+.poll-card-total { display: flex; align-items: center; gap: 4px; color: var(--text-weak) }

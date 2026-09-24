@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Search } from 'lucide-react'
+import { Bookmark, Search } from 'lucide-react'
 import type { ChatMessage } from '../../../shared/model'
 import type { ForwardProgress, ForwardTarget } from '../../../shared/forward'
 import type { InquiryForwardRoom } from '../../../shared/channel-inquiries'
 import { maxForwardTargets } from '../../../shared/forward'
 import { searchFold } from '../../../shared/search'
 import { controller } from '../app/ui'
-import { useDesktopEvent } from '../app/store'
+import { desktop, useDesktopEvent } from '../app/store'
+import { waitFor } from '../app/contacts'
 import { errorText } from '../app/format'
 import { trackWrite } from '../app/drafts'
 import { Box } from '../ui/layers'
@@ -45,6 +46,9 @@ function ShareBox({ accountUid, messages, origin, close }: { accountUid: string;
   }, [accountUid, first.chatId, first.id, first.version, inquiry])
   const shown = useMemo(() => (targets ?? []).filter(target => !query || searchFold(target.title).includes(searchFold(query))), [targets, query])
   const shownRooms = useMemo(() => rooms.filter(room => !query || searchFold(room.title).includes(searchFold(query))), [rooms, query])
+  // peerListPartitionRows(isSelf): Saved Messages leads the whole list, above the inquiry rooms as well.
+  const saved = useMemo(() => shown.find(target => target.chatId.startsWith('memo_')) ?? null, [shown])
+  const others = useMemo(() => shown.filter(target => target !== saved), [shown, saved])
   const chosen = selected.length + selectedRooms.length
   const toggle = (chatId: string): void => setSelected(current => current.includes(chatId) ? current.filter(id => id !== chatId)
     : chosen < maxForwardTargets ? [...current, chatId] : current)
@@ -69,6 +73,14 @@ function ShareBox({ accountUid, messages, origin, close }: { accountUid: string;
   }
   // The chats go through the delivery queue, as every forward into a chat does.
   async function forwardToChats(): Promise<void> {
+    // Saved Messages is offered before its room exists, as Telegram's list always holds it; the room
+    // the server makes on first use is made here, the way the notes screen makes it before opening.
+    const savedId = `memo_${accountUid}`
+    if (selected.includes(savedId) && !desktop.value?.dialogs.some(dialog => dialog.id === savedId)) {
+      await window.morse.prepareMemoChat(accountUid)
+      await waitFor(() => desktop.value?.dialogs.some(dialog => dialog.id === savedId) ? true : null, 15000,
+        tr('저장한 메시지를 준비하는 데 시간이 걸리고 있습니다. 잠시 후 다시 시도해 주세요.'))
+    }
     if (messages.length > 1) {
       const batch = { id: operationId, sources: messages.map(message => ({ chatId: sourceChatId(message, origin), messageId: message.id, version: message.version })),
         targets: selected.map(chatId => ({ chatId, messageIds: messages.map(() => crypto.randomUUID()) })) }
@@ -90,7 +102,12 @@ function ShareBox({ accountUid, messages, origin, close }: { accountUid: string;
     <label className="search-field"><Search size={16} /><input value={query} placeholder={tr('대화 검색')} data-autofocus onChange={event => setQuery(event.target.value)} /></label>
     <div className="peer-list" aria-busy={targets === null}>
       {targets === null ? <div className="empty-state"><Spinner size={22} /></div> : !shown.length && !shownRooms.length ? <div className="empty-state">{query ? tr('검색 결과가 없습니다.') : tr('전달할 수 있는 대화가 없습니다.')}</div>
-        : <>{shownRooms.map(room => {
+        : <>{saved && <button type="button" className="peer-row" aria-pressed={selected.includes(saved.chatId)} disabled={busy || (!selected.includes(saved.chatId) && chosen >= maxForwardTargets)} onClick={() => toggle(saved.chatId)}>
+          <span className="avatar avatar-saved" style={{ width: 42, height: 42 }} aria-hidden="true"><Bookmark size={20} /></span>
+          <span className="peer-row-text"><strong className="ellipsis">{saved.title}</strong><small>{tr('나만 볼 수 있어요')}</small></span>
+          <RoundCheck checked={selected.includes(saved.chatId)} />
+        </button>}
+        {shownRooms.map(room => {
           const checked = selectedRooms.includes(room.inquiryId)
           return <button key={room.inquiryId} type="button" className="peer-row" aria-pressed={checked} disabled={busy || (!checked && chosen >= maxForwardTargets)} onClick={() => toggleRoom(room.inquiryId)}>
             <Avatar name={room.title} size={42} />
@@ -98,7 +115,7 @@ function ShareBox({ accountUid, messages, origin, close }: { accountUid: string;
             <RoundCheck checked={checked} />
           </button>
         })}
-        {shown.map(target => {
+        {others.map(target => {
           const checked = selected.includes(target.chatId)
           return <button key={target.chatId} type="button" className="peer-row" aria-pressed={checked} disabled={busy || (!checked && chosen >= maxForwardTargets)} onClick={() => toggle(target.chatId)}>
             <DialogAvatar chatId={target.chatId} name={target.title} size={42} />

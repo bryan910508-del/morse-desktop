@@ -101,6 +101,8 @@ export type DeliveryCommand =
   | { kind: 'ready' }
   | { kind: 'list'; chatId?: string }
   | { kind: 'draft'; chatId: string }
+  // Every room's unsent draft at once, for the chat list's own line.
+  | { kind: 'drafts' }
   | { kind: 'save-draft'; chatId: string; text: string }
   | { kind: 'text-known'; wire: TextSendWire }
   | { kind: 'enqueue'; wire: TextSendWire; expectedDraft: string; reply: ReplyBinding | null }

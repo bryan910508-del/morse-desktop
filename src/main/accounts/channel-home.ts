@@ -3,7 +3,7 @@ import type { ChannelSummary } from '../../shared/channels'
 import { channelCategoryId, type ChannelCategoryId, type ChannelHomeChannel, type ChannelHomeImage, type ChannelHomePost, type ChannelHomeSnapshot } from '../../shared/channel-home'
 import type { ChannelPostText } from '../../shared/channel-posts'
 import { backgroundImageInfo } from '../../shared/background-photo-bytes'
-import { comparePosition, positionMilliseconds } from '../../shared/model'
+import { comparePosition, positionMilliseconds, type MessagePosition } from '../../shared/model'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
 import { documents, type FirestoreDocument, type WireObject } from '../network/firestore-values'
 import { callMorseFunction } from '../network/morse-callable'
@@ -96,6 +96,11 @@ export class ChannelHome {
       blur: media.blur, width: media.width ?? 0, height: media.height ?? 0 }
   }
 
+  // The feed's posts of one channel among `ids` (iOS reads the channel tab feed as the channel screen).
+  seenPosts(channelId: string, ids: readonly string[]): { id: string; position: MessagePosition; own: boolean }[] {
+    return [...this.boosted, ...this.feed].filter(item => item.channelId === channelId && ids.includes(item.post.id))
+      .map(item => ({ id: item.post.id, position: { ...item.post.position }, own: item.post.own }))
+  }
   get snapshot(): ChannelHomeSnapshot | null {
     if (this.closed || !this.visible || !this.allowed()) return null
     const items = this.listed.items().filter(item => item.status === 'ready')

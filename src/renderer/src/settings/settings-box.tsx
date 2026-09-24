@@ -1,3 +1,4 @@
+import { autoDownloadChoiceLabel, autoDownloadChoices, autoDownloadSourceLabel } from '../../../shared/auto-download'
 import { changeBackupCode, deleteAccount, showBlockedUsersBox, showLastSeenBox, showSessionsBox } from './security-boxes'
 import { useEffect, useState, type ReactNode } from 'react'
 import { ArrowLeft, AtSign, Bell, Camera, ChevronRight, FileText, FolderOpen, HardDrive, Image as ImageIcon, Info, LogOut, MessageSquare, Palette, Shield, Star, Trash2, User, X, Clock3, KeyRound, ShieldOff, Timer, Lock, BatteryLow, Download, Lightbulb, CircleHelp, ShieldCheck, Users, QrCode as QrCodeIcon, Crown, CircleCheck, Globe, History, ImagePlus, Keyboard } from 'lucide-react'
@@ -17,11 +18,11 @@ import { trackWrite } from '../app/drafts'
 import { changeProfilePhoto } from '../app/photos'
 import { showPhotoViewer } from '../ui/photo-viewer'
 import { showChatBackgroundBox } from '../boxes/chat-background-box'
-import { showCloseFriendsBox } from '../boxes/close-friends-box'
 import { showFoldersBox } from '../boxes/chat-folder-boxes'
 import { showPasscodeSettings } from './passcode-boxes'
 import { AccountsList } from '../window/accounts-list'
 import { showAutoDeleteDefaultsBox } from '../boxes/auto-delete-box'
+import { loadAutoDeleteDefault, useAutoDeleteDefault } from '../app/auto-delete-default'
 import { autoDeleteOptions } from '../../../shared/chat-auto-delete'
 import { showTextEditBox } from '../boxes/text-edit-box'
 import { Avatar } from '../ui/avatar'
@@ -247,7 +248,7 @@ function DataPage({ preferences, onPage }: { preferences: Preferences; onPage(pa
     <div className="section-divider" />
     <div className="section-label">{tr('전송 화질')}</div>
     {preferences.compressMediaUploads || active ? <p className="settings-note">{tr('절전 모드의 업로드 자동 압축이 켜져 있어 사진을 압축해서 보내요.')}</p> : null}
-    {([['auto', tr('자동'), tr('긴 변 720px')], ['original', tr('원본'), tr('긴 변 2560px까지')], ['compressed', tr('압축'), tr('긴 변 512px')]] as const).map(([id, label, detail]) =>
+    {([['auto', tr('자동'), tr('긴 변 1280px')], ['original', tr('원본'), tr('긴 변 2560px까지')], ['compressed', tr('압축'), tr('긴 변 512px')]] as const).map(([id, label, detail]) =>
       <label key={id} className="settings-radio"><input type="radio" name="photo-quality" checked={preferences.photoSendQuality === id} onChange={() => update({ photoSendQuality: id })} /><span>{tr('사진 화질 · {0}', [label])}<small>{detail}</small></span></label>)}
     {preferences.compressMediaUploads || active ? <p className="settings-note">{tr('절전 모드의 업로드 자동 압축이 켜져 있어 동영상을 360p로 압축해서 보내요.')}</p> : null}
     {([['auto', tr('자동'), '480p (960×540)'], ['original', tr('원본'), '720p (1280×720)'], ['compressed', tr('압축'), '360p']] as const).map(([id, label, detail]) =>
@@ -366,6 +367,9 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
   const integration = useDesktop(state => state?.platformIntegration ?? null)
   const appVersion = useDesktop(state => state?.appVersion ?? '')
   const [notices, setNotices] = useState<string | null>(null)
+  // The account's new-chat auto-delete default lives with the account, not this device, so the row reads it.
+  const autoDeleteDefault = useAutoDeleteDefault(accountUid)
+  useEffect(() => { if (page === 'privacy') void loadAutoDeleteDefault(accountUid).catch(() => {}) }, [page, accountUid])
   useEffect(() => {
     if (page !== 'about' || notices !== null) return
     void window.morse.thirdPartyNotices().then(setNotices).catch(() => setNotices(''))
@@ -440,7 +444,9 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
         </label>)}
         <div className="section-divider" />
         <Entry icon={<FolderOpen size={20} />} label={tr('채팅 폴더')} detail={tr('폴더 추가, 편집, 순서 바꾸기')} onClick={() => showFoldersBox(accountUid)} />
-        <Entry icon={<Timer size={20} />} label={tr('자동 삭제 메시지')} detail={tr('새 채팅 기본값 · {0}', [autoDeleteOptions.find(item => item.seconds === preferences.autoDeleteDefaultSeconds)?.label ?? tr('자동 삭제 꺼짐')])} onClick={showAutoDeleteDefaultsBox} />
+        <Entry icon={<Timer size={20} />} label={tr('자동 삭제 메시지')}
+          detail={tr('새 채팅 기본값 · {0}', [autoDeleteOptions.find(item => item.seconds === autoDeleteDefault)?.label ?? tr('자동 삭제 꺼짐')])}
+          onClick={() => showAutoDeleteDefaultsBox(accountUid)} />
         <Entry icon={<ImageIcon size={20} />} label={tr('기본 채팅 배경')} detail={tr('따로 정하지 않은 대화에 적용')} onClick={() => showChatBackgroundBox(accountUid, null)} />
         <div className="section-divider" />
         <div className="section-label">{tr('메시지 글자 크기 · {0}', [preferences.messageFontSize])}</div>
@@ -448,16 +454,23 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
         <div className="section-divider" />
         <Toggle label={tr('Enter로 보내기')} detail={preferences.enterToSend ? tr('Shift + Enter로 줄을 바꿉니다') : tr('⌘/Ctrl + Enter로 보냅니다')} checked={preferences.enterToSend} onChange={value => update({ enterToSend: value })} />
         <Toggle label={tr('맞춤법 검사')} checked={preferences.spellCheck} onChange={value => update({ spellCheck: value })} />
-        {/* Telegram Settings > Advanced > Automatic media download. */}
-        <Toggle label={tr('사진 자동 내려받기')} detail={preferences.autoDownloadPhotos ? tr('받은 사진을 말풍선에 바로 보여 줍니다') : tr('사진을 누르면 내려받습니다')}
-          checked={preferences.autoDownloadPhotos} onChange={value => update({ autoDownloadPhotos: value })} />
+        {/* Telegram Settings > Advanced > Automatic media download (Data::AutoDownload): a size, kept
+            for each kind of peer, under which a photo shows without being asked for. */}
+        <div className="section-label">{tr('사진 자동 내려받기')}</div>
+        <p className="settings-note">{tr('이 크기보다 작은 사진은 말풍선에 바로 보여 줍니다. 더 큰 사진과 «받지 않음»은 사진을 눌러 내려받습니다.')}</p>
+        {(['user', 'group', 'channel'] as const).map(source => <label key={source} className="settings-select">
+          <span>{autoDownloadSourceLabel(source)}</span>
+          <select value={preferences.autoDownloadPhotos[source]} aria-label={tr('{0} 사진 자동 내려받기', [autoDownloadSourceLabel(source)])}
+            onChange={event => update({ autoDownloadPhotos: { ...preferences.autoDownloadPhotos, [source]: Number(event.target.value) } })}>
+            {autoDownloadChoices.map(bytes => <option key={bytes} value={bytes}>{autoDownloadChoiceLabel(bytes)}</option>)}
+          </select>
+        </label>)}
         <div className="section-divider" />
         <div className="section-label">{tr('프라이버시')}</div>
         <Toggle label={tr('입력 중 표시 보내기')} detail={tr('상대방에게 입력 중인 상태 알리기')} checked={preferences.sendTypingIndicator} onChange={value => update({ sendTypingIndicator: value })} />
       </>}
       {page === 'privacy' && <>
         <AccountPrivacySection accountUid={accountUid} />
-        <Entry icon={<Star size={20} />} label={tr('친한 친구')} detail={tr('친한 친구 공개 스토리를 볼 수 있는 사람')} onClick={() => showCloseFriendsBox(accountUid)} />
         <div className="section-divider" />
         <Toggle label={tr('스토리 몰래 보기')} detail={tr('켜면 연락처의 스토리를 볼 때 열람 기록을 남기지 않습니다')} checked={preferences.storyStealth} onChange={value => update({ storyStealth: value })} />
         <div className="section-divider" />

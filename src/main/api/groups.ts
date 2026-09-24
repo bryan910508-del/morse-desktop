@@ -26,7 +26,7 @@ export class GroupApi {
   private closed = false
 
   constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly allowed: () => void, private readonly sources: GroupSources,
-    private readonly newChatAutoDelete: () => { seconds: number; myOnly: boolean } = () => ({ seconds: 0, myOnly: false })) {}
+    private readonly newChatAutoDelete: () => { seconds: number } = () => ({ seconds: 0 })) {}
 
   private async run<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.closed) throw new Error(tr('계정이 변경되었습니다.'))

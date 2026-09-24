@@ -6,7 +6,8 @@ import { AttachmentStaging } from '../../src/main/media/attachment-staging'
 
 // iOS PhotoSendQuality and MorseMediaPolicy.photoSendQualityDefault.
 test('the photo quality follows iOS, and power saving compresses', () => {
-  assert.deepEqual(photoSendSpec('auto', false), { maxEdge: 720, quality: 0.7 })
+  // «자동» and «원본» are the SD and HD sizes Telegram sends a photo at, 1280 and 2560.
+  assert.deepEqual(photoSendSpec('auto', false), { maxEdge: 1280, quality: 0.8 })
   assert.deepEqual(photoSendSpec('original', false), { maxEdge: 2560, quality: 0.9 })
   assert.deepEqual(photoSendSpec('compressed', false), { maxEdge: 512, quality: 0.55 })
   assert.deepEqual(photoSendSpec('original', true), { maxEdge: 512, quality: 0.55 })

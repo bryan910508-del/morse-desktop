@@ -4,14 +4,15 @@ import type { OwnStoryPhotoRequest } from '../../shared/own-story-photo'
 import type { ReadCredentials } from '../network/firestore-rpc'
 import { storyHiddenFrom } from '../network/story-hidden-audience'
 import { OwnStoryPhoto } from './own-story-photo'
+import { storyMediaKey, type StoryMediaCache } from './story-media-cache'
 import { tr } from '../../shared/i18n'
 export class ContactPublicStoryPhoto {
   private closed = false
   private job: Promise<void> | null = null
   private selected: { request: ContactPublicStoryPhotoRequest; ownerId: string; viewer: OwnStoryPhoto } | null = null
   constructor(private readonly uid: string, private readonly auth: ReadCredentials,
-    private readonly prepare: (request: ContactPublicStoryPhotoRequest) => { ownerId: string; story: OwnStoryDetail },
-    private readonly contact: (profileRequestId: string) => string, private readonly changed: () => void) {}
+    private readonly prepare: (request: ContactPublicStoryPhotoRequest) => { ownerId: string; story: OwnStoryDetail; path: string | null },
+    private readonly contact: (profileRequestId: string) => string, private readonly cache: StoryMediaCache, private readonly changed: () => void) {}
   private validate(request: ContactPublicStoryPhotoRequest, ownerId: string): void {
     this.auth.signal.throwIfAborted()
     if (this.closed || this.selected?.request.selectionId !== request.selectionId || this.selected.ownerId !== ownerId || this.contact(request.profileRequestId) !== ownerId) throw new Error(tr('선택한 연락처의 사진 읽기가 변경되었습니다.'))
@@ -36,10 +37,29 @@ export class ContactPublicStoryPhoto {
       this.validate(request, prepared.ownerId)
       if (current.selectionId !== raw.selectionId || current.requestId !== raw.requestId || current.storyId !== raw.storyId || current.version !== raw.version || current.presentation !== raw.presentation) throw new Error(tr('공개 사진 선택이 변경되었습니다.'))
       return prepared.story
-    }, () => { if (!this.closed) this.changed() }, { prefix: '__contact-public-story-photo', inspect: doc => { if (storyHiddenFrom(doc).hiddenFrom.includes(this.uid)) throw new Error(tr('공개 스토리 숨김 설정이 변경되었습니다.')) } })
+    }, () => { if (!this.closed) this.changed() }, { prefix: '__contact-public-story-photo', inspect: doc => { if (storyHiddenFrom(doc).hiddenFrom.includes(this.uid)) throw new Error(tr('공개 스토리 숨김 설정이 변경되었습니다.')) }, cache: this.cache, address: () => this.prepare(request).path })
     this.selected = { request, ownerId: prepared.ownerId, viewer }
     const task = Promise.resolve().then(() => viewer.load(raw)).finally(() => { if (this.job === task) this.job = null; if (!this.closed) this.changed() })
     this.job = task; this.changed(); return task
+  }
+
+  // Media::Stories::Controller::preloadNext fetches the stories around the one on screen. This fetches
+  // one of them without taking the viewer's place: what it reads waits in the cache until it is opened.
+  preload(input: ContactPublicStoryPhotoRequest): Promise<void> {
+    const request = contactPublicStoryPhotoRequest(input)
+    if (this.closed) throw new Error(tr('현재 연락처의 공개 사진 스토리를 확인해 주세요.'))
+    const prepared = this.prepare(request)
+    if (prepared.ownerId === this.uid || prepared.story.mediaType !== (request.presentation === 'video-poster' ? 'video' : 'image') || (request.presentation === 'video-poster' && !prepared.story.hasThumbnail) || prepared.story.privacy !== 'everyone') throw new Error(tr('현재 연락처의 공개 사진 스토리를 확인해 주세요.'))
+    if (this.cache.has(storyMediaKey(prepared.ownerId, request.storyId, request.version, `photo:${request.presentation}:${prepared.story.privacy}`))) return Promise.resolve()
+    const selectionId = request.selectionId
+    const raw: OwnStoryPhotoRequest = { presentation: request.presentation, selectionId, requestId: request.requestId, storyId: request.storyId, version: request.version }
+    const viewer = new OwnStoryPhoto(prepared.ownerId, this.auth, current => {
+      this.auth.signal.throwIfAborted()
+      if (this.closed || this.contact(request.profileRequestId) !== prepared.ownerId) throw new Error(tr('현재 연락처의 공개 사진 스토리를 확인해 주세요.'))
+      if (current.selectionId !== raw.selectionId || current.requestId !== raw.requestId || current.storyId !== raw.storyId || current.version !== raw.version || current.presentation !== raw.presentation) throw new Error(tr('공개 사진 선택이 변경되었습니다.'))
+      return this.prepare(request).story
+    }, () => {}, { prefix: '__contact-public-story-photo', inspect: doc => { if (storyHiddenFrom(doc).hiddenFrom.includes(this.uid)) throw new Error(tr('공개 스토리 숨김 설정이 변경되었습니다.')) }, cache: this.cache, address: () => this.prepare(request).path })
+    return viewer.load(raw).finally(() => void viewer.close())
   }
   response(token: string, request: Request): Response {
     const selected = this.selected

@@ -5,6 +5,7 @@ import type { ContactPublicStoryAudioRequest } from '../../shared/contact-public
 import type { ContactPublicStoryVideoRequest } from '../../shared/contact-public-story-video'
 import type { ContactPublicStoryPhotoRequest } from '../../shared/contact-public-story-photo'
 import type { OwnStoryDetail } from '../../shared/own-stories'
+import { storyMediaPaths, type StoryMediaPaths } from './story-media-paths'
 import { contactPublicStoriesPageRequest, type ContactPublicStoriesPageRequest, contactPublicStoriesRequest, type ContactPublicStoriesRequest, type ContactPublicStoriesResult } from '../../shared/contact-public-stories'
 import { positionAt, positionMilliseconds, type MessagePosition } from '../../shared/model'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
@@ -16,7 +17,7 @@ interface Cursor { expires: MessagePosition; created: MessagePosition }
 const compareCursor = (a: Cursor, b: Cursor): number => a.expires.seconds - b.expires.seconds || a.expires.nanoseconds - b.expires.nanoseconds || a.created.seconds - b.created.seconds || a.created.nanoseconds - b.created.nanoseconds || Buffer.compare(Buffer.from(a.created.id), Buffer.from(b.created.id))
 export class ContactPublicStories {
   private closed = false
-  private pageState: { request: ContactPublicStoriesRequest; uid: string; cursor: Cursor | null; history: (Cursor | null)[]; next: Cursor | null; number: number; deadline: number; visible: Map<string, OwnStoryDetail>; links: Map<string, string> } | null = null
+  private pageState: { request: ContactPublicStoriesRequest; uid: string; cursor: Cursor | null; history: (Cursor | null)[]; next: Cursor | null; number: number; deadline: number; visible: Map<string, { story: OwnStoryDetail; media: StoryMediaPaths }>; links: Map<string, string> } | null = null
   private pageTimer: ReturnType<typeof setTimeout> | null = null
   private owner: { id: string; abort: AbortController; reader: FirestoreReader; validate(): void } | null = null
   private readonly jobs = new Set<Promise<ContactPublicStoriesResult>>()
@@ -26,29 +27,29 @@ export class ContactPublicStories {
   dismiss(id: string): void { if (this.owner?.id === id || this.pageState?.request.id === id) this.pause() }
   async close(): Promise<void> { this.closed = true; this.pause(); await Promise.allSettled([...this.jobs]) }
   reactionSource(request: ContactStoryReactionTarget): { ownerId: string; expiresAt: number } {
-    const current = this.pageState, story = current?.visible.get(request.storyId)
+    const current = this.pageState, entry = current?.visible.get(request.storyId), story = entry?.story
     if (this.closed || this.auth.signal.aborted || this.owner || !current || Date.now() >= current.deadline || current.request.id !== request.requestId || current.request.profileRequestId !== request.profileRequestId || request.privacy !== 'everyone' || request.audienceId !== null || this.source(current.request).uid !== current.uid || !story || story.version !== request.version || story.privacy !== request.privacy || positionMilliseconds(story.expires) <= Date.now()) throw new Error(tr('현재 스토리 구간에서 본인의 반응을 다시 확인해 주세요.'))
     return { ownerId: current.uid, expiresAt: Math.min(current.deadline, positionMilliseconds(story.expires)) }
   }
   linkSource(request: ContactPublicStoryLinkRequest): string {
-    const current = this.pageState, story = current?.visible.get(request.storyId), url = current?.links.get(request.storyId)
+    const current = this.pageState, entry = current?.visible.get(request.storyId), story = entry?.story, url = current?.links.get(request.storyId)
     if (this.closed || this.auth.signal.aborted || this.owner || !current || Date.now() >= current.deadline || current.request.id !== request.requestId || current.request.profileRequestId !== request.profileRequestId || this.source(current.request).uid !== current.uid || !story || story.version !== request.version || positionMilliseconds(story.expires) <= Date.now() || !url || url !== request.url) throw new Error(tr('현재 공개 구간에서 설명과 전체 웹 주소를 다시 확인해 주세요.'))
     return url
   }
   audioSource(request: ContactPublicStoryAudioRequest): { ownerId: string; story: OwnStoryDetail } {
-    const current = this.pageState, story = current?.visible.get(request.storyId)
+    const current = this.pageState, entry = current?.visible.get(request.storyId), story = entry?.story
     if (this.closed || this.owner || !current || Date.now() >= current.deadline || current.request.id !== request.requestId || current.request.profileRequestId !== request.profileRequestId || this.source(current.request).uid !== current.uid || !story || story.version !== request.version || !['image', 'video'].includes(story.mediaType) || story.audio !== 'attached' || positionMilliseconds(story.expires) <= Date.now()) throw new Error(tr('현재 공개 스토리의 첨부 오디오를 다시 선택해 주세요.'))
     return { ownerId: current.uid, story: { ...story, created: { ...story.created }, expires: { ...story.expires } } }
   }
-  videoSource(request: ContactPublicStoryVideoRequest): { ownerId: string; story: OwnStoryDetail } {
-    const current = this.pageState, story = current?.visible.get(request.storyId)
+  videoSource(request: ContactPublicStoryVideoRequest): { ownerId: string; story: OwnStoryDetail; path: string | null; audioPath: string | null } {
+    const current = this.pageState, entry = current?.visible.get(request.storyId), story = entry?.story
     if (this.closed || this.owner || !current || Date.now() >= current.deadline || current.request.id !== request.requestId || current.request.profileRequestId !== request.profileRequestId || this.source(current.request).uid !== current.uid || !story || story.version !== request.version || story.mediaType !== 'video' || story.audio !== (request.mode === 'with-audio' ? 'attached' : 'none') || positionMilliseconds(story.expires) <= Date.now()) throw new Error(tr('현재 공개 영상과 오디오 구성를 다시 선택해 주세요.'))
-    return { ownerId: current.uid, story: { ...story, created: { ...story.created }, expires: { ...story.expires } } }
+    return { ownerId: current.uid, story: { ...story, created: { ...story.created }, expires: { ...story.expires } }, path: entry!.media.video, audioPath: entry!.media.audio }
   }
-  photoSource(request: ContactPublicStoryPhotoRequest): { ownerId: string; story: OwnStoryDetail } {
-    const current = this.pageState, story = current?.visible.get(request.storyId)
+  photoSource(request: ContactPublicStoryPhotoRequest): { ownerId: string; story: OwnStoryDetail; path: string | null } {
+    const current = this.pageState, entry = current?.visible.get(request.storyId), story = entry?.story
     if (this.closed || this.owner || !current || Date.now() >= current.deadline || current.request.id !== request.requestId || current.request.profileRequestId !== request.profileRequestId || this.source(current.request).uid !== current.uid || !story || story.version !== request.version || story.mediaType !== (request.presentation === 'video-poster' ? 'video' : 'image') || (request.presentation === 'video-poster' && !story.hasThumbnail) || positionMilliseconds(story.expires) <= Date.now()) throw new Error(tr('현재 공개 스토리 구간에서 사진을 다시 선택해 주세요.'))
-    return { ownerId: current.uid, story: { ...story, created: { ...story.created }, expires: { ...story.expires } } }
+    return { ownerId: current.uid, story: { ...story, created: { ...story.created }, expires: { ...story.expires } }, path: request.presentation === 'video-poster' ? entry!.media.poster : entry!.media.image }
   }
   read(input: ContactPublicStoriesRequest): Promise<ContactPublicStoriesResult> { return this.readPage(contactPublicStoriesRequest(input), null, [], 1) }
   page(input: ContactPublicStoriesPageRequest): Promise<ContactPublicStoriesResult> {
@@ -80,7 +81,7 @@ export class ContactPublicStories {
         validate()
         if (docs.length > 51 || docs.reduce((sum, doc) => sum + JSON.stringify(doc).length, 0) > 4 * 1024 * 1024) throw new Error('Contact public stories limit exceeded')
         // Validate all rows before exposing any caption, including the pagination sentinel.
-        const parsed = docs.map(doc => ({ story: ownStoryFromDocument(doc, peer.uid, 'everyone'), hidden: storyHiddenFrom(doc).hiddenFrom.includes(this.uid) }))
+        const parsed = docs.map(doc => ({ story: ownStoryFromDocument(doc, peer.uid, 'everyone'), media: storyMediaPaths(doc, peer.uid), hidden: storyHiddenFrom(doc).hiddenFrom.includes(this.uid) }))
         if (new Set(parsed.map(item => item.story.id)).size !== parsed.length || parsed.some(item => positionMilliseconds(item.story.expires) <= cutoff)) throw new Error('Unexpected public story query result')
         parsed.sort((a, b) => compareCursor(a.story, b.story))
         if (cursor && parsed.some(item => compareCursor(item.story, cursor) <= 0)) throw new Error('Story outside page cursor')
@@ -89,7 +90,7 @@ export class ContactPublicStories {
         const next = boundary ? { expires: { ...boundary.expires }, created: { ...boundary.created } } : null
         const now = Date.now()
         const rows = parsed.slice(0, 50).filter(item => !item.hidden && positionMilliseconds(item.story.expires) > now).map(({ story }) => ({ audio: story.audio, hasThumbnail: story.hasThumbnail, id: story.id, version: story.version, caption: story.caption, mediaType: story.mediaType, createdAt: positionMilliseconds(story.created), expiresAt: positionMilliseconds(story.expires) })).sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-        this.pageState = { request, uid: peer.uid, cursor, history, next, number: pageNumber, links: new Map(rows.flatMap(row => { const url = firstStoryCaptionLink(row.caption); return url ? [[row.id, url] as const] : [] })), visible: new Map(parsed.slice(0, 50).filter(item => !item.hidden && positionMilliseconds(item.story.expires) > now).map(({ story }) => [story.id, { ...story, caption: '', preview: '' }])), deadline: Math.min(Date.now() + 30000, ...rows.map(row => row.expiresAt)) }
+        this.pageState = { request, uid: peer.uid, cursor, history, next, number: pageNumber, links: new Map(rows.flatMap(row => { const url = firstStoryCaptionLink(row.caption); return url ? [[row.id, url] as const] : [] })), visible: new Map(parsed.slice(0, 50).filter(item => !item.hidden && positionMilliseconds(item.story.expires) > now).map(({ story, media }) => [story.id, { story: { ...story, caption: '', preview: '' }, media }])), deadline: Math.min(Date.now() + 30000, ...rows.map(row => row.expiresAt)) }
         this.pageTimer = setTimeout(() => { this.pageState = null; this.pageTimer = null }, Math.max(1, this.pageState.deadline - Date.now()))
         result = { page: { number: pageNumber, canPrevious: history.length > 0, canNext: Boolean(next) }, outcome: 'ready', rows, limited: parsed.length > 50, message: tr('조회 시점에 이 연락처가 전체 공개로 게시한 스토리의 설명입니다. 숨김 대상과 만료를 확인하며 이후 변경을 실시간으로 조회하지 않습니다.') }
       } catch { validate(); result = { page: { number: pageNumber, canPrevious: false, canNext: false }, outcome: 'unavailable', rows: [], limited: false, message: tr('공개 스토리의 접근 범위·형식·조회 결과를 확인하지 못했습니다. 빈 목록이나 일부 성공으로 표시하지 않습니다.') } }

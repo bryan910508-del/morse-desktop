@@ -5,7 +5,7 @@ import { findTextLinks, linkTarget } from '../../shared/text-links'
 import type { MediaRequest } from '../../shared/media'
 import { mediaResources } from '../media/media-document'
 import type { FirestoreReader } from '../network/firestore-rpc'
-import { decodeMessage, documents, expiry, messagesQuery, pageSize, rawPosition, ReadFailure, type FirestoreDocument, type ReadDialog } from '../network/firestore-values'
+import { decodeMessage, documents, expiry, messagesQuery, pageSize, rawPosition, ReadFailure, type FirestoreDocument, type ReadDialog, roomMediaNames } from '../network/firestore-values'
 import { tr } from '../../shared/i18n'
 
 const resultLimit = 160, byteLimit = 8 * 1024 * 1024
@@ -60,7 +60,7 @@ export class MessageSearch {
     const doc = this.rows.get(`${documents}/chats/${this.dialog.summary.id}/messages/${request.messageId}`)
     const matched = doc ? this.match(doc) : null
     if (!doc || !matched || matched.message.version !== request.version) return null
-    return mediaResources(doc, this.dialog.summary.id, matched.message.kind, false)[request.index] ?? null
+    return mediaResources(doc, roomMediaNames(doc, this.dialog), matched.message.kind, false)[request.index] ?? null
   }
   target(messageId: string): MessagePosition | null {
     if (this.closed || this.failed || this.value.status !== 'ready') return null

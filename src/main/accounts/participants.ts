@@ -14,7 +14,11 @@ export function participantSnapshot(requestId: string, doc: FirestoreDocument, d
     const data = mapField(info, uid), name = stringField(data, 'displayName', 512).trim()
     const present = Boolean(info[uid]?.mapValue)
     const withdrawn = boolField(data, 'accountDeleted') || (present && !name && !stringField(data, 'photoURL', 10000))
-    return { uid, displayName: withdrawn ? tr('탈퇴한 계정') : name || tr('참여자'), withdrawn,
+    // The room's owner is the channel here, as iOS names them (MorseGroupChatSenderDisplay: the owner of a
+    // channel discussion room is shown by the room's name, never by their own), and the server writes the
+    // channel's name into this room's participantInfo. A room whose copy predates that shows it anyway.
+    const shown = discussion && uid === owner && summary.title ? summary.title : name || tr('참여자')
+    return { uid, displayName: withdrawn ? tr('탈퇴한 계정') : shown, withdrawn,
       self: !discussion && uid === accountUid, owner: !discussion && summary.kind === 'group' && uid === owner,
       canOpenContact: !discussion && uid !== accountUid && !withdrawn && Boolean(name) && hasContact(uid),
       canAddContact: contactsReady && !discussion && uid !== accountUid && !withdrawn && Boolean(name) && !hasContact(uid) }

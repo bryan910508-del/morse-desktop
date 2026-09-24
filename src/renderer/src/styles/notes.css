@@ -1,4 +1,9 @@
 /* Morse space notes: list rows follow Dialogs::Row geometry. */
+/* «저장한 메시지» above the notes: the same row shape, with the bookmark Telegram gives Saved Messages. */
+.note-row.saved-messages { border-bottom: 1px solid var(--divider) }
+.avatar-saved { display: grid; place-items: center; border-radius: 50%; background: var(--accent-soft); color: var(--accent) }
+.saved-messages-icon { display: grid; place-items: center; width: 22px; height: 22px; margin-right: 8px; border-radius: 50%; background: var(--accent-soft); color: var(--accent) }
+.notes-widget .section-label { padding-top: 10px }
 .notes-widget { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--card) }
 .notes-title { flex: 1; min-width: 0; padding: 0 6px; font-size: var(--t-body); font-weight: 600 }
 .notes-search { flex: none; padding: 0 10px 8px; border-bottom: 1px solid var(--divider) }

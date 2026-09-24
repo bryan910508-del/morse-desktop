@@ -1,3 +1,4 @@
+import { autoDownloadLimits } from './auto-download'
 import { autoDeleteSecondsValue } from './chat-auto-delete'
 import type { MessagePosition, Preferences } from './model'
 import { chatBackground } from './chat-background'
@@ -34,7 +35,7 @@ export function historyPosition(value: unknown): MessagePosition | undefined {
 }
 type BooleanPreference = { [K in keyof Preferences]: Preferences[K] extends boolean ? K : never }[keyof Preferences]
 const booleanPreferences = new Set<BooleanPreference>(['storyStealth', 'enterToSend', 'notifications', 'showNotificationPreview', 'closeToTray', 'showUnreadBadge',
-  'autoDeleteOnlyMyMessages', 'autoTranslateChats', 'autoDownloadPhotos', 'recordVideoMessages', 'sendTypingIndicator', 'disableTypingIndicators',
+  'autoTranslateChats', 'recordVideoMessages', 'sendTypingIndicator', 'disableTypingIndicators',
   'notifyPersonal', 'notifyGroup', 'notifyChannel', 'notificationSound', 'inAppNotifications', 'spellCheck', 'powerSavingAuto', 'powerSavingAlwaysOn', 'compressMediaUploads', 'reduceMessageAnimations'])
 export function preferencePatch(value: unknown): Partial<Preferences> {
   const record = object(value)
@@ -54,6 +55,8 @@ export function preferencePatch(value: unknown): Partial<Preferences> {
     } else if (key === 'autoDeleteDefaultSeconds') {
       if (typeof record.autoDeleteDefaultSeconds !== 'number' || autoDeleteSecondsValue(record.autoDeleteDefaultSeconds) !== record.autoDeleteDefaultSeconds) throw new Error(tr('자동 삭제 시간을 다시 선택해 주세요.'))
       result.autoDeleteDefaultSeconds = record.autoDeleteDefaultSeconds
+    } else if (key === 'autoDownloadPhotos') {
+      result.autoDownloadPhotos = autoDownloadLimits(record.autoDownloadPhotos)
     } else if (key === 'photoSendQuality') {
       if (record.photoSendQuality !== 'auto' && record.photoSendQuality !== 'original' && record.photoSendQuality !== 'compressed') throw new Error(tr('사진 화질을 다시 선택해 주세요.'))
       result.photoSendQuality = record.photoSendQuality

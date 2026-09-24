@@ -21,7 +21,11 @@ export class SettingsStore {
     try {
       const raw = object(JSON.parse(await readFile(this.path, 'utf8')))
       if (raw.version !== 1) throw new Error(tr('지원하지 않는 설정 파일입니다.'))
-      const preferences = { ...defaultPreferences, ...preferencePatch(raw.preferences) }
+      // A file written by another version may hold a setting this one no longer has (and the next one may add some):
+      // what is not known is left behind, as every value that is known is still checked. Refusing the whole file would
+      // keep the app from opening at all.
+      const stored = raw.preferences === undefined ? {} : object(raw.preferences)
+      const preferences = { ...defaultPreferences, ...preferencePatch(Object.fromEntries(Object.entries(stored).filter(([key]) => key in defaultPreferences))) }
       const window = raw.window ? object(raw.window) : undefined
       if (window && !['x', 'y', 'width', 'height'].every(key => typeof window[key] === 'number' && Number.isFinite(window[key]))) {
         throw new Error(tr('저장된 창 위치를 읽을 수 없습니다.'))

@@ -9,6 +9,9 @@ import { ownStoryCollections, ownStoryFromDocument } from '../network/own-story-
 import { ownStoryPhotoPath } from '../media/own-story-photo-document'
 import { downloadOwnStoryPhoto } from '../network/own-story-photo'
 import { channelMediaResponse } from '../media/channel-media-response'
+import { storyMediaKey, type StoryMediaCache } from './story-media-cache'
+import { mediaCacheFor } from './media-cache'
+import { recordStoryStep } from '../platform/story-diagnostics'
 import { tr } from '../../shared/i18n'
 interface Selection { request: OwnStoryPhotoRequest; abort: AbortController; reader: FirestoreReader; token: string; path: string | null; watched: boolean; bytes: Buffer | null; mime: string; deadline: number }
 export class OwnStoryPhoto {
@@ -17,7 +20,7 @@ export class OwnStoryPhoto {
   private job: Promise<void> | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
   private closed = false
-  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly source: (request: OwnStoryPhotoRequest) => OwnStoryDetail, private readonly changed: () => void, private readonly options?: { prefix: '__contact-public-story-photo' | '__contact-audience-story-photo' | '__contact-story-photo-audio-image'; inspect(doc: FirestoreDocument): void }) {}
+  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly source: (request: OwnStoryPhotoRequest) => OwnStoryDetail, private readonly changed: () => void, private readonly options?: { prefix: '__contact-public-story-photo' | '__contact-audience-story-photo' | '__contact-story-photo-audio-image'; inspect(doc: FirestoreDocument): void; cache?: StoryMediaCache; address?: (request: OwnStoryPhotoRequest) => string | null }) {}
   private publish(): void { if (!this.closed) this.changed() }
   private validate(media: Selection, documentRequired = true): void {
     this.auth.signal.throwIfAborted(); media.abort.signal.throwIfAborted()
@@ -46,11 +49,25 @@ export class OwnStoryPhoto {
     this.selected = media; this.value = { ...request, status: 'loading', url: null, loaded: 0, total: null, message: tr('현재 스토리와 사진 권한을 확인하고 있습니다.') }
     this.timer = setTimeout(() => { if (this.selected === media) { this.clear(); this.publish() } }, lifetime)
     const signal = AbortSignal.any([this.auth.signal, media.abort.signal, AbortSignal.timeout(45000)])
-    const task = this.download(media, signal).catch(() => {
+    const task = this.shown(media, source) ? Promise.resolve() : this.download(media, signal).catch(error => {
+      recordStoryStep('photo-failed', error instanceof Error ? error.message : '')
       if (this.selected !== media) return
       this.clear(); this.value = { ...request, status: 'error', url: null, loaded: 0, total: null, message: tr('사진의 현재 문서·권한·형식·크기를 확인하지 못했습니다. 스토리 목록을 다시 읽은 뒤 열어 주세요.') }
     }).finally(() => { if (this.job === task) this.job = null; this.publish() })
     this.job = task; this.publish(); return task
+  }
+  private cacheKey(request: OwnStoryPhotoRequest, source: OwnStoryDetail): string {
+    return storyMediaKey(this.uid, request.storyId, request.version, `photo:${request.presentation}:${source.privacy}`)
+  }
+  // Media::Stories::Controller preloads the stories around this one; one that is already here is shown
+  // at once, without reading the story again or downloading it a second time.
+  private shown(media: Selection, source: OwnStoryDetail): boolean {
+    const held = this.options?.cache?.take(this.cacheKey(media.request, source))
+    if (!held) return false
+    media.bytes = held.bytes; media.mime = held.mime; media.watched = true; media.path = 'preloaded'
+    held.audioBytes?.fill(0)
+    this.value = { ...media.request, status: 'ready', url: `morse://app/${this.options?.prefix ?? '__own-story-photo'}/${media.token}`, loaded: held.bytes.length, total: held.bytes.length, message: '' }
+    return true
   }
   private observe(media: Selection, signal: AbortSignal): Promise<string> {
     const source = this.source(media.request), path = `${documents}/users/${this.uid}/${ownStoryCollections[source.privacy]}/${source.id}`
@@ -88,19 +105,37 @@ export class OwnStoryPhoto {
     })
   }
   private async download(media: Selection, signal: AbortSignal): Promise<void> {
-    const path = await this.observe(media, signal)
+    // Telegram downloads what the peer's stories answer already named (stories.getPeerStories), without
+    // reading that story again; the list here carries the same address. Only a list that cannot give one
+    // falls back to reading the story document.
+    const named = this.options?.address?.(media.request) ?? null
+    if (named) { media.path = named; media.watched = true }
+    const path = named ?? await this.observe(media, signal)
     signal.throwIfAborted(); this.validate(media)
+    // FileLoader::start() asks tryLoadLocal() first: a story this account already fetched is shown from
+    // the account's own cache file, with no grant, no metadata read and no download. Telegram does the
+    // same for every file it has, which is why a story it has seen opens at once.
+    const files = mediaCacheFor(this.auth), stored = await files?.read(path, 8 * 1024 * 1024)
+    if (stored) {
+      try { signal.throwIfAborted(); this.validate(media); this.accept(media, stored); return }
+      catch (error) { stored.fill(0); if (signal.aborted) throw error /* An unusable copy is fetched again. */ }
+    }
     const downloaded = await downloadOwnStoryPhoto(this.auth, path, media.request.storyId, this.uid, signal, () => this.validate(media), 8 * 1024 * 1024, (loaded, total) => {
       this.validate(media)
       if (this.value?.selectionId === media.request.selectionId) { this.value.loaded = loaded; this.value.total = total; this.publish() }
     })
     try {
       signal.throwIfAborted(); this.validate(media)
-      const info = backgroundImageInfo(downloaded)
-      if (info.width * info.height > 8 * 1024 * 1024) throw new Error('Story photo dimensions too large')
-      media.mime = info.type; media.bytes = downloaded
-      this.value = { ...media.request, status: 'ready', url: `morse://app/${this.options?.prefix ?? '__own-story-photo'}/${media.token}`, loaded: downloaded.length, total: downloaded.length, message: '' }
+      this.accept(media, downloaded)
+      files?.write(path, downloaded)
     } catch (error) { downloaded.fill(0); throw error }
+  }
+  private accept(media: Selection, bytes: Buffer): void {
+    const info = backgroundImageInfo(bytes)
+    if (info.width * info.height > 8 * 1024 * 1024) throw new Error('Story photo dimensions too large')
+    media.mime = info.type; media.bytes = bytes
+    this.options?.cache?.keep(this.cacheKey(media.request, this.source(media.request)), { bytes: Buffer.from(bytes), mime: info.type, audioBytes: null, audioMime: '' })
+    this.value = { ...media.request, status: 'ready', url: `morse://app/${this.options?.prefix ?? '__own-story-photo'}/${media.token}`, loaded: bytes.length, total: bytes.length, message: '' }
   }
   response(token: string, request: Request): Response {
     const media = this.selected

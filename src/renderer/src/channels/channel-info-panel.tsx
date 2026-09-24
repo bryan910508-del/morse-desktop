@@ -40,14 +40,9 @@ function ChannelInfoPanel({ accountUid, channelId }: { accountUid: string; chann
   const editable = Boolean(ready?.owned && version)
   let link: string | null = null
   if (ready?.publicSharing) { try { link = channelShareURL(channelId) } catch { link = null } }
-  // The cover is loaded only while the info column shows it.
-  const [coverRequestId] = useState(() => crypto.randomUUID())
-  const hasCover = Boolean(ready?.hasCover)
-  useEffect(() => {
-    if (!hasCover) return
-    void window.morse.showChannelCover(accountUid, { requestId: coverRequestId, channelId }).catch(() => {})
-    return () => { void window.morse.hideChannelCover(accountUid, coverRequestId).catch(() => {}) }
-  }, [accountUid, channelId, coverRequestId, hasCover])
+  // One holder asks for the cover: ChannelSection, which is open whenever this column is. Asking from
+  // here as well let one of the two hide a cover the other was still showing (Channels.hideCover only
+  // answers the request it is holding).
   const coverUrl = ready?.cover?.status === 'ready' ? ready.cover.url : null
 
   const editName = (): void => {

@@ -1,7 +1,7 @@
 import type { ChatMessage, HistorySnapshot, MessagePosition } from '../../shared/model'
 import { comparePosition, positionAt } from '../../shared/model'
 import { FirestoreReader } from '../network/firestore-rpc'
-import { decodeMessage, documents, expiry, historyReadable, historyLimit, messagesQuery, pageSize, positionValue, rawPosition, ReadFailure, type FirestoreDocument, type ReadDialog } from '../network/firestore-values'
+import { decodeMessage, documents, expiry, historyReadable, historyLimit, messagesQuery, pageSize, positionValue, rawPosition, ReadFailure, type FirestoreDocument, type ReadDialog, roomMediaNames } from '../network/firestore-values'
 import type { MediaRequest } from '../../shared/media'
 import { mediaResources } from '../media/media-document'
 import { originalPreview, replyOriginal, ReplyContext } from './reply-context'
@@ -45,9 +45,13 @@ export class HistoryReader {
   get snapshot(): HistorySnapshot { return { ...this.value, messages: [...this.value.messages] } }
   mediaResource(request: MediaRequest) {
     const message = this.actionMessage(request.messageId, request.version)
-    if (!message || message.encrypted || message.system || !message.readEligible) return null
+    // A channel post card is the one system message that carries a picture of its own, and
+    // decodeMessage already keeps it readable (readEligible: `!system || kind === 'channelPost'`).
+    // Refusing every system message here left the card's bubble in the discussion room with nothing
+    // inside it, which is what iOS draws from the same mirrored message (MorseChatUIKitNativeChannelPostRow).
+    if (!message || message.encrypted || (message.system && message.kind !== 'channelPost') || !message.readEligible) return null
     const doc = this.rows.get(`${documents}/chats/${this.dialog.summary.id}/messages/${request.messageId}`)!
-    return mediaResources(doc, this.dialog.summary.id, message.kind, false)[request.index] ?? null
+    return mediaResources(doc, roomMediaNames(doc, this.dialog), message.kind, false)[request.index] ?? null
   }
   actionMessage(messageId: string, version: string) {
     if (this.closed || this.failed || this.paging || this.value.status !== 'ready') return null

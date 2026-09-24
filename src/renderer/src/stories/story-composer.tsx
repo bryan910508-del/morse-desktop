@@ -18,7 +18,7 @@ import { prepareStoryComposerPhoto } from '../photos/prepare-story-composer-phot
 import { withoutMetadata } from '../photos/jpeg-metadata'
 import { tr } from '../../../shared/i18n'
 
-const privacies: StoryPrivacy[] = ['everyone', 'contacts', 'closeFriends']
+const privacies: StoryPrivacy[] = ['everyone', 'contacts']
 const privacyIcons: Record<StoryPrivacy, ReactNode> = { everyone: <Globe size={16} />, contacts: <Users size={16} />, closeFriends: <Star size={16} /> }
 const waiting = tr('이전 스토리의 게시 결과를 확인하고 있습니다. 잠시 후 다시 시도해 주세요.')
 
@@ -182,7 +182,11 @@ function StoryComposer({ accountUid, close, onPublished }: { accountUid: string;
     void trackWrite(window.morse.saveStoryComposerDraft(accountUid, { id: draftId, draft: null, expected, revision: crypto.randomUUID() })).catch(() => {})
   }, [])
 
+  // A draft is written only after it has been opened, as the post and note editors open theirs.
+  const opened = useRef<Promise<unknown> | null>(null)
   async function saveDraft(content: StoryComposerDraftContent): Promise<string> {
+    opened.current ??= window.morse.readStoryComposerDraft(accountUid, target)
+    try { await opened.current } catch (reason) { opened.current = null; throw reason }
     const revision = crypto.randomUUID()
     const record = await trackWrite(window.morse.saveStoryComposerDraft(accountUid, { id: draftId, draft: content, expected: draftRevision.current, revision }))
     draftRevision.current = record.revision

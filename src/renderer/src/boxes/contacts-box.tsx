@@ -8,7 +8,6 @@ import { controller } from '../app/ui'
 import { errorText } from '../app/format'
 import { trackWrite } from '../app/drafts'
 import { deleteContactByUid, openContactChat, waitFor } from '../app/contacts'
-import { loadCloseFriends, setCloseFriend, useCloseFriends } from '../app/close-friends'
 import { AvatarScope } from '../ui/avatar'
 import { Spinner, TextField } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
@@ -75,9 +74,7 @@ export function showAddContactBox(accountUid: string, initial = ''): void {
 
 function ContactsBox({ accountUid, close }: { accountUid: string; close(): void }) {
   const contacts = useContactList()
-  const closeFriends = useCloseFriends(accountUid)
   const [query, setQuery] = useState(''), [showArchived, setShowArchived] = useState(false)
-  useEffect(() => { void loadCloseFriends(accountUid).catch(() => {}) }, [accountUid])
   // iOS ContactListView: favourites first, then every contact; archived ones sit in their own folder.
   const matched = useMemo(() => contacts.items.filter(item => !query || searchFold(item.displayName).includes(searchFold(query))), [contacts.items, query])
   const archivedCount = contacts.items.filter(item => item.archived).length
@@ -91,7 +88,6 @@ function ContactsBox({ accountUid, close }: { accountUid: string; close(): void 
     { label: tr('메시지 보내기'), icon: <MessageCircle size={18} />, onSelect: () => { close(); void openContactChat(accountUid, uid) } },
     { label: current?.favorite ? tr('즐겨찾기 해제') : tr('즐겨찾기'), icon: <Heart size={18} />, onSelect: () => flag(uid, { favorite: !current?.favorite }) },
     { label: current?.archived ? tr('복원') : tr('보관'), icon: current?.archived ? <ArchiveRestore size={18} /> : <Archive size={18} />, onSelect: () => flag(uid, { archived: !current?.archived }) },
-    closeFriends ? { label: closeFriends.has(uid) ? tr('친한 친구에서 빼기') : tr('친한 친구에 추가'), icon: <Star size={18} />, onSelect: () => { void setCloseFriend(accountUid, uid, !closeFriends.has(uid)) } } : null,
     'separator',
     { label: tr('연락처 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => {
       void confirmBox({ title: tr('연락처 삭제'), text: tr('{0}님을 연락처에서 삭제할까요? 대화 기록은 유지됩니다.', [name]), confirm: tr('삭제'), danger: true }).then(ok => { if (ok) void deleteContactByUid(accountUid, uid, name) })
@@ -102,7 +98,6 @@ function ContactsBox({ accountUid, close }: { accountUid: string; close(): void 
     <ContactAvatar contact={contact} />
     <span className="peer-row-text"><strong className="ellipsis">{contact.displayName}</strong><ContactStatus uid={contact.uid} original={contact.originalName && contact.originalName !== contact.displayName ? contact.originalName : null} /></span>
     {contact.favorite && <Heart size={15} className="peer-row-star" aria-label={tr('즐겨찾기')} />}
-    {closeFriends?.has(contact.uid) && <Star size={16} className="peer-row-star" aria-label={tr('친한 친구')} />}
   </button>
   return <Box title={showArchived ? tr('보관된 연락처') : tr('연락처')} width={400} className="contacts-box" onClose={close} buttons={<>
     {showArchived ? <button className="button flat" onClick={() => setShowArchived(false)}>{tr('모든 연락처')}</button>

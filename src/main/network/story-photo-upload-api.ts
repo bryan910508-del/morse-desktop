@@ -1,6 +1,8 @@
 import type { ReadCredentials } from './firestore-rpc'
 import { storageBucket } from '../media/media-document'
 import { storyPhotoMime,storyPhotoMetadata, storyPhotoPath, storyPhotoSession, type StoryPhotoReceipt, type StoryPhotoUploadSource } from '../media/story-photo-upload-record'
+import { sendAgain } from './resend'
+import { recordStoryStep } from '../platform/story-diagnostics'
 import { tr } from '../../shared/i18n'
 export class StoryPhotoUploadBlocked extends Error { constructor(readonly reason: 'unknown' | 'expired') { super(reason === 'unknown' ? tr('서버의 완료 상태는 확인했지만 사진 완료 응답을 보관하지 못했습니다. 게시 가능 상태로 넘기지 않습니다.') : tr('업로드 세션이 만료되었습니다. 같은 경로에 새 업로드를 시작하지 않습니다.')) } }
 async function metadata(response: Response): Promise<unknown> {
@@ -8,6 +10,15 @@ async function metadata(response: Response): Promise<unknown> {
   const reader = response.body.getReader(), chunks: Uint8Array[] = []; let size = 0
   try { while (true) { const item = await reader.read(); if (item.done) break; size += item.value.byteLength; if (size > 65536) throw new Error(tr('사진 완료 응답이 너무 큽니다.')); chunks.push(item.value) }; return JSON.parse(Buffer.concat(chunks).toString('utf8')) }
   finally { await reader.cancel().catch(() => {}); reader.releaseLock() }
+}
+// undici says only «fetch failed»; what it was is in the cause, and that is what the log keeps.
+async function fetched(url: string, init: RequestInit & { signal: AbortSignal }): Promise<Response> {
+  try { return await sendAgain(init.signal, () => fetch(url, init), (code, attempt) => recordStoryStep('upload-resend', `${code} ${attempt}`)) }
+  catch (error) {
+    const cause = error instanceof Error && error.cause, code = cause && typeof cause === 'object' ? (cause as { code?: string }).code : undefined
+    recordStoryStep('upload-fetch-failed', `${code ?? ''} ${cause instanceof Error ? cause.message : ''}`)
+    throw error
+  }
 }
 export async function uploadStoryPhoto(auth: ReadCredentials, photo: StoryPhotoUploadSource, outer: AbortSignal, saveSession: (session: string) => Promise<void>, progress: (bytes: number) => void, validate: () => void): Promise<StoryPhotoReceipt> {
   const { intent, part, transfer, bytes } = photo, path = storyPhotoPath(intent.ownerId, intent.id, part)
@@ -17,7 +28,7 @@ export async function uploadStoryPhoto(auth: ReadCredentials, photo: StoryPhotoU
     validate(); signal.throwIfAborted()
     const bounded = AbortSignal.any([signal, AbortSignal.timeout(65000)]), credentials = await auth.authorize(bounded, false)
     validate(); bounded.throwIfAborted()
-    const response = await fetch(url, { method: 'POST', headers: { ...headers, Authorization: `Firebase ${credentials.idToken}`, 'X-Firebase-AppCheck': credentials.appCheckToken }, body: typeof body === 'string' ? body : body ? new Uint8Array(body) : undefined, signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store' })
+    const response = await fetched(url, { method: 'POST', headers: { ...headers, Authorization: `Firebase ${credentials.idToken}`, 'X-Firebase-AppCheck': credentials.appCheckToken }, body: typeof body === 'string' ? body : body ? new Uint8Array(body) : undefined, signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store' })
     if ([401, 403].includes(response.status)) { await response.body?.cancel(); throw new Error(tr('사진 업로드 권한을 확인하지 못했습니다.')) }
     return response
   }

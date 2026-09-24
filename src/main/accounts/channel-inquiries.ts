@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { ChannelInquiriesSnapshot, InquiryAttachmentMode, InquiryAttachmentRequest, InquiryAutoDeleteRequest, InquiryVoiceRequest, InquiryListRequest, InquiryListSnapshot, InquiryMessageItem, InquiryMessageKind, InquiryPhotoRequest, InquiryReactionRequest, InquiryRole, InquirySummary,
   InquiryScheduleRequest, InquiryTargetRequest, InquiryTextRequest, InquiryThreadRequest, InquiryThreadSnapshot } from '../../shared/channel-inquiries'
-import { inquiryChatMessage, inquiryQueueChatId } from '../../shared/channel-inquiries'
+import { inquiryChatMessage, inquiryPreviewText, inquiryQueueChatId } from '../../shared/channel-inquiries'
 import type { ForwardMediaSource } from '../media/forward-media'
 import type { PreparedForwardMedia } from '../storage/forward-media-protocol'
 import { maxScheduleAheadMs } from '../../shared/deferred-send'
@@ -65,8 +65,7 @@ function decodeInquiry(doc: FirestoreDocument, uid: string): Inquiry {
   const channelName = boolField(f, 'channelDeleted') ? tr('알 수 없는 채널') : stringField(f, 'channelName', 512) || tr('채널')
   const subscriberName = boolField(f, 'subscriberAccountDeleted') ? tr('탈퇴한 계정') : stringField(f, 'subscriberName', 512) || tr('구독자')
   return { id, role, peerUid: role === 'owner' ? subscriberId : '', channelId: stringField(f, 'channelId', 160), channelName, peerName: role === 'owner' ? subscriberName : channelName,
-    // A media message keeps its download URL in lastMessage (iOS stores the URL in text as well).
-    lastMessage: (raw => /^https:\/\/firebasestorage\.googleapis\.com\//.test(raw) ? tr('사진') : raw)(stringField(f, 'lastMessage', 100000).slice(0, 300)), lastMessageAt: time(f, 'lastMessageAt'),
+    lastMessage: inquiryPreviewText(stringField(f, 'lastMessage', 100000).slice(0, 300)), lastMessageAt: time(f, 'lastMessageAt'),
     unread: Math.max(0, Math.trunc(numberField(f, role === 'owner' ? 'unreadForOwner' : 'unreadForSubscriber'))), cutoff: time(f, 'historyRevokedAt'),
     // The room's own auto-delete policy; the server stamps every accepted message with its deleteAt.
     autoDeleteSeconds: autoDeleteSecondsValue(Math.trunc(numberField(f, 'autoDeleteSeconds'))), autoDeleteMyOnly: boolField(f, 'autoDeleteMyOnly'),
@@ -624,9 +623,9 @@ export class ChannelInquiries {
   async setAutoDelete(request: InquiryAutoDeleteRequest): Promise<void> {
     const state = this.requireThread(request)
     const inquiry = state.inquiry!
-    if (inquiry.autoDeleteSeconds === request.seconds && (request.seconds === 0 || inquiry.autoDeleteMyOnly === request.myOnly)) return
+    if (inquiry.autoDeleteSeconds === request.seconds) return
     this.allowed()
-    try { await this.source.setInquiryAutoDelete(this.uid, request.inquiryId, request.seconds, request.myOnly, this.signal()) }
+    try { await this.source.setInquiryAutoDelete(this.uid, request.inquiryId, request.seconds, this.signal()) }
     catch (error) { throw new Error(error instanceof DocumentWriteFailure && error.uncertain ? tr('자동 삭제 설정 결과를 확인하지 못했습니다. 잠시 후 대화를 확인해 주세요.') : tr('자동 삭제 설정을 저장할 수 없어요. 연결을 확인해 주세요.')) }
   }
   // «예약 전송»: the server sends the text into this room at its time (talky-scheduled-online-messages).

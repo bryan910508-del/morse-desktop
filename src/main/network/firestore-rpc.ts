@@ -6,6 +6,7 @@ import { writeStickerPackInstall, writeStickerPackUninstall, StickerPackInstallF
 import type { StickerPack } from '../../shared/sticker-packs'
 import type { StoryViewReceiptRequest } from '../../shared/story-view-receipt'
 import { writeStoryReaction, StoryReactionWriteFailure } from './story-reaction-write'
+import { recordStoryStep } from '../platform/story-diagnostics'
 import type { StoryReactionChangeRequest } from '../../shared/story-reaction-change'
 import { writeStoryVideoPublication, StoryVideoPublicationFailure } from './story-video-publication-write'
 import type { StoryVideoPublicationCommitRequest } from '../../shared/story-video-publication-commit'
@@ -22,7 +23,7 @@ import type { StoryRemovalRequest } from '../../shared/story-removal'
 import { writeStoryCaptionSave, StoryCaptionSaveFailure } from './story-caption-save-write'
 import type { StoryCaptionSaveRequest } from '../../shared/story-caption-save'
 import { ownStoryCollections, ownStoryFromDocument } from './own-story-document'
-import { positionMilliseconds } from '../../shared/model'
+import { positionMilliseconds, type MessagePosition } from '../../shared/model'
 import { writeNoteRemoval, NoteRemovalFailure } from './space-note-removal-write'
 import type { NoteRemovalRequest } from '../../shared/space-note-removal'
 import { writeNoteTextSave, NoteTextSaveFailure } from './space-note-text-save-write'
@@ -75,7 +76,7 @@ import { Client, credentials, loadPackageDefinition, Metadata, status, type Clie
 import { fromJSON } from '@grpc/proto-loader'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { database, document, documents, timestamp, ReadFailure, type FirestoreDocument, type WireObject } from './firestore-values'
+import { database, document, documents, positionValue, timestamp, ReadFailure, type FirestoreDocument, type WireObject } from './firestore-values'
 import { object } from '../../shared/validation'
 import { MessageMutationFailure, NotEmitted } from './contracts'
 import type { PublicContact } from './contact-lookup'
@@ -476,20 +477,40 @@ export class FirestoreReader {
     try { await writeDialogPreference(this.client, metadata(authorization), uid, request, bounded, validate) }
     catch (error) { throw error instanceof DialogPreferenceWriteFailure ? error : new DialogPreferenceWriteFailure(true) }
   }
+  // The story is read on its own first, as a reaction's is: the receipt began as a transaction, whose
+  // own reads are refused from here, and the write that follows appends one id and sets one map key.
   async writeStoryViewReceipt(uid: string, request: StoryViewReceiptRequest, signal: AbortSignal, validate: () => void): Promise<void> {
     const bounded = AbortSignal.any([this.bounded(signal), AbortSignal.timeout(60000)])
-    let authorization: ReadAuthorization
-    try { bounded.throwIfAborted(); validate(); authorization = await this.auth.authorize(bounded, false); bounded.throwIfAborted(); validate() }
-    catch { throw new StoryViewReceiptWriteFailure(false) }
-    try { await writeStoryViewReceipt(this.client, metadata(authorization), uid, request, bounded, validate) }
+    let authorization: ReadAuthorization, current: FirestoreDocument
+    try {
+      bounded.throwIfAborted(); validate()
+      const doc = await this.getDocument(`${documents}/users/${request.ownerId}/${ownStoryCollections[request.privacy]}/${request.storyId}`, bounded, validate)
+      bounded.throwIfAborted(); validate()
+      if (!doc) throw new ReadFailure('data')
+      current = doc; authorization = await this.auth.authorize(bounded, false); bounded.throwIfAborted(); validate()
+    } catch (error) {
+      recordStoryStep('receipt-read-failed', error instanceof ReadFailure ? error.code : error instanceof Error ? error.message : '')
+      throw new StoryViewReceiptWriteFailure(false)
+    }
+    try { await writeStoryViewReceipt(this.client, metadata(authorization), uid, request, current, bounded, validate) }
     catch (error) { throw error instanceof StoryViewReceiptWriteFailure ? error : new StoryViewReceiptWriteFailure(true) }
   }
+  // The story is read on its own first, the way the hidden-audience change reads it: a plain read
+  // is allowed where a transaction's read is not, and the write that follows touches one map key.
   async changeStoryReaction(uid: string, request: StoryReactionChangeRequest, signal: AbortSignal, validate: () => void): Promise<void> {
     const bounded = AbortSignal.any([this.bounded(signal), AbortSignal.timeout(60000)])
-    let authorization: ReadAuthorization
-    try { bounded.throwIfAborted(); validate(); authorization = await this.auth.authorize(bounded, false); bounded.throwIfAborted(); validate() }
-    catch { throw new StoryReactionWriteFailure(false) }
-    try { await writeStoryReaction(this.client, metadata(authorization), uid, request, bounded, validate) }
+    let authorization: ReadAuthorization, current: FirestoreDocument
+    try {
+      bounded.throwIfAborted(); validate()
+      const doc = await this.getDocument(`${documents}/users/${request.ownerId}/${ownStoryCollections[request.privacy]}/${request.storyId}`, bounded, validate)
+      bounded.throwIfAborted(); validate()
+      if (!doc) throw new ReadFailure('data')
+      current = doc; authorization = await this.auth.authorize(bounded, false); bounded.throwIfAborted(); validate()
+    } catch (error) {
+      recordStoryStep('reaction-read-failed', error instanceof ReadFailure ? error.code : error instanceof Error ? error.message : '')
+      throw new StoryReactionWriteFailure(false)
+    }
+    try { await writeStoryReaction(this.client, metadata(authorization), uid, request, current, bounded, validate) }
     catch (error) { throw error instanceof StoryReactionWriteFailure ? error : new StoryReactionWriteFailure(true) }
   }
   async changeStoryHiddenAudience(uid: string, request: StoryHiddenChangeRequest, signal: AbortSignal, validate: () => void): Promise<void> {
@@ -647,6 +668,13 @@ export class FirestoreReader {
       bounded.addEventListener('abort', cancel, { once: true }); if (bounded.aborted) cancel()
     })
   }
+  // users/{uid}/channelReadMarks/{channelId}, as iOS MorseChannelPostReadMarks sets it: the furthest post read in the
+  // channel, at the post's own createdAt. firestore.rules lets it move forward only.
+  async writeChannelReadMark(uid: string, channelId: string, position: MessagePosition, postId: string, signal: AbortSignal): Promise<void> {
+    await this.commitWrites([{ update: { name: `${documents}/users/${uid}/channelReadMarks/${channelId}`, fields: {
+      channelId: { stringValue: channelId }, maxReadCreatedAt: positionValue(position), maxReadPostId: { stringValue: postId }
+    } }, updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }] }], signal)
+  }
   // users/{uid}/blocked/{peer}: the same document the iOS app writes when blocking.
   async setBlockedUser(uid: string, peer: { uid: string; userId: string; displayName: string }, signal: AbortSignal): Promise<void> {
     await this.commitWrites([{ update: { name: `${documents}/users/${uid}/blocked/${peer.uid}`, fields: {
@@ -661,6 +689,14 @@ export class FirestoreReader {
     const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789', bytes = randomBytes(20)
     const id = [...bytes].map(byte => alphabet[byte % alphabet.length]).join('')
     await this.commitWrites([{ update: { name: `${documents}/reports/${id}`, fields }, currentDocument: { exists: false } }], signal)
+  }
+  // users/{uid}/private/chatSettings: settings only the account itself may read or write (firestore.rules,
+  // match /private/{privateDocId}). iOS keeps the new-chat auto-delete default here (MorseAccountAutoDeleteDefault),
+  // where Telegram keeps its own default TTL on the account (messages.setDefaultHistoryTTL).
+  async setAccountDefaultAutoDelete(uid: string, seconds: number, signal: AbortSignal): Promise<void> {
+    await this.commitWrites([{ update: { name: `${documents}/users/${uid}/private/chatSettings`,
+      fields: { defaultAutoDeleteSeconds: { integerValue: String(seconds) } } },
+      updateMask: { fieldPaths: ['defaultAutoDeleteSeconds'] } }], signal)
   }
   // updateData on the account's own user document (the named fields only).
   async updateUserFields(uid: string, fields: Record<string, WireObject>, mask: string[], signal: AbortSignal): Promise<void> {
@@ -707,9 +743,9 @@ export class FirestoreReader {
       updateMask: { fieldPaths: ['order'] }, currentDocument: { exists: true } })), signal)
   }
   // AppState.updateChatAutoDeletePolicy: the policy fields and the actor in one update of an existing chat.
-  async setChatAutoDelete(uid: string, chatId: string, seconds: number, myOnly: boolean, signal: AbortSignal): Promise<void> {
+  async setChatAutoDelete(uid: string, chatId: string, seconds: number, signal: AbortSignal): Promise<void> {
     await this.commitWrites([{ update: { name: `${documents}/chats/${chatId}`, fields: {
-      autoDeleteSeconds: { integerValue: String(seconds) }, autoDeleteMyOnly: { booleanValue: myOnly }, autoDeleteLastSetByUid: { stringValue: uid }
+      autoDeleteSeconds: { integerValue: String(seconds) }, autoDeleteMyOnly: { booleanValue: false }, autoDeleteLastSetByUid: { stringValue: uid }
     } }, updateMask: { fieldPaths: ['autoDeleteSeconds', 'autoDeleteMyOnly', 'autoDeleteLastSetByUid'] }, currentDocument: { exists: true } }], signal)
   }
   // MorseDeferredOutgoingRequest.payload: a queue document the server sends at its time or when the peer comes online.
@@ -746,9 +782,9 @@ export class FirestoreReader {
   }
   // The room's auto-delete policy, as a chat's (AppState.updateChatAutoDeletePolicy). firestore.rules
   // autoDeletePolicyActorOk: a change of the policy must name its actor, or the write is refused.
-  async setInquiryAutoDelete(uid: string, inquiryId: string, seconds: number, myOnly: boolean, signal: AbortSignal): Promise<void> {
+  async setInquiryAutoDelete(uid: string, inquiryId: string, seconds: number, signal: AbortSignal): Promise<void> {
     await this.commitWrites([{ update: { name: `${documents}/channelInquiries/${inquiryId}`, fields: {
-      autoDeleteSeconds: { integerValue: String(seconds) }, autoDeleteMyOnly: { booleanValue: myOnly }, autoDeleteLastSetByUid: { stringValue: uid }
+      autoDeleteSeconds: { integerValue: String(seconds) }, autoDeleteMyOnly: { booleanValue: false }, autoDeleteLastSetByUid: { stringValue: uid }
     } }, updateMask: { fieldPaths: ['autoDeleteSeconds', 'autoDeleteMyOnly', 'autoDeleteLastSetByUid'] }, currentDocument: { exists: true } }], signal)
   }
   // ChannelInquiryService.editMessage / deleteMessage on an existing message.

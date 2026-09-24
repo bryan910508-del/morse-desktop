@@ -3,6 +3,9 @@ import { defaultPreferences, type ChatMessage, type DesktopEvent, type HistorySn
 // A small in-memory Morse account: one 1:1 chat with numbered messages and three pinned ones.
 const me = 'harness-me', peer = 'harness-peer', chatId = 'harness-chat'
 const pageSize = 50, total = 150
+// ?short shows a room holding only its last few messages, so the list can be checked for Telegram's
+// bottom-aligned layout (ListWidget::countItemsTop) instead of floating at the top of an empty window.
+const shortRoom = new URLSearchParams(location.search).has('short')
 // m-148 is on the first screen, so its menu can be checked without scrolling.
 const pinnedIds = ['m-010', 'm-060', 'm-120', 'm-148']
 const position = (index: number): MessagePosition => ({ seconds: 1_750_000_000 + index * 60, nanoseconds: 0, id: `m-${String(index).padStart(3, '0')}` })
@@ -47,6 +50,13 @@ messages[total - 6] = { ...messages[total - 6]!, kind: 'image', text: '', captio
   mediaMetadata: { mediaWidthPx: 1200, mediaHeightPx: 800 },
   attachments: [{ index: 0, kind: 'image', name: '사진', available: true, blind: false }] } as unknown as ChatMessage
 
+// A channel post mirrored into a discussion room (chpost_{postId}): a system message that carries the
+// post's own picture, drawn as a card (MorseChatUIKitNativeChannelPostRow).
+messages[total - 14] = { ...messages[total - 14]!, kind: 'channelPost', system: true, text: '채널에 새 게시물이 올라왔습니다',
+  channelPost: { channelId: 'ch-mine', postId: 'cpost-1', channelName: '내 채널', ratio: 4 / 5 },
+  mediaMetadata: { mediaWidthPx: 1200, mediaHeightPx: 1500 },
+  attachments: [{ index: 0, kind: 'image', name: '사진', available: true, blind: false }] } as unknown as ChatMessage
+
 // Text with addresses, emoji on their own and a shared channel, for links, link cards and large emoji.
 const text = (index: number, value: string): void => { messages[index] = { ...messages[index]!, text: value } as ChatMessage }
 text(total - 2, '자료는 https://example.com/docs?page=2, 메일은 help@morse.com 으로 주세요')
@@ -54,6 +64,24 @@ text(total - 3, '😀👍')
 text(total - 5, '📢 [모스 소식] 채널을 공유했어요\nhttps://talky-a38c3.web.app/channel/abc123')
 text(total - 7, '😂')
 text(total - 9, 'naver.com 에서 찾아봐요')
+// A poll as iOS sends one, so the card and its vote buttons can be looked at: several answers allowed,
+// nothing chosen yet. total-17 is a second one, a quiz that this account has already answered.
+messages[total - 16] = { ...messages[total - 16]!, kind: 'poll', text: '', senderId: peer, senderName: '상대',
+  poll: { question: '이번 주 회식 언제가 좋아요?', options: ['수요일', '목요일', '금요일'], anonymous: false,
+    multipleAnswers: true, quiz: false, correctOption: null, canRevote: true, shuffleOptions: false,
+    voteCounts: [2, 5, 1], totalVoters: 7, mine: null, closed: false } } as unknown as ChatMessage
+messages[total - 17] = { ...messages[total - 17]!, kind: 'poll', text: '', senderId: peer, senderName: '상대',
+  poll: { question: '모스는 어느 나라 말로 처음 나왔을까요?', options: ['한국어', '영어'], anonymous: true,
+    multipleAnswers: false, quiz: true, correctOption: 0, canRevote: false, shuffleOptions: false,
+    voteCounts: [3, 1], totalVoters: 4, mine: [0], closed: false } } as unknown as ChatMessage
+// A reply to a photo, as ReplyContext.originalPreview builds one: the kind's name, then the caption.
+messages[total - 13] = { ...messages[total - 13]!, text: '그 사진 좋네요',
+  reply: { state: 'ready', senderName: '상대', kind: 'image', text: '사진 · 사진 설명' } } as unknown as ChatMessage
+// A reply to a message this version cannot read, which has no content of its own to quote.
+messages[total - 15] = { ...messages[total - 15]!, text: '이건 안 보여요',
+  reply: { state: 'ready', senderName: '상대', kind: 'unsupported', text: '지원하지 않는 메시지' } } as unknown as ChatMessage
+// A note iOS kept in the memo room's own messages: read as the note it is, never as its wire.
+text(total - 11, "__TALKY_MEMO__:{\"t\": \"장보기\", \"b\": \"우유\\n달걀\\n식빵\"}")
 messages[total - 3] = { ...messages[total - 3]!, categoryId: 'notice' } as ChatMessage
 // Reactions with the people behind them, and one new reaction to my message for the chat list.
 messages[total - 2] = { ...messages[total - 2]!, reactions: [{ emoji: '❤️', count: 2, selected: true, users: [{ uid: me, name: '나' }, { uid: peer, name: '상대' }] },
@@ -61,7 +89,9 @@ messages[total - 2] = { ...messages[total - 2]!, reactions: [{ emoji: '❤️', 
 
 // Settings are kept here so a switch, such as Telegram's automatic media download, really takes
 // effect in the harness instead of being recorded and forgotten.
-const preferences = { ...defaultPreferences }
+// ?manual sets every automatic photo download limit to zero, the way a person can, so the download
+// button a held back picture carries (Telegram historyFileThumbDownload) can be pressed here.
+const preferences = { ...defaultPreferences, ...(new URLSearchParams(location.search).has('manual') ? { autoDownloadPhotos: { user: 0, group: 0, channel: 0 } } : {}) }
 
 let revision = 10, historyRevision = 1
 const listeners = new Set<(event: DesktopEvent) => void>()
@@ -70,6 +100,8 @@ let liveFolders: unknown[] | null = null
 let typingUntil = 0
 let listTyping: Record<string, { until: number; names: string[] }> = {}
 let forumSelected: string | null = null
+// chat_id -> the unsent text of that room, as local_drafts holds it.
+const localDrafts = new Map<string, string>()
 let selfPhoto: string | null = null
 let pickVideo: string | null = null
 export const harness = {
@@ -88,9 +120,9 @@ export const harness = {
 ;(window as unknown as { __harness: typeof harness }).__harness = harness
 
 function page(endIndex: number, focusMessageId?: string): HistorySnapshot {
-  const start = Math.max(0, endIndex - pageSize + 1)
-  return { revision: ++historyRevision, messages: messages.slice(start, endIndex + 1), before: start > 0 ? messages[start]!.position : null,
-    hasMore: start > 0, status: 'ready', message: '', newerAvailable: endIndex < total - 1, focusMessageId } as HistorySnapshot
+  const start = shortRoom ? Math.max(0, endIndex - 2) : Math.max(0, endIndex - pageSize + 1)
+  return { revision: ++historyRevision, messages: messages.slice(start, endIndex + 1), before: shortRoom || start === 0 ? null : messages[start]!.position,
+    hasMore: !shortRoom && start > 0, status: 'ready', message: '', newerAvailable: endIndex < total - 1, focusMessageId } as HistorySnapshot
 }
 function loading(): HistorySnapshot {
   return { revision: ++historyRevision, messages: [], before: null, hasMore: false, status: 'loading', message: '', newerAvailable: true } as HistorySnapshot
@@ -127,18 +159,80 @@ function harnessChannelHome(): unknown {
   }
 }
 
+// The channel screen (iOS ChannelDetailView): one channel with picture posts for the grid, text-only
+// posts for the cards, a pinned post and a cover, so the whole screen can be looked at.
+let channelPostsRequest: { requestId: string; channelId: string } | null = null
+function harnessChannels(): unknown {
+  const at = (minutes: number) => { const ms = Date.now() - minutes * 60000; return { seconds: Math.floor(ms / 1000), nanoseconds: 0, id: `cp-${minutes}` } }
+  const revision = (index: number) => String(index).padStart(2, '0').repeat(32).slice(0, 64)
+  const picture = (index: number, hue: number, video = false) => ({ index, kind: video ? 'video' : 'image', available: true, videoAvailable: video,
+    blur: '', width: 800, height: 600, picture: { status: 'ready', url: photo(hue), width: 800, height: 600, video, blur: '' } })
+  const post = (index: number, minutes: number, text: string, media: unknown[], pinFlag = 'unpinned') => ({
+    removalEligible: true, pinFlag, own: true, editableText: text, visibility: 'public', id: `cpost-${index}`, revision: revision(index),
+    likes: { status: 'ready', selected: index % 3 === 0, count: 4 + index, storedCount: 4 + index, message: '' },
+    mediaCount: media.length, media, position: at(minutes), text, hasMedia: media.length > 0, pinned: pinFlag === 'pinned',
+    likeCount: 4 + index, commentCount: index % 4
+  })
+  const items = [{
+    id: 'ch-mine', version: '4:0', publicSharing: { name: 'mine', version: '4:0' }, hasAvatar: true, hasCover: true,
+    avatar: { status: 'ready', url: photo(280), message: '' }, cover: { status: 'ready', url: photo(200), message: '' },
+    status: 'ready', access: null, editableAccess: null, discussion: { status: 'known', chatId: 'harness-discussion' },
+    tags: ['모스', '소식'], name: '내 채널', description: '사진과 글을 올리는 채널입니다.', ownerName: '테스트', owned: true,
+    subscriptionListed: true, type: 'public', subscriberCount: 1234, postCount: 9, updated: at(5)
+  }]
+  const posts = [
+    post(1, 5, '고정된 게시물입니다.', [picture(0, 10)], 'pinned'),
+    post(2, 20, '사진 여러 장을 올린 게시물', [picture(0, 40), picture(1, 70), picture(2, 110)]),
+    post(3, 60, '영상 게시물', [picture(0, 150, true)]),
+    post(4, 120, '', [picture(0, 190)]),
+    post(5, 300, '글만 있는 게시물입니다. 이 탭에서는 카드로 보입니다.', []),
+    post(6, 600, '짧은 글', []),
+    post(7, 900, '사진 한 장', [picture(0, 230)]),
+    post(8, 1500, '사진 한 장 더', [picture(0, 320)])
+  ]
+  return {
+    status: 'ready', message: '', items, admins: null, subscribers: null, joinRequests: null, membership: null,
+    posts: channelPostsRequest ? {
+      ...channelPostsRequest, status: 'ready', message: '', posts, media: null, scope: 'member',
+      authoring: { channelId: 'ch-mine', channelVersion: '4:0', role: 'owner', permission: 'allowed', permissionSource: 'owner', adminVersion: null, discussion: { status: 'known', chatId: 'harness-discussion' }, publicChannel: true },
+      pins: { owned: true, channelVersion: '4:0', reference: { status: 'known', postId: 'cpost-1', source: 'value' }, targetFlag: 'pinned', flaggedCount: 1, missingCount: 0, unknownCount: 0, comparison: 'compatible', message: '' },
+      comments: null
+    } : null
+  }
+}
+
+// The notes page as SpaceNotesReader publishes it: a few notes, one of them pinned, one selected.
+const noteAt = (seconds: number, id: string) => ({ seconds, nanoseconds: 0, id })
+const noteRows = [
+  { id: 'note-1', version: '3:0', title: '장보기', preview: '우유, 달걀, 빵', updated: noteAt(1_750_003_000, 'note-1'), created: noteAt(1_750_000_000, 'note-1'), pinned: true },
+  { id: 'note-2', version: '2:0', title: '회의 메모', preview: '금요일 회의: 배포 일정 확인', updated: noteAt(1_750_002_000, 'note-2'), created: noteAt(1_750_001_000, 'note-2'), pinned: false },
+  { id: 'note-3', version: '1:0', title: '', preview: '제목 없는 노트', updated: noteAt(1_750_001_500, 'note-3'), created: noteAt(1_750_001_400, 'note-3'), pinned: false },
+]
+let notesRequestId: string | null = null
+let notesSelected: string | null = null
+function notesSnapshot(): unknown {
+  const row = noteRows.find(item => item.id === notesSelected) ?? null
+  return { revision: '1', page: { number: 1, canPrevious: false, older: null }, requestId: notesRequestId,
+    status: notesRequestId ? 'ready' : 'idle', message: '', limited: false, rows: notesRequestId ? noteRows : [],
+    selected: row ? { ...row, body: `${row.title}\n\n${row.preview}` } : null }
+}
 function snapshot(): unknown {
   return {
     revision: ++revision, appVersion: 'harness', platform: 'macOS', preferences: { ...preferences }, systemDark: false,
     accounts: [{ uid: me, userId: 'harness1', displayName: '테스트' }], activeAccountUid: me, connection: 'ready',
     dialogs: [{ id: chatId, version: '1:0', kind: 'direct', title: '상대', participantUids: [me, peer], preview: messages.at(-1)!.text, unreadCount: 0,
       markedUnread: false, readPositions: {}, readSync: { status: 'ready' }, pinned: false, pinVersion: '', muted: false, archived: false,
-      top: messages.at(-1)!.position, avatar: null, pinnedForAll: ['m-060'], unseenReaction: { messageId: 'm-147', emoji: '🔥', reactionVersion: 2 },
+      top: messages.at(-1)!.position, avatar: null, draft: localDrafts.get(chatId) ?? '', pinnedForAll: ['m-060'], unseenReaction: { messageId: 'm-147', emoji: '🔥', reactionVersion: 2 },
       forum: { generalId: 'general', categories: [{ id: 'general', name: '일반', sortOrder: 0, isGeneral: true }, { id: 'notice', name: '공지', sortOrder: 1, isGeneral: false }] }, forumSelected: forumSelected },
+      // Saved Messages (chats/memo_{uid}): it belongs in the notes screen, never in this list.
+      { id: `memo_${me}`, version: '1:0', kind: 'direct', title: '내 메모', participantUids: [me], preview: '📝 장보기', unreadCount: 0,
+        markedUnread: false, readPositions: {}, readSync: { status: 'ready' }, pinned: false, pinVersion: '', muted: false, archived: false,
+        top: messages.at(-3)!.position, avatar: null, pinnedForAll: [] },
       // A channel discussion room: deleting it from the list leaves it, as iOS does.
       { id: 'harness-discussion', version: '3:0', kind: 'group', title: '구독 채널 토론방', participantUids: [me, peer], preview: '댓글이 달렸어요', unreadCount: 0,
         markedUnread: false, readPositions: {}, readSync: { status: 'ready' }, pinned: false, pinVersion: '', muted: false, archived: false,
-        top: messages.at(-2)!.position, avatar: null, pinnedForAll: [], discussion: true, channelId: 'harness-channel2', createdBy: peer }],
+        top: messages.at(-2)!.position, avatar: null, draft: localDrafts.get('harness-discussion') ?? '', pinnedForAll: [], discussion: true, channelId: 'harness-channel2', createdBy: peer }],
+    spaceNotes: notesSnapshot(),
     dialogStatus: 'ready', dialogMessage: '', dialogPin: null, manualUnread: null, dialogActionsAvailable: true, signInAvailable: true,
     authentication: { available: true, phase: 'signed-in', account: null, message: '' },
     // ?intro previews the sign-in screens as «Add Account» shows them.
@@ -161,7 +255,7 @@ function snapshot(): unknown {
     ],
     notifications: { supported: true, message: '' }, platformIntegration: { trayAvailable: false, message: '' },
     selfProfile: selfPhoto ? { status: 'ready', profile: { uid: me, userId: 'harness1', displayName: '테스트', bio: '', premium: false, hasPhoto: true }, message: '',
-      photo: { url: selfPhoto, status: 'ready', message: '' } } : null, contacts: { status: 'ready', items: [], message: '' }, channels: null, participants: null, contactSearch: null, pendingDirects: [],
+      photo: { url: selfPhoto, status: 'ready', message: '' } } : null, contacts: { status: 'ready', items: [], message: '' }, channels: harnessChannels(), participants: null, contactSearch: null, pendingDirects: [],
     channelHome: harnessChannelHome(), channelStories
   }
 }
@@ -234,11 +328,39 @@ function inquiryThread(): unknown {
     ] } } : null
 }
 // A batch that does not follow the current revision makes the store resync, which is all we need.
+const fetchedPhotos = new Set<string>()
 const refresh = (): void => { harness.emit({ type: 'data', batch: { base: -1, revision: revision + 1000, fields: {} } } as unknown as DesktopEvent) }
 
 // Every bridge method answers; the ones the chat screen reads return realistic shapes.
 const implemented: Record<string, (...args: unknown[]) => unknown> = {
   snapshot: async () => snapshot(),
+  // The forward box: chats to forward into and the 1:1 inquiry rooms beside them. Saved Messages is
+  // deliberately not first here — the box hoists it, as Telegram's peerListPartitionRows(isSelf) does.
+  forwardTargets: async () => [
+    { chatId, title: '상대', kind: 'direct', preview: '메시지 149' },
+    { chatId: `memo_${me}`, title: '저장한 메시지', kind: 'direct', preview: '메모해 둔 링크' },
+    { chatId: 'harness-discussion', title: '구독 채널 토론방', kind: 'group', preview: '댓글이 달렸어요' }
+  ],
+  inquiryForwardRooms: async () => [
+    { inquiryId: 'harness-channel2_harness-me', channelId: 'harness-channel2', title: '구독 중인 채널', role: 'subscriber' }
+  ],
+  openChannelPosts: async (_uid: unknown, request: unknown) => { channelPostsRequest = request as { requestId: string; channelId: string }; refresh() },
+  closeChannelPosts: async () => { channelPostsRequest = null; refresh() },
+  openSpaceNotes: async (_uid: unknown, requestId: unknown) => { notesRequestId = String(requestId); notesSelected = null; refresh() },
+  closeSpaceNotes: async () => { notesRequestId = null; notesSelected = null; refresh() },
+  selectSpaceNote: async (_uid: unknown, request: unknown) => { notesSelected = (request as { noteId: string | null }).noteId; refresh() },
+  pageSpaceNotes: async () => { refresh() },
+  searchNotePage: async (_uid: unknown, request: unknown) => {
+    const text = String((request as { text?: unknown }).text ?? '')
+    const row = noteRows.find(item => item.title.includes(text) || item.preview.includes(text)) ?? null
+    return { requestId: notesRequestId, outcome: row ? 'found' : 'absent', noteId: row?.id ?? null, version: row?.version ?? null, page: { number: 1, canPrevious: false, older: null }, message: '' }
+  },
+  // The draft a new note is written into: read first, as the outbox requires, then saved.
+  readNoteDraft: async (_uid: unknown, target: unknown) => ({ ...(target as object), title: '', body: '', pinned: false, revision: null }),
+  saveNoteDraft: async (_uid: unknown, request: unknown) => ({ ...(request as object), revision: (request as { revision: string }).revision }),
+  refreshNoteCreation: async () => {},
+  prepareNoteCreation: async () => {},
+  noteCreationAction: async () => {},
   onEvent: (listener: unknown) => { listeners.add(listener as (event: DesktopEvent) => void); return () => listeners.delete(listener as (event: DesktopEvent) => void) },
   // Like HistoryReader.older: a `before` cursor returns the page just older than that message.
   history: async (_uid: unknown, _chat: unknown, before: unknown) => {
@@ -266,9 +388,16 @@ const implemented: Record<string, (...args: unknown[]) => unknown> = {
     requestId: (request as { requestId: string }).requestId, url: await pngDataURL(120, 1600), presentation: 'image', name: '사진.png', size: (await pngBytes(120, 1600)).byteLength
   }),
   // Telegram's automatic media download: the picture arrives without the bubble being pressed.
-  photoPreview: async () => pngDataURL(),
+  // Main answers with nothing when this room's limit holds the picture back; a press asks without one.
+  photoPreview: async (_uid: unknown, _chatId: unknown, request: unknown, asked: unknown) => {
+    if (asked !== true && !Object.values(preferences.autoDownloadPhotos).some(limit => limit > 0)) return null
+    fetchedPhotos.add((request as { messageId: string }).messageId)
+    return pngDataURL()
+  },
   // The placeholder the main process makes for a message that carried none: base64 JPEG, no prefix.
-  photoThumb: async () => (await jpegDataURL(32, 21)).slice('data:image/jpeg;base64,'.length),
+  // A placeholder is kept only from a picture that was fetched to be shown; nothing is fetched for one.
+  photoThumb: async (_uid: unknown, _chatId: unknown, request: unknown) =>
+    fetchedPhotos.has((request as { messageId: string }).messageId) ? (await jpegDataURL(32, 21)).slice('data:image/jpeg;base64,'.length) : null,
   // The app calls updatePreferences(patch) and gets the new snapshot; older harness scripts pass (uid, patch).
   relaunchApp: async () => { location.reload() },
   updatePreferences: async (first: unknown, second: unknown) => { Object.assign(preferences, (second ?? first) as Record<string, unknown>); refresh(); return snapshot() },
@@ -319,7 +448,17 @@ const implemented: Record<string, (...args: unknown[]) => unknown> = {
   outgoing: async () => ({ revision: 1, items: [], canCompose: true, message: '' }),
   replyDraft: async () => ({ revision: 1, selection: null, status: 'none', preview: null }),
   messageActions: async () => ({ revision: 1, ready: true, message: '', items: [] }),
-  loadDraft: async () => '', draft: async () => '', chatBackground: async () => null,
+  // Local drafts, as the delivery store keeps them: the composer reads one back, and the chat list
+  // shows «작성 중: …» on every room that has one (Telegram RowPainter::Paint lng_from_draft).
+  // 「저장한 메시지」 opens chats/memo_{uid}, which Session.prepareMemoChat names.
+  prepareMemoChat: async () => `memo_${me}`,
+  loadDraft: async () => '', draft: async (_uid: unknown, chat: unknown) => localDrafts.get(String(chat)) ?? '',
+  saveDraft: async (_uid: unknown, chat: unknown, text: unknown) => {
+    const value = String(text)
+    if (value) localDrafts.set(String(chat), value.slice(0, 160)); else localDrafts.delete(String(chat))
+    refresh()
+  },
+  chatBackground: async () => null,
   // Session.jumpPinned -> HistoryReader.jump: a loading frame, then the page ending at the pin.
   jumpPinned: async (_uid: unknown, chat: unknown, messageId: unknown) => {
     const index = messages.findIndex(message => message.id === messageId)

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { object } from '../../shared/validation'
 import type { ReadCredentials } from './firestore-rpc'
 import { storageBucket } from '../media/media-document'
+import { sendAgain } from './resend'
 
 async function bytes(response: Response, max: number, signal: AbortSignal, validate: () => void, progress?: (loaded: number) => void): Promise<Buffer> {
   const header = response.headers.get('content-length'), length = header === null ? null : Number(header)
@@ -29,11 +30,11 @@ export async function downloadOwnStoryAudio(auth: ReadCredentials, path: string,
   const authorization = await auth.authorize(signal, false)
   signal.throwIfAborted(); validate()
   const resourceURL = `gs://${storageBucket}/${path}`
-  const grant = await fetch('https://asia-northeast3-talky-a38c3.cloudfunctions.net/authorizeMorseMediaRead', {
+  const grant = await sendAgain(signal, () => fetch('https://asia-northeast3-talky-a38c3.cloudfunctions.net/authorizeMorseMediaRead', {
     method: 'POST', signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken },
     body: JSON.stringify({ data: { resourceURL } })
-  })
+  }))
   const payload = await bytes(grant, 64 * 1024, signal, validate)
   try {
     const wire = object(JSON.parse(payload.toString('utf8'))), result = object(wire.result ?? wire.data)
@@ -41,8 +42,8 @@ export async function downloadOwnStoryAudio(auth: ReadCredentials, path: string,
   } finally { payload.fill(0) }
   signal.throwIfAborted(); validate()
   const endpoint = `https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}`
-  const get = (url: string) => fetch(url, { signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
-    headers: { Authorization: `Firebase ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken } })
+  const get = (url: string) => sendAgain(signal, () => fetch(url, { signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
+    headers: { Authorization: `Firebase ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken } }))
   const metadata = async () => {
     signal.throwIfAborted(); validate()
     const payload = await bytes(await get(endpoint), 64 * 1024, signal, validate)
