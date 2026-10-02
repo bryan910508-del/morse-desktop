@@ -86,6 +86,23 @@ test('a message the server refused waits, marked, until it is sent again or dele
   await q.sends.close()
 })
 
+// B40: a busy server, a contended write or a proof that had just expired turns the message away for now, not for good —
+// it waits with the clock and goes again by itself, as a lost connection does. Only the other answers mark it failed.
+test('a message a busy server turned away for now goes again by itself, without the failed mark', async () => {
+  for (const status of ['RESOURCE_EXHAUSTED', 'ABORTED', 'UNAUTHENTICATED']) {
+    const db = database(), messageId = id()
+    const q = queue(db, async (_payload, call) => { if (call === 1) throw new MorseCallableFailure('answered', status); return { ok: true } })
+    await q.sends.load()
+    await q.sends.enqueue(text(messageId, status))
+    await wait(30)
+    assert.deepEqual(q.sends.items().map(item => item.state), ['sending'], `${status}: waiting, not failed`)
+    await wait(inquiryRetryDelay(1) + 300)
+    assert.deepEqual(q.sent.map(payload => payload.clientMessageId), [messageId, messageId], `${status}: sent again under its id`)
+    assert.deepEqual(q.sends.items().map(item => item.state), ['sent'])
+    await q.sends.close()
+  }
+})
+
 test('a photo is uploaded once and its address goes with every attempt', async () => {
   const db = database(), messageId = id(), bytes = new Uint8Array([1, 2, 3, 4])
   const q = queue(db, async (_payload, call) => { if (call === 1) throw new MorseCallableFailure('unknown', 'INTERNAL'); return { ok: true } })

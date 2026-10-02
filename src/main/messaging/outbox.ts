@@ -91,6 +91,25 @@ export interface AccountAuthorization extends ReadCredentials {
 }
 interface ReadContext { ready: boolean; dialogs: Map<string, DialogSummary>; reader: FirestoreReader | null }
 
+// A message on its way goes again by itself: one that never left, one whose answer is not known yet, an upload the
+// connection cut off. Only a definite refusal waits for the person.
+export function resumableIntent(row: StoredIntent): boolean {
+  return row.state === 'uploading' || row.state === 'queued' || row.state === 'uncertain' || (row.state === 'upload-failed' && row.reason === 'upload-network')
+}
+// An upload the connection cut off resumes by itself: it is shown waiting, with the clock, and offers no «다시 전송».
+export const waitingUpload = (row: Pick<StoredIntent, 'state' | 'reason'>): boolean => row.state === 'upload-failed' && row.reason === 'upload-network'
+export const shownState = (row: Pick<StoredIntent, 'state' | 'reason'>): StoredIntent['state'] => waitingUpload(row) ? 'uploading' : row.state
+// What the queue sends next: the first message that may go now. A room's messages go in the order they were written
+// (Telegram R-54, tdesktop data_histories.cpp sendPreparedMessage .afterRequest(history->sendRequestId)): one waits
+// while an earlier one of its room is still on its way — not sent yet, or its answer not known — and goes once that
+// one is through or has definitely failed, as a failed message in Telegram stands alone. Other rooms do not wait.
+// Until 0.241.0 a later message overtook an earlier one waiting out a retry (B40).
+export function nextIntent(rows: StoredIntent[], now: number, retryAt: (id: string) => number, allowed: (row: StoredIntent) => boolean): { intent: StoredIntent | null; candidates: StoredIntent[] } {
+  const candidates = rows.filter(row => allowed(row) && resumableIntent(row) &&
+    !rows.some(earlier => earlier.chatId === row.chatId && earlier.sequence < row.sequence && resumableIntent(earlier)))
+  return { intent: candidates.find(row => retryAt(row.id) <= now) ?? null, candidates }
+}
+
 export class OutboxPump {
   private repository: DeliveryRepository | null = null
   private readonly opening: Promise<void>
@@ -324,9 +343,12 @@ export class OutboxPump {
         .filter(row => row.chatId === chatId && !rows.some(other => other.id === row.id))].map(row => this.sent.has(row.id) && !rows.some(other => other.id === row.id) ? {
         id: row.id, chatId, text: pendingText(row), replyToId: row.wire.replyToId, createdAt: row.createdAt, state: 'sent' as const, reason: '', busy: false,
         voicePreview: row.voicePreview, forwarded: row.forwarded, storyReply: Boolean(row.wire.replyStoryId), retryable: false } : ({ id: row.id, chatId, text: pendingText(row), replyToId: row.wire.replyToId, createdAt: row.createdAt,
-        state: row.state, reason: this.earlierForward(row, rows) ? tr('앞선 전달 메시지의 결과 확인 또는 대기 정리가 필요합니다.') : row.state === 'uploading' ? tr('첨부 업로드 대기 중') : row.state === 'queued' ? tr('메시지 전송 대기 중') : deliveryReason(row.reason), busy: this.busyId === row.id,
+        // An upload the connection cut off is not a failure: it resumes by itself, so it shows the clock, not the red
+        // mark that waits for the person (Telegram R-52: a clock until the server has it, failed only on its refusal).
+        state: shownState(row),
+        reason: this.earlierForward(row, rows) ? tr('앞선 전달 메시지의 결과 확인 또는 대기 정리가 필요합니다.') : waitingUpload(row) ? tr('연결 대기 중') : row.state === 'uploading' ? tr('첨부 업로드 대기 중') : row.state === 'queued' ? tr('메시지 전송 대기 중') : deliveryReason(row.reason), busy: this.busyId === row.id,
         voicePreview:row.voicePreview, forwarded: row.forwarded, storyReply: Boolean(row.wire.replyStoryId), progress: this.busyId === row.id ? this.uploadProgress : undefined,
-        retryable: row.state === 'upload-failed' || (row.state === 'failed' && retryableRejections.has(row.reason)) })) : [] }
+        retryable: (row.state === 'upload-failed' && !waitingUpload(row)) || (row.state === 'failed' && retryableRejections.has(row.reason)) })) : [] }
   }
   private keepSent(row: StoredIntent): void {
     if (this.closed) return
@@ -779,17 +801,15 @@ export class OutboxPump {
   // contract: a stored message ID returns alreadyExisted, a different payload
   // is rejected as CONFLICT. Unconfirmed sends and interrupted uploads
   // therefore resume automatically; definite rejections wait for the user.
-  private resumable(row: StoredIntent): boolean {
-    return row.state === 'uploading' || row.state === 'queued' || row.state === 'uncertain' || (row.state === 'upload-failed' && row.reason === 'upload-network')
-  }
+  private resumable(row: StoredIntent): boolean { return resumableIntent(row) }
   private async drain(signal: AbortSignal): Promise<void> {
     while (this.active(signal)) {
       const rows = await this.store<StoredIntent[]>({ kind: 'list' })
       if (!this.active(signal)) return
       for (const id of [...this.retryAt.keys()]) if (!rows.some(row => row.id === id)) this.retryAt.delete(id)
       const now = Date.now()
-      const candidates = rows.filter(row => this.composeAllowed(row.chatId) && !this.earlierForward(row, rows) && this.resumable(row))
-      const intent = candidates.find(row => (this.retryAt.get(row.id)?.at ?? 0) <= now)
+      const { intent, candidates } = nextIntent(rows, now, id => this.retryAt.get(id)?.at ?? 0,
+        row => this.composeAllowed(row.chatId) && !this.earlierForward(row, rows))
       if (!intent) {
         if (candidates.length) {
           const next = Math.min(...candidates.map(row => this.retryAt.get(row.id)?.at ?? now))

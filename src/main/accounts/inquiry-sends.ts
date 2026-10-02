@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { InquiryMessageKind, InquirySendItem } from '../../shared/channel-inquiries'
 import type { ReadCredentials } from '../network/firestore-rpc'
-import { callMorseFunction, MorseCallableFailure } from '../network/morse-callable'
+import { callMorseFunction, MorseCallableFailure, transientAnswers } from '../network/morse-callable'
 import { uploadInquiryAttachment } from '../network/inquiry-photo-upload-api'
 import { UploadRefused } from '../network/upload-refused'
 import { DeliveryCommandFailure } from '../storage/delivery-client'
@@ -182,7 +182,9 @@ export class InquirySends {
     } catch (error) {
       // The connection went while it was on its way: it waits as it is and goes when the connection is back.
       if (!this.active(signal)) return
-      const refused = (error instanceof MorseCallableFailure && error.delivery === 'answered') || error instanceof UploadRefused
+      // Only a refusal for good fails the message; a busy or contended server, or a proof that had just expired, is
+      // tried again like a lost connection (morse-callable.ts transientAnswers).
+      const refused = (error instanceof MorseCallableFailure && error.delivery === 'answered' && !transientAnswers.has(error.status)) || error instanceof UploadRefused
       if (refused) {
         this.retries.delete(row.id)
         await this.store({ kind: 'inquiry-send-state', id: row.id, state: 'failed',

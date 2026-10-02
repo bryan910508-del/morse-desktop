@@ -31,6 +31,9 @@ const statuses = new Set(['CANCELLED', 'UNKNOWN', 'INVALID_ARGUMENT', 'DEADLINE_
   'RESOURCE_EXHAUSTED', 'FAILED_PRECONDITION', 'ABORTED', 'OUT_OF_RANGE', 'UNIMPLEMENTED', 'INTERNAL', 'UNAVAILABLE', 'DATA_LOSS', 'UNAUTHENTICATED'])
 // A function that fails part of the way through says one of these (user decision 2026-09-29: «모름»).
 const partial = new Set(['INTERNAL', 'UNAVAILABLE', 'DEADLINE_EXCEEDED'])
+// Answers that turn a request away for now, not for good: too many requests, a conflicting write, a proof that had just
+// expired. The request goes again later; only the other answers refuse it (B40).
+export const transientAnswers: ReadonlySet<string> = new Set(['RESOURCE_EXHAUSTED', 'ABORTED', 'UNAUTHENTICATED'])
 
 // What the function's answer says, from the status line and the body as they came.
 export function callableAnswer(ok: boolean, body: string): Record<string, unknown> {
