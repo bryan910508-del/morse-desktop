@@ -13,6 +13,10 @@ export interface LocalOutgoing {
   reason: string
   busy: boolean
   retryable: boolean
+  // A10 §4: refused because the operator restricted or banned this account — the menu offers the operator's mail.
+  sanction?: import('./sanctions').Sanction
+  // B73: the end of a restriction (ms), for the «제한 끝» line of that mail.
+  sanctionUntil?: number
   progress?: { loaded: number; total: number; current: number; count: number }
 }
 export interface OutgoingSnapshot {

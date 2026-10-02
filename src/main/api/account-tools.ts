@@ -58,6 +58,18 @@ export function decodeSignInSession(doc: FirestoreDocument, currentSessionId: st
 
 // Account-level tools that the iOS app reaches through callables or its own user documents:
 // chat history clearing, the memo chat, blocking, sign-in sessions, recovery code, privacy and deletion.
+// reports/{auto-id} as firestore.rules isValidReport takes it: the common fields, then each kind's own (A10 §3-1).
+export function reportFields(uid: string, request: ReportRequest, now: number): Record<string, WireObject> {
+  const target = request.target
+  const fields: Record<string, WireObject> = { type: { stringValue: target.type }, targetId: { stringValue: target.targetId }, reporterId: { stringValue: uid },
+    category: { stringValue: request.category }, createdAt: { timestampValue: { seconds: String(Math.floor(now / 1000)), nanos: (now % 1000) * 1000000 } } }
+  if (target.type === 'post') fields.channelId = { stringValue: target.channelId }
+  if (target.type === 'message') fields.chatId = { stringValue: target.chatId }
+  if (target.type === 'comment') { fields.channelId = { stringValue: target.channelId }; fields.postId = { stringValue: target.postId } }
+  if (target.type === 'story') { fields.ownerType = { stringValue: target.ownerType }; fields.ownerId = { stringValue: target.ownerId } }
+  if (request.extra) fields.extra = { stringValue: request.extra }
+  return fields
+}
 export class AccountToolsApi {
   constructor(private readonly uid: string, private readonly auth: AccountAuthorization, private readonly allowed: () => unknown) {}
   private get sessionId(): string { const scope = this.auth.storageScope; return scope.slice(0, scope.lastIndexOf(':')) }
@@ -209,13 +221,14 @@ export class AccountToolsApi {
     return { uid: result.creatorId, userId: value('creatorUserId', 160), displayName: value('displayName', 512), bio: value('bio', 500) }
   }
   // A report the way iOS files one; firestore.rules v4.8.10 allows only this create, under the reporter's own uid.
+  // B52: whether this account closed the «unknown person» bar for a peer, on any of its devices.
+  peerBarHidden(peer: string): Promise<boolean> {
+    return this.read(async (reader, signal) => (await reader.getDocument(`${documents}/users/${this.uid}/settings/peerBar_${peer}`, signal))?.fields?.hidden?.booleanValue === true)
+  }
+  hidePeerBar(peer: string): Promise<void> { return this.read((reader, signal) => reader.hidePeerBar(this.uid, peer, signal)) }
   async report(request: ReportRequest): Promise<void> {
     if (request.target.type === 'user' && request.target.targetId === this.uid) throw new Error(tr('자신은 신고할 수 없어요.'))
-    const now = Date.now()
-    const fields: Record<string, WireObject> = { type: { stringValue: request.target.type }, targetId: { stringValue: request.target.targetId }, reporterId: { stringValue: this.uid },
-      category: { stringValue: request.category }, createdAt: { timestampValue: { seconds: String(Math.floor(now / 1000)), nanos: (now % 1000) * 1000000 } } }
-    if (request.target.type === 'post') fields.channelId = { stringValue: request.target.channelId }
-    if (request.extra) fields.extra = { stringValue: request.extra }
+    const fields = reportFields(this.uid, request, Date.now())
     try { await this.read((reader, signal) => reader.createReport(fields, signal)) }
     catch (error) {
       const code = (error as { code?: number }).code

@@ -750,6 +750,12 @@ export class FirestoreReader {
   // users/{uid}/blocked/{peer}: the same document the iOS app writes when blocking.
   // A11 §3: the name and note this account saved for a person, at users/{uid}/contactNames/{peer}, readable only by the
   // account itself. Both empty takes the document away.
+  // B52 (Telegram R-64, the «unknown person» bar's close): users/{uid}/settings/peerBar_{peer} {hidden: true, at}, the
+  // account's own setting, so every device of it stops offering the bar for this person.
+  async hidePeerBar(uid: string, peer: string, signal: AbortSignal): Promise<void> {
+    await this.commitWrites([{ update: { name: `${documents}/users/${uid}/settings/peerBar_${peer}`, fields: { hidden: { booleanValue: true } } },
+      updateTransforms: [{ fieldPath: 'at', setToServerValue: 'REQUEST_TIME' }] }], signal)
+  }
   async setContactName(uid: string, peer: string, value: { name: string; note: string; operationId: string }, signal: AbortSignal): Promise<void> {
     const name = `${documents}/users/${uid}/contactNames/${peer}`
     if (!value.name && !value.note) { await this.commitWrites([{ delete: name }], signal); return }

@@ -29,13 +29,13 @@ import type { ChannelsSnapshot, ChannelSummary, ChannelCoverRequest } from '../.
 import { comparePosition } from '../../shared/model'
 import { identifier } from '../../shared/validation'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
-import { childId, documents, documentVersion, mapField, numberField, stringField, timestamp, type FirestoreDocument } from '../network/firestore-values'
+import { childId, documents, documentVersion, mapField, numberField, roomRestricted, stringField, timestamp, type FirestoreDocument } from '../network/firestore-values'
 import { tr } from '../../shared/i18n'
 
 type Kind = 'subscriptions' | 'owned'
 interface Batch { ids: string[]; status: ChannelSummary['status']; rows: Map<string, FirestoreDocument>; stop(): void }
 const empty = (id: string, status: ChannelSummary['status'], subscriptionListed: boolean): ChannelSummary => ({
-  id, status, subscriptionListed, publicSharing: null, avatar: null, cover: null, hasAvatar: false, hasCover: false, discussion: null, tags: null, access: null, editableAccess: null, version: null, name: '', description: '', owned: false, type: 'unknown', subscriberCount: null, postCount: null, updated: null
+  id, status, subscriptionListed, restricted: false, publicSharing: null, avatar: null, cover: null, hasAvatar: false, hasCover: false, discussion: null, tags: null, access: null, editableAccess: null, version: null, name: '', description: '', owned: false, type: 'unknown', subscriberCount: null, postCount: null, updated: null
 })
 // iOS Channel.type: the stored type, else isPublic for channels made before the field existed.
 export function channelDocumentType(f: FirestoreDocument['fields']): ChannelSummary['type'] {
@@ -60,7 +60,7 @@ export function decodeChannelSummary(doc: FirestoreDocument, uid: string, subscr
   try { version = documentVersion(doc) } catch { /* Read-only metadata can remain visible without an edit version. */ }
   let publicSharing: ChannelSummary['publicSharing'] = null
   try { const metadata = publicChannelMetadata(doc); publicSharing = { name: metadata.name, version: metadata.version } } catch { /* Keep nonpublic or malformed metadata out of sharing. */ }
-  return { ...empty(id, 'ready', subscribed), publicSharing, discussion: channelDiscussionReference(doc), access: channelAccessInfo(doc), editableAccess: editableChannelAccess(doc), tags: readChannelTags(f.tags), version, name, description: stringField(f, 'description', 10000),
+  return { ...empty(id, 'ready', subscribed), restricted: roomRestricted(f), publicSharing, discussion: channelDiscussionReference(doc), access: channelAccessInfo(doc), editableAccess: editableChannelAccess(doc), tags: readChannelTags(f.tags), version, name, description: stringField(f, 'description', 10000),
     hasAvatar: typeof f.photoURL?.stringValue === 'string' && !!f.photoURL.stringValue,
     hasCover: typeof f.coverURL?.stringValue === 'string' && !!f.coverURL.stringValue,
     owned: owner === uid, type,

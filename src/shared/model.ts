@@ -111,6 +111,10 @@ export interface MessagePosition {
 }
 
 export interface DialogSummary {
+  // A10 §4: the operator closed this room; its messages are not shown (shared/sanctions.ts).
+  restricted?: boolean
+  // B52: in a 1:1, whether the peer withdrew.
+  peerDeleted?: boolean
   composeAccess?: boolean
   composeMessage?: string
   historyAccess?: 'loading' | 'blocked' | 'ready'
@@ -321,6 +325,8 @@ export interface DesktopSnapshot {
   platformIntegration: { trayAvailable: boolean; message: string }
   // B51: translation, voice to text and background removal on this device (shared/translation.ts).
   onDevice: import('./translation').OnDeviceFeatures
+  // B58: whether a two-finger swipe may go back (the Mac's «Swipe between pages»; always on elsewhere).
+  swipeBack: boolean
   selfProfile: ProfileSnapshot | null
   contacts: ContactsSnapshot | null
   channels: import('./channels').ChannelsSnapshot | null
@@ -329,6 +335,8 @@ export interface DesktopSnapshot {
   participants: ParticipantsSnapshot | null
   contactSearch: ContactSearchSnapshot | null
   pendingDirects: PendingDirect[]
+  // B49: the 1:1 rooms that are not rows of the list, for the chat-list search (shared/dialog-search.ts).
+  unlistedDirects: import('./dialog-search').UnlistedDirect[]
   channelJoinDecisions: ChannelJoinDecisionSnapshot | null
   channelAccess: ChannelAccessEditSnapshot | null
   channelPhotoUpload: ChannelPhotoUploadSnapshot | null
@@ -377,6 +385,7 @@ export type DesktopEvent =
   | { type: 'data'; batch: DataBatch }
   | {type:'voice-capture-revoked';id:string}
   | { type: 'background-photo-availability'; available: boolean }
+  | { type: 'scroll-phase'; phase: 'momentum' }
   | { type: 'chat-background-changed'; accountUid: string; chatId: string; background: ChatBackgroundRecord }
   | { type: 'forward-progress'; accountUid: string; progress: ForwardProgress }
   | { type: 'snapshot'; snapshot: DesktopSnapshot }
@@ -813,6 +822,8 @@ export interface DesktopBridge {
   addContact(accountUid: string, requestId: string): Promise<void>
   closeContactSearch(accountUid: string, requestId: string): Promise<void>
   startContactChat(accountUid: string, requestId: string): Promise<string>
+  openUnlistedDirect(accountUid: string, chatId: string): Promise<string>
+  startMemberChat(accountUid: string, groupChatId: string, peerUid: string): Promise<string>
   discardDirectDraft(accountUid: string, chatId: string): Promise<void>
   thirdPartyNotices(): Promise<string>
   history(accountUid: string, chatId: string, before?: MessagePosition): Promise<HistorySnapshot>
@@ -856,6 +867,9 @@ export interface DesktopBridge {
   pinMessage(accountUid: string, request: import('./pinned-messages').PinMessageRequest): Promise<'done'>
   jumpPinned(accountUid: string, chatId: string, messageId: string): Promise<HistorySnapshot>
   openTranslationSettings(): Promise<void>
+  peerBarHidden(accountUid: string, peerUid: string): Promise<boolean>
+  hidePeerBar(accountUid: string, peerUid: string): Promise<void>
+  operatorMail(accountUid: string, sanction: import('./sanctions').Sanction, until?: number | null): Promise<void>
   openMessageLink(url: string): Promise<void>
   openSupportChat(accountUid: string): Promise<string>
   openPostLikers(accountUid: string, request: import('./post-likers').PostLikersRequest): Promise<'done'>

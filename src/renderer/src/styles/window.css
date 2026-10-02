@@ -63,6 +63,8 @@
 .accounts-row-text small.error { color: var(--danger) }
 .accounts-row-check { flex: none; color: var(--accent) }
 .accounts-row-badge { flex: none; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; line-height: 20px; text-align: center }
+.accounts-row-help { align-self: flex-start; margin: -4px 0 6px 64px; padding: 2px 0; font-size: 13px; color: var(--accent) }
+.accounts-row-help:hover { text-decoration: underline }
 .accounts-row-add { flex: none; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; color: var(--accent) }
 .accounts-list.settings { border-bottom: 0 }
 .accounts-list.settings .accounts-row { padding-inline: 20px }

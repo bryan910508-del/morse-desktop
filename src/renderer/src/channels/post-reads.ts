@@ -5,6 +5,20 @@ import { useEffect, type RefObject } from 'react'
 // iOS MorseChannelFeedReadTracker does the same for channel posts. The posts inside `container` that carry
 // data-channel-id and data-post-id are watched; those on screen go to the main process, which moves each channel's
 // read mark to the furthest of them.
+// B60 (Telegram MainWindow::markingAsRead needs no layer shown, mainwindow.cpp:597-606; HistoryInner reads nothing
+// where its content is overlapped, history_inner_widget.cpp:1410-1416): a post under a box, the post viewer, a menu or
+// the side panel is not seen. An overlay that holds the feed itself (the side panel showing the channel) does not count.
+export const readCoveringSelector = '.layer, .channel-viewer, .popup-menu, .main-menu-layer, .third-layer'
+interface Box { getBoundingClientRect(): { left: number; top: number; right: number; bottom: number }; contains(other: unknown): boolean }
+export function postUncovered(post: Box, feed: Box, overlays: Iterable<Box>, hit: (x: number, y: number) => unknown, viewport: { width: number; height: number }): boolean {
+  for (const overlay of overlays) if (!overlay.contains(feed)) return false
+  // A point in the part of the post that is on screen must be the post itself (the chat read's elementFromPoint).
+  const r = post.getBoundingClientRect()
+  const top = Math.max(r.top, 0), bottom = Math.min(r.bottom, viewport.height), left = Math.max(r.left, 0), right = Math.min(r.right, viewport.width)
+  if (bottom <= top || right <= left) return false
+  return post.contains(hit((left + right) / 2, (top + bottom) / 2))
+}
+
 export function usePostReads(accountUid: string, container: RefObject<HTMLElement | null>, ready: boolean): void {
   useEffect(() => {
     const element = container.current
@@ -15,8 +29,15 @@ export function usePostReads(accountUid: string, container: RefObject<HTMLElemen
       clearTimeout(timer)
       timer = setTimeout(() => {
         if (document.visibilityState !== 'visible' || !document.hasFocus() || !visible.size) return
+        const overlays = [...document.querySelectorAll(readCoveringSelector)], viewport = { width: innerWidth, height: innerHeight }
         const byChannel = new Map<string, Set<string>>()
-        for (const { channelId, postId } of visible.values()) byChannel.set(channelId, (byChannel.get(channelId) ?? new Set()).add(postId))
+        let covered = false
+        for (const [node, { channelId, postId }] of visible) {
+          if (!postUncovered(node, element, overlays, (x, y) => document.elementFromPoint(x, y), viewport)) { covered = true; continue }
+          byChannel.set(channelId, (byChannel.get(channelId) ?? new Set()).add(postId))
+        }
+        // Looked at again once whatever covers it may have gone.
+        if (covered) { clearTimeout(timer); timer = setTimeout(report, 1000) }
         for (const [channelId, ids] of byChannel) void window.morse.channelPostsSeen(accountUid, channelId, [...ids].slice(0, 50)).catch(() => {})
       }, 400)
     }

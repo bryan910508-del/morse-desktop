@@ -5,6 +5,8 @@ import { tr } from './i18n'
 
 export interface ChannelSummary {
   id: string
+  // A10 §4: the operator closed this channel; its posts are not shown (shared/sanctions.ts).
+  restricted: boolean
   version: string | null
   publicSharing: { name: string; version: string } | null
   hasAvatar: boolean

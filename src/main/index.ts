@@ -125,6 +125,7 @@ import { mkdir, readFile, rm, stat as fileStat, writeFile } from 'node:fs/promis
 import { existsSync } from 'node:fs'
 import { release } from 'node:os'
 import { onDeviceFeatures } from '../shared/translation'
+import { operatorMailURL } from '../shared/sanctions'
 import { randomUUID } from 'node:crypto'
 import type { IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron'
 import { extname, isAbsolute, join, resolve, sep } from 'node:path'
@@ -323,6 +324,16 @@ function canReadWindow(): boolean {
   return shutdown === 'running' && !screenLocked && !contextMenus.open && Boolean(mainWindow && !mainWindow.isDestroyed() &&
     mainWindow.isVisible() && mainWindow.isFocused() && !mainWindow.isMinimized() && !mainWindow.webContents.isCrashed())
 }
+// B58 (Telegram base_haptic_mac.mm:23-31 IsSwipeBackEnabled): «Swipe between pages» in the Mac's trackpad settings, read
+// once; no value means on. Read as a string so a missing value ('') is told apart from off ('0').
+let swipeBackSetting: boolean | null = null
+function swipeBackEnabled(): boolean {
+  if (swipeBackSetting === null) {
+    const value = process.platform === 'darwin' ? systemPreferences.getUserDefault('AppleEnableSwipeNavigateWithScrolls', 'string') : ''
+    swipeBackSetting = value !== '0' && value !== 'false'
+  }
+  return swipeBackSetting
+}
 function emit(event: DesktopEvent): void {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('morse:event', event)
 }
@@ -341,10 +352,12 @@ async function snapshot(): Promise<DesktopSnapshot> {
     preferences: settings.preferences, systemDark: nativeTheme.shouldUseDarkColors, notifications: notifications.status(),
     platformIntegration: desktopShell.status(),
     onDevice: onDeviceFeatures(process.platform, release(), { translate: translator.usable, media: mediaHelper.usable }),
+    swipeBack: swipeBackEnabled(),
     accounts: profiles, activeAccountUid: active?.profile.uid ?? null, selfProfile: appLocked ? null : selfProfile, contacts: appLocked ? null : active?.contactsSnapshot() ?? null,
     channels: screenLocked ? null : active?.channels.snapshot ?? null,
     personalChannels: screenLocked ? null : active?.personalChannels.snapshot ?? null,
     contactSearch: appLocked ? null : active?.contactDiscovery.snapshot ?? null, pendingDirects: appLocked || !active ? [] : active.pendingDirects().map(item => ({ ...item, displayName: active.dialogAvatars.peerName(item.chatId) || item.displayName, avatar: active.dialogAvatars.snapshot(item.chatId) })), participants: appLocked ? null : active?.participants ?? null,
+    unlistedDirects: appLocked || !active ? [] : active.unlistedDirects(),
     channelJoinDecisions: screenLocked ? null : active?.channelJoinDecisions.snapshot ?? null,
     channelAccess: screenLocked ? null : active?.channelAccess.snapshot ?? null,
     channelPhotoUpload: screenLocked ? null : active?.channelPhotoUpload.snapshot ?? null,
@@ -573,6 +586,11 @@ function registerIPC(): void {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).accountTools.setLastSeenPrivacy(lastSeenPrivacy(raw))
   })
+  handle('peer-bar-hidden', (uid, peerUid) => accounts.requireActive(identifier(uid)).accountTools.peerBarHidden(identifier(peerUid)))
+  handle('hide-peer-bar', (uid, peerUid) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).accountTools.hidePeerBar(identifier(peerUid))
+  })
   handle('report', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).accountTools.report(reportRequest(raw))
@@ -644,7 +662,8 @@ function registerIPC(): void {
   handle('edit-inquiry-message', (uid, raw) => inquiries(uid).edit(inquiryEditRequest(raw)))
   handle('delete-inquiry-message', (uid, raw) => inquiries(uid).remove(inquiryTargetRequest(raw)))
   handle('channel-posts-seen', (uid, channelId, ids) => {
-    if (screenLocked || !Array.isArray(ids) || !ids.length || ids.length > 50) return
+    // B60: as a chat's read, only while the window can be read (visible, focused, no native menu open).
+    if (screenLocked || !canReadWindow() || !Array.isArray(ids) || !ids.length || ids.length > 50) return
     accounts.active?.profile.uid === identifier(uid) && accounts.active.channelPostsSeen(identifier(channelId), [...new Set(ids.map(identifier))])
   })
   handle('react-inquiry-message', (uid, raw) => inquiries(uid).react(inquiryReactionRequest(raw)))
@@ -2175,6 +2194,8 @@ function registerIPC(): void {
     return accounts.requireActive(identifier(uid)).openSupportChat()
   })
   handle('start-contact-chat', (uid, requestId) => accounts.requireActive(identifier(uid)).startContactChat(identifier(requestId)))
+  handle('open-unlisted-direct', (uid, chatId) => accounts.requireActive(identifier(uid)).openUnlistedDirect(identifier(chatId)))
+  handle('start-member-chat', (uid, groupChatId, peerUid) => accounts.requireActive(identifier(uid)).startMemberChat(identifier(groupChatId), identifier(peerUid)))
   handle('discard-direct-draft', (uid, chatId) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 다시 시도해 주세요.'))
     return accounts.requireActive(identifier(uid)).discardDirectDraft(identifier(chatId))
@@ -2545,6 +2566,18 @@ function registerIPC(): void {
   })
   // System Settings › General › Language & Region › Translation Languages
   handle('open-translation-settings', () => shell.openExternal('x-apple.systempreferences:com.apple.Localization-Settings.extension'))
+  // A10 §4 «자세히·이의 제기» / «도움»: a new mail to the operator naming the account, the app and the system (Telegram
+  // SendToBannedHelp). Any saved account may ask — a banned one is not connected.
+  handle('operator-mail', (uid, sanction, until) => {
+    // A saved account, or the one a sign-in was just refused for (the screen's account), or none yet.
+    const entry = authentication.entrySnapshot.account
+    const state = uid === '' ? { uid: '', userId: '' } : accountStates().find(item => item.uid === identifier(uid))
+      ?? (entry?.uid === identifier(uid) ? { uid: entry.uid, userId: entry.userId } : undefined)
+    if (!state || (sanction !== 'restricted' && sanction !== 'banned')) throw new Error(tr('계정을 다시 선택해 주세요.'))
+    const system = `${process.platform === 'darwin' ? 'macOS' : process.platform === 'win32' ? 'Windows' : process.platform} ${process.getSystemVersion()}`
+    return shell.openExternal(operatorMailURL(sanction, { uid: state.uid, userId: state.userId, appVersion: app.getVersion(), system,
+      until: typeof until === 'number' && Number.isSafeInteger(until) && until > 0 ? until : null }))
+  })
   // A link pressed in a message (Telegram's UrlClickHandler::Open): only web, file transfer and mail addresses
   // leave the app, so a message can never start another program through a custom scheme.
   // reCAPTCHA's notice lives on the sign-in screen now that the check itself is not shown: Google's two pages only.
@@ -2779,6 +2812,10 @@ function createWindow(): void {
   window.on('blur', () => { contextMenus.close(); if (!window.webContents.isDestroyed()) window.webContents.setIgnoreMenuShortcuts(false) })
   window.on('hide', () => contextMenus.close()); window.on('minimize', () => contextMenus.close())
   window.webContents.on('did-finish-load', () => emit({ type: 'full-screen', value: window.isFullScreen() }))
+  // B58: the page's wheel events carry no phases. Chromium's gestureScrollBegin/End mark a whole scroll sequence (a
+  // phase-less wheel makes one per tick — measured 10-02 on Electron 44), not the fingers lifting, so only a fling, if
+  // one is reported, is passed on: like Telegram's ScrollMomentum it ends the swipe and its coasting is not a new one.
+  window.webContents.on('input-event', (_event, input) => { if (input.type === 'gestureFlingStart') emit({ type: 'scroll-phase', phase: 'momentum' }) })
   window.on('enter-full-screen', () => emit({ type: 'full-screen', value: true }))
   window.on('leave-full-screen', () => emit({ type: 'full-screen', value: false }))
   const readingActivityChanged = (): void => { for (const session of accounts.all) session.readingActivityChanged() }

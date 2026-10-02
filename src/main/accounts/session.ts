@@ -709,6 +709,35 @@ export class AccountSession {
       summary.participantUids.includes(this.profile.uid) && summary.participantUids.includes(peer.uid))
     return this.openUnlisted(existing?.summary.id ?? await this.delivery.openDirect(peer))
   }
+  // B49 (Telegram keeps a History for every peer — Data::Session::history is find-or-create, data_session.cpp:1681-1683
+  // — and its chat-list search shows contacts whose chat left the list, data_session.cpp:5771-5775): the 1:1 rooms that
+  // are not rows of the list (nothing left after a delete for everyone, or hidden on this device), contact or not, so
+  // the search can bring them back.
+  unlistedDirects(): import('../../shared/dialog-search').UnlistedDirect[] {
+    if (this.closed || this.locked) return []
+    const listed = new Set(this.list.map(dialog => dialog.id))
+    return [...this.index.values()].flatMap(({ summary }) => {
+      if (listed.has(summary.id) || summary.kind !== 'direct' || summary.participantUids.length !== 2 || summary.id === `memo_${this.profile.uid}`) return []
+      const peerUid = summary.participantUids.find(uid => uid !== this.profile.uid)
+      return peerUid ? [{ chatId: summary.id, peerUid, title: summary.title }] : []
+    }).slice(0, 500)
+  }
+  openUnlistedDirect(chatId: string): string {
+    const dialog = this.index.get(chatId)?.summary
+    if (this.closed || this.locked || !dialog || dialog.kind !== 'direct') throw new Error(tr('대화를 다시 선택해 주세요.'))
+    return this.openUnlisted(chatId)
+  }
+  // B49: a group member, contact or not, opened as their 1:1 — the pair's room, listed or not, else a new one — as a
+  // Telegram profile's «Message» opens any peer (info_profile_top_bar.cpp:1001-1004).
+  async startMemberChat(groupChatId: string, peerUid: string): Promise<string> {
+    if (this.closed || this.locked || this.connection !== 'ready' || this.status !== 'ready') throw new Error(tr('대화 목록과 연결을 확인해 주세요.'))
+    const group = this.index.get(groupChatId)
+    if (!group || group.summary.kind !== 'group' || !group.summary.participantUids.includes(peerUid) || peerUid === this.profile.uid) throw new Error(tr('참여자를 다시 선택해 주세요.'))
+    const existing = [...this.index.values()].find(({ summary }) => summary.kind === 'direct' && summary.participantUids.length === 2 &&
+      summary.participantUids.includes(this.profile.uid) && summary.participantUids.includes(peerUid))
+    const displayName = this.contacts.personName(peerUid) || group.participantNames[peerUid] || tr('참여자')
+    return this.openUnlisted(existing?.summary.id ?? await this.delivery.openDirect({ uid: peerUid, displayName }))
+  }
   private openUnlisted(chatId: string): string {
     const listed = this.list.some(dialog => dialog.id === chatId)
     const next = !listed && this.index.has(chatId) ? chatId : this.unlistedOpen === chatId ? null : this.unlistedOpen

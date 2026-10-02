@@ -278,6 +278,11 @@ button.voice-message-play:disabled { opacity: .7 }
 .history-inner.settling { visibility: hidden }
 
 /* Pinned bar under the chat header (iOS BookmarkBar: accent line, kind, n/total, preview). */
+.peer-bar { display: flex; align-items: center; gap: 4px; min-height: 44px; padding: 4px 8px 4px 16px; border-bottom: 1px solid var(--divider); background: var(--window-bg) }
+.peer-bar-action { flex: 1; height: 36px; border-radius: 8px; color: var(--accent); font-size: var(--t-body); font-weight: 600 }
+.peer-bar-action.danger { color: var(--danger) }
+.peer-bar-action:hover:not(:disabled) { background: var(--card-pressed) }
+.peer-bar-close { flex: none; color: var(--text-weak) }
 .pinned-bar { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 6px 16px; border: 0; border-bottom: 1px solid var(--divider); background: var(--window-bg); color: var(--text); text-align: left; cursor: pointer }
 .pinned-bar:hover { background: var(--card-pressed) }
 .pinned-bar-line { flex: none; width: 3px; height: 26px; border-radius: 2px; background: var(--accent) }
@@ -431,3 +436,16 @@ button.service-pill { cursor: pointer }
   color: var(--accent); font: inherit; font-weight: 600; cursor: pointer }
 .poll-card-vote:disabled { color: var(--text-weak); cursor: default }
 .poll-card-total { display: flex; align-items: center; gap: 4px; color: var(--text-weak) }
+/* B58 (Telegram SetupSwipeBack, swipe_handler.cpp:395-534): the plate a swipe back slides in from the left edge, and
+   the reply arrow beside the bubble (history_view_message.cpp:2236-2310). Both bounce once when the swipe is reached. */
+.swipe-back { position: absolute; top: 50%; z-index: 30; width: 150px; height: 150px; margin-top: -75px; pointer-events: none }
+.swipe-back > span { position: absolute; inset: 37.5px; display: grid; place-items: center; padding-left: 19px; border-radius: 50%; background: var(--service-bg, rgba(0, 0, 0, .4)); color: var(--service-fg, #fff) }
+.swipe-back.reached > span { animation: swipe-reach 500ms ease-out }
+.swipe-back.reached > span::after { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--service-bg, rgba(0, 0, 0, .4)); animation: swipe-wave 500ms ease-out forwards }
+.side-panel { position: relative }
+.swipe-reply { position: absolute; z-index: 30; width: 36px; height: 36px; display: grid; place-items: center; border-radius: 50%; background: var(--service-bg, rgba(0, 0, 0, .4)); color: var(--service-fg, #fff); pointer-events: none }
+.swipe-reply .swipe-ring { position: absolute; inset: 0; transform: rotate(-90deg) }
+.swipe-reply .swipe-ring circle { fill: none; stroke: var(--service-fg, #fff); stroke-width: 2; stroke-linecap: round; opacity: .6 }
+.swipe-reply.reached { animation: swipe-reach 500ms ease-out }
+@keyframes swipe-reach { 0% { transform: scale(1) } 12.5% { transform: scale(1.25) } 25%, 100% { transform: scale(1) } }
+@keyframes swipe-wave { 0% { opacity: 1; inset: 0 } 100% { opacity: 0; inset: -10px } }

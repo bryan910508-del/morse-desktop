@@ -126,6 +126,13 @@ export function readDialogs(docs: Iterable<FirestoreDocument>, uid: string): { d
   }
   return { dialogs, skipped }
 }
+// A10 §3-3-5 (Telegram restriction_reason): the operator closed this channel or chat — a reason string, or the map the
+// server writes ({reason, wasPublic, fromChannel}). The room document stays readable; what is in it is not.
+export function roomRestricted(fields: FirestoreDocument['fields']): boolean {
+  const value = fields.restriction as { nullValue?: unknown; booleanValue?: boolean; stringValue?: string; mapValue?: unknown } | undefined
+  if (!value || value.nullValue !== undefined || value.booleanValue === false) return false
+  return value.stringValue !== undefined ? value.stringValue !== '' : true
+}
 export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
   const id = childId(doc.name, `${documents}/chats`), f = doc.fields
   const kind = stringField(f, 'type', 32)
@@ -170,7 +177,9 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
   // A media label is stored in whatever language wrote it, and shown in this window's own; the kind the
   // server writes beside it says which lines are labels at all.
   else preview = chatListPreviewText(preview, stringField(f, 'lastMessageType', 64))
-  return { summary: { id, version: documentVersion(doc), kind: kind as DialogSummary['kind'], title, participantUids: participants,
+  return { summary: { id, version: documentVersion(doc), kind: kind as DialogSummary['kind'], title, participantUids: participants, ...(roomRestricted(f) ? { restricted: true } : {}),
+    // B52: whether a 1:1 peer withdrew (the «unknown person» bar is not offered then).
+    ...(kind === 'direct' && boolField(peer, 'accountDeleted') ? { peerDeleted: true } : {}),
     preview: preview.slice(0, 300), top, unreadCount: Math.max(0, Math.trunc(numberField(mapField(f, 'unreadCounts'), uid))),
     markedUnread: boolField(mapField(f, 'manualUnread'), uid), readPositions, outboxRead: outboxReadTill(readPositions, participants.filter(participant => participant !== uid)), readSync: idleReadSync,
     // isArchived / isMuted in the shared room document are another person's choice as often as this one's;

@@ -1,7 +1,8 @@
 import { Link as LinkIcon } from 'lucide-react'
 import { firstStoryCaptionLink } from '../../../shared/story-caption-link'
 import { useEffect, useRef, useState } from 'react'
-import { ChevronLeft, ChevronRight, Pause, Play, Send, Volume2, VolumeX, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Flag, Pause, Play, Send, Volume2, VolumeX, X } from 'lucide-react'
+import { showReportBox } from '../boxes/report-box'
 import type { DesktopSnapshot } from '../../../shared/model'
 import type { ContactPublicStory } from '../../../shared/contact-public-stories'
 import { storyReactionChoices } from '../../../shared/contact-story-reaction'
@@ -457,6 +458,8 @@ function StoryViewer({ accountUid, peers, startIndex, close }: { accountUid: str
         <span><strong className="ellipsis">{name}</strong>{item && <small>{storyAgo(item.createdAt)}{item.privacy === 'contacts' ? tr(' · 연락처 공개') : ''}</small>}</span>
         <button className="icon-button small" aria-label={paused ? tr('재생') : tr('일시 정지')} onClick={() => setPaused(value => !value)}>{paused ? <Play size={18} /> : <Pause size={18} />}</button>
         {item?.audio === 'attached' && <button className="icon-button small" aria-label={muted ? tr('소리 켜기') : tr('소리 끄기')} onClick={() => setMuted(value => !value)}>{muted ? <VolumeX size={18} /> : <Volume2 size={18} />}</button>}
+        {/* A10 §3-1 (Telegram stories.report): the story itself, owned by this person. */}
+        {peer && item && <button className="icon-button small" aria-label={tr('스토리 신고')} onClick={() => { setPaused(true); showReportBox(accountUid, { type: 'story', targetId: item.id, ownerType: 'user', ownerId: peer.uid }, tr('스토리 신고')) }}><Flag size={18} /></button>}
       </header>
       <div className="story-stage">
         {error ? <div className="media-viewer-loading" role="alert"><p>{error}</p></div>

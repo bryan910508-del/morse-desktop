@@ -147,6 +147,7 @@ export function Intro() {
         ? <button className="button flat block" type="button" onClick={() => { void run(() => window.morse.authentication.cancelSignIn(), false) }}>{tr('취소')}</button>
         : <button className="intro-link" type="button" onClick={() => { setMode('connect'); setError('') }}>{tr('이미 계정이 있어요 · 복구 코드로 연결')}</button>}
       {status && <p className={`intro-status${failed ? ' error' : ''}`} role={failed ? 'alert' : 'status'}>{status}</p>}
+      {auth.banned && !error && <button className="intro-link" type="button" onClick={() => { void window.morse.operatorMail(auth.account?.uid ?? '', 'banned').catch(() => {}) }}>{tr('도움')}</button>}
       <RecaptchaNotice />
     </div>
       : <form className="intro-step" onSubmit={event => { event.preventDefault(); if (!busy && code.trim()) void run(() => window.morse.authentication.signInWithBackupCode(code)) }}>
@@ -167,6 +168,7 @@ export function Intro() {
             ? <button className="button flat block" type="button" onClick={() => { void run(() => window.morse.authentication.cancelSignIn(), false) }}>{tr('연결 취소')}</button>
             : <button className="button flat block" type="button" onClick={() => { setMode('create'); setError('') }}><UserPlus size={18} />{tr('새 계정 만들기')}</button>}
           {status && <p className={`intro-status${failed ? ' error' : ''}`} role={failed ? 'alert' : 'status'}>{status}</p>}
+      {auth.banned && !error && <button className="intro-link" type="button" onClick={() => { void window.morse.operatorMail(auth.account?.uid ?? '', 'banned').catch(() => {}) }}>{tr('도움')}</button>}
           {savedList}
           <RecaptchaNotice />
         </>}

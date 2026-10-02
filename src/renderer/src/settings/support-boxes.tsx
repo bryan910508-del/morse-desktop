@@ -14,7 +14,7 @@ const faq = [
   { q: tr('계정 여러 개를 사용하려면?'), a: tr('설정 → 계정 → 계정 추가에서 새 계정을 만들 수 있어요. 무료 사용자는 2개, Morse+ 사용자는 4개까지 가능해요. 설정 화면을 두 번 탭하면 빠르게 전환할 수 있어요.') },
   { q: tr('메시지가 도착하지 않아요'), a: tr('1) 알림 설정이 켜져 있는지 확인 2) 인터넷 연결 확인 3) 앱을 종료 후 재시작. 그래도 안 되면 설정 → 고객 센터에서 채팅으로 문의해 주세요.') },
   { q: tr('광고나 트래킹은 정말 없나요?'), a: tr('네. 광고 SDK, 행동 분석, 데이터 판매, 제3자 트래킹 모두 0이에요. Firebase Analytics도 비활성화했고, App Tracking Transparency 권한도 요청하지 않아요.') },
-  { q: tr('신고 처리는 얼마나 걸리나요?'), a: tr('긴급 신고(아동 안전, 폭력 위협)는 1시간 이내, 심각(성적 콘텐츠, 혐오)은 24시간, 일반(스팸, 괴롭힘)은 72시간 이내에 처리해요. 자세한 내용은 커뮤니티 가이드라인을 참고해주세요.') }
+  { q: tr('신고 처리는 얼마나 걸리나요?'), a: tr('신고는 운영자가 24시간 안에 확인합니다.') }
 ]
 // iOS AppGuideView (MorseFeature): the features Morse is built around, each with its details.
 const features = [
@@ -49,7 +49,7 @@ function SupportBox({ accountUid, version, close }: { accountUid: string; versio
     <div className="section-label">{tr('앱 정보')}</div>
     <div className="support-info"><span>{tr('버전')}</span><span>{version}</span></div>
     <div className="support-info"><span>{tr('디바이스')}</span><span>Mac</span></div>
-    <p className="box-note">{tr('평균 응답 시간: 영업일 기준 24시간 이내')}<br />{tr('긴급 신고는 1시간 이내 처리')}</p>
+    <p className="box-note">{tr('평균 응답 시간: 영업일 기준 24시간 이내')}<br />{tr('신고는 운영자가 24시간 안에 확인합니다.')}</p>
   </Box>
 }
 

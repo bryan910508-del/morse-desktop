@@ -73,6 +73,7 @@ import { definiteRejections, deliveryReason, retryableRejections, textDigest } f
 import { draftPreviewChars } from '../../shared/chat-list-preview'
 import { directChatId } from './direct-chat-id'
 import { tr } from '../../shared/i18n'
+import { rejectionCode, rejectionUntil, sanctionOf, storedRejection } from '../../shared/sanctions'
 
 // The delivery worker words a waiting attachment in Korean («사진 3장», «음성 메시지.m4a», «스티커.png»); the chat shows it in
 // the app's language.
@@ -110,6 +111,14 @@ export function nextIntent(rows: StoredIntent[], now: number, retryAt: (id: stri
   return { intent: candidates.find(row => retryAt(row.id) <= now) ?? null, candidates }
 }
 
+// B54 (Telegram HistoryItem::destroy → ApiWrap::cancelLocalItem, history.cpp:694-696; Android SendMessagesHelper
+// cancelSendingMessage): «보내기 취소» always takes the device's row away, whatever the connection or the queue is
+// doing — offline, waiting behind another message, or while its answer is awaited. An upload of this message stops; a
+// send already on its way is not recalled (Telegram does not cancel the request), so a copy the server kept comes back
+// as the server's message.
+export function cancelPlan(state: { uploading: boolean }): { removeRow: true; abortUpload: boolean; recallSend: false } {
+  return { removeRow: true, abortUpload: state.uploading, recallSend: false }
+}
 export class OutboxPump {
   private repository: DeliveryRepository | null = null
   private readonly opening: Promise<void>
@@ -135,6 +144,9 @@ export class OutboxPump {
   // so the bubble does not leave and come back. The history showing the id, or a minute, ends it.
   private sent = new Map<string, { row: StoredIntent; timer: ReturnType<typeof setTimeout> }>()
   private busyId: string | null = null
+  // Rows cancelled while their send was on its way: an answer that comes back afterwards does not show them again as
+  // «sent»; the server's copy, if it kept one, comes as the server's message.
+  private readonly cancelled = new Set<string>()
   private views = new Set<string>()
   private known = new Set<string>()
   private revision = 0
@@ -348,7 +360,8 @@ export class OutboxPump {
         state: shownState(row),
         reason: this.earlierForward(row, rows) ? tr('앞선 전달 메시지의 결과 확인 또는 대기 정리가 필요합니다.') : waitingUpload(row) ? tr('연결 대기 중') : row.state === 'uploading' ? tr('첨부 업로드 대기 중') : row.state === 'queued' ? tr('메시지 전송 대기 중') : deliveryReason(row.reason), busy: this.busyId === row.id,
         voicePreview:row.voicePreview, forwarded: row.forwarded, storyReply: Boolean(row.wire.replyStoryId), progress: this.busyId === row.id ? this.uploadProgress : undefined,
-        retryable: (row.state === 'upload-failed' && !waitingUpload(row)) || (row.state === 'failed' && retryableRejections.has(row.reason)) })) : [] }
+        retryable: (row.state === 'upload-failed' && !waitingUpload(row)) || (row.state === 'failed' && retryableRejections.has(rejectionCode(row.reason))),
+        ...(row.state === 'failed' && sanctionOf(row.reason) ? { sanction: sanctionOf(row.reason)!, ...(rejectionUntil(row.reason) ? { sanctionUntil: rejectionUntil(row.reason)! } : {}) } : {}) })) : [] }
   }
   private keepSent(row: StoredIntent): void {
     if (this.closed) return
@@ -844,7 +857,7 @@ export class OutboxPump {
           await this.auth.sender.send(intent.wire, signal)
           if (!this.active(signal)) return
           this.retryAt.delete(intent.id)
-          this.keepSent(intent)
+          if (!this.cancelled.has(intent.id)) this.keepSent(intent)
           await this.store({ kind: 'finish', id: intent.id, discarded: false })
         } catch (error) {
           if (error instanceof NotEmitted) {
@@ -854,7 +867,7 @@ export class OutboxPump {
           }
           if (!this.active(signal)) return
           if (error instanceof ServerRejection && definiteRejections.has(error.reason)) {
-            await this.store({ kind: 'state', id: intent.id, state: 'failed', reason: error.reason })
+            await this.store({ kind: 'state', id: intent.id, state: 'failed', reason: storedRejection(error.reason, error.until) })
           } else {
             this.backoff(intent.id)
             await this.store({ kind: 'state', id: intent.id, state: 'uncertain', reason: 'ack-pending' })
@@ -916,7 +929,7 @@ export class OutboxPump {
             stringField(doc.fields, 'payloadDigest', 64) !== textDigest(intent.wire)) {
           await this.store({ kind: 'state', id: intent.id, state: 'failed', reason: 'CONFLICT' }); return 'conflict'
         }
-        this.keepSent(intent)
+        if (!this.cancelled.has(intent.id)) this.keepSent(intent)
         await this.store({ kind: 'finish', id: intent.id, discarded: false }); return 'found'
       }
       if (intent.state !== 'failed') await this.store({ kind: 'state', id: intent.id, state: 'uncertain', reason: 'not-found' })
@@ -937,7 +950,7 @@ export class OutboxPump {
       if (intent.state === 'upload-failed') { await this.store({ kind: 'state', id, state: 'uploading', reason: '' }); return }
       // The same durable ID is idempotent on the server, so a user resend of an
       // unconfirmed or retryable-rejected message never creates a duplicate.
-      if (intent.state === 'uncertain' || (intent.state === 'failed' && retryableRejections.has(intent.reason))) {
+      if (intent.state === 'uncertain' || (intent.state === 'failed' && retryableRejections.has(rejectionCode(intent.reason)))) {
         await this.store({ kind: 'state', id, state: 'queued', reason: '' }); return
       }
       if (intent.state !== 'queued' && intent.state !== 'uploading') throw new Error(tr('다시 전송할 수 없는 메시지입니다.'))
@@ -947,10 +960,14 @@ export class OutboxPump {
   }
   async discard(chatId: string, id: string, reviewed?: DiscussionLeaveWorkDismiss, validate: () => void = () => {}): Promise<void> {
     if (reviewed && (reviewed.kind !== 'outgoing' || reviewed.id !== id || reviewed.target.chatId !== chatId)) throw new Error(tr('정리할 전송 기록을 다시 선택해 주세요.'))
-    if (!reviewed && this.queueAvailable(chatId) && this.busyId === id && this.uploadChatId === chatId && this.uploadAbort) {
-      this.uploadAbort.abort()
-      await this.store({ kind: 'finish', id, discarded: true })
-      void this.publish(); return
+    if (!reviewed) {
+      const row = (await this.store<StoredIntent[]>({ kind: 'list', chatId })).find(item => item.id === id)
+      if (!row) return
+      const plan = cancelPlan({ uploading: this.busyId === id && this.uploadChatId === chatId && Boolean(this.uploadAbort) })
+      this.cancelled.add(id); this.retryAt.delete(id)
+      if (plan.abortUpload) this.uploadAbort?.abort()
+      await this.store({ kind: 'finish', id, discarded: true }, validate)
+      void this.publish(); this.kick(); return
     }
     if (!this.queueAvailable(chatId) || this.task) throw new Error(tr('진행 중인 전송이 끝난 뒤 정리해 주세요.'))
     const signal = this.generation.signal

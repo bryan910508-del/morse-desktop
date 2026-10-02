@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { ChevronLeft, ChevronRight, Eye, Film, Image as ImageIcon, Pause, Play, Trash2, Volume2, VolumeX, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Eye, Film, Flag, Image as ImageIcon, Pause, Play, Trash2, Volume2, VolumeX, X } from 'lucide-react'
+import { showReportBox } from '../boxes/report-box'
 import { channelStoryPhotoSide, channelStoryReactions, channelStoryThumbnailSide, maxChannelStoryCaption, type ChannelStory } from '../../../shared/channel-stories'
 import type { GroupPhotoImage } from '../../../shared/group-photo'
 import { desktop, useDesktop } from '../app/store'
@@ -120,6 +121,8 @@ function ChannelStoryViewer({ accountUid, channel, owned, close }: { accountUid:
         <button className="icon-button small" aria-label={paused ? tr('재생') : tr('일시 정지')} onClick={() => setPaused(value => !value)}>{paused ? <Play size={18} /> : <Pause size={18} />}</button>
         {(video || story?.audio) && <button className="icon-button small" aria-label={muted ? tr('소리 켜기') : tr('소리 끄기')} onClick={() => setMuted(value => !value)}>{muted ? <VolumeX size={18} /> : <Volume2 size={18} />}</button>}
         {owned && story && <button className="icon-button small" aria-label={tr('스토리 삭제')} disabled={busy} onClick={() => { void remove() }}><Trash2 size={18} /></button>}
+        {/* A10 §3-1 (Telegram stories.report): the story itself, owned by the channel. */}
+        {!owned && story && <button className="icon-button small" aria-label={tr('스토리 신고')} onClick={() => { setPaused(true); showReportBox(accountUid, { type: 'story', targetId: story.id, ownerType: 'channel', ownerId: channel.id }, tr('스토리 신고')) }}><Flag size={18} /></button>}
       </header>
       <div className="story-stage">
         {story ? <StoryMedia key={story.id} accountUid={accountUid} channelId={channel.id} story={story} paused={paused || hidden || busy} muted={muted}

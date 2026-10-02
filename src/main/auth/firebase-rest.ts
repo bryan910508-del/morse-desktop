@@ -13,15 +13,17 @@ function string(value: unknown, max = 16384): string {
   return value
 }
 type RequestKind = 'plain' | 'backup' | 'creation' | 'apple'
-function failureFromBody(value: Record<string, unknown>, status: number, kind: RequestKind): AuthenticationFailure {
+export function failureFromBody(value: Record<string, unknown>, status: number, kind: RequestKind): AuthenticationFailure {
   const error = value.error && typeof value.error === 'object' ? value.error as Record<string, unknown> : {}
   const details = error.details && typeof error.details === 'object' ? error.details as Record<string, unknown> : {}
   const code = typeof error.message === 'string' ? error.message.split(' ')[0] : error.status
   if (details.reason === 'session-revoked') return new AuthenticationFailure('revoked')
+  // A10 §3-3-4: an operator's ban — bannedAt refused by the callable gate, or the Firebase user disabled.
+  if (details.reason === 'ACCOUNT_BANNED' || code === 'USER_DISABLED') return new AuthenticationFailure('banned')
   // completeTalkyProfile: a withdrawn account's leftover Firebase user (iOS MorseAccountDeletion.staleAppleAuthIdentityCode).
   if (details.morseCode === 'stale_apple_auth_identity') return new AuthenticationFailure('stale-identity')
   if (status === 429 || error.status === 'RESOURCE_EXHAUSTED' || code === 'TOO_MANY_ATTEMPTS_TRY_LATER') return new AuthenticationFailure('rate-limited')
-  if (['TOKEN_EXPIRED', 'USER_DISABLED', 'USER_NOT_FOUND', 'INVALID_REFRESH_TOKEN', 'INVALID_ID_TOKEN'].includes(String(code))) return new AuthenticationFailure('invalid-credential')
+  if (['TOKEN_EXPIRED', 'USER_NOT_FOUND', 'INVALID_REFRESH_TOKEN', 'INVALID_ID_TOKEN'].includes(String(code))) return new AuthenticationFailure('invalid-credential')
   if (kind === 'backup' && error.status === 'PERMISSION_DENIED') return new AuthenticationFailure('invalid-code')
   if (kind === 'creation' && error.status === 'ALREADY_EXISTS') return new AuthenticationFailure('id-taken')
   if (kind === 'creation' && error.status === 'PERMISSION_DENIED') return new AuthenticationFailure('account-limit')

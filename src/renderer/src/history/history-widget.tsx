@@ -53,6 +53,10 @@ import { DeferredBar } from './deferred-send'
 import { useShownConnection } from '../app/connection'
 import { tr } from '../../../shared/i18n'
 import { reactionStrip, readRecentReactions, recordReaction } from './recent-reactions'
+import { chatRestrictedNotice } from '../../../shared/sanctions'
+import { PeerBar } from './peer-bar'
+import { SwipeBackPlate, SwipeReplyIcon, useSwipe } from './use-swipe'
+import { messageReportAllowed } from '../../../shared/reports'
 
 const initialHistory: HistorySnapshot = { revision: -1, messages: [], before: null, hasMore: false, status: 'loading', message: '', newerAvailable: false }
 const initialOutgoing: OutgoingSnapshot = { revision: -1, items: [], canCompose: false, message: '' }
@@ -363,6 +367,31 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     if (choice === 'everyone') { for (const message of messages) void deleteMessage(accountUid, message); return }
     void trackWrite(window.morse.hideMessages(accountUid, chatId, messages.map(message => message.id))).catch(reason => controller.toast(errorText(reason, tr('메시지를 삭제하지 못했습니다.')), 'error'))
   }, [accountUid, chatId])
+  // B58 (Telegram R-66, history_inner_widget.cpp:641-809): two-finger swipes over the messages. Fingers right close
+  // the chat (showBackFromStack with nothing stacked); fingers left reply to the message under the pointer, where a
+  // reply is possible and nothing is being chosen.
+  const historyBox = useRef<HTMLDivElement>(null)
+  const swipeTarget = useRef<{ message: ChatMessage; row: HTMLElement } | null>(null)
+  const swipeFrame = useSwipe(scroll, {
+    enabled: () => Boolean(dialogRef.current),
+    resolve: (direction, place) => {
+      swipeTarget.current = null
+      if (direction === 'right-to-left') return 'back'
+      if (selectionRef.current !== null) return null
+      const row = document.elementFromPoint(place.x, place.y)?.closest<HTMLElement>('.history-message[data-message-id]') ?? null
+      const entry = row ? currentEntries.current.find(item => item.kind === 'message' && item.message.id === row.dataset.messageId) : undefined
+      const message = entry?.kind === 'message' ? entry.message : null
+      if (!row || !message || message.system || message.encrypted || !canReply(message) || !outgoingRef.current.canCompose) return null
+      swipeTarget.current = { message, row }
+      return 'reply'
+    },
+    finish: kind => {
+      if (kind === 'back') controller.closeChat()
+      else if (swipeTarget.current) void selectReply(swipeTarget.current.message)
+    },
+    row: () => swipeTarget.current?.row ?? null
+  })
+  const swipe = swipeFrame()
   // B53: the chosen messages as one text — the author's name, «나»'s own for this account (shared/message-copy.ts).
   const copyMessages = useCallback((messages: ChatMessage[]) => {
     const self = desktop.value?.selfProfile
@@ -414,11 +443,13 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
         savable?.kind === 'image' ? { label: tr('이미지 복사'), icon: <Copy size={18} />, onSelect: () => { void copyAttachmentImage(accountUid, chatId, message, savable.index) } } : null,
         canForwardMessage(message) ? { label: tr('전달'), icon: <Forward size={18} />, onSelect: () => showShareBox(accountUid, [message]) } : null,
         message.version && !message.system ? { label: tr('선택'), icon: <Check size={18} />, onSelect: () => setSelection([message.id]) } : null,
-        // iOS 의 메시지 메뉴와 같은 자리다. 신고되는 것은 보낸 사람이다 — firestore.rules 의 신고 종류에
-        // message 가 없다 — 그래서 어느 메시지인지는 설명에 적어 보낸다.
-        !own && !message.system && message.senderId ? { label: tr('신고'), icon: <Flag size={18} />, danger: true,
-          onSelect: () => showReportBox(accountUid, { type: 'user', targetId: message.senderId }, tr('메시지 신고'), null,
-            tr('신고한 메시지: 대화 {0}, 메시지 {1}', [chatId, message.id])) } : null,
+        // A10 §3-1: 메시지 자체를 신고한다(type message + chatId, 규칙이 신고자가 그 방 참여자인지 본다). 6A-5 결정(텔레그램
+        // suggestReport): 그룹(토론방 포함)에서만 — 1:1·비밀 대화는 사람 신고(정보 칸·모르는 사람 줄)로 한다. 내가 참여자가
+        // 아닌 토론방은 옛 모양 — 보낸 사람 + 설명의 좌표 — 그대로 보낸다(규칙이 여전히 받는다).
+        !own && !message.system && message.senderId && messageReportAllowed(owner?.kind) ? { label: tr('신고'), icon: <Flag size={18} />, danger: true,
+          onSelect: () => owner && owner.participantUids.includes(accountUid)
+            ? showReportBox(accountUid, { type: 'message', targetId: message.id, chatId }, tr('메시지 신고'))
+            : showReportBox(accountUid, { type: 'user', targetId: message.senderId }, tr('메시지 신고'), null, tr('신고한 메시지: 대화 {0}, 메시지 {1}', [chatId, message.id])) } : null,
         deletable ? 'separator' : null,
         deletable ? { label: tr('삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void removeMessages([message]) } } : null
       ]
@@ -434,6 +465,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     popupMenu.open(point, [
       item.retryable ? { label: tr('다시 보내기'), icon: <RotateCcw size={18} />, onSelect: () => { void window.morse.retryMessage(accountUid, chatId, item.id).catch(reason => controller.toast(errorText(reason, tr('다시 보내지 못했습니다.')), 'error')) } } : null,
       item.text ? { label: tr('텍스트 복사'), icon: <Copy size={18} />, onSelect: () => { controller.toast(copyText(item.text) ? tr('복사했습니다.') : tr('복사하지 못했습니다.')) } } : null,
+      // A10 §4 (Telegram R-56): refused because the operator restricted or banned this account — the operator's mail.
+      item.sanction ? { label: tr('자세히·이의 제기'), icon: <Info size={18} />, onSelect: () => { void window.morse.operatorMail(accountUid, item.sanction!, item.sanctionUntil ?? null).catch(reason => controller.toast(errorText(reason, tr('메일을 열지 못했습니다.')), 'error')) } } : null,
       // A sent item is already the server's message; only the history's own menu changes it.
       item.state !== 'sent' && { label: failed ? tr('삭제') : tr('보내기 취소'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void window.morse.discardOutgoing(accountUid, chatId, item.id).catch(reason => controller.toast(errorText(reason, tr('처리하지 못했습니다.')), 'error')) } }
     ])
@@ -526,7 +559,9 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   const subtitle = !dialog ? pending ? tr('새 대화') : '' : shownConnection !== 'ready' ? tr('연결 중…') : secret ? tr('비밀 대화') : typing ? tr('입력 중...') : group ? tr('참여자 {0}명', [dialog.participantUids.length]) : peerPresence?.text ?? ''
   const surface = secret ? defaultChatBackground : background?.value ?? deviceBackground
   const scope = background?.value ? { kind: 'chat' as const, accountUid, chatId } : { kind: 'device' as const }
-  const bodyNotice = !dialog ? pending ? tr('첫 메시지를 보내면 대화가 시작됩니다.') : tr('대화를 찾을 수 없습니다.')
+  // A10 §4 (Telegram restriction_reason): a room the operator closed shows why instead of its messages.
+  const closed = dialog?.restricted === true
+  const bodyNotice = closed ? chatRestrictedNotice() : !dialog ? pending ? tr('첫 메시지를 보내면 대화가 시작됩니다.') : tr('대화를 찾을 수 없습니다.')
     : history.status === 'loading' && !entries.length ? null : history.status !== 'ready' && !entries.length ? history.message || tr('대화를 불러오지 못했습니다.') : historyReady && !entries.length ? tr('아직 메시지가 없습니다.') : ''
 
   return <section className="history-widget" aria-label={tr('{0} 대화', [title])}>
@@ -551,13 +586,14 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
         <button className="icon-button" aria-label={tr('더 보기')} onClick={event => openMore(pointFor(event, event.currentTarget))}><EllipsisVertical size={20} /></button>
       </>}
     </header>
+    {dialog && dialog.kind === 'direct' && selection === null && <PeerBar accountUid={accountUid} dialog={dialog} />}
     {dialog && !secret && <PinnedBar accountUid={accountUid} chatId={chatId} />}
     {dialog && forum && <CategoryBar accountUid={accountUid} chatId={chatId} forum={forum} selected={forumSelected}
       owner={dialog.kind === 'group' && dialog.createdBy === accountUid && !dialog.discussion} />}
     <PlaybackBar chatId={chatId} />
     {dialog && !secret && <DeferredBar accountUid={accountUid} chatId={chatId} />}
     {dialog?.historyMessage && <p className="history-banner" role="status">{dialog.historyMessage}</p>}
-    <div className="history" onDragEnter={dragOver} onDragOver={dragOver} onDrop={drop}
+    <div className="history" ref={historyBox} onDragEnter={dragOver} onDragOver={dragOver} onDrop={drop}
       onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(null) }}>
       <BackgroundSurface value={surface} scope={scope} />
       {scrollDate.value && <div className={`history-floating-date${scrollDate.value.shown ? ' shown' : ''}`}>
@@ -566,7 +602,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       </div>}
       <div ref={scroll} className={`history-scroll${selection !== null ? ' selecting' : ''}`} onScroll={onScroll} tabIndex={-1} data-region-focus aria-busy={paging || history.status === 'loading'}>
         <div className={`history-inner${settled ? '' : ' settling'}`} style={{ height: virtual.getTotalSize(), marginTop: Math.max(0, viewport - virtual.getTotalSize()) }}>
-          {virtual.getVirtualItems().map(item => {
+          {!closed && virtual.getVirtualItems().map(item => {
             const entry = entries[item.index]!, layout = layouts[item.index]!
             return <div key={item.key} data-index={item.index} ref={virtual.measureElement} className="history-row" style={{ transform: `translateY(${item.start}px)` }}>
               {layout.date && <div className="history-date"><button type="button" className="service-pill" title={tr('날짜로 이동')}
@@ -583,6 +619,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
         </div>
         {paging && <div className="history-paging"><Spinner size={18} /></div>}
       </div>
+      <SwipeBackPlate frame={swipe} />
+      <SwipeReplyIcon frame={swipe} row={swipeTarget.current?.row ?? null} host={historyBox.current} />
       {(bodyNotice || (history.status === 'loading' && dialog && !entries.length)) && <div className="history-notice" role="status">
         {bodyNotice ? <span className="service-pill">{bodyNotice}</span> : <Spinner size={24} />}
         {history.status === 'error' && dialog && <button className="button secondary" onClick={() => { void window.morse.latestHistory(accountUid, chatId).then(applyHistory).catch(() => {}) }}>{tr('다시 불러오기')}</button>}

@@ -30,6 +30,7 @@ import { usePresence } from '../app/presence'
 import { openPersonalChannel, PersonalChannelSection, usePersonalChannelCard } from './personal-channel'
 import { tr } from '../../../shared/i18n'
 import { clampChatTitle, maxChatTitle } from '../../../shared/chat-title'
+import { SwipeBackPlate, useSwipe } from '../history/use-swipe'
 
 export function InfoRow({ icon, value, label, onClick }: { icon: ReactNode; value: string; label: string; onClick?(): void }) {
   const content = <><span className="info-row-icon">{icon}</span><span className="info-row-text"><span className="selectable">{value}</span><small>{label}</small></span></>
@@ -247,6 +248,12 @@ function GroupInfo({ accountUid, dialog, onProfile }: { accountUid: string; dial
         void window.morse.participantContact(accountUid, { requestId, chatId: dialog.id, uid: member.uid, version }).then(onProfile)
           .catch(reason => controller.toast(errorText(reason, tr('프로필을 열지 못했습니다.')), 'error'))
       } } : null,
+      // B49: a member, contact or not, can be written to — the pair's 1:1, listed or not, else a new one (Telegram's
+      // profile «Message» opens any peer).
+      !member.withdrawn ? { label: tr('메시지 보내기'), icon: <MessageCircle size={18} />, onSelect: () => {
+        void window.morse.startMemberChat(accountUid, dialog.id, member.uid).then(chatId => controller.openChat(chatId))
+          .catch(reason => controller.toast(errorText(reason, tr('대화를 열지 못했습니다.')), 'error'))
+      } } : null,
       !member.withdrawn && member.canAddContact ? { label: tr('연락처에 추가'), icon: <UserPlus size={18} />, onSelect: () => {
         void trackWrite(window.morse.addParticipantContact(accountUid, { id: crypto.randomUUID(), requestId, chatId: dialog.id, uid: member.uid, version }))
           .then(result => controller.toast(result.outcome === 'added' ? tr('{0}님을 연락처에 추가했습니다.', [member.displayName]) : result.outcome === 'exists' ? tr('이미 연락처에 있습니다.') : result.message, result.outcome === 'rejected' ? 'error' : 'default'))
@@ -304,10 +311,30 @@ export function InfoPanel({ accountUid, chatId }: { accountUid: string; chatId: 
   const [profile, setProfile] = useState<string | null>(null)
   const [media, setMedia] = useState(false)
   const [adding, setAdding] = useState(false)
+  const blockedUsers = useBlockedUsers(accountUid)
   const peerUid = dialog?.kind === 'direct' ? dialog.participantUids.find(uid => uid !== accountUid) ?? null : !dialog ? pending?.peerUid ?? null : null
   const inContacts = useDesktop(state => peerUid ? Boolean(state?.contacts?.items.some(item => item.uid === peerUid)) : false)
   const heading = media ? tr('공유된 미디어') : profile ? tr('연락처 정보') : dialog?.kind === 'group' ? tr('그룹 정보') : tr('정보')
+  // B58 (Telegram info_content_widget.cpp:596-614): fingers right over the panel go back a step, or close it.
+  const panel = useRef<HTMLElement>(null)
+  const steps = useRef({ media, profile }); steps.current = { media, profile }
+  const swipeFrame = useSwipe(panel, {
+    enabled: () => true,
+    resolve: direction => direction === 'right-to-left' ? 'back' : null,
+    finish: () => { if (steps.current.media) setMedia(false); else if (steps.current.profile) setProfile(null); else controller.setRight(null) }
+  })
+  const swipe = swipeFrame()
   useEffect(() => { setProfile(null); setMedia(false) }, [chatId])
+  const stranger = dialog?.kind === 'direct' && Boolean(peerUid) && !inContacts
+  useEffect(() => { if (stranger && blockedUsers === null) void loadBlockedUsers(accountUid).catch(() => []) }, [accountUid, stranger, blockedUsers])
+  const peerBlocked = blockedUsers?.some(user => user.uid === peerUid) ?? false
+  // B52: a person who is not a contact can be blocked and reported from here too, as from a contact's profile.
+  async function toggleStrangerBlock(): Promise<void> {
+    if (!dialog || !peerUid) return
+    if (!peerBlocked && !await confirmBox({ title: tr('사용자 차단'), text: tr('{0}님을 차단할까요? 설정 → 개인정보에서 언제든 해제할 수 있어요.', [dialog.title]), confirm: tr('차단'), danger: true })) return
+    try { await setBlocked(accountUid, { uid: peerUid, userId: '', displayName: dialog.title }, !peerBlocked); controller.toast(peerBlocked ? tr('차단을 해제했습니다.') : tr('차단했습니다.')) }
+    catch (reason) { controller.toast(errorText(reason, tr('차단 상태를 바꾸지 못했습니다.')), 'error') }
+  }
   async function addPeer(): Promise<void> {
     if (!dialog || !peerUid || adding) return
     setAdding(true)
@@ -317,7 +344,8 @@ export function InfoPanel({ accountUid, chatId }: { accountUid: string; chatId: 
     } catch (reason) { controller.toast(errorText(reason, tr('연락처에 추가하지 못했습니다.')), 'error') }
     finally { setAdding(false) }
   }
-  return <section className="side-panel" aria-label={heading}>
+  return <section ref={panel} className="side-panel" aria-label={heading}>
+    <SwipeBackPlate frame={swipe} />
     <header className="top-bar">
       {(profile || media) && <button className="icon-button" aria-label={tr('뒤로')} onClick={() => { if (media) setMedia(false); else setProfile(null) }}><ArrowLeft size={20} /></button>}
       <strong className="side-title">{heading}</strong>
@@ -337,6 +365,9 @@ export function InfoPanel({ accountUid, chatId }: { accountUid: string; chatId: 
       {/* Telegram's profile of a non-contact offers "Add to contacts"; iOS UnknownProfileView the same. */}
       {!profile && dialog?.kind === 'direct' && peerUid && !inContacts && <div className="info-section">
         <ActionRow icon={adding ? <Spinner size={20} /> : <UserPlus size={20} />} label={tr('연락처에 추가')} disabled={adding} onClick={() => { void addPeer() }} />
+        <ActionRow icon={<ShieldOff size={20} />} label={peerBlocked ? tr('차단 해제') : tr('사용자 차단')} danger={!peerBlocked} disabled={blockedUsers === null} onClick={() => { void toggleStrangerBlock() }} />
+        {/* iOS UnknownProfileView «사용자 신고» (UserReportView). */}
+        <ActionRow icon={<Flag size={20} />} label={tr('사용자 신고')} danger onClick={() => showReportBox(accountUid, { type: 'user', targetId: peerUid }, tr('사용자 신고'), { uid: peerUid, userId: '', displayName: dialog.title })} />
       </div>}
       {/* Telegram's Shared Media entry; a secret room keeps nothing to list here. */}
       {!profile && dialog && dialog.kind !== 'secret' && <div className="info-section">

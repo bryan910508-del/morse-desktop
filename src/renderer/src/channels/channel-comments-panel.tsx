@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Copy, Reply, Send, Trash2, X } from 'lucide-react'
+import { Copy, Flag, Reply, Send, Trash2, X } from 'lucide-react'
+import { showReportBox } from '../boxes/report-box'
 import type { ChannelCommentItem } from '../../../shared/channel-comments'
 import type { CommentDraftRecord, CommentReplyTarget } from '../../../shared/channel-comment-drafts'
 import { composingKey } from '../../../shared/shortcuts'
@@ -153,6 +154,8 @@ export function CommentsThread({ accountUid, channelId, requestId, post, surface
     popupMenu.open(point, [
       item.parent === 'none' || item.parent === 'present' ? { label: tr('답글'), icon: <Reply size={18} />, onSelect: () => replyTo(item) } : null,
       item.text ? { label: tr('텍스트 복사'), icon: <Copy size={18} />, onSelect: () => { const copied = copyText(item.text); controller.toast(copied ? tr('텍스트를 복사했습니다.') : tr('텍스트를 복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null,
+      // A10 §3-1: a comment is reported as itself (type comment, its channel and post).
+      !item.own ? { label: tr('신고'), icon: <Flag size={18} />, danger: true, onSelect: () => showReportBox(accountUid, { type: 'comment', targetId: item.id, channelId, postId }, tr('댓글 신고')) } : null,
       removable ? 'separator' : null,
       removable ? { label: tr('삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void remove(item) } } : null
     ])

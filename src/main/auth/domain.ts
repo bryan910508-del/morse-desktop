@@ -157,7 +157,7 @@ export class AuthenticationDomain {
   states(): DomainAccountState[] {
     return [...this.controllers.entries()].map(([uid, controller]) => {
       const snapshot = controller.snapshot, profile = snapshot.account ?? this.profiles.get(uid)
-      return { uid, userId: profile?.userId ?? '', displayName: profile?.displayName ?? '', phase: snapshot.phase, message: snapshot.phase === 'signed-in' ? '' : snapshot.message }
+      return { uid, userId: profile?.userId ?? '', displayName: profile?.displayName ?? '', phase: snapshot.phase, message: snapshot.phase === 'signed-in' ? '' : snapshot.message, ...(snapshot.banned ? { banned: true } : {}) }
     })
   }
   // The account the user chose to see; it stays shown when it reconnects.

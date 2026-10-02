@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { SendWire } from '../../shared/model'
 import { tr } from '../../shared/i18n'
+import { bannedNotice, rejectionCode, rejectionUntil, restrictedNotice } from '../../shared/sanctions'
 
 // The Railway server's canonical() (morse-message-authority.js) in its exact field order: the payloadDigest it
 // stores must equal this, or a send whose answer was lost is taken for a conflict when it is looked up.
@@ -49,12 +50,14 @@ export function textDigest(wire: SendWire): string {
   if (source.isCircleVideo === true) canonical.isCircleVideo = true
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
 }
-export const retryableRejections = new Set(['UNAUTHORIZED', 'SUSPENDED', 'CHAT_MISSING', 'NOT_PARTICIPANT', 'PEER_GONE', 'BLOCKED', 'POSTING_RESTRICTED'])
+// A10 §4: an operator's restriction ends by itself, so its message can go again then; a ban and a closed room do not.
+export const retryableRejections = new Set(['UNAUTHORIZED', 'SUSPENDED', 'CHAT_MISSING', 'NOT_PARTICIPANT', 'PEER_GONE', 'BLOCKED', 'POSTING_RESTRICTED', 'ACCOUNT_RESTRICTED'])
 // DIRECT_CHAT_EXISTS: the pair already has a dialog under another id (morse-message-authority.js). The list
 // receives that dialog; this room's message was not stored.
-export const definiteRejections = new Set([...retryableRejections, 'INVALID_PAYLOAD', 'REPLY_MESSAGE_NOT_FOUND', 'CONFLICT', 'DIRECT_CHAT_EXISTS'])
+export const definiteRejections = new Set([...retryableRejections, 'INVALID_PAYLOAD', 'REPLY_MESSAGE_NOT_FOUND', 'CONFLICT', 'DIRECT_CHAT_EXISTS', 'ACCOUNT_BANNED', 'CHAT_RESTRICTED'])
 export function deliveryReason(reason: string): string {
-  return ({ BLOCKED: tr('차단 상태로 전송할 수 없습니다.'), PEER_GONE: tr('상대 계정을 확인할 수 없습니다.'),
+  if (rejectionCode(reason) === 'ACCOUNT_RESTRICTED') return restrictedNotice(rejectionUntil(reason))
+  return ({ ACCOUNT_BANNED: bannedNotice(), CHAT_RESTRICTED: tr('이 대화는 Morse 운영 정책 위반으로 이용할 수 없습니다.'), BLOCKED: tr('차단 상태로 전송할 수 없습니다.'), PEER_GONE: tr('상대 계정을 확인할 수 없습니다.'),
     'upload-network': tr('첨부 업로드가 중단되었습니다. 다시 전송을 누르면 수신 위치를 확인합니다.'),
     'upload-permission': tr('첨부를 올릴 권한을 확인하지 못했습니다. 계정과 대화 상태를 확인해 주세요.'),
     'upload-conflict': tr('서버 첨부와 보관한 원본이 일치하지 않아 전송을 중단했습니다.'),

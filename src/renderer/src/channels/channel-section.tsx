@@ -1,7 +1,7 @@
 import { showPostLikers } from './post-likers-box'
 import { showReportBox } from '../boxes/report-box'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { AlignLeft, ArrowLeft, ChevronLeft, ChevronRight, Copy, Film, Globe, Heart, Image as ImageIcon, Images, Info, Layers, Link, Lock, MessageCircle, Pencil, Pin, PinOff, Plus, Send, Trash2, Users, X, Flag } from 'lucide-react'
+import { AlignLeft, ArrowLeft, ChevronLeft, ChevronRight, Copy, Film, Globe, Heart, Image as ImageIcon, Images, Info, Layers, Link, Lock, MessageCircle, Pencil, Pin, PinOff, Plus, Send, ShieldOff, Trash2, Users, X, Flag } from 'lucide-react'
 import type { ChannelSummary } from '../../../shared/channels'
 import type { ChannelPostsSnapshot, ChannelPostText } from '../../../shared/channel-posts'
 import type { PostDraftRecord, PostDraftVisibility } from '../../../shared/channel-post-drafts'
@@ -34,6 +34,7 @@ import { locale, tr } from '../../../shared/i18n'
 import { subscriberCountText } from '../../../shared/channel-subscriber-count'
 import { editView, enqueueChannelOperation, likeView, removedPosts, useChannelOperations } from './channel-operations'
 import type { ChannelOperationItem } from '../../../shared/channel-operations'
+import { roomRestrictedNotice } from '../../../shared/sanctions'
 
 type Result = { outcome: 'saved' | 'rejected' | 'uncertain'; message: string }
 // ChannelDetailView.ViewMode: the pictures as a grid, the writing as cards.
@@ -452,7 +453,9 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
     catch (reason) { controller.toast(errorText(reason, tr('토론방을 열지 못했습니다.')), 'error') }
   }
   const authoring = snapshot?.authoring ?? null
-  const canPost = authoring?.permission === 'allowed'
+  // A10 §4 (Telegram restriction_reason): a channel the operator closed shows why instead of its posts.
+  const closed = channel?.restricted === true
+  const canPost = authoring?.permission === 'allowed' && !closed
 
   // The channels tab is not always beside this screen (a chat-list inquiry row and a shared link open it on
   // their own), so it asks for the channel's picture itself. Every mounted scope of one surface adds to the
@@ -474,11 +477,12 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
         <button className="button flat" onClick={() => resolvePin('restore')}>{tr('다시 고정')}</button>
         <button className="button flat" onClick={() => resolvePin('clear')}>{tr('고정 비우기')}</button>
       </div>}
-      {pinnedPost && !unresolvedPin && <section className="channel-pinned-post" aria-label={tr('고정된 게시물')}>
+      {closed && <div className="channel-feed-state" role="status"><ShieldOff size={34} /><span>{roomRestrictedNotice()}</span></div>}
+      {!closed && pinnedPost && !unresolvedPin && <section className="channel-pinned-post" aria-label={tr('고정된 게시물')}>
         <span className="channel-pinned-label"><Pin size={13} />{tr('고정된 게시물')}</span>
         <div className="channel-post-row" data-channel-id={channelId} data-post-id={pinnedPost.id}>{postCard(pinnedPost)}</div>
       </section>}
-      <div className="channel-tabs" role="tablist" aria-label={tr('보기 방식')}>
+      {!closed && <><div className="channel-tabs" role="tablist" aria-label={tr('보기 방식')}>
         <button type="button" role="tab" aria-selected={mode === 'media'} onClick={() => setMode('media')}><Images size={16} />{tr('미디어')}</button>
         <button type="button" role="tab" aria-selected={mode === 'text'} onClick={() => setMode('text')}><AlignLeft size={16} />{tr('글', [], 'tab')}</button>
       </div>
@@ -495,7 +499,8 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
               : <div className="channel-cards">
                 {shown.map(post => <div key={post.id} className="channel-post-row" data-channel-id={channelId} data-post-id={post.id}>{postCard(post)}</div>)}
               </div>}
-      {shown.length > 0 && count < filtered.length && <div className="channel-feed-more"><button className="button flat" onClick={loadOlder}>{tr('이전 게시물 더 보기')}</button></div>}
+      </>}
+      {!closed && shown.length > 0 && count < filtered.length && <div className="channel-feed-more"><button className="button flat" onClick={loadOlder}>{tr('이전 게시물 더 보기')}</button></div>}
     </div>
     {canPost && viewingIndex < 0 && <button type="button" className="channel-compose-fab" aria-label={tr('새 게시물')} title={tr('새 게시물')} onClick={() => showComposeBox(accountUid, channelId, name)}><Plus size={26} /></button>}
     {viewingIndex >= 0 && <PostViewer posts={viewerPosts} index={viewingIndex} name={name} render={postCard}

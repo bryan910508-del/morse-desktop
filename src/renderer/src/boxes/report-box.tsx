@@ -37,13 +37,13 @@ function ReportBox({ accountUid, target, title, block, initialExtra, close }: { 
       placeholder={user ? tr('자세한 상황을 알려주시면 처리에 도움돼요.') : tr('상세한 사유를 적어주시면 처리에 도움돼요.')} onChange={event => setExtra(event.target.value)} /></label>
     {user && block && <label className="settings-toggle"><span className="settings-toggle-text"><span>{tr('이 사용자 차단')}</span><small>{tr('신고와 함께 차단해요')}</small></span>
       <Switch label={tr('이 사용자 차단')} checked={alsoBlock} disabled={busy} onChange={setAlsoBlock} /></label>}
-    <p className="box-note">{user ? tr('검토 후 적절한 조치를 취할게요.\n긴급 신고(아동 안전, 폭력 위협)는 1시간 이내 처리해요.\n허위 신고 시 이용에 제한이 있을 수 있어요.') : tr('검토 후 적절한 조치를 취할게요.\n허위 신고 시 이용에 제한이 있을 수 있어요.')}</p>
+    <p className="box-note">{tr('운영자가 24시간 안에 확인합니다.\n허위 신고 시 이용에 제한이 있을 수 있어요.')}</p>
     {error && <p className="box-error" role="alert">{error}</p>}
   </Box>
 }
 
-// `initialExtra`: 신고 대상을 가리키는 좌표를 미리 적어 둔다. 메시지 신고가 그렇다 — 신고되는 것은 보낸
-// 사람이고(규칙의 신고 종류에 message 가 없다), 어느 메시지인지는 설명에 적혀야 검토할 수 있다.
+// `initialExtra`: 신고 대상을 가리키는 좌표를 미리 적어 둔다. 이제 메시지·댓글·스토리는 그 자체로 신고하므로
+// (A10 §3-1) 쓰는 곳은 서버가 방 참여를 확인할 수 없는 메시지(비밀 대화·참여자가 아닌 토론방)뿐이다.
 export function showReportBox(accountUid: string, target: ReportTarget, title: string, block: BlockTarget | null = null, initialExtra = ''): void {
   controller.showLayer(close => <ReportBox accountUid={accountUid} target={target} title={title} block={block} initialExtra={initialExtra} close={close} />)
 }

@@ -68,6 +68,9 @@ export class AuthenticationController {
   private logoutTask: Promise<void> | null = null
   private logoutAbort: AbortController | null = null
   private failure: AuthFailureCode | null = null
+  // The account this operation is about, once known (the recovery code's answer, or the saved sign-in): a ban refused
+  // after that point still names it in the «도움» mail. Never the code itself.
+  private known: AccountProfile | null = null
 
   constructor(configuration: DesktopAuthConfiguration | null, private readonly vault: CredentialVault,
     private readonly version: string, private readonly changed: () => void, private readonly accounts: AuthenticatedAccountHooks,
@@ -83,7 +86,9 @@ export class AuthenticationController {
   get lastFailure(): AuthFailureCode | null { return this.failure }
   get snapshot(): AuthenticationSnapshot { return { ...this.value, account: this.value.account ? { ...this.value.account } : null } }
   private set(phase: AuthenticationSnapshot['phase'], message: string, owner: CredentialOwner | null = null): void {
-    this.value = { available: this.api !== null, phase, message, account: owner ? { ...owner.record.profile } : null }
+    const banned = phase === 'error' && this.failure === 'banned'
+    const account = owner ? owner.record.profile : banned ? this.known : null
+    this.value = { available: this.api !== null, phase, message, account: account ? { ...account } : null, ...(banned ? { banned: true } : {}) }
     this.changed()
   }
   private requireAPI(): FirebaseAuthenticationAPI {
@@ -99,6 +104,7 @@ export class AuthenticationController {
     const controller = new AbortController()
     this.operation = controller
     this.failure = null
+    this.known = null
     this.set(restoring ? 'restoring' : 'verifying', restoring ? tr('저장된 계정을 확인하고 있습니다.') : message ?? tr('복구 코드를 확인하고 있습니다.'))
     const task = (async () => {
       try {
@@ -136,6 +142,7 @@ export class AuthenticationController {
       this.assertCurrent(controller)
       // A saved account reconnects only as itself; a new one must fit the device's account limit.
       if (stored && stored.profile.uid !== verified.profile.uid) throw new AuthenticationFailure('unavailable')
+      this.known = verified.profile
       if (!this.boundUid) this.admission?.admit(verified.profile.uid)
       // Signing in again to a saved account keeps its device session ID.
       const previous = stored ?? (this.boundUid ? null : await this.vault.read(verified.profile.uid).catch(() => null))
@@ -278,6 +285,7 @@ export class AuthenticationController {
         const record = this.boundUid ? await this.vault.read(this.boundUid) : null
         this.assertCurrent(controller)
         if (!record) { this.set('signed-out', tr('복구 코드로 기존 계정을 연결하세요.')); return }
+        this.known = record.profile
         // A credential saved by an earlier build: its session ID is written down so a later sign-in reuses it (A6 §4).
         void this.identity.sessionId(record.profile.uid, record.sessionId).catch(() => {})
         progress.stage = 'token'
@@ -413,6 +421,11 @@ export class AuthenticationController {
       await api.startSession(idToken, owner.record.sessionId, this.version, owner.record.provider ?? 'custom', owner.controller.signal)
       return 'confirmed'
     } catch (error) {
+      // A10 §4: the server says the account is banned — the socket stops asking, and the account says so with «도움».
+      if (asAuthFailure(error).code === 'banned' && this.owner === owner) {
+        this.detach(false); this.failure = 'banned'; this.set('error', asAuthFailure(error).message)
+        return 'unknown'
+      }
       if (asAuthFailure(error).code !== 'revoked' || this.owner !== owner) return 'unknown'
       owner.revokedByServer = true
       return 'revoked'

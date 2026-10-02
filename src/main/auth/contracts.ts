@@ -1,5 +1,6 @@
 import type { AccountProfile } from '../../shared/model'
 import { tr } from '../../shared/i18n'
+import { bannedNotice } from '../../shared/sanctions'
 
 export interface AppCheckProof { token: string; expiresAt: number; appId: string }
 export interface DesktopAppProofProvider {
@@ -30,7 +31,7 @@ export interface SavedCredential {
   // How this device signed in, for the server's session list (iOS sends the Firebase provider ID).
   provider?: 'apple.com'
 }
-export type AuthFailureCode = 'unavailable' | 'update-required' | 'app-proof' | 'invalid-code' | 'rate-limited' | 'invalid-credential' | 'revoked' | 'network' | 'storage' | 'protocol' | 'cancelled' | 'id-taken' | 'account-limit' | 'saved-account' | 'already-added' | 'device-limit' | 'apple' | 'stale-identity'
+export type AuthFailureCode = 'unavailable' | 'update-required' | 'app-proof' | 'invalid-code' | 'rate-limited' | 'invalid-credential' | 'revoked' | 'network' | 'storage' | 'protocol' | 'cancelled' | 'id-taken' | 'account-limit' | 'saved-account' | 'already-added' | 'device-limit' | 'apple' | 'stale-identity' | 'banned'
 const messages: Record<AuthFailureCode, string> = {
   unavailable: tr('현재 이 버전에서는 계정을 연결할 수 없습니다.'),
   // The server needs a newer Morse. What was waiting to go is still here, and goes once it is updated.
@@ -51,7 +52,10 @@ const messages: Record<AuthFailureCode, string> = {
   'device-limit': tr('계정 한도에 도달했어요.'),
   apple: tr('Apple 로그인에 실패했어요. 다시 시도해 주세요.'),
   // The server refused to give a withdrawn account's Apple identity a new profile; signing in again gets a new one.
-  'stale-identity': tr('Apple 로그인에 실패했어요. 다시 시도해 주세요.')
+  'stale-identity': tr('Apple 로그인에 실패했어요. 다시 시도해 주세요.'),
+  // A10 §4 (Telegram PHONE_NUMBER_BANNED): the operator banned the account. What it kept stays on this device — the
+  // operator can lift a ban — and the account offers «도움», a mail to the operator.
+  banned: bannedNotice()
 }
 // What a failed token refresh does to the account on this device. When the sign-in itself is over — the refresh
 // token refused, or the session revoked — the account is signed out and what it kept is cleared, as Telegram does on
@@ -60,7 +64,7 @@ const messages: Record<AuthFailureCode, string> = {
 // again (F-RT-001, 11_phase1-work §E-1).
 export function tokenFailureEffect(code: AuthFailureCode): 'none' | 'disconnect' | 'sign-out' {
   if (code === 'invalid-credential' || code === 'revoked') return 'sign-out'
-  if (code === 'storage') return 'disconnect'
+  if (code === 'storage' || code === 'banned') return 'disconnect'
   return 'none'
 }
 export class AuthenticationFailure extends Error {

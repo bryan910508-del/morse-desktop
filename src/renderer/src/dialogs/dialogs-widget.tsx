@@ -27,11 +27,14 @@ import { StoriesRow } from '../stories/stories-row'
 import { tr } from '../../../shared/i18n'
 import { useShownConnection } from '../app/connection'
 import { useListTyping } from '../app/typing'
+import { peopleWithoutRows, type NoChatPerson, type UnlistedDirect } from '../../../shared/dialog-search'
+import { openContactChat } from '../app/contacts'
 
 const noDialogs: DialogSummary[] = []
 const noPending: PendingDirect[] = []
 const noContacts: ContactSummary[] = []
 const noInquiryRows: InquiryRow[] = []
+const noUnlisted: UnlistedDirect[] = []
 export const folders: { id: Folder; label: string }[] = [
   // A channel is not a chat list filter: Telegram's strip is «All chats» plus the folders a person
   // made, and a Morse channel has its own section, reachable from the menu, a post card or a
@@ -42,10 +45,10 @@ const connectionLabels: Record<ConnectionState, string> = {
   ready: '', offline: tr('연결 대기 중'), connecting: tr('연결 중…'), registering: tr('계정 확인 중…'), suspended: tr('연결 일시 중지'), rejected: tr('다시 로그인해 주세요')
 }
 
-type Row = { kind: 'dialog'; dialog: DialogSummary } | { kind: 'pending'; pending: PendingDirect }
+type Row = { kind: 'dialog'; dialog: DialogSummary } | { kind: 'pending'; pending: PendingDirect } | { kind: 'person'; person: NoChatPerson }
   | { kind: 'inquiry'; inquiry: InquiryRow } | { kind: 'archive'; count: number; unread: number } | { kind: 'notes' }
 function rowKey(row: Row): string {
-  return row.kind === 'dialog' ? row.dialog.id : row.kind === 'pending' ? `pending:${row.pending.chatId}`
+  return row.kind === 'dialog' ? row.dialog.id : row.kind === 'pending' ? `pending:${row.pending.chatId}` : row.kind === 'person' ? `person:${row.person.uid}`
     : row.kind === 'inquiry' ? row.inquiry.id : row.kind
 }
 
@@ -162,6 +165,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
   // A room whose pair already has a dialog is that dialog (PendingDirect.supersededBy): it is not a row.
   const pendingRooms = useDesktop(snapshot => snapshot?.pendingDirects ?? noPending)
   const pending = useMemo(() => pendingRooms.filter(item => !item.supersededBy), [pendingRooms])
+  const unlistedDirects = useDesktop(snapshot => snapshot?.unlistedDirects) ?? noUnlisted
   const pinState = useDesktop(snapshot => snapshot?.dialogPin ?? null)
   const unreadState = useDesktop(snapshot => snapshot?.manualUnread ?? null)
   const query = useUi(state => state.dialogsQuery)
@@ -219,7 +223,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       for (const item of pending) result.push({ kind: 'pending', pending: item })
     } else if (needle && !archived) for (const item of pending) if (matches(item.displayName)) result.push({ kind: 'pending', pending: item })
     const context = { uid: accountUid, contacts: contactSet }, inCustom = custom && !archived && !needle ? custom : null
-    const pinnedChats: Row[] = [], timedChats: Row[] = []
+    const pinnedChats: Row[] = [], timedChats: Row[] = [], listedPeers = new Set<string>()
     // iOS shouldHideChannelDiscussionOnMainList: my own channel's discussion room is not a row of its own —
     // the channel's row stands for it, and carries what it has to say.
     const discussions: DiscussionFold[] = []
@@ -248,6 +252,14 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
     const at = (row: Row): number => row.kind === 'inquiry' ? row.inquiry.lastMessageAt ?? -Infinity
       : row.kind === 'dialog' ? positionTime(row.dialog.top) ?? -Infinity : -Infinity
     result.push(...pinnedChats, ...(inquiries.length ? [...timedChats, ...inquiries].sort((a, b) => at(b) - at(a)) : timedChats))
+    // B49: searching also finds the people with no row — a 1:1 that left the list (contact or not) and a contact with
+    // no 1:1 — after the chats, as Telegram's search shows its contactsNoChatsList (shared/dialog-search.ts).
+    if (needle && !archived && !inCustom) {
+      for (const dialog of listed) if (dialog.kind === 'direct') for (const uid of dialog.participantUids) if (uid !== accountUid) listedPeers.add(uid)
+      const people = peopleWithoutRows({ matches, listedPeers, pendingPeers: new Set(pending.map(item => item.peerUid)), unlisted: unlistedDirects,
+        contacts: contactItems.map(item => ({ uid: item.uid, name: item.displayName })), self: accountUid })
+      for (const person of people) result.push({ kind: 'person', person })
+    }
     // Chats pinned inside the folder come first, in their pinned order.
     if (inCustom?.pinnedChatIds.length) {
       const rank = new Map(inCustom.pinnedChatIds.map((id, index) => [id, index]))
@@ -255,8 +267,14 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       result.sort((a, b) => { const x = key(a), y = key(b); return x === y ? 0 : x < y ? -1 : 1 })
     }
     return result
-  }, [listed, pending, inquiryRows, rowState, query, folder, archived, overridesVersion, custom, contactSet, accountUid])
+  }, [listed, pending, inquiryRows, rowState, query, folder, archived, overridesVersion, custom, contactSet, accountUid, unlistedDirects, contactItems])
 
+  // B49: a person found without a row opens as their 1:1 — the room that left the list, else a new chat with the contact.
+  async function openPerson(person: NoChatPerson): Promise<void> {
+    if (!person.chatId) { await openContactChat(accountUid, person.uid); return }
+    try { controller.openChat(await window.morse.openUnlistedDirect(accountUid, person.chatId)) }
+    catch (reason) { controller.toast(errorText(reason, tr('대화를 열지 못했습니다.')), 'error') }
+  }
   const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => scroll.current, estimateSize: () => 62, overscan: 10, getItemKey: index => rowKey(rows[index]!) })
 
   // iOS gives an inquiry row the same swipe actions a chat row has, all kept on the device that set them
@@ -409,7 +427,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
           onChange={event => controller.setQuery(event.target.value)}
           onKeyDown={event => {
             if (event.key === 'ArrowDown') { event.preventDefault(); scroll.current?.querySelector<HTMLElement>('[data-row="0"]')?.focus() }
-            else if (event.key === 'Enter' && rows[0]) { const row = rows[0]; if (row.kind === 'dialog') controller.openChat(row.dialog.id); else if (row.kind === 'pending') controller.openChat(row.pending.chatId) }
+            else if (event.key === 'Enter' && rows[0]) { const row = rows[0]; if (row.kind === 'dialog') controller.openChat(row.dialog.id); else if (row.kind === 'pending') controller.openChat(row.pending.chatId); else if (row.kind === 'person') void openPerson(row.person) }
           }} />
         {query && <button className="icon-button small" aria-label={tr('검색어 지우기')} onClick={() => { controller.setQuery(''); search.current?.focus() }}><X size={16} /></button>}
       </label>
@@ -443,6 +461,13 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
               <span className="dialog-row-body">
                 <span className="dialog-row-line"><span className="dialog-row-name ellipsis">{row.pending.displayName}</span></span>
                 <span className="dialog-row-line"><span className="dialog-row-preview ellipsis">{tr('새 대화 · 첫 메시지를 보내면 시작됩니다')}</span></span>
+              </span>
+            </button>
+            if (row.kind === 'person') return <button key={item.key} type="button" className="dialog-row" style={style} data-row={item.index} onClick={() => { void openPerson(row.person) }}>
+              <Avatar name={row.person.title || '?'} size={46} />
+              <span className="dialog-row-body">
+                <span className="dialog-row-line"><span className="dialog-row-name ellipsis">{row.person.title}</span></span>
+                <span className="dialog-row-line"><span className="dialog-row-preview ellipsis">{row.person.chatId ? tr('지난 대화 · 다시 열기') : tr('연락처 · 대화 없음')}</span></span>
               </span>
             </button>
             if (row.kind === 'notes') return <button key={item.key} type="button" className="dialog-row" style={style} data-row={item.index} onClick={() => controller.showNotes()}>
