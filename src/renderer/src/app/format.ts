@@ -21,6 +21,13 @@ export function dialogTime(time: number | null, now = Date.now()): string {
   if (time >= today - 6 * 86400000) return weekday.format(time)
   return shortDate.format(time)
 }
+// Api::Authorizations::ActiveDateString (tdesktop api_authorizations.cpp): a session's last activity — today → time,
+// this calendar week → weekday, older → date.
+export function sessionActiveTime(time: number, now = Date.now()): string {
+  if (sameDay(time, now)) return clock.format(time)
+  const week = (value: number): number => { const date = new Date(startOfDay(value)); date.setDate(date.getDate() - (date.getDay() + 6) % 7); return date.getTime() }
+  return week(time) === week(now) ? weekday.format(time) : shortDate.format(time)
+}
 export function messageTime(time: number): string { return clock.format(time) }
 export function fullTime(time: number): string { return full.format(time) }
 // HistoryView service date: current year omits the year.

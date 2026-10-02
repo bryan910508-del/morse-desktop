@@ -7,6 +7,9 @@ import type { StickerPack } from '../../shared/sticker-packs'
 import type { StoryViewReceiptRequest } from '../../shared/story-view-receipt'
 import { writeStoryReaction, StoryReactionWriteFailure } from './story-reaction-write'
 import { recordStoryStep } from '../platform/story-diagnostics'
+import { recordConnectionStep, recordWatch } from '../platform/connection-diagnostics'
+import { reachability } from './reachability'
+import { grpcCode, grpcDelivery, serverAnswered } from './grpc-delivery'
 import type { StoryReactionChangeRequest } from '../../shared/story-reaction-change'
 import { writeStoryVideoPublication, StoryVideoPublicationFailure } from './story-video-publication-write'
 import type { StoryVideoPublicationCommitRequest } from '../../shared/story-video-publication-commit'
@@ -72,7 +75,7 @@ import type { ChannelNameEdit } from '../../shared/channel-name'
 import { writeChannelMetadata, ChannelMetadataWriteFailure } from './channel-metadata-write'
 import type { ChannelPhotoClear } from '../../shared/channel-photo-clear'
 import type { ChannelPhotoKind } from '../../shared/channel-photo-bytes'
-import { Client, credentials, loadPackageDefinition, Metadata, status, type ClientDuplexStream, type ClientReadableStream, type ClientUnaryCall, type ServiceError } from '@grpc/grpc-js'
+import { Client, connectivityState, credentials, loadPackageDefinition, Metadata, status, type ClientDuplexStream, type ClientReadableStream, type ClientUnaryCall, type ServiceError } from '@grpc/grpc-js'
 import { fromJSON } from '@grpc/proto-loader'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -124,7 +127,7 @@ function failure(error: unknown): ReadFailure {
   if (error instanceof ReadFailure) return error
   const code = error && typeof error === 'object' ? (error as { code?: number }).code : undefined
   return new ReadFailure(code === status.PERMISSION_DENIED || code === status.UNAUTHENTICATED ? 'permission' :
-    code === status.FAILED_PRECONDITION ? 'index' : 'network')
+    code === status.FAILED_PRECONDITION ? 'index' : 'network', typeof code === 'number' ? grpcCode(error as { code: number; details?: string }) : '')
 }
 function metadata(authorization: ReadAuthorization): Metadata {
   const result = new Metadata()
@@ -147,30 +150,95 @@ export function writeDetail(error: { details?: string; message?: string }): stri
 // `detail` its masked wording, kept so a caller can write them to its diagnostics log.
 export class DocumentWriteFailure extends Error { constructor(readonly uncertain: boolean, readonly code = 0, readonly detail = '') { super(uncertain ? tr('저장 결과를 확인하지 못했습니다.') : tr('저장하지 못했습니다.')) } }
 
-export class FirestoreReader {
-  private readonly client: FirestoreClient
-  private closed = false
-  private readonly abort = new AbortController()
-  constructor(private readonly auth: ReadCredentials) {
+// The Firestore service as the protocol file describes it, loaded once for every reader.
+type FirestoreService = new (address: string, channelCredentials: ReturnType<typeof credentials.createSsl>, options: object) => FirestoreClient
+let service: FirestoreService | null = null
+function newClient(): FirestoreClient {
+  if (!service) {
     const definition = fromJSON(JSON.parse(readFileSync(join(__dirname, '../../resources/firestore-v1.json'), 'utf8')), {
       longs: String, enums: String, bytes: Buffer, defaults: false, oneofs: true,
     })
-    const loaded = loadPackageDefinition(definition) as unknown as { google: { firestore: { v1: { Firestore: new (address: string, channelCredentials: ReturnType<typeof credentials.createSsl>, options: object) => FirestoreClient } } } }
-    this.client = new loaded.google.firestore.v1.Firestore('firestore.googleapis.com:443', credentials.createSsl(), {
-      'grpc.max_receive_message_length': 2 * 1024 * 1024,
-      'grpc.max_send_message_length': 2 * 1024 * 1024,
-      // Telegram Desktop `Api::Updates::_noUpdatesTimer` (kNoUpdatesTimeout, 60s):
-      // a session that received nothing for a minute pings, and a failed ping
-      // reconnects and requests the difference. A Listen stream past CURRENT
-      // has no watchdog of its own, so a transport that died without a close
-      // (network path change, sleep the socket survived) would stay silent
-      // until the 45-minute renewal. HTTP/2 keepalive ends such a stream, and
-      // `watch` re-issues the target, which re-reads the whole result set.
-      'grpc.keepalive_time_ms': 60000,
-      'grpc.keepalive_timeout_ms': 20000,
-      'grpc.keepalive_permit_without_calls': 1,
-    })
+    service = (loadPackageDefinition(definition) as unknown as { google: { firestore: { v1: { Firestore: FirestoreService } } } }).google.firestore.v1.Firestore
   }
+  return new service('firestore.googleapis.com:443', credentials.createSsl(), {
+    'grpc.max_receive_message_length': 2 * 1024 * 1024,
+    'grpc.max_send_message_length': 2 * 1024 * 1024,
+    // Telegram Desktop `Api::Updates::_noUpdatesTimer` (kNoUpdatesTimeout, 60s):
+    // a session that received nothing for a minute pings, and a failed ping
+    // reconnects and requests the difference. A Listen stream past CURRENT
+    // has no watchdog of its own, so a transport that died without a close
+    // (network path change, sleep the socket survived) would stay silent
+    // until the 45-minute renewal. HTTP/2 keepalive ends such a stream, and
+    // `watch` re-issues the target, which re-reads the whole result set.
+    'grpc.keepalive_time_ms': 60000,
+    'grpc.keepalive_timeout_ms': 20000,
+    'grpc.keepalive_permit_without_calls': 1,
+  })
+}
+// What one call says of the network (reachability.ts): it never left, or the server answered it.
+function observe(error: { code?: number; details?: string } | null): void {
+  if (!error || serverAnswered(error.code)) reachability.reached('firestore')
+  else if (typeof error.code === 'number' && grpcDelivery(error, []) === 'not-sent') reachability.lost()
+}
+// Every open reader, so that the network coming back reaches each of them. A gRPC channel that failed to connect
+// waits out its own backoff before it tries again (@grpc/grpc-js subchannel: 1 s growing by 1.6 to 120 s), and until
+// then fails every call at once with «No connection established»; it cannot be told to try now (pick_first's
+// resetBackoff does nothing). Such a channel is replaced by a new one, which connects on its first call, as
+// Telegram's restart drops the connection it had and makes a new one. Watches waiting to listen again go now.
+const live = new Set<FirestoreReader>()
+reachability.subscribe(reason => {
+  let made = 0, woken = 0
+  for (const reader of [...live]) { const done = reader.reconnectNow(); made += done.made; woken += done.woken }
+  if (made || woken) recordConnectionStep('firestore-now', `${reason} channels=${made} watches=${woken}`)
+})
+// Readers are numbered for connection-check.log, so a watch that stays down can be told from one that comes back.
+let readers = 0
+const channelStates = ['IDLE', 'CONNECTING', 'READY', 'TRANSIENT_FAILURE', 'SHUTDOWN']
+export class FirestoreReader {
+  private client: FirestoreClient
+  private readonly serial = ++readers
+  private readonly born = Date.now()
+  private closed = false
+  private readonly abort = new AbortController()
+  // Watches waiting out their retry, each with a way to listen again at once.
+  private readonly waiting = new Set<() => void>()
+  // Every watch of this reader, each with a way to rest and to listen again (pause, resume).
+  private readonly watches = new Set<{ hold(): void; release(): void }>()
+  private resting = false
+  constructor(private readonly auth: ReadCredentials) {
+    this.client = newClient()
+    live.add(this)
+  }
+  // The network is back (reachability.ts): a channel in its reconnect wait is made anew, and waiting watches go.
+  reconnectNow(): { made: number; woken: number } {
+    if (this.closed) return { made: 0, woken: 0 }
+    let made = 0
+    try {
+      if (this.client.getChannel().getConnectivityState(false) === connectivityState.TRANSIENT_FAILURE) {
+        const old = this.client
+        this.client = newClient(); old.close(); made = 1
+      }
+    } catch { /* a closed channel has nothing to wait for */ }
+    const wakers = [...this.waiting]
+    this.waiting.clear()
+    for (const wake of wakers) wake()
+    return { made, woken: wakers.length }
+  }
+  // The screen these watches serve is not seen (a hidden window): they stop listening and tell their watcher nothing,
+  // so what it shows stays. Telegram Desktop keeps a channel's loaded posts and replies while its window is hidden.
+  pause(): void {
+    if (this.closed || this.resting) return
+    this.resting = true
+    for (const watch of this.watches) watch.hold()
+  }
+  // Seen again: each watch listens anew as after a reconnect (`reconnecting`, then the next snapshot replaces what
+  // was kept). Reads and writes that are not watches are never held.
+  resume(): void {
+    if (this.closed || !this.resting) return
+    this.resting = false
+    for (const watch of [...this.watches]) watch.release()
+  }
+  get paused(): boolean { return this.resting && !this.closed }
   private bounded(signal: AbortSignal): AbortSignal { return AbortSignal.any([signal, this.abort.signal, this.auth.signal]) }
   async getDocument(path: string, signal: AbortSignal, validate: () => void = () => {}): Promise<FirestoreDocument | null> {
     if (!path.startsWith(`${documents}/`)) throw new ReadFailure('data')
@@ -188,6 +256,7 @@ export class FirestoreReader {
       }
       const cancel = (): void => { call.cancel(); finish(new ReadFailure('cancelled')) }
       const call = this.client.getDocument({ name: path }, metadata(authorization), { deadline: new Date(Date.now() + 30000) }, (error, response) => {
+        observe(error)
         if (error?.code === status.NOT_FOUND) { finish(null); return }
         if (error) { finish(error); return }
         try { const doc = document(response); if (doc.name !== path) throw new ReadFailure('data'); finish(null, doc) }
@@ -574,18 +643,21 @@ export class FirestoreReader {
   async createChannelPost(uid: string, request: PostCreationRequest, signal: AbortSignal, source: () => PostCreationSource): Promise<void> {
     const bounded = AbortSignal.any([this.bounded(signal), AbortSignal.timeout(60000)])
     let authorization: ReadAuthorization, current: PostCreationSource
+    // Nothing has left yet: a channel that no longer allows the post refuses it, anything else (the connection, the
+    // account's proof) only holds it back.
     try { bounded.throwIfAborted(); source(); authorization = await this.auth.authorize(bounded, false); bounded.throwIfAborted(); current = source() }
-    catch { throw new ChannelPostCreationFailure(false) }
+    catch (error) { throw error instanceof ChannelPostCreationFailure ? error : new ChannelPostCreationFailure('not-sent') }
     try { await writeChannelPostCreation(this.client, metadata(authorization), uid, request, current, bounded) }
-    catch (error) { throw error instanceof ChannelPostCreationFailure ? error : new ChannelPostCreationFailure(true) }
+    catch (error) { throw error instanceof ChannelPostCreationFailure ? error : new ChannelPostCreationFailure('unknown') }
   }
   async createChannelComment(uid: string, request: CommentCreationRequest, signal: AbortSignal, source: () => FirestoreDocument): Promise<void> {
     const bounded = AbortSignal.any([this.bounded(signal), AbortSignal.timeout(60000)])
     let authorization: ReadAuthorization, post: FirestoreDocument
+    // Nothing has left yet: a post that no longer takes the comment refuses it, anything else only holds it back.
     try { bounded.throwIfAborted(); source(); authorization = await this.auth.authorize(bounded, false); bounded.throwIfAborted(); post = source() }
-    catch { throw new ChannelCommentCreationFailure(false) }
+    catch (error) { throw error instanceof ChannelCommentCreationFailure ? error : new ChannelCommentCreationFailure('not-sent') }
     try { await writeChannelCommentCreation(this.client, metadata(authorization), uid, request, post, bounded) }
-    catch (error) { throw error instanceof ChannelCommentCreationFailure ? error : new ChannelCommentCreationFailure(true) }
+    catch (error) { throw error instanceof ChannelCommentCreationFailure ? error : new ChannelCommentCreationFailure('unknown') }
   }
   async removeChannelComment(uid: string, request: ChannelCommentRemoval, signal: AbortSignal, source: () => CommentRemovalSource): Promise<void> {
     const bounded = AbortSignal.any([this.bounded(signal), AbortSignal.timeout(60000)])
@@ -707,11 +779,27 @@ export class FirestoreReader {
   async updateChatFields(chatId: string, fields: Record<string, WireObject>, mask: string[], signal: AbortSignal): Promise<void> {
     await this.commitWrites([{ update: { name: `${documents}/chats/${chatId}`, fields }, updateMask: { fieldPaths: mask }, currentDocument: { exists: true } }], signal)
   }
-  // chats/{chatId}/watchers/{uid} with setData(merge: true), as iOS writes the typing state.
+  // iOS ChatRoomView.updateTypingStateIfNeeded (886b1f49): the typing signal only updates the watcher document the
+  // open room holds (accounts/room-presence.ts) and never creates one. A signal that finds none — the room was left,
+  // its document deleted — is the expected answer, not a failure, as Telegram's setTyping is a one-shot request.
   async setChatWatcherTyping(chatId: string, uid: string, typing: boolean, signal: AbortSignal): Promise<void> {
-    await this.commitWrites([{ update: { name: `${documents}/chats/${chatId}/watchers/${uid}`, fields: { uid: { stringValue: uid }, typing: { booleanValue: typing } } },
-      updateMask: { fieldPaths: ['uid', 'typing'] },
-      updateTransforms: [{ fieldPath: 'enteredAt', setToServerValue: 'REQUEST_TIME' }, { fieldPath: 'typingAt', setToServerValue: 'REQUEST_TIME' }] }], signal)
+    try {
+      await this.commitWrites([{ update: { name: `${documents}/chats/${chatId}/watchers/${uid}`, fields: { uid: { stringValue: uid }, typing: { booleanValue: typing } } },
+        updateMask: { fieldPaths: ['uid', 'typing'] }, currentDocument: { exists: true },
+        updateTransforms: [{ fieldPath: 'enteredAt', setToServerValue: 'REQUEST_TIME' }, { fieldPath: 'typingAt', setToServerValue: 'REQUEST_TIME' }] }], signal)
+    } catch (error) {
+      if (error instanceof DocumentWriteFailure && error.code === status.NOT_FOUND) return
+      throw error
+    }
+  }
+  // AppState.commitActiveChatPresenceWritesIfNeeded / refreshActiveChatPresence: setData(merge) of uid and enteredAt.
+  async enterChatWatcher(chatId: string, uid: string, signal: AbortSignal): Promise<void> {
+    await this.commitWrites([{ update: { name: `${documents}/chats/${chatId}/watchers/${uid}`, fields: { uid: { stringValue: uid } } },
+      updateMask: { fieldPaths: ['uid'] }, updateTransforms: [{ fieldPath: 'enteredAt', setToServerValue: 'REQUEST_TIME' }] }], signal)
+  }
+  // AppState.setActiveChat(nil): the room was left.
+  async leaveChatWatcher(chatId: string, uid: string, signal: AbortSignal): Promise<void> {
+    await this.commitWrites([{ delete: `${documents}/chats/${chatId}/watchers/${uid}` }], signal)
   }
   async saveChatFolder(uid: string, folderId: string, fields: Record<string, WireObject>, mask: string[] | null, signal: AbortSignal): Promise<void> {
     const update = { name: `${documents}/users/${uid}/folders/${folderId}`, fields }
@@ -791,6 +879,11 @@ export class FirestoreReader {
   async editInquiryMessage(inquiryId: string, messageId: string, text: string, signal: AbortSignal): Promise<void> {
     await this.commitWrites([{ update: { name: `${documents}/channelInquiries/${inquiryId}/messages/${messageId}`, fields: { text: { stringValue: text }, isEdited: { booleanValue: true } } },
       updateMask: { fieldPaths: ['text', 'isEdited'] }, currentDocument: { exists: true } }], signal)
+  }
+  // The room itself. Both sides may remove it (firestore.rules channelInquiries delete), and it is one
+  // document, so it goes for the other person too.
+  async deleteInquiryRoom(inquiryId: string, signal: AbortSignal): Promise<void> {
+    await this.commitWrites([{ delete: `${documents}/channelInquiries/${inquiryId}`, currentDocument: { exists: true } }], signal)
   }
   async deleteInquiryMessage(inquiryId: string, messageId: string, signal: AbortSignal): Promise<void> {
     await this.commitWrites([{ delete: `${documents}/channelInquiries/${inquiryId}/messages/${messageId}`, currentDocument: { exists: true } }], signal)
@@ -991,7 +1084,7 @@ export class FirestoreReader {
     let retry: ReturnType<typeof setTimeout> | undefined
     let timeout: ReturnType<typeof setTimeout> | undefined
     let renewal: ReturnType<typeof setTimeout> | undefined
-    let generation = 0, attempt = 0, force = false, everCurrent = false
+    let generation = 0, attempt = 0, force = false, everCurrent = false, woken = false
     const relisten = (reason?: ReadFailure): void => { if (everCurrent && events.reconnecting) events.reconnecting(reason); else events.state('loading', reason) }
     const stopCycle = (): void => {
       generation++
@@ -999,10 +1092,19 @@ export class FirestoreReader {
       clearTimeout(renewal)
       stream?.cancel(); stream = null
     }
-    const cancel = (): void => { clearTimeout(retry); stopCycle() }
+    let waker: (() => void) | undefined
+    // Resting (pause): no stream, no retry, nothing told to the watcher until the reader resumes.
+    let held = false
+    const control = {
+      hold: (): void => { held = true; clearTimeout(retry); if (waker) { this.waiting.delete(waker); waker = undefined }; stopCycle() },
+      release: (): void => { if (!held) return; held = false; attempt = 0; void run() }
+    }
+    this.watches.add(control)
+    const cancel = (): void => { clearTimeout(retry); if (waker) this.waiting.delete(waker); this.watches.delete(control); stopCycle() }
     bounded.addEventListener('abort', cancel, { once: true })
     const run = async (): Promise<void> => {
       if (bounded.aborted || this.closed) return
+      if (this.resting) { control.hold(); return }
       stopCycle()
       const cycle = generation
       const active = (): boolean => !bounded.aborted && cycle === generation && !this.closed
@@ -1021,7 +1123,11 @@ export class FirestoreReader {
         relisten(reason)
         if (bounded.aborted || this.closed) return
         const wait = Math.min(30000, 1000 * 2 ** Math.min(attempt++, 5)) * (0.8 + Math.random() * 0.4)
-        retry = setTimeout(() => { void run() }, wait)
+        recordWatch(error, wait, this.where())
+        observe(error as { code?: number; details?: string } | null)
+        const wake = (): void => { if (waker === wake) waker = undefined; this.waiting.delete(wake); clearTimeout(retry); attempt = 0; woken = true; void run() }
+        waker = wake; this.waiting.add(wake)
+        retry = setTimeout(() => { if (waker === wake) waker = undefined; this.waiting.delete(wake); void run() }, wait)
       }
       try {
         relisten()
@@ -1077,6 +1183,9 @@ export class FirestoreReader {
                 if (received.size > maxDocuments) throw new ReadFailure('data')
                 if (dirty) { events.snapshot(new Map(received)); dirty = false }
                 if (!active()) return
+                if (attempt || woken) recordWatch(null, undefined, this.where())
+                woken = false
+                reachability.reached('firestore')
                 attempt = 0; force = false; everCurrent = true; events.state('ready')
               }
             }
@@ -1090,5 +1199,11 @@ export class FirestoreReader {
     if (!bounded.aborted) void run()
     return () => { local.abort(); bounded.removeEventListener('abort', cancel); cancel() }
   }
-  close(): void { if (!this.closed) { this.closed = true; this.abort.abort(); this.client.close() } }
+  close(): void { if (!this.closed) { this.closed = true; live.delete(this); this.waiting.clear(); this.watches.clear(); this.abort.abort(); this.client.close() } }
+  // Which reader, how old, and its gRPC channel's state: numbers and a state name only.
+  private where(): string {
+    let state = 'UNKNOWN'
+    try { state = channelStates[this.client.getChannel().getConnectivityState(false)] ?? 'UNKNOWN' } catch { /* closed */ }
+    return `#${this.serial} age=${Math.round((Date.now() - this.born) / 1000)}s ${state}`
+  }
 }

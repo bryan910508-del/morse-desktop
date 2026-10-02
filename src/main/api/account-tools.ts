@@ -1,19 +1,27 @@
 import type { ReportRequest } from '../../shared/reports'
-import type { AccountPrivacy, BlockTarget, BlockedUser, DataExport, LastSeenPrivacy, SignInSession } from '../../shared/account-tools'
+import { defaultSessionTtlDays, sessionTtlDayOptions, type AccountPrivacy, type BlockTarget, type BlockedUser, type DataExport, type LastSeenPrivacy, type SessionPlatform, type SignInSession, type SignInSessions } from '../../shared/account-tools'
 import { normalizeBackupCode } from '../../shared/auth'
 import type { AccountAuthorization } from '../messaging/outbox'
 import { autoDeleteSecondsValue } from '../../shared/chat-auto-delete'
 import { maxFolderChats, maxFolders, type ChatFolder } from '../../shared/chat-folders'
 import { DocumentWriteFailure, FirestoreReader } from '../network/firestore-rpc'
-import { boolField, childId, documents, numberField, stringField, type FirestoreDocument, type WireObject } from '../network/firestore-values'
+import { boolField, childId, documents, numberField, stringField, timestamp, type FirestoreDocument, type WireObject } from '../network/firestore-values'
 import { callMorseFunction, MorseCallableFailure } from '../network/morse-callable'
-import { generateBackupCode } from '../auth/backup-code'
 import { tr } from '../../shared/i18n'
 
 type Value = { stringValue?: string; timestampValue?: string; mapValue?: { fields?: Record<string, Value> }; arrayValue?: { values?: Value[] } }
 const fieldsOf = (doc: FirestoreDocument): Record<string, Value> => (doc.fields ?? {}) as unknown as Record<string, Value>
 const text = (value: Value | undefined, max = 512): string => typeof value?.stringValue === 'string' ? value.stringValue.slice(0, max) : ''
-const time = (value: Value | undefined): number | null => { const parsed = value?.timestampValue ? Date.parse(value.timestampValue) : NaN; return Number.isFinite(parsed) ? parsed : null }
+// A Firestore timestamp in milliseconds. gRPC reads give {seconds, nanos}; the RFC 3339 string form is read too. Only
+// the string form was read before, so sessions' last activity and blocking times always came out empty.
+const time = (value: Value | undefined): number | null => {
+  const raw = value?.timestampValue as unknown
+  if (raw && typeof raw === 'object') {
+    try { const at = timestamp(raw, ''); return at.seconds * 1000 + Math.floor(at.nanoseconds / 1e6) } catch { return null }
+  }
+  const parsed = typeof raw === 'string' ? Date.parse(raw) : NaN
+  return Number.isFinite(parsed) ? parsed : null
+}
 const lastSegment = (name: string): string => name.slice(name.lastIndexOf('/') + 1)
 
 function folderIds(fields: Record<string, WireObject>, key: string): string[] {
@@ -28,6 +36,24 @@ export function decodeChatFolder(doc: FirestoreDocument, uid: string): ChatFolde
     excludeMuted: boolField(f, 'excludeMuted'), excludeRead: boolField(f, 'excludeRead'), excludeArchived: f.excludeArchived === undefined ? true : boolField(f, 'excludeArchived'),
     includeContacts: boolField(f, 'includeContacts'), includeNonContacts: boolField(f, 'includeNonContacts'), includeGroups: boolField(f, 'includeGroups'),
     includeChannels: boolField(f, 'includeChannels'), order: numberField(f, 'order') }
+}
+
+const platforms: SessionPlatform[] = ['iOS', 'Android', 'macOS', 'Windows']
+const lastActive = (row: SignInSession): number => row.lastSeenAt ?? row.createdAt ?? 0
+// One session document as a row. A document still marked as revoked is left out (A6 §4-4: an old one without a login
+// generation, which the server can only mark). A row written before A6 has no device model or app name: the model
+// comes from its old label without «Morse · », the name from the platform the server verified (A6 §3-3).
+export function decodeSignInSession(doc: FirestoreDocument, currentSessionId: string): SignInSession | null {
+  const f = fieldsOf(doc), id = lastSegment(doc.name)
+  if (f.revokeRequestedAt) return null
+  const verified = text(f.platform, 20), platform = platforms.find(item => item === verified) ?? 'other'
+  return {
+    id, platform, current: id === currentSessionId,
+    deviceModel: text(f.deviceModel, 100).trim() || text(f.deviceLabel, 160).replace(/^Morse\s*·\s*/, '').trim() || tr('알 수 없는 기기'),
+    appName: text(f.appName, 40).trim() || (platform === 'other' ? 'Morse' : `Morse ${platform}`),
+    appVersion: text(f.appVersion, 40).trim(), systemVersion: text(f.systemVersion, 40).trim(),
+    lastSeenAt: time(f.lastSeenAt), createdAt: time(f.createdAt)
+  }
 }
 
 // Account-level tools that the iOS app reaches through callables or its own user documents:
@@ -45,26 +71,8 @@ export class AccountToolsApi {
     return callMorseFunction(this.auth, name, data, AbortSignal.timeout(65000))
   }
 
-  // The callable answers with the boundary it wrote (historyRevokedAt, milliseconds).
-  async clearChatHistory(chatId: string): Promise<{ state: 'done' | 'unconfirmed'; cutoff: number | null }> {
-    try {
-      const result = await this.call('clearMorseChatHistory', { chatId })
-      return { state: 'done', cutoff: typeof result.cutoff === 'number' && Number.isFinite(result.cutoff) ? result.cutoff : null }
-    }
-    catch (error) {
-      if (error instanceof MorseCallableFailure && error.uncertain) return { state: 'unconfirmed', cutoff: null }
-      throw new Error(tr('대화 기록을 삭제하지 못했습니다.'))
-    }
-  }
-  // Telegram's "Delete chat" for both sides of a private chat: the same callable iOS uses
-  // (MorseDirectHistoryRevoke.callableName) revokes the history for everyone in the room.
-  async revokeDirectHistory(chatId: string): Promise<'done' | 'unconfirmed'> {
-    try { await this.call('deleteDirectChatHistory', { chatId }); return 'done' }
-    catch (error) {
-      if (error instanceof MorseCallableFailure && error.uncertain) return 'unconfirmed'
-      throw new Error(tr('대화를 삭제하지 못했습니다.'))
-    }
-  }
+  // Clearing a room's history for everyone (clearMorseChatHistory, deleteDirectChatHistory) is the device queue's:
+  // accounts/history-clears.ts (A4).
   // AppState.getOrCreateMemoChat: the server creates chats/memo_{uid} once.
   async prepareMemoChat(): Promise<string> {
     const chatId = `memo_${this.uid}`
@@ -84,26 +92,37 @@ export class AccountToolsApi {
     try { await this.read((reader, signal) => blocked ? reader.setBlockedUser(this.uid, target, signal) : reader.deleteBlockedUser(this.uid, target.uid, signal)) }
     catch { throw new Error(blocked ? tr('사용자를 차단하지 못했습니다.') : tr('차단을 해제하지 못했습니다.')) }
   }
-  signInSessions(): Promise<SignInSession[]> {
-    return this.read(async (reader, signal) => (await reader.query(`${documents}/users/${this.uid}`, { from: [{ collectionId: 'signInSessions' }] }, signal)).map(doc => {
-      const f = fieldsOf(doc), id = lastSegment(doc.name)
-      return { id, deviceLabel: text(f.deviceLabel, 160) || tr('알 수 없는 기기'), loginProvider: text(f.loginProvider, 40), lastSeenAt: time(f.lastSeenAt), current: id === this.sessionId, revokeRequested: Boolean(f.revokeRequestedAt) }
-    }).sort((a, b) => a.current !== b.current ? (a.current ? -1 : 1) : (b.lastSeenAt ?? 0) - (a.lastSeenAt ?? 0)))
+  // Telegram's account.getAuthorizations: this device first, then the others by last activity, and the account's
+  // «terminate old sessions» period (users/{uid}/signInSettings/main, A6 §3-2).
+  signInSessions(): Promise<SignInSessions> {
+    return this.read(async (reader, signal) => {
+      const [docs, settings] = await Promise.all([
+        reader.query(`${documents}/users/${this.uid}`, { from: [{ collectionId: 'signInSessions' }] }, signal),
+        reader.getDocument(`${documents}/users/${this.uid}/signInSettings/main`, signal)
+      ])
+      const sessions = docs.flatMap(doc => { const row = decodeSignInSession(doc, this.sessionId); return row ? [row] : [] })
+        .sort((a, b) => a.current !== b.current ? (a.current ? -1 : 1) : lastActive(b) - lastActive(a))
+      const days = settings ? numberField(settings.fields ?? {}, 'authorizationTtlDays') : NaN
+      return { sessions, ttlDays: sessionTtlDayOptions.includes(days as typeof sessionTtlDayOptions[number]) ? days : defaultSessionTtlDays }
+    })
   }
-  // revokeMorseDeviceSession: one session, or every session except this device's.
+  // revokeMorseDeviceSession: one other session, or every session except this device's. The server deletes them at
+  // once and refuses their sign-ins everywhere (A6 §3-1); this device signs itself out from settings.
   async revokeSessions(sessionId: string | null): Promise<void> {
     if (sessionId === this.sessionId) throw new Error(tr('이 기기는 설정의 로그아웃으로 로그아웃해 주세요.'))
     try { await this.call('revokeMorseDeviceSession', sessionId ? { sessionId } : { allOthers: true, currentSessionId: this.sessionId }) }
-    catch { throw new Error(tr('기기 로그아웃을 요청하지 못했습니다.')) }
+    catch { throw new Error(tr('세션을 종료하지 못했습니다.')) }
+  }
+  // setMorseSessionTtl: the account's own period for ending idle sessions (Telegram account.setAuthorizationTTL).
+  async setSessionTtl(days: number): Promise<void> {
+    try { await this.call('setMorseSessionTtl', { days }) }
+    catch { throw new Error(tr('기간을 바꾸지 못했습니다.')) }
   }
   // AuthService.updateBackupCode: the current code proves ownership of the new one.
-  async changeBackupCode(currentCode: string): Promise<{ backupCode: string; confirmed: boolean }> {
-    const backupCode = generateBackupCode()
-    try { await this.call('updateBackupCode', { newBackupCode: backupCode, oldBackupCode: normalizeBackupCode(currentCode) }); return { backupCode, confirmed: true } }
-    catch (error) {
-      if (error instanceof MorseCallableFailure && error.uncertain) return { backupCode, confirmed: false }
-      throw new Error(tr('복구 코드를 바꾸지 못했습니다. 현재 복구 코드를 확인해 주세요.'))
-    }
+  // One send of a recovery code change; the change itself — kept, sent again, confirmed — is auth/backup-code-rotation.ts
+  // (A3). A failure is thrown as it came: MorseCallableFailure says whether the server answered.
+  async updateBackupCode(oldCode: string, newCode: string): Promise<void> {
+    await this.call('updateBackupCode', { newBackupCode: newCode, oldBackupCode: normalizeBackupCode(oldCode) })
   }
   lastSeenPrivacy(): Promise<LastSeenPrivacy> {
     return this.read(async (reader, signal) => {

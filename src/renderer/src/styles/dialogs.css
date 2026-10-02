@@ -32,6 +32,9 @@
 .dialog-row-name { flex: 1; min-width: 0; font-size: var(--t-body); font-weight: 600; color: var(--list-title) }
 .dialog-row-kind { flex: none; color: var(--icon-muted) }
 .dialog-row-kind.secret { color: var(--secret) }
+/* MorseChannelBadgeView, and the megaphone beside a channel somebody else runs. */
+.dialog-row-kind.channel { color: var(--accent) }
+.dialog-row-channel { flex: none; padding: 1px 5px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); font-size: var(--t-caption2); font-weight: 600; line-height: 1.3 }
 .dialog-row-time { flex: none; font-size: 12px; color: var(--text-weak) }
 .dialog-row-time.sending { display: inline-flex; color: var(--text-weak) }
 .dialog-row-preview { flex: 1; min-width: 0; font-size: var(--t-caption); color: var(--text-weak) }
@@ -50,6 +53,7 @@
 .dialog-row.active :is(.dialog-row-name, .dialog-row-time, .dialog-row-preview, .dialog-row-kind, .dialog-row-status, .dialog-row-sending) { color: #fff }
 .dialog-row.active .dialog-row-preview.draft b { color: #fff }
 .dialog-row.active .dialog-row-badge { background: #fff; color: var(--accent) }
+.dialog-row.active .dialog-row-channel { background: rgba(255, 255, 255, .22); color: #fff }
 .dialog-row.active .dialog-row-badge.muted { color: var(--swipe-mute) }
 .dialog-row .avatar-archive { background: var(--swipe-mute) }
 .dialogs-empty { display: grid; place-items: center; gap: 12px; padding: 40px 24px; text-align: center; color: var(--text-weak); font-size: var(--t-caption); line-height: 1.55 }

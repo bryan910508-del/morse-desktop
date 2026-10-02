@@ -1,5 +1,5 @@
 import type { FirestoreReader } from '../network/firestore-rpc'
-import { documents, timestamp, type FirestoreDocument } from '../network/firestore-values'
+import { documents, timestamp, type FirestoreDocument, type WireObject } from '../network/firestore-values'
 import { positionMilliseconds, type DialogSummary } from '../../shared/model'
 
 // iOS ChatRoomView typing (Telegram PeerInputActivityManager): chats/{chatId}/watchers/{uid} carries
@@ -24,6 +24,12 @@ export function typingUntil(rows: Iterable<FirestoreDocument>, me: string, now: 
 }
 
 interface Owner { chatId: string; rows: Map<string, FirestoreDocument>; stop: () => void }
+// The limit is a google.protobuf.Int32Value, so it goes as { value }: a bare number fails to serialize before it leaves
+// (B20 — every group room's typing read failed that way from e861f79 on).
+export function typingTarget(chatId: string, peer: string | null): WireObject {
+  return peer ? { documents: { documents: [`${documents}/chats/${chatId}/watchers/${peer}`] } }
+    : { query: { parent: `${documents}/chats/${chatId}`, structuredQuery: { from: [{ collectionId: 'watchers' }], limit: { value: 500 } } } }
+}
 
 export class ChatTyping {
   private owner: Owner | null = null
@@ -36,9 +42,7 @@ export class ChatTyping {
     this.clear()
     const owner: Owner = { chatId, rows: new Map(), stop: () => {} }
     this.owner = owner
-    const target = peer ? { documents: { documents: [`${documents}/chats/${chatId}/watchers/${peer}`] } }
-      : { query: { parent: `${documents}/chats/${chatId}`, structuredQuery: { from: [{ collectionId: 'watchers' }], limit: 500 } } }
-    owner.stop = reader.watch(target, this.signal, {
+    owner.stop = reader.watch(typingTarget(chatId, peer), this.signal, {
       snapshot: rows => { if (this.owner !== owner) return; owner.rows = new Map(rows); this.changed() },
       state: () => {}
     }, 500, 2 * 1024 * 1024)

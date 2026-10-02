@@ -5,7 +5,6 @@ import { tr } from './i18n'
 
 export interface ChannelPostsRequest { requestId: string; channelId: string }
 export interface ChannelPostText {
-  removalEligible: boolean
   pinFlag: import('./channel-post-pins').ChannelPostPinFlag
   own: boolean
   editableText: string | null

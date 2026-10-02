@@ -8,6 +8,7 @@ import { originalPreview, replyOriginal, ReplyContext } from './reply-context'
 import { ExpiredMessages } from './expired-messages'
 import { recordHistoryStep } from '../platform/history-diagnostics'
 import { ReactionUpdates } from './reaction-updates'
+import { PollVotes } from './poll-votes'
 import { tr } from '../../shared/i18n'
 
 export class HistoryReader {
@@ -27,6 +28,8 @@ export class HistoryReader {
   private expiryTimer?: ReturnType<typeof setTimeout>
   private readonly replies: ReplyContext
   private readonly reactionUpdates = new ReactionUpdates()
+  // This account's own answer to each poll on screen; the tally comes with the message, the answer does not.
+  private readonly pollVotes: PollVotes
   // checkTTLs(): what this room has seen expire leaves the server too, since no one else takes it away.
   private readonly expired: ExpiredMessages
   private value: HistorySnapshot = { messages: [], before: null, hasMore: false, revision: 0, status: 'loading', message: '', newerAvailable: false }
@@ -36,6 +39,16 @@ export class HistoryReader {
     // Nothing is taken from the server while the screen is locked or the account has moved on.
     private readonly writable: () => boolean = () => true) {
     this.replies = new ReplyContext(dialog, reader, this.abort.signal, () => this.publish())
+    this.pollVotes = new PollVotes(async messageId => {
+      const doc = await reader.getDocument(`${documents}/chats/${dialog.summary.id}/messages/${messageId}/pollVotes/${dialog.accountUid}`, this.abort.signal)
+      if (!doc) return null
+      const values = (doc.fields.optionIndexes as { arrayValue?: { values?: unknown } } | undefined)?.arrayValue?.values
+      if (!Array.isArray(values)) return []
+      return values.slice(0, 10).flatMap(value => {
+        const index = Number((value as { integerValue?: unknown })?.integerValue ?? Number.NaN)
+        return Number.isSafeInteger(index) && index >= 0 && index < 10 ? [index] : []
+      })
+    }, () => { if (!this.closed && !this.failed) this.publish() })
     this.expired = new ExpiredMessages(
       entry => reader.deleteMessage(entry.doc, dialog.summary.id, entry.id, dialog.accountUid, this.abort.signal),
       // A group takes away only this account's own messages, as iOS does; a 1:1 or the memo space takes any.
@@ -170,7 +183,9 @@ export class HistoryReader {
       const messages = raw.map(doc => {
         const message = decodeMessage(doc, this.dialog)
         const updated = message && !message.encrypted ? this.reactionUpdates.reactions(message.id, doc, this.dialog.accountUid, this.dialog.participantNames) : null
-        return message && updated ? { ...message, reactions: updated } : message
+        const shown = message && updated ? { ...message, reactions: updated } : message
+        // The poll's own answer for this account, read beside the message (poll-votes.ts).
+        return shown?.poll ? { ...shown, poll: { ...shown.poll, mine: this.pollVotes.mine(shown.id) } } : shown
       }).filter((message): message is ChatMessage => message !== null && !this.hidden(message.id)).reverse()
       const name = (id: string): string => `${documents}/chats/${this.dialog.summary.id}/messages/${id}`
       // Loaded rows retain their existing authoritative owner. Only off-window
@@ -184,6 +199,8 @@ export class HistoryReader {
           ? originalPreview(replyOriginal(original, this.dialog), this.dialog) : this.replies.preview(message.replyToId)
         return { ...message, reply }
       })
+      // Ask for the answers of the polls now on screen; an answer that lands publishes again.
+      if (this.value.status === 'ready') this.pollVotes.follow(this.value.messages)
       const nextExpiry = [...raw.map(expiry), this.replies.nextExpiry()].filter((time): time is number => time !== null && time > Date.now()).sort((a, b) => a - b)[0]
       if (nextExpiry) this.expiryTimer = setTimeout(() => this.publish(), Math.min(2147483647, Math.max(1, nextExpiry - Date.now() + 1)))
       // What has already expired is taken from the server as well, so it is gone for the other side too.
@@ -306,7 +323,7 @@ export class HistoryReader {
   private cancelPage(): void { this.epoch++; this.pageAbort?.abort(); this.pageAbort = null; this.paging = null }
   close(): void {
     if (this.closed) return
-    this.closed = true; this.cancelPage(); this.abort.abort(); this.stopTail?.(); this.stopGroups(); this.replies.clear(); this.expired.close(); clearTimeout(this.expiryTimer)
+    this.closed = true; this.cancelPage(); this.abort.abort(); this.stopTail?.(); this.stopGroups(); this.replies.clear(); this.expired.close(); this.pollVotes.close(); clearTimeout(this.expiryTimer)
     this.rows.clear(); this.top = []
   }
 }

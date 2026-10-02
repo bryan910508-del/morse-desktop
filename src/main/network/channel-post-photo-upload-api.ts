@@ -3,6 +3,7 @@ import { storageBucket } from '../media/media-document'
 import { object } from '../../shared/validation'
 import { channelPostPhotoPath } from '../../shared/channel-post-photo'
 import { channelPostPhotoSession, type PostPhotoRecord } from '../storage/channel-post-creation-table'
+import { UploadRefused } from './upload-refused'
 import { tr } from '../../shared/i18n'
 
 const chunkBytes = 256 * 1024
@@ -36,7 +37,7 @@ export async function uploadChannelPostPhoto(auth: ReadCredentials, uid: string,
     const response = await fetch(url, { ...init, body: typeof init.body === 'string' ? init.body : init.body ? new Uint8Array(init.body) : undefined,
       signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store', headers: { ...init.headers,
         Authorization: `Firebase ${credentials.idToken}`, 'X-Firebase-AppCheck': credentials.appCheckToken } })
-    if ([401, 403].includes(response.status)) { await response.body?.cancel(); throw new Error(tr('사진 업로드 권한을 확인하지 못했습니다. 채널 권한과 연결을 확인해 주세요.')) }
+    if ([401, 403].includes(response.status)) { await response.body?.cancel(); throw new UploadRefused(tr('사진 업로드 권한을 확인하지 못했습니다. 채널 권한과 연결을 확인해 주세요.')) }
     return response
   }
   let session = photo.session ? channelPostPhotoSession(photo.session, target.channelId, photo.id) : '', offset = 0
@@ -77,7 +78,7 @@ export async function uploadChannelPostPhoto(auth: ReadCredentials, uid: string,
     if (!final) { await part.body?.cancel(); offset = end; continue }
     const stored = await json(part), custom = object(stored.metadata ?? {})
     if (stored.bucket !== storageBucket || stored.name !== path || stored.contentType !== 'image/jpeg' || Number(stored.size) !== size || stored.md5Hash !== target.md5 ||
-      custom.ownerUid !== uid || custom.postId !== target.postId) throw new Error(tr('올린 사진의 내용이나 소유 정보가 다릅니다. 게시 기록을 닫고 다시 시도해 주세요.'))
+      custom.ownerUid !== uid || custom.postId !== target.postId) throw new UploadRefused(tr('올린 사진의 내용이나 소유 정보가 다릅니다. 게시 기록을 닫고 다시 시도해 주세요.'))
     break
   }
   validate(); signal.throwIfAborted()

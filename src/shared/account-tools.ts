@@ -3,7 +3,22 @@ import { tr } from './i18n'
 
 export interface BlockedUser { uid: string; userId: string; displayName: string; blockedAt: number | null }
 export interface BlockTarget { uid: string; userId: string; displayName: string }
-export interface SignInSession { id: string; deviceLabel: string; loginProvider: string; lastSeenAt: number | null; current: boolean; revokeRequested: boolean }
+// A6 §4: a row of the account's session list as Telegram shows one (tdesktop api_authorizations.cpp: the device model,
+// «app version», the system, the last activity). How the device signed in is not shown, as Telegram does not.
+export type SessionPlatform = 'iOS' | 'Android' | 'macOS' | 'Windows' | 'other'
+export interface SignInSession {
+  id: string; deviceModel: string; appName: string; appVersion: string; systemVersion: string; platform: SessionPlatform
+  lastSeenAt: number | null; createdAt: number | null; current: boolean
+}
+// Telegram's «automatically terminate old sessions» choices (account.setAuthorizationTTL, telegram-refs R-14):
+// 1 week, 3, 6 or 12 months; 6 months when the account has chosen none (A6 §3-2).
+export const sessionTtlDayOptions = [7, 90, 183, 365] as const
+export const defaultSessionTtlDays = 183
+export interface SignInSessions { sessions: SignInSession[]; ttlDays: number }
+export function sessionTtlDays(raw: unknown): number {
+  if (!sessionTtlDayOptions.includes(raw as typeof sessionTtlDayOptions[number])) throw new Error(tr('기간을 다시 선택해 주세요.'))
+  return raw as number
+}
 export type LastSeenMode = 'everybody' | 'contacts' | 'nobody'
 // AccountSecurityView: «비공개 모드» (users.isPrivate) and «자동 회원 탈퇴» (privacy.autoDeleteAccountMonths).
 export interface AccountPrivacy { isPrivate: boolean; autoDeleteMonths: number }
@@ -26,7 +41,7 @@ export function lastSeenPrivacy(raw: unknown): LastSeenPrivacy {
 }
 export function signInSessionId(raw: unknown): string | null {
   if (raw === null) return null
-  if (typeof raw !== 'string' || !/^[A-Za-z0-9_.:-]{1,200}$/.test(raw)) throw new Error(tr('로그아웃할 기기를 다시 선택해 주세요.'))
+  if (typeof raw !== 'string' || !/^[A-Za-z0-9_.:-]{1,200}$/.test(raw)) throw new Error(tr('종료할 세션을 다시 선택해 주세요.'))
   return raw
 }
 

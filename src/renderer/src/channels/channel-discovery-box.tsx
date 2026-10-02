@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, Copy, Film, Heart, Image as ImageIcon, Link, Megaphone, MessageCircle, Search } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ArrowLeft, Copy, Film, Heart, Image as ImageIcon, Link, Lock, Megaphone, MessageCircle, Search } from 'lucide-react'
 import { channelDiscoveryRequest } from '../../../shared/channel-discovery'
-import { publicChannelLinkRequest } from '../../../shared/channel-share'
-import { channelPostLikeRequest } from '../../../shared/channel-post-like'
+import { channelShareURL, publicChannelLinkRequest } from '../../../shared/channel-share'
 import type { PublicChannelPost, PublicChannelPreviewSnapshot } from '../../../shared/channel-public-preview'
 import { desktop, useDesktop } from '../app/store'
 import { controller } from '../app/ui'
@@ -17,13 +16,14 @@ import { Box } from '../ui/layers'
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { CommentsThread } from './channel-comments-panel'
 import { showChannelMedia } from './channel-media-viewer'
+import { channelTypeLabel } from './channel-section'
 import { locale, tr } from '../../../shared/i18n'
 import { subscriberCountText } from '../../../shared/channel-subscriber-count'
+import { enqueueChannelOperation, likeView, useChannelOperations } from './channel-operations'
 
-interface LikeOverride { revision: string; selected: boolean; count: number }
 
-function PreviewPost({ post, likes, likeBusy, onLike, onMedia, onComments, onMenu }: {
-  post: PublicChannelPost; likes: { selected: boolean | null; count: number | null }; likeBusy: boolean
+function PreviewPost({ post, likes, onLike, onMedia, onComments, onMenu }: {
+  post: PublicChannelPost; likes: { selected: boolean | null; count: number | null }
   onLike(): void; onMedia(index: number): void; onComments(): void; onMenu(point: { x: number; y: number }): void
 }) {
   const time = positionTime(post.position)
@@ -36,7 +36,7 @@ function PreviewPost({ post, likes, likeBusy, onLike, onMedia, onComments, onMen
     </div>}
     {post.text && <p className="channel-post-text selectable">{post.text}</p>}
     <div className="channel-post-footer">
-      <button type="button" className={`channel-like${likes.selected ? ' active' : ''}`} disabled={likeBusy || likes.selected === null} aria-pressed={likes.selected === true}
+      <button type="button" className={`channel-like${likes.selected ? ' active' : ''}`} disabled={likes.selected === null} aria-pressed={likes.selected === true}
         aria-label={likes.selected ? tr('좋아요 취소') : tr('좋아요')} onClick={onLike}>
         <Heart size={14} fill={likes.selected ? 'currentColor' : 'none'} />{likes.count !== null && likes.count > 0 ? likes.count.toLocaleString(locale()) : ''}
       </button>
@@ -56,23 +56,23 @@ function ChannelDiscoveryBox({ accountUid, initialLink, close }: { accountUid: s
   const [error, setError] = useState(''), [joining, setJoining] = useState(false), [feedBusy, setFeedBusy] = useState(false)
   const [commentsPost, setCommentsPost] = useState<string | null>(null), [count, setCount] = useState(30)
   const [photoId, setPhotoId] = useState<string | null>(null), [memberId, setMemberId] = useState<string | null>(null)
-  const [likes, setLikes] = useState<Record<string, LikeOverride>>({})
-  const [likeBusy, setLikeBusy] = useState<ReadonlySet<string>>(new Set())
-  const busyRef = useRef(new Set<string>())
   const search = useDesktop(state => { const value = state?.channelDiscovery; return searchId && value?.requestId === searchId ? value : null })
   const preview = useDesktop(state => { const value = state?.channelPublicPreview; return previewId && value?.requestId === previewId ? value : null })
   const previewChannel = preview?.channelId ?? null
+  const operations = useChannelOperations(accountUid, previewChannel)
   const readyChannel = preview?.status === 'ready' && preview.metadata ? preview.channelId : null
   const listed = useDesktop(state => previewChannel ? Boolean(state?.channels?.items.some(item => item.id === previewChannel && item.status === 'ready' && (item.owned || item.subscriptionListed))) : false)
   useEffect(() => retainChannels(accountUid), [accountUid])
   useEffect(() => () => { if (searchId) void window.morse.closeChannelDiscovery(accountUid, searchId).catch(() => {}) }, [accountUid, searchId])
   useEffect(() => {
-    setCommentsPost(null); setLikes({}); setCount(30)
+    setCommentsPost(null); setCount(30)
     return () => { if (previewId) void window.morse.closePublicChannelPreview(accountUid, previewId).catch(() => {}) }
   }, [accountUid, previewId])
+  // A closed channel's posts are its members' alone (canReadChannelPost), so they are not asked for.
+  const publicChannel = preview?.status === 'ready' && preview.metadata?.access === 'public'
   useEffect(() => {
-    if (preview?.status === 'ready' && !preview.postsRequested && previewId) void window.morse.loadPublicPreviewPosts(accountUid, previewId).catch(() => {})
-  }, [preview?.status, preview?.postsRequested, previewId])
+    if (publicChannel && !preview.postsRequested && previewId) void window.morse.loadPublicPreviewPosts(accountUid, previewId).catch(() => {})
+  }, [publicChannel, preview?.postsRequested, previewId])
   // The channel photo, cover and the viewer's own join request are read with the preview.
   useEffect(() => {
     if (!previewId || !readyChannel) return
@@ -116,7 +116,7 @@ function ChannelDiscoveryBox({ accountUid, initialLink, close }: { accountUid: s
     setJoining(true)
     try {
       const result = await trackWrite(window.morse.joinChannel(accountUid, channelId))
-      if (result === 'pending') controller.toast(tr('가입 요청을 보냈습니다. 채널 소유자가 승인하면 참여됩니다.'))
+      if (result === 'pending') controller.toast(tr('가입 요청을 보냈어요. 채널 소유자 승인 후 입장됩니다.'))
       else if (result === 'unconfirmed') controller.toast(tr('가입 결과를 확인하고 있습니다. 잠시 후 채널 목록을 확인해 주세요.'))
       else {
         controller.toast(tr('채널에 가입했습니다.'))
@@ -140,26 +140,13 @@ function ChannelDiscoveryBox({ accountUid, initialLink, close }: { accountUid: s
       .catch(reason => controller.toast(errorText(reason, tr('복사하지 못했습니다.')), 'error'))
   }
   function likeState(post: PublicChannelPost): { selected: boolean | null; count: number | null } {
-    const override = likes[post.id]
-    if (override && override.revision === post.revision && post.likes.selected !== override.selected) return override
-    return { selected: post.likes.selected, count: post.likes.count }
+    return likeView({ selected: post.likes.selected, count: post.likes.count }, operations, post.id)
   }
+  // As on the channel screen: the heart changes at once and the device queue carries the choice (channel-operations.ts).
   function toggleLike(state: PublicChannelPreviewSnapshot, post: PublicChannelPost): void {
-    if (busyRef.current.has(post.id)) return
-    const info = post.likes
-    if (info.status !== 'ready' || info.selected === null || info.count === null) { controller.toast(info.message || tr('좋아요 상태를 확인하고 있습니다.')); return }
-    let request
-    try { request = channelPostLikeRequest({ id: crypto.randomUUID(), requestId: state.requestId, channelId: state.channelId, postId: post.id, revision: post.revision, selected: info.selected, count: info.count, desired: !info.selected }) }
-    catch (reason) { controller.toast(errorText(reason, tr('좋아요를 변경할 수 없습니다.')), 'error'); return }
-    const desired = request.desired, base = info.count
-    const setBusy = (busy: boolean): void => { if (busy) busyRef.current.add(post.id); else busyRef.current.delete(post.id); setLikeBusy(new Set(busyRef.current)) }
-    const revert = (): void => setLikes(value => { const next = { ...value }; delete next[post.id]; return next })
-    setBusy(true)
-    setLikes(value => ({ ...value, [post.id]: { revision: post.revision, selected: desired, count: Math.max(0, base + (desired ? 1 : -1)) } }))
-    void trackWrite(window.morse.setPublicPreviewLike(accountUid, request)).then(result => {
-      if (result.outcome === 'rejected') { revert(); controller.toast(result.message, 'error') }
-      else if (result.outcome === 'uncertain') controller.toast(result.message)
-    }).catch(() => { revert(); controller.toast(tr('좋아요를 변경하지 못했습니다.'), 'error') }).finally(() => setBusy(false))
+    const view = likeState(post)
+    if (post.likes.status !== 'ready' || view.selected === null) { controller.toast(post.likes.message || tr('좋아요 상태를 확인하고 있습니다.')); return }
+    void enqueueChannelOperation(accountUid, { kind: 'post-like', id: crypto.randomUUID(), channelId: state.channelId, postId: post.id, liked: !view.selected })
   }
   function openPostMenu(state: PublicChannelPreviewSnapshot, post: PublicChannelPost, point: { x: number; y: number }): void {
     popupMenu.open(point, [
@@ -193,16 +180,18 @@ function ChannelDiscoveryBox({ accountUid, initialLink, close }: { accountUid: s
             {coverUrl && <div className="channel-preview-cover"><img src={coverUrl} alt="" draggable={false} /></div>}
             <div className="info-cover">
               <Avatar name={metadata.name} url={avatarUrl} size={72} kind="channel" />
-              <h2 className="selectable">{metadata.name}</h2>
-              <span>{metadata.subscriberCount !== null ? subscriberCountText(metadata.subscriberCount) : tr('공개 채널')}{metadata.ownerName ? ` · ${metadata.ownerName}` : ''}</span>
+              <h2 className="selectable">{metadata.name}{metadata.access !== 'public' && <Lock size={15} aria-label={channelTypeLabel(metadata.access)} />}</h2>
+              <span>{metadata.subscriberCount !== null ? subscriberCountText(metadata.subscriberCount) : channelTypeLabel(metadata.access)}</span>
             </div>
             {metadata.description && <p className="channel-preview-description selectable">{metadata.description}</p>}
             {metadata.tags && metadata.tags.length > 0 && <p className="channel-preview-tags">{metadata.tags.map(tag => `#${tag}`).join(' ')}</p>}
-            <div className="channel-preview-actions">
+            {/* Sharing is offered for a public channel, as the channel screen offers it (publicSharing). */}
+            {publicChannel && <div className="channel-preview-actions">
               <button className="button flat" onClick={() => share(preview, 'link')}><Link size={16} />{tr('링크 복사')}</button>
               <button className="button flat" onClick={() => share(preview, 'text')}><Copy size={16} />{tr('공유 문구 복사')}</button>
-            </div>
+            </div>}
             {requested && <p className="box-note">{tr('가입 요청을 보냈습니다. 채널 소유자의 승인을 기다리고 있습니다.')}</p>}
+            {publicChannel && <>
             {preview.linkedPostId && <div className="channel-preview-linked"><span>{tr('공유받은 게시물만 표시하고 있습니다.')}</span>
               <button className="button flat" disabled={feedBusy} onClick={openFeed}>{feedBusy && <Spinner size={14} />}{tr('전체 글 보기')}</button></div>}
             <div className="section-label">{preview.linkedPostId ? tr('공유받은 게시물') : tr('최근 게시물')}</div>
@@ -210,12 +199,13 @@ function ChannelDiscoveryBox({ accountUid, initialLink, close }: { accountUid: s
               : preview.postStatus !== 'ready' ? <div className="empty-state">{preview.postMessage || tr('게시물을 불러오지 못했습니다.')}</div>
                 : !preview.posts.length ? <div className="empty-state">{tr('공개 게시물이 없습니다.')}</div>
                   : <div className="channel-preview-posts">
-                    {preview.posts.slice(0, count).map(post => <PreviewPost key={post.id} post={post} likes={likeState(post)} likeBusy={likeBusy.has(post.id)}
+                    {preview.posts.slice(0, count).map(post => <PreviewPost key={post.id} post={post} likes={likeState(post)}
                       onLike={() => toggleLike(preview, post)} onMedia={index => showChannelMedia(accountUid, preview.channelId, preview.requestId, post, index, metadata.name, 'public-preview')}
                       onComments={() => setCommentsPost(post.id)} onMenu={point => openPostMenu(preview, post, point)} />)}
                     {count < preview.posts.length && <button className="button flat" onClick={() => setCount(value => value + 30)}>{tr('더 보기')}</button>}
                     {preview.postMessage && <p className="box-note">{preview.postMessage}</p>}
                   </div>}
+            </>}
           </div>
       : <>
         <form className="channel-discovery-form" onSubmit={event => { event.preventDefault(); runSearch() }}>
@@ -243,4 +233,11 @@ function ChannelDiscoveryBox({ accountUid, initialLink, close }: { accountUid: s
 
 export function showChannelDiscoveryBox(accountUid: string, initialLink?: string): void {
   controller.showLayer(close => <ChannelDiscoveryBox accountUid={accountUid} initialLink={initialLink} close={close} />)
+}
+
+// A channel of the account's list opens as the channel screen; any other opens the way its share link does, in this
+// preview — a public one with its posts, a closed one with a join request.
+export function openChannelOrPreview(accountUid: string, channelId: string, listed: boolean, postId: string | null = null): void {
+  if (listed) controller.openChannel(channelId, postId)
+  else showChannelDiscoveryBox(accountUid, channelShareURL(channelId, postId ?? undefined))
 }

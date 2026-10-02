@@ -35,7 +35,9 @@ export function TextField({ label, value, onChange, maxLength, placeholder, mult
     {label && <span>{label}</span>}
     {multiline ? <textarea {...common} rows={rows ?? 4} onChange={event => onChange(event.target.value)} />
       : <input {...common} type={type} spellCheck={false} onChange={event => onChange(event.target.value)} />}
-    {counter && maxLength !== undefined && <small className="counter">{[...value].length} / {maxLength}</small>}
+    {/* Counted as the limit is: the field's maxLength and every length check behind it are UTF-16 units, as Telegram's
+        InputField counts a QString — counting characters said «120 / 128» of a title that would take no more. */}
+    {counter && maxLength !== undefined && <small className="counter">{value.length} / {maxLength}</small>}
   </label>
 }
 

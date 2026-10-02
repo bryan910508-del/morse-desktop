@@ -1,10 +1,11 @@
-import { autoDeleteMonthOptions, blockTarget, inviteToken, lastSeenPrivacy, signInSessionId } from '../shared/account-tools'
+import { autoDeleteMonthOptions, blockTarget, inviteToken, lastSeenPrivacy, sessionTtlDays, signInSessionId } from '../shared/account-tools'
 import { roundVideoFacts, roundVideoSendRequest, roundVideoSide } from '../shared/round-video'
 import type { CaptureMedia } from './platform/voice-captures'
 import { recordRendererVoiceStep, recordVoiceStep, voiceErrorCode } from './platform/voice-diagnostics'
 import { chatFolderInput, chatFolderOrder } from '../shared/chat-folders'
 import { autoDeleteSecondsValue, canChangeAutoDelete } from '../shared/chat-auto-delete'
-import { inquiryAttachmentRequest, inquiryAutoDeleteRequest, inquiryForwardRequest, inquiryIdentifier, inquiryReplyTo, inquiryScheduleRequest, inquiryVoiceRequest, inquiryVoiceTarget, inquiryEditRequest, inquiryListRequest, inquiryPhotoRequest, inquiryPinRequest, inquiryReactionRequest, inquirySendRequest, inquiryTargetRequest, inquiryThreadRequest } from '../shared/channel-inquiries'
+import { recordContactStep } from './platform/contact-diagnostics'
+import { inquiryAttachmentRequest, inquiryAutoDeleteRequest, inquiryContactRequest, inquiryForwardRequest, inquiryIdentifier, inquiryReplyTo, inquiryScheduleRequest, inquiryVoiceRequest, inquiryVoiceTarget, inquiryEditRequest, inquiryListRequest, inquiryPhotoRequest, inquiryPinRequest, inquiryReactionRequest, inquirySendRequest, inquiryTargetRequest, inquiryThreadRequest } from '../shared/channel-inquiries'
 import { voiceDraftStorageNavigation, voiceDraftStorageRemoval } from '../shared/voice-draft-storage'
 import { ownStoriesPageRequest } from '../shared/own-stories'
 import { contactPublicStoriesPageRequest } from '../shared/contact-public-stories'
@@ -105,6 +106,7 @@ import { channelIntroductionEdit } from '../shared/channel-introduction'
 import { channelNameEdit } from '../shared/channel-name'
 import { channelPhotoClear } from '../shared/channel-photo-clear'
 import { channelCoverRequest, visibleChannelPhotos } from '../shared/channels'
+import { personalChannelCardRequest, personalChannelLink } from '../shared/personal-channel'
 import { channelPostMediaRequest } from '../shared/channel-post-media'
 import { backgroundPhotoId, backgroundPhotoScope, chatBackgroundEdit, type BackgroundPhotoScope } from '../shared/chat-background'
 import { backgroundStorageRemoval } from '../shared/background-storage'
@@ -118,7 +120,7 @@ import { groupPhotoRequest, groupPhotoClear } from '../shared/group-photo'
 import { visibleDialogPhotos } from '../shared/dialog-avatars'
 import { channelPostsRequest } from '../shared/channel-posts'
 import { groupAnnouncementEdit } from '../shared/group-announcement'
-import { app, BrowserWindow, clipboard, ClipboardItem, dialog, ipcMain, Menu, nativeImage, nativeTheme, powerMonitor, protocol, session, shell, systemPreferences } from 'electron'
+import { app, BrowserWindow, clipboard, ClipboardItem, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, powerMonitor, protocol, session, shell, systemPreferences } from 'electron'
 import { mkdir, readFile, rm, stat as fileStat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -128,6 +130,8 @@ import { SettingsStore } from './platform/settings'
 import { AccountRegistry } from './accounts/registry'
 import { AuthenticationDomain } from './auth/domain'
 import { CredentialVault } from './auth/credential-vault'
+import { BackupCodeRotations } from './auth/backup-code-rotation'
+import { generateBackupCode } from './auth/backup-code'
 import { productionAuthentication } from './auth/production'
 import type { DesktopEvent, DesktopSnapshot } from '../shared/model'
 import { draftText, historyPosition, identifier, preferencePatch } from '../shared/validation'
@@ -176,10 +180,13 @@ import { userpicRoute } from './accounts/userpic-cache'
 import { pinMessageRequest } from '../shared/pinned-messages'
 import { deferredKind, deferredSendRequest } from '../shared/deferred-send'
 import { eventReminderRequest } from '../shared/chat-event'
-import type { AccountAuthState } from '../shared/auth'
+import { normalizeBackupCode, type AccountAuthState } from '../shared/auth'
 import { effectiveUnreadCount as accountUnreadCount } from '../shared/manual-unread'
 import { autoLockValue, passcodeInput, type AppLockSnapshot } from '../shared/app-lock'
 import { language, locale, tr } from '../shared/i18n'
+import { reachability, watchSystemOnline } from './network/reachability'
+import { recordConnectionStep } from './platform/connection-diagnostics'
+import { channelOperationId, channelOperationRequest } from '../shared/channel-operations'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'morse', privileges: {
   standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true
@@ -209,6 +216,7 @@ const accounts = new AccountRegistry(uid => ({
 let settings: SettingsStore
 let authentication: AuthenticationDomain
 let credentialVault: CredentialVault
+let backupRotations: BackupCodeRotations | null = null
 let mainWindow: BrowserWindow | null = null
 let snapshotRevision = 0
 let shutdown: 'running' | 'closing' | 'done' = 'running'
@@ -332,6 +340,7 @@ async function snapshot(): Promise<DesktopSnapshot> {
     platformIntegration: desktopShell.status(),
     accounts: profiles, activeAccountUid: active?.profile.uid ?? null, selfProfile: appLocked ? null : selfProfile, contacts: appLocked ? null : active?.contactsSnapshot() ?? null,
     channels: screenLocked ? null : active?.channels.snapshot ?? null,
+    personalChannels: screenLocked ? null : active?.personalChannels.snapshot ?? null,
     contactSearch: appLocked ? null : active?.contactDiscovery.snapshot ?? null, pendingDirects: appLocked || !active ? [] : active.pendingDirects().map(item => ({ ...item, displayName: active.dialogAvatars.peerName(item.chatId) || item.displayName, avatar: active.dialogAvatars.snapshot(item.chatId) })), participants: appLocked ? null : active?.participants ?? null,
     channelJoinDecisions: screenLocked ? null : active?.channelJoinDecisions.snapshot ?? null,
     channelAccess: screenLocked ? null : active?.channelAccess.snapshot ?? null,
@@ -368,6 +377,8 @@ async function snapshot(): Promise<DesktopSnapshot> {
     discussionJoin: screenLocked ? null : active?.discussionJoin.snapshot ?? null,
     channelInquiries: screenLocked ? null : active?.channelInquiries.snapshot ?? null,
     inquiryRows: appLocked || !active ? [] : active.inquiryRowList(),
+    inquirySends: appLocked || !active ? [] : active.inquirySends.items(),
+    channelOperations: appLocked || !active ? [] : active.channelOperations.items(),
     chatFolders: appLocked || !active ? null : active.chatFolderList(),
     connection: active?.state ?? 'offline', dialogs: appLocked ? [] : dialogs, openDialogs: appLocked || !active ? [] : active.openDialogs(),
     dialogStatus: active?.readStatus ?? 'ready', dialogMessage: active?.readMessage ?? '',
@@ -534,15 +545,21 @@ function registerIPC(): void {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).accountTools.revokeSessions(signInSessionId(sessionId))
   })
+  handle('set-session-ttl', (uid, days) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).accountTools.setSessionTtl(sessionTtlDays(days))
+  })
   // No current code: the one kept on this device for an Apple sign-up (iOS updateBackupCode with SavedAccount.backupCode).
+  // A3: the change is kept on this device with both codes until the server answers, and goes again by itself
+  // (auth/backup-code-rotation.ts). Unconfirmed, the screen shows the new code with the old one to keep (BackupCodeBox).
   handle('change-backup-code', async (uid, code) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     const account = identifier(uid)
+    accounts.requireActive(account)
     const stored = code === null ? await credentialVault.backupCode(account).catch(() => null) : null
     if (code === null ? !stored : typeof code !== 'string' || !code.trim() || code.length > 256) throw new Error(tr('현재 복구 코드를 입력해 주세요.'))
-    const result = await accounts.requireActive(account).accountTools.changeBackupCode(stored ?? String(code))
-    if (stored && result.confirmed) await credentialVault.saveBackupCode(account, result.backupCode).catch(() => {})
-    return result
+    if (!backupRotations) throw new Error(tr('복구 코드를 바꾸지 못했습니다. 다시 시도해 주세요.'))
+    return backupRotations.change(account, code === null ? null : normalizeBackupCode(String(code)))
   })
   handle('has-stored-backup-code', uid => credentialVault.backupCode(identifier(uid)).then(code => code !== null, () => false))
   handle('last-seen-privacy', uid => {
@@ -660,6 +677,23 @@ function registerIPC(): void {
   })
   handle('send-inquiry-attachment', (uid, raw, video) => inquiries(uid).sendAttachment(inquiryAttachmentRequest(raw), videoFacts(video)))
   handle('discard-inquiry-attachment', (uid, id) => { openInquiries(uid)?.discardAttachment(identifier(id)) })
+  // A message of the device's inquiry queue the server refused: sent again under its id, or taken away.
+  handle('retry-inquiry-send', (uid, id) => { inquiries(uid); return accounts.requireActive(identifier(uid)).inquirySends.retry(identifier(id)) })
+  handle('discard-inquiry-send', (uid, id) => { inquiries(uid); return accounts.requireActive(identifier(uid)).inquirySends.discard(identifier(id)) })
+  // A like, new words or a delete of a channel post or comment: handed to the device queue, which sends it until the
+  // server shows it (accounts/channel-operations.ts).
+  handle('enqueue-channel-operation', (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).channelOperations.enqueue(channelOperationRequest(raw))
+  })
+  handle('retry-channel-operation', (uid, id) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).channelOperations.retry(channelOperationId(id))
+  })
+  handle('discard-channel-operation', (uid, id) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).channelOperations.discard(channelOperationId(id))
+  })
   // An inquiry recording holds the same microphone grant a chat recording does (VoiceCaptures): reserved for
   // the open room with the window focused, active while recording, and ended when it is sent or put down.
   handle('begin-inquiry-voice', async (uid, raw) => {
@@ -1596,9 +1630,11 @@ function registerIPC(): void {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     accounts.requireActive(identifier(uid)).spaceNotes.select(spaceNoteSelection(raw))
   })
-  handle('channels-visible', (uid, visible) => {
-    if (typeof visible !== 'boolean' || (screenLocked && visible)) throw new Error(tr('채널 화면과 잠금 상태를 확인해 주세요.'))
-    accounts.requireActive(identifier(uid)).channels.setVisible(visible)
+  // A window shown while the screen still counts as locked (waking from sleep, unlocking the Mac) is taken as asked:
+  // ChannelsSession reads nothing while locked and starts once unlocked. Refusing it left the open channel loading.
+  handle('channels-visible', (uid, visible, resting) => {
+    if (typeof visible !== 'boolean' || typeof resting !== 'boolean' || (visible && resting)) throw new Error(tr('채널 화면과 잠금 상태를 확인해 주세요.'))
+    accounts.requireActive(identifier(uid)).channels.setVisible(visible, resting)
   })
   handle('open-channel-photo-clear', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
@@ -1774,6 +1810,22 @@ function registerIPC(): void {
     session.channels.avatars.setVisible(ids)
     // Channels outside the account's list (the channel tab's discover rail) have their own photos.
     session.channelHome.avatars.setVisible(ids)
+    // So do the channels linked to the profiles on screen and the chooser's rows.
+    session.personalChannels.avatars.setVisible(ids)
+  })
+  // A profile's linked channel is read while the profile is on screen; a locked screen keeps the handle and reads it
+  // when it opens (PersonalChannels.setLocked).
+  handle('open-personal-channel', (uid, raw) => { accounts.requireActive(identifier(uid)).personalChannels.openCard(personalChannelCardRequest(raw)) })
+  handle('close-personal-channel', (uid, requestId) => {
+    if (accounts.active?.profile.uid === identifier(uid)) accounts.active.personalChannels.closeCard(identifier(requestId))
+  })
+  handle('open-owned-channels', (uid, requestId) => { accounts.requireActive(identifier(uid)).personalChannels.openOwned(identifier(requestId)) })
+  handle('close-owned-channels', (uid, requestId) => {
+    if (accounts.active?.profile.uid === identifier(uid)) accounts.active.personalChannels.closeOwned(identifier(requestId))
+  })
+  handle('save-personal-channel', (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).personalChannels.save(personalChannelLink(raw))
   })
   handle('refresh-channels', uid => accounts.requireActive(identifier(uid)).channels.refresh())
   handle('visible-channel-stories', (uid, raw) => {
@@ -1815,10 +1867,6 @@ function registerIPC(): void {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     accounts.requireActive(identifier(uid)).channelHome.open()
   })
-  handle('like-channel-home-post', (uid, channelId, postId) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).channelHome.like(identifier(channelId), identifier(postId))
-  })
   handle('close-channel-home', uid => { if (accounts.active?.profile.uid === identifier(uid)) accounts.active.channelHome.close() })
   handle('refresh-channel-home', uid => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
@@ -1840,10 +1888,6 @@ function registerIPC(): void {
   handle('save-channel-post-pin', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).channels.posts.pinEditor.save(channelPostPinEdit(raw))
-  })
-  handle('save-channel-post-text', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).channels.posts.textEditor.save(channelPostTextEdit(raw))
   })
   // MorseStickerEditor «배경 제거».
   handle('sticker-cutout', async (uid, bytes) => {
@@ -1928,29 +1972,9 @@ function registerIPC(): void {
     return accounts.requireActive(identifier(uid)).openPostLikers(postLikersRequest(raw))
   })
   handle('close-post-likers', (uid, requestId) => { if (accounts.active?.profile.uid === identifier(uid)) accounts.active.closePostLikers(identifier(requestId)) })
-  handle('set-channel-post-like', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).channels.posts.likes.save(channelPostLikeRequest(raw))
-  })
-  handle('remove-public-preview-comment', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).channelPublicPreview.comments.removal.save(channelCommentRemoval(raw))
-  })
-  handle('remove-channel-comment', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).channels.posts.comments.removal.save(channelCommentRemoval(raw))
-  })
   handle('set-post-visibility', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).channels.posts.visibilityEditor.save(postVisibilityRequest(raw))
-  })
-  handle('remove-channel-post', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).channels.posts.removalEditor.save(postRemovalTarget(raw))
-  })
-  handle('set-public-preview-like', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).channelPublicPreview.likes.save(channelPostLikeRequest(raw))
   })
   handle('open-public-preview-comments', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
@@ -2200,6 +2224,17 @@ function registerIPC(): void {
   handle('add-chat-contact', (uid, request) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
     return accounts.requireActive(identifier(uid)).addChatContact(chatContactRequest(request))
+  })
+  handle('delete-inquiry-room', (uid, inquiryId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 삭제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).deleteInquiryRoom(inquiryIdentifier(inquiryId))
+  })
+  handle('add-inquiry-contact', (uid, request) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
+    // Nothing recorded an ask that never reached the save itself, which is where the first report of
+    // «adding does nothing» left off: the request and the check that stopped it are named here.
+    try { recordContactStep('inquiry-ask'); return accounts.requireActive(identifier(uid)).addInquiryContact(inquiryContactRequest(request)) }
+    catch (error) { recordContactStep('inquiry-ask-refused', error instanceof Error ? error.message : ''); throw error }
   })
   handle('close-contact-profile', (uid, requestId) => {
     if (accounts.active?.profile.uid === identifier(uid)) { accounts.active.contacts.closeProfile(identifier(requestId)); accounts.active.presence.setPeers('profile', []) }
@@ -2867,6 +2902,9 @@ async function configureRenderer(): Promise<void> {
       if (rows && rows.status !== 403) return rows
       const discussion = accounts.active?.discussionAvatars.response(channelAvatar, request)
       if (discussion && discussion.status !== 403) return discussion
+      // A profile's linked channel and the personal channel chooser show them too.
+      const personal = accounts.active?.personalChannels.avatars.response(channelAvatar, request)
+      if (personal && personal.status !== 403) return personal
       return accounts.active?.channelHome.avatars.response(channelAvatar, request) ?? new Response(null, { status: 403 })
     }
     if (url.hostname === 'app' && url.pathname.startsWith('/__channel-story/')) {
@@ -3075,12 +3113,18 @@ else {
     touchIdAvailable = process.platform === 'darwin' && systemPreferences.canPromptTouchID()
     refreshScreenLock(); screenLocked = screenIsLocked || appLock.locked
     credentialVault = new CredentialVault(join(app.getPath('userData'), 'credentials'))
+    backupRotations = new BackupCodeRotations({
+      read: uid => credentialVault.pendingRotation(uid), save: (uid, rotation) => credentialVault.savePendingRotation(uid, rotation),
+      clear: uid => credentialVault.clearPendingRotation(uid), kept: uid => credentialVault.backupCode(uid), keep: (uid, code) => credentialVault.saveBackupCode(uid, code)
+    }, uid => { const session = accounts.get(uid); return session ? (old, next) => session.accountTools.updateBackupCode(old, next) : null }, generateBackupCode)
     authentication = new AuthenticationDomain(productionAuthentication(), credentialVault, app.getVersion(), () => { void publish() }, {
         activated: (profile, credentials, makeActive) => {
           accounts.activate(profile, credentials, join(app.getPath('userData'), 'accounts'), makeActive)
           const session = accounts.get(profile.uid)
           session?.selfProfile.setLocked(screenLocked); session?.contacts.setLocked(screenLocked); session?.setLocked(screenLocked)
           if (accounts.active?.profile.uid === profile.uid) void credentialVault.setActive(profile.uid)
+          // A recovery code change left waiting (A3) goes on once the account is connected again.
+          backupRotations?.retryNow(profile.uid)
           checkAutoLock()
           updatePresence()
         },
@@ -3113,6 +3157,10 @@ else {
       if (shutdown !== 'running') return
       systemSuspended = false; refreshScreenLock(); updateScreenProtection(); windowState.recover(); authentication.resume(); updatePresence()
     })
+    // base::NetworkReachability (tdesktop mtproto/mtp_instance.cpp restarts every session on availableChanges): the
+    // system saying the network is there again makes every connection and queue try now (network/reachability.ts).
+    watchSystemOnline(() => net.isOnline(), () => { if (shutdown === 'running') reachability.returned('system') })
+    reachability.subscribe(reason => { recordConnectionStep('network-back', reason); const uid = accounts.active?.profile.uid; if (uid) backupRotations?.retryNow(uid) })
     powerMonitor.on('lock-screen', () => { screenIsLocked = true; updateScreenProtection() })
     powerMonitor.on('unlock-screen', () => { screenIsLocked = false; updateScreenProtection() })
     powerMonitor.on('user-did-resign-active', () => { userInactive = true; updateScreenProtection() })

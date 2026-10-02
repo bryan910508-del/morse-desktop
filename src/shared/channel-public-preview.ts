@@ -3,7 +3,9 @@ import type { ChannelDiscoveryRow } from './channel-discovery'
 import type { MessagePosition } from './model'
 import { tr } from './i18n'
 export interface PublicChannelPreviewRequest { requestId: string; searchRequestId: string; channelId: string; version: string }
-export type PublicChannelMetadata = Omit<ChannelDiscoveryRow, 'matchesName' | 'matchesTag'> & { created: MessagePosition; ownerName: string | null; storedPostCount: number | null }
+// `access`: 'public' when anyone may read the posts; a closed channel ('private', or 'invite' only) is previewed from its
+// link without them, and joining it sends a request (joinMorseChannel answers «pending»).
+export type PublicChannelMetadata = Omit<ChannelDiscoveryRow, 'matchesName' | 'matchesTag'> & { created: MessagePosition; storedPostCount: number | null; access: 'public' | 'private' | 'invite' }
 export interface PublicChannelPost { likes: import('./channel-post-like').ChannelPostLikes; media: import('./channel-post-media').ChannelPostMediaItem[]; id: string; revision: string; text: string; position: MessagePosition; hasMedia: boolean; mediaCount: number; likeCount: number | null; commentCount: number | null }
 export interface PublicChannelPreviewSnapshot extends Omit<PublicChannelPreviewRequest, 'searchRequestId'> {
   photos: PublicChannelPhotosSnapshot | null

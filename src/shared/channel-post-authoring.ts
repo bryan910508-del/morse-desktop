@@ -8,4 +8,7 @@ export interface ChannelPostAuthoring {
   adminVersion: string | null
   discussion: ChannelDiscussionReference
   publicChannel: boolean | null
+  // A1 §3-5: whether this account deletes others' posts and comments here — the owner, or an admin whose
+  // canDeleteMessages is stored true. Its own it always may.
+  moderates: boolean
 }

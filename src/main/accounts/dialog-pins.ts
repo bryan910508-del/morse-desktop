@@ -1,10 +1,16 @@
 import type { DialogPinRequest, DialogPinSnapshot } from '../../shared/dialog-pins'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
 import { DialogPinWriteFailure } from '../network/dialog-pin-write'
-import { boolField, documentVersion, documents, numberField, stringField, type FirestoreDocument } from '../network/firestore-values'
+import { boolField, documentVersion, documents, numberField, stringField, type FirestoreDocument, type WireObject } from '../network/firestore-values'
 import { tr } from '../../shared/i18n'
 
 interface Attempt { request: DialogPinRequest; rank: number; value: DialogPinSnapshot; task: Promise<void> }
+// This account's state document of one chat, read back after a pin whose answer was lost. The limit goes as
+// { value } (google.protobuf.Int32Value): a bare number failed to serialize, so the read never left (B20).
+export function dialogStateQuery(path: string): WireObject {
+  return { from: [{ collectionId: 'dialogStates' }],
+    where: { fieldFilter: { field: { fieldPath: '__name__' }, op: 'EQUAL', value: { referenceValue: path } } }, limit: { value: 2 } }
+}
 function pin(doc: FirestoreDocument) {
   const version = documentVersion(doc), rank = numberField(doc.fields, 'rank'), operation = stringField(doc.fields, 'operationId', 300)
   if (!version || typeof doc.fields.isPinned?.booleanValue !== 'boolean' || !operation || !Number.isFinite(rank) || rank < 0 || rank > 1e12) throw new Error('Invalid pin state')
@@ -90,8 +96,7 @@ export class DialogPins {
     try {
       reader = new FirestoreReader(this.auth)
       const parent = `${documents}/users/${this.uid}`, path = `${parent}/dialogStates/${attempt.request.chatId}`
-      const rows = await reader.query(parent, { from: [{ collectionId: 'dialogStates' }],
-        where: { fieldFilter: { field: { fieldPath: '__name__' }, op: 'EQUAL', value: { referenceValue: path } } }, limit: 2 }, signal)
+      const rows = await reader.query(parent, dialogStateQuery(path), signal)
       signal.throwIfAborted(); this.source(attempt.request, false)
       if (rows.length > 1 || (rows[0] && rows[0].name !== path)) throw new Error('Pin lookup scope mismatch')
       const current = rows[0] ? pin(rows[0]) : null

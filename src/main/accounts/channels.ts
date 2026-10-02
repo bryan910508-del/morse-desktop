@@ -23,6 +23,7 @@ import type { ChannelNameEdit } from '../../shared/channel-name'
 import { ChannelPhotoClearEditor } from './channel-photo-clear'
 import type { ChannelPhotoClear } from '../../shared/channel-photo-clear'
 import { ChannelImages } from './channel-images'
+import { ChannelListUnavailable } from './channel-list-availability'
 import { ChannelPosts } from './channel-posts'
 import type { ChannelsSnapshot, ChannelSummary, ChannelCoverRequest } from '../../shared/channels'
 import { comparePosition } from '../../shared/model'
@@ -34,7 +35,7 @@ import { tr } from '../../shared/i18n'
 type Kind = 'subscriptions' | 'owned'
 interface Batch { ids: string[]; status: ChannelSummary['status']; rows: Map<string, FirestoreDocument>; stop(): void }
 const empty = (id: string, status: ChannelSummary['status'], subscriptionListed: boolean): ChannelSummary => ({
-  id, status, subscriptionListed, publicSharing: null, avatar: null, cover: null, hasAvatar: false, hasCover: false, discussion: null, tags: null, access: null, editableAccess: null, version: null, name: '', description: '', ownerName: '', owned: false, type: 'unknown', subscriberCount: null, postCount: null, updated: null
+  id, status, subscriptionListed, publicSharing: null, avatar: null, cover: null, hasAvatar: false, hasCover: false, discussion: null, tags: null, access: null, editableAccess: null, version: null, name: '', description: '', owned: false, type: 'unknown', subscriberCount: null, postCount: null, updated: null
 })
 // iOS Channel.type: the stored type, else isPublic for channels made before the field existed.
 export function channelDocumentType(f: FirestoreDocument['fields']): ChannelSummary['type'] {
@@ -62,7 +63,7 @@ export function decodeChannelSummary(doc: FirestoreDocument, uid: string, subscr
   return { ...empty(id, 'ready', subscribed), publicSharing, discussion: channelDiscussionReference(doc), access: channelAccessInfo(doc), editableAccess: editableChannelAccess(doc), tags: readChannelTags(f.tags), version, name, description: stringField(f, 'description', 10000),
     hasAvatar: typeof f.photoURL?.stringValue === 'string' && !!f.photoURL.stringValue,
     hasCover: typeof f.coverURL?.stringValue === 'string' && !!f.coverURL.stringValue,
-    ownerName: stringField(mapField(f, 'ownerInfo'), 'displayName', 512), owned: owner === uid, type,
+    owned: owner === uid, type,
     subscriberCount: count('subscriberCount'), postCount: count('postCount'), updated: last ? timestamp(last, id) : created }
 }
 
@@ -92,6 +93,7 @@ export class ChannelsSession {
   private coverRequest: ChannelCoverRequest | null = null
   private reader: FirestoreReader | null = null
   private visible = false
+  private resting = false
   private connected = false
   private locked = false
   private closed = false
@@ -119,7 +121,7 @@ export class ChannelsSession {
     this.posts = new ChannelPosts(uid, auth, id => this.postSource(id), changed)
   }
   get snapshot(): ChannelsSnapshot {
-    if (this.closed || this.locked || !this.visible || !this.connected || this.status !== 'ready') return { status: this.status, message: this.message, items: [], admins: null, subscribers: null, joinRequests: null, membership: null, posts: null }
+    if (this.closed || this.locked || !this.shown || !this.connected || this.status !== 'ready') return { status: this.status, message: this.message, items: [], admins: null, subscribers: null, joinRequests: null, membership: null, posts: null }
     const subscribed = new Set([...this.rows.subscriptions.keys()].map(name => childId(name, `${documents}/users/${this.uid}/subscriptions`)))
     const docs = new Map(this.rows.owned), states = new Map<string, ChannelSummary['status']>()
     for (const batch of this.batches) for (const id of batch.ids) {
@@ -136,7 +138,7 @@ export class ChannelsSession {
     return { status: this.status, message: this.message, items, admins: this.admins.snapshot, subscribers: this.subscribers.snapshot, joinRequests: this.joinRequests.snapshot, membership: this.membership.snapshot, posts: this.posts.snapshot }
   }
   private postSource(id: string): { doc: FirestoreDocument; reader: FirestoreReader } {
-    if (this.closed || this.locked || !this.visible || !this.connected || this.status !== 'ready' || !this.reader) throw new Error('Channel list unavailable')
+    if (this.closed || this.locked || !this.shown || !this.connected || this.status !== 'ready' || !this.reader) throw new ChannelListUnavailable('Channel list unavailable')
     const path = `${documents}/channels/${id}`
     let doc = this.rows.owned.get(path)
     if (!doc && this.rows.subscriptions.has(`${documents}/users/${this.uid}/subscriptions/${id}`)) {
@@ -310,19 +312,32 @@ export class ChannelsSession {
     this.coverRequest = null; this.cover.clear(); this.changed()
   }
   // The list's read state without decoding it (ChannelHome waits for it).
-  get listStatus(): ChannelsSnapshot['status'] { return this.closed || this.locked || !this.visible || !this.connected ? 'idle' : this.status }
-  setVisible(value: boolean): void { if (this.visible !== value) { this.visible = value; this.restart() } }
+  get listStatus(): ChannelsSnapshot['status'] { return this.closed || this.locked || !this.shown || !this.connected ? 'idle' : this.status }
+  // On screen, or in a hidden window with what it showed kept (a resting reader).
+  private get shown(): boolean { return this.visible || Boolean(this.reader?.paused) }
+  // Telegram Desktop keeps a channel's loaded posts and replies while its window is hidden. A channel surface in a
+  // hidden window (`resting`) stops its watches and keeps what they showed, the open channel's posts and comments
+  // included; seen again, they listen anew as after a reconnect and the next snapshots replace it. A surface that was
+  // left stops reading and lets go; a list that failed is read again from the start.
+  setVisible(value: boolean, resting = false): void {
+    const rest = !value && resting
+    if (this.visible === value && this.resting === rest) return
+    this.visible = value; this.resting = rest
+    if (rest && this.reader && !this.closed && !this.locked && this.connected) { this.reader.pause(); this.publish(); return }
+    if (value && this.reader?.paused && this.status !== 'error') { this.reader.resume(); this.publish(); return }
+    this.restart()
+  }
   connection(value: boolean): void { if (this.connected !== value) { this.connected = value; this.restart() } }
   // Leaving the channels tab or a reconnect keeps downloaded channel photos (ChannelImages' retained cache);
-  // a locked screen forgets them.
-  setLocked(value: boolean): void { if (this.locked !== value) { this.locked = value; if (value) this.avatars.clear(); this.restart() } }
+  // a locked screen forgets them, and the comments kept for a pane opened again.
+  setLocked(value: boolean): void { if (this.locked !== value) { this.locked = value; if (value) { this.avatars.clear(); this.posts.comments.forget() }; this.restart() } }
   refresh(): void {
     if (this.closed || this.locked || !this.connected || !this.visible) throw new Error(tr('채널 화면과 계정 연결을 확인해 주세요.'))
     this.restart()
   }
   private clearBatches(): void { for (const batch of this.batches) batch.stop(); this.batches = []; this.batchKey = '' }
   private stop(): void {
-    this.adminAppointment.pause(); this.adminRemoval.pause(); this.adminPermissions.pause(); this.admins.clear(); this.subscribers.clear(); this.joinRequests.clear(); this.membership.clear(); this.photoClear.pause(); this.nameEditor.pause(); this.tagsEditor.pause(); this.introduction.pause(); this.posts.clear(); this.cover.clear(); this.coverRequest = null; this.generation++; this.clearBatches(); this.reader?.close(); this.reader = null
+    this.adminAppointment.pause(); this.adminRemoval.pause(); this.adminPermissions.pause(); this.admins.clear(); this.subscribers.clear(); this.joinRequests.clear(); this.membership.clear(); this.photoClear.pause(); this.nameEditor.pause(); this.tagsEditor.pause(); this.introduction.pause(); this.posts.hold(); this.cover.clear(); this.coverRequest = null; this.generation++; this.clearBatches(); this.reader?.close(); this.reader = null
     this.rows = { subscriptions: new Map(), owned: new Map() }; this.ready = { subscriptions: false, owned: false }
   }
   private restart(): void {
@@ -355,6 +370,9 @@ export class ChannelsSession {
           }
           this.publish()
         },
+        // Telegram keeps the list it has while it reconnects: the rows stay, and the next consistent snapshot
+        // replaces them. Only a watch that was never current, or one the server refuses, empties the list.
+        reconnecting: () => {},
         state: state => {
           if (!active() || state === 'ready') return
           this.ready[kind] = false; this.rows[kind].clear(); this.clearBatches()
@@ -382,9 +400,11 @@ export class ChannelsSession {
           else { batch.status = 'ready'; batch.rows = rows }
           this.publish()
         },
+        // The channels' names, pictures and counts stay on screen while their watch reconnects.
+        reconnecting: () => {},
         state: state => { if (current() && state !== 'ready') { batch.status = state; batch.rows.clear(); this.publish() } }
       }, 10, 2 * 1024 * 1024)
     }
   }
-  close(): void { this.closed = true; void this.posts.visibilityEditor.close(); void this.posts.removalEditor.close(); void this.posts.pinResolutionEditor.close(); void this.posts.extraPinEditor.close(); void this.posts.pinEditor.close(); void this.posts.textEditor.close(); void this.posts.likes.close(); void this.posts.comments.removal.close(); void this.adminAppointment.close(); void this.adminRemoval.close(); void this.adminPermissions.close(); void this.photoClear.close(); void this.nameEditor.close(); void this.tagsEditor.close(); void this.introduction.close(); this.stop(); this.avatars.close(); this.cover.close(); this.status = 'idle'; this.message = '' }
+  close(): void { this.closed = true; void this.posts.visibilityEditor.close(); void this.posts.pinResolutionEditor.close(); void this.posts.extraPinEditor.close(); void this.posts.pinEditor.close(); void this.adminAppointment.close(); void this.adminRemoval.close(); void this.adminPermissions.close(); void this.photoClear.close(); void this.nameEditor.close(); void this.tagsEditor.close(); void this.introduction.close(); this.stop(); this.posts.clear(); this.avatars.close(); this.cover.close(); this.status = 'idle'; this.message = '' }
 }

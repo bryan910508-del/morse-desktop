@@ -2,6 +2,7 @@ import type { ReadCredentials } from './firestore-rpc'
 import { storageBucket } from '../media/media-document'
 import { object } from '../../shared/validation'
 import { maxInquiryPhotoBytes } from '../../shared/channel-inquiries'
+import { UploadRefused } from './upload-refused'
 import { tr } from '../../shared/i18n'
 
 // ChannelInquiryChatView attachment send. iOS MorsePendingMediaUploadManager stores an inquiry
@@ -68,7 +69,7 @@ export async function uploadInquiryAttachment(auth: ReadCredentials, uid: string
     const response = await fetch(url, { ...init, body: typeof init.body === 'string' ? init.body : init.body ? new Uint8Array(init.body) : undefined,
       signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store', headers: { ...init.headers,
         Authorization: `Firebase ${credentials.idToken}`, 'X-Firebase-AppCheck': credentials.appCheckToken } })
-    if ([401, 403].includes(response.status)) { await response.body?.cancel(); throw new Error(tr('{0} 업로드 권한을 확인하지 못했습니다. 이 문의를 다시 열어 주세요.', [noun])) }
+    if ([401, 403].includes(response.status)) { await response.body?.cancel(); throw new UploadRefused(tr('{0} 업로드 권한을 확인하지 못했습니다. 이 문의를 다시 열어 주세요.', [noun])) }
     return response
   }
   // The stored object must be this file, uploaded by this account, before its URL is sent.
@@ -79,7 +80,7 @@ export async function uploadInquiryAttachment(auth: ReadCredentials, uid: string
     const raw = await json(response), custom = object(raw.metadata)
     if (raw.bucket !== storageBucket || raw.name !== path || raw.contentType !== contentType ||
         Number(raw.size) !== photo.bytes.byteLength || raw.md5Hash !== photo.md5 ||
-        custom.ownerUid !== uid || custom.morseSourceSHA256 !== photo.sha256) throw new Error(tr('업로드된 {0}의 내용이나 소유 정보가 다릅니다. 다시 선택해 주세요.', [noun]))
+        custom.ownerUid !== uid || custom.morseSourceSHA256 !== photo.sha256) throw new UploadRefused(tr('업로드된 {0}의 내용이나 소유 정보가 다릅니다. 다시 선택해 주세요.', [noun]))
     const token = typeof raw.downloadTokens === 'string' ? raw.downloadTokens.split(',')[0]?.trim() : ''
     if (!token || token.length > 4096) throw new Error(tr('서버가 {0} URL을 제공하지 않았습니다. 접근 권한은 변경하지 않습니다.', [noun]))
     return `${objectURL}?alt=media&token=${encodeURIComponent(token)}`

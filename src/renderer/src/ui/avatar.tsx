@@ -106,7 +106,7 @@ export function AvatarScope({ accountUid, enabled, surface, children }: PropsWit
   return <Scopes.Provider value={value}><Nearest.Provider value={surface}>{children}</Nearest.Provider></Scopes.Provider>
 }
 
-export function PeerAvatar({ id, name, image, size = 46, kind, priority = false, surface }: { id: string; name: string; image?: GroupPhotoImage | null; size?: number; kind?: AvatarKind; priority?: boolean; surface?: PhotoSurface }) {
+export function PeerAvatar({ id, name, image, size = 46, kind, priority = false, surface, onOpen }: { id: string; name: string; image?: GroupPhotoImage | null; size?: number; kind?: AvatarKind; priority?: boolean; surface?: PhotoSurface; onOpen?: () => void }) {
   const element = useRef<HTMLSpanElement>(null), scopes = useContext(Scopes), nearest = useContext(Nearest)
   const observe = scopes[surface ?? nearest ?? 'dialogs'] ?? null
   const eligible = Boolean(image)
@@ -115,5 +115,5 @@ export function PeerAvatar({ id, name, image, size = 46, kind, priority = false,
     if (!node || !eligible || !observe) return
     return observe(node, id, () => {}, priority)
   }, [observe, id, eligible, priority])
-  return <Avatar ref={element} name={name} url={image?.status === 'ready' ? image.url : null} size={size} kind={kind} />
+  return <Avatar ref={element} name={name} url={image?.status === 'ready' ? image.url : null} size={size} kind={kind} onOpen={onOpen} />
 }

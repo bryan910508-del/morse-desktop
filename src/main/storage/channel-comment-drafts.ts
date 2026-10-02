@@ -1,4 +1,3 @@
-import { pendingCommentCreation } from './channel-comment-creation-table'
 import type Database from 'better-sqlite3-multiple-ciphers'
 import { commentDraftParent, commentReplyTarget, sameCommentReply, type CommentDraftParent, commentDraftTarget, commentDraftText, commentDraftWrite, type CommentDraftRecord, type CommentDraftTarget, type CommentDraftWrite } from '../../shared/channel-comment-drafts'
 import { backgroundPhotoId } from '../../shared/chat-background'
@@ -19,8 +18,7 @@ export function executeCommentDraft(db: Database.Database, command: CommentDraft
   }
   return db.transaction(() => {
     const request = command.kind === 'comment-draft-parent' ? commentDraftParent(command.request) : commentDraftWrite(command.request), target = { channelId: request.channelId, postId: request.postId }, current = read(db, target)
-    const creation = pendingCommentCreation(db)
-    if (creation?.channelId === target.channelId && creation.postId === target.postId) return conflict()
+    // A comment on its way holds its own words (channel-comment-creation-table.ts), so the draft stays open for the next.
     const parent = 'parent' in request ? request.parent : current.parent, text = 'text' in request ? request.text : current.text
     if (current.revision === request.revision) { if (current.text === text && sameCommentReply(current.parent, parent)) return current; return conflict() }
     if (current.revision !== request.expected || db.prepare('SELECT 1 FROM channel_comment_drafts WHERE revision=?').get(request.revision)) return conflict()

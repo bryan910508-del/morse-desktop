@@ -137,6 +137,9 @@ export interface DialogSummary {
   muted: boolean
   archived: boolean
   discussion?: boolean
+  // A channel discussion room (A1 §3-6): whether this account — the channel's owner or a canDeleteMessages admin —
+  // deletes others' messages there for everyone. Others delete only their own.
+  moderates?: boolean
   // chats/{id}.channelId of a channel discussion group: the chat keeps only the picture address the
   // server copied when it was created, so the row falls back to the channel's own picture.
   channelId?: string
@@ -305,6 +308,10 @@ export interface DesktopSnapshot {
   channelInquiries: import('./channel-inquiries').ChannelInquiriesSnapshot | null
   // 1:1 channel inquiry rooms shown in the chat list beside the chats.
   inquiryRows: import('./channel-inquiries').InquiryRow[]
+  // What this account has sent into inquiry rooms and the server has not accepted yet, kept on the device.
+  inquirySends: import('./channel-inquiries').InquirySendItem[]
+  // Likes, new words and deletes of channel posts and comments still on their way or refused (channel-operations.ts).
+  channelOperations: import('./channel-operations').ChannelOperationItem[]
   // The active account's chat folders as they are on the server; null until they are known.
   chatFolders: import('./chat-folders').ChatFolder[] | null
   notifications: NotificationStatus
@@ -312,6 +319,8 @@ export interface DesktopSnapshot {
   selfProfile: ProfileSnapshot | null
   contacts: ContactsSnapshot | null
   channels: import('./channels').ChannelsSnapshot | null
+  // The channels linked to the profiles on screen and the chooser's list of this account's channels.
+  personalChannels: import('./personal-channel').PersonalChannelsSnapshot | null
   participants: ParticipantsSnapshot | null
   contactSearch: ContactSearchSnapshot | null
   pendingDirects: PendingDirect[]
@@ -419,8 +428,9 @@ export interface DesktopBridge {
   prepareMemoChat(accountUid: string): Promise<string>
   blockedUsers(accountUid: string): Promise<import('./account-tools').BlockedUser[]>
   setBlockedUser(accountUid: string, target: import('./account-tools').BlockTarget, blocked: boolean): Promise<void>
-  signInSessions(accountUid: string): Promise<import('./account-tools').SignInSession[]>
+  signInSessions(accountUid: string): Promise<import('./account-tools').SignInSessions>
   revokeSignInSessions(accountUid: string, sessionId: string | null): Promise<void>
+  setSessionTtl(accountUid: string, days: number): Promise<void>
   // A null current code uses the code kept on this device for an Apple sign-up.
   changeBackupCode(accountUid: string, currentCode: string | null): Promise<{ backupCode: string; confirmed: boolean }>
   hasStoredBackupCode(accountUid: string): Promise<boolean>
@@ -447,14 +457,20 @@ export interface DesktopBridge {
   closeInquiryList(accountUid: string, requestId: string): Promise<void>
   openInquiryThread(accountUid: string, request: import('./channel-inquiries').InquiryThreadRequest): Promise<void>
   closeInquiryThread(accountUid: string, requestId: string): Promise<void>
-  sendInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryTextRequest & { replyToId?: string }): Promise<'sent' | 'unconfirmed'>
+  sendInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryTextRequest & { replyToId?: string }): Promise<'queued'>
   pickInquiryPhoto(accountUid: string): Promise<Uint8Array | null>
-  sendInquiryPhoto(accountUid: string, request: import('./channel-inquiries').InquiryPhotoRequest, bytes: Uint8Array): Promise<'sent' | 'unconfirmed'>
+  sendInquiryPhoto(accountUid: string, request: import('./channel-inquiries').InquiryPhotoRequest, bytes: Uint8Array): Promise<'queued'>
   pickInquiryAttachment(accountUid: string, request: import('./channel-inquiries').InquiryThreadRequest, mode: import('./channel-inquiries').InquiryAttachmentMode): Promise<import('./uploads').AttachmentDraft | null>
-  sendInquiryAttachment(accountUid: string, request: import('./channel-inquiries').InquiryAttachmentRequest, video: import('./uploads').VideoFacts | null): Promise<'sent' | 'unconfirmed'>
+  sendInquiryAttachment(accountUid: string, request: import('./channel-inquiries').InquiryAttachmentRequest, video: import('./uploads').VideoFacts | null): Promise<'queued'>
   discardInquiryAttachment(accountUid: string, id: string): Promise<void>
+  // A message of the device's inquiry queue: sent again once the server refused it, or taken away.
+  retryInquirySend(accountUid: string, id: string): Promise<void>
+  enqueueChannelOperation(accountUid: string, request: import('./channel-operations').ChannelOperationRequest): Promise<'queued'>
+  retryChannelOperation(accountUid: string, id: string): Promise<void>
+  discardChannelOperation(accountUid: string, id: string): Promise<void>
+  discardInquirySend(accountUid: string, id: string): Promise<void>
   finishInquiryVoice(accountUid: string, target: import('./channel-inquiries').InquiryVoiceTarget, bytes: Uint8Array): Promise<import('./voice-capture').VoiceCapturePreview>
-  sendInquiryVoice(accountUid: string, request: import('./channel-inquiries').InquiryVoiceRequest): Promise<'sent' | 'unconfirmed'>
+  sendInquiryVoice(accountUid: string, request: import('./channel-inquiries').InquiryVoiceRequest): Promise<'queued'>
   beginInquiryVoice(accountUid: string, target: import('./channel-inquiries').InquiryVoiceTarget): Promise<import('./voice-capture').VoiceCaptureGrant>
   // A recording step for voice-check.log: a fixed step name and, for a failure, the error's name only.
   recordVoiceStep(step: { surface: 'chat' | 'inquiry'; step: string; name?: string }): void
@@ -462,7 +478,7 @@ export interface DesktopBridge {
   beginRoundVideo(accountUid: string, target: import('./voice-capture').VoiceCaptureTarget): Promise<import('./voice-capture').VoiceCaptureGrant>
   sendRoundVideo(accountUid: string, request: import('./round-video').RoundVideoSendRequest, bytes: Uint8Array): Promise<void>
   beginInquiryRoundVideo(accountUid: string, target: import('./channel-inquiries').InquiryVoiceTarget): Promise<import('./voice-capture').VoiceCaptureGrant>
-  sendInquiryRoundVideo(accountUid: string, request: import('./channel-inquiries').InquiryVoiceTarget & { messageId: string; duration: number; thumb: string; replyToId?: string }, bytes: Uint8Array): Promise<'sent' | 'unconfirmed'>
+  sendInquiryRoundVideo(accountUid: string, request: import('./channel-inquiries').InquiryVoiceTarget & { messageId: string; duration: number; thumb: string; replyToId?: string }, bytes: Uint8Array): Promise<'queued'>
   activateInquiryVoice(accountUid: string, target: import('./channel-inquiries').InquiryVoiceTarget): Promise<import('./voice-capture').VoiceCaptureGrant>
   editInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryTextRequest): Promise<void>
   deleteInquiryMessage(accountUid: string, request: import('./channel-inquiries').InquiryTargetRequest): Promise<void>
@@ -485,8 +501,8 @@ export interface DesktopBridge {
   openRecaptchaTerms(which: 'privacy' | 'terms'): Promise<void>
   showProfilePhoto(accountUid: string, peerUid: string, index: number): Promise<{ url: string } | null>
   closeProfilePhotos(accountUid: string): Promise<void>
-  sendInquirySticker(accountUid: string, request: import('./channel-inquiries').InquiryTargetRequest, stickerId: string): Promise<'sent' | 'unconfirmed'>
-  sendInquiryPackSticker(accountUid: string, request: import('./channel-inquiries').InquiryTargetRequest, setId: string, itemId: string): Promise<'sent' | 'unconfirmed'>
+  sendInquirySticker(accountUid: string, request: import('./channel-inquiries').InquiryTargetRequest, stickerId: string): Promise<'queued'>
+  sendInquiryPackSticker(accountUid: string, request: import('./channel-inquiries').InquiryTargetRequest, setId: string, itemId: string): Promise<'queued'>
   clearInquiryHistory(accountUid: string, request: import('./channel-inquiries').InquiryThreadRequest): Promise<'done' | 'unconfirmed'>
   refreshDiscussionJoin(accountUid: string): Promise<void>
   prepareDiscussionJoin(accountUid: string, request: DiscussionJoinRequest): Promise<void>
@@ -510,6 +526,8 @@ export interface DesktopBridge {
   participantContact(accountUid: string, request: ParticipantContactRequest): Promise<string>
   addParticipantContact(accountUid: string, request: ParticipantAddRequest): Promise<ParticipantAddResult>
   addChatContact(accountUid: string, request: import('./participants').ChatContactRequest): Promise<import('./participants').ParticipantAddResult>
+  addInquiryContact(accountUid: string, request: import('./channel-inquiries').InquiryContactRequest): Promise<import('./participants').ParticipantAddResult>
+  deleteInquiryRoom(accountUid: string, inquiryId: string): Promise<'done' | 'unconfirmed'>
   saveGroupName(accountUid: string, request: GroupNameEdit): Promise<GroupNameResult>
   refreshChannelJoinDecisions(accountUid: string): Promise<void>
   prepareChannelJoinDecision(accountUid: string, request: ChannelJoinDecisionRequest): Promise<void>
@@ -656,7 +674,8 @@ export interface DesktopBridge {
   openSpaceNotes(accountUid: string, requestId: string): Promise<void>
   closeSpaceNotes(accountUid: string, requestId: string): Promise<void>
   selectSpaceNote(accountUid: string, request: import('./space-notes').SpaceNoteSelection): Promise<void>
-  setChannelsVisible(accountUid: string, visible: boolean): Promise<void>
+  // resting: not seen only because the window is hidden, with a channel surface open in it (its reads rest, what they showed stays).
+  setChannelsVisible(accountUid: string, visible: boolean, resting?: boolean): Promise<void>
   refreshChannels(accountUid: string): Promise<void>
   openChannelPhotoClear(accountUid: string, request: import('./channel-photo-clear').ChannelPhotoClear): Promise<void>
   clearChannelPhoto(accountUid: string, request: import('./channel-photo-clear').ChannelPhotoClear): Promise<import('./channel-photo-clear').ChannelPhotoClearResult>
@@ -700,16 +719,15 @@ export interface DesktopBridge {
   showChannelCover(accountUid: string, request: import('./channels').ChannelCoverRequest): Promise<void>
   hideChannelCover(accountUid: string, requestId: string): Promise<void>
   setVisibleChannelPhotos(accountUid: string, ids: string[]): Promise<void>
+  openPersonalChannel(accountUid: string, request: import('./personal-channel').PersonalChannelCardRequest): Promise<void>
+  closePersonalChannel(accountUid: string, requestId: string): Promise<void>
+  openOwnedChannels(accountUid: string, requestId: string): Promise<void>
+  closeOwnedChannels(accountUid: string, requestId: string): Promise<void>
+  savePersonalChannel(accountUid: string, link: import('./personal-channel').PersonalChannelLink): Promise<'done' | 'unconfirmed'>
   resolveChannelPostPin(accountUid: string, request: import('./channel-post-pin-resolution').ChannelPostPinResolution): Promise<import('./channel-post-pin-resolution').ChannelPostPinResolutionResult>
   clearChannelPostExtraPin(accountUid: string, request: import('./channel-post-extra-pin').ChannelPostExtraPinRequest): Promise<import('./channel-post-extra-pin').ChannelPostExtraPinResult>
   saveChannelPostPin(accountUid: string, request: import('./channel-post-pin-edit').ChannelPostPinEdit): Promise<import('./channel-post-pin-edit').ChannelPostPinResult>
-  saveChannelPostText(accountUid: string, request: import('./channel-post-text-edit').ChannelPostTextEdit): Promise<import('./channel-post-text-edit').ChannelPostTextResult>
-  setChannelPostLike(accountUid: string, request: import('./channel-post-like').ChannelPostLikeRequest): Promise<import('./channel-post-like').ChannelPostLikeResult>
-  removePublicPreviewComment(accountUid: string, request: import('./channel-comment-removal').ChannelCommentRemoval): Promise<import('./channel-comment-removal').ChannelCommentRemovalResult>
-  removeChannelComment(accountUid: string, request: import('./channel-comment-removal').ChannelCommentRemoval): Promise<import('./channel-comment-removal').ChannelCommentRemovalResult>
   setPostVisibility(accountUid: string, request: import('./channel-post-visibility').PostVisibilityRequest): Promise<import('./channel-post-visibility').PostVisibilityResult>
-  removeChannelPost(accountUid: string, request: import('./channel-post-removal').PostRemovalTarget): Promise<import('./channel-post-removal').PostRemovalResult>
-  setPublicPreviewLike(accountUid: string, request: import('./channel-post-like').ChannelPostLikeRequest): Promise<import('./channel-post-like').ChannelPostLikeResult>
   openPublicPreviewComments(accountUid: string, request: import('./channel-comments').ChannelCommentsRequest): Promise<void>
   closePublicPreviewComments(accountUid: string, selectionId: string): Promise<void>
   openPublicPreviewMedia(accountUid: string, request: import('./channel-post-media').ChannelPostMediaRequest): Promise<void>
@@ -726,7 +744,6 @@ export interface DesktopBridge {
   installAppUpdate(): Promise<void>
   closeChannelHome(accountUid: string): Promise<void>
   refreshChannelHome(accountUid: string): Promise<void>
-  likeChannelHomePost(accountUid: string, channelId: string, postId: string): Promise<void>
   setVisibleChannelStories(accountUid: string, channelIds: string[]): Promise<void>
   channelStoryMedia(accountUid: string, channelId: string, storyId: string): Promise<import('./channel-stories').ChannelStoryMedia>
   markChannelStoryViewed(accountUid: string, channelId: string, storyId: string): Promise<void>
@@ -869,6 +886,14 @@ export interface DesktopBridge {
 
 export function comparePosition(a: MessagePosition, b: MessagePosition): number {
   return a.seconds - b.seconds || a.nanoseconds - b.nanoseconds || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+}
+// A history boundary (chats/{id}.historyRevokedAt, a «delete for me» moment, a subscription time) names no message:
+// a message at or before its instant is gone, as the server deletes `createdAt <= boundary` (morse-message-identity.js
+// isHistoryRevoked; A4 contract §3-3). Only the time is compared — by id, a message at exactly the boundary sorted
+// after it and stayed on this device alone, and the A4 boundary is exactly the last message's own time.
+export function withinCutoff(position: MessagePosition, cutoff: MessagePosition | null | undefined): boolean {
+  if (!cutoff) return false
+  return (position.seconds - cutoff.seconds || position.nanoseconds - cutoff.nanoseconds) <= 0
 }
 export function positionAt(milliseconds: number, id: string): MessagePosition {
   const seconds = Math.floor(milliseconds / 1000)

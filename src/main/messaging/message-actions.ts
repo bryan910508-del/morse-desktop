@@ -8,6 +8,7 @@ import { MessageMutationFailure, NotEmitted } from '../network/contracts'
 import { selectionDigest, setMessageReaction } from '../network/message-reaction-api'
 import { setMessagePollVote } from '../network/attachment-api'
 import type { AccountAuthorization } from './outbox'
+import { recordRetry } from '../platform/connection-diagnostics'
 import { tr } from '../../shared/i18n'
 
 interface Context { ready: boolean; reader: FirestoreReader | null; dialogs: Map<string, ReadDialog> }
@@ -26,16 +27,16 @@ export function canApplyAction(request: Pick<MessageActionRequest, 'kind'>, mess
   return true
 }
 
-// A reaction may be sent again under its own clientRevision: the server applies one revision once and answers the
-// repeat with alreadyApplied (firebase/functions/morse-release-authority.js:296). So a reaction whose outcome the
-// connection swallowed is worth sending again rather than dropping on the account, which is what iOS
-// (MorsePendingReactionSync, 1s doubling) and Android do. An edit or a delete is a conditional write on one version
-// and is never sent again on its own.
-// The count is per connected stretch — pause() clears it — because an account that loses its connection stops the
-// queue altogether and resumes it on reconnect. Failing this many times while connected is a fault worth telling
-// the account about, so the attempt after the last one is reported the way it was before.
-export const reactionRetryLimit = 8
-export function reactionRetryDelay(attempt: number): number { return Math.min(30000, 1000 * 2 ** (attempt - 1)) }
+// A reaction and a vote may be sent again under their own clientRevision: the server applies one revision once and
+// answers the repeat with alreadyApplied (firebase/functions/morse-release-authority.js:296 for a reaction, :676 for a
+// vote). So one the connection could not settle goes again after a growing wait of up to a minute, for as long as it
+// is unsettled, instead of stopping on the account (user decision 2026-09-29; Telegram resends under the same
+// random_id, iOS MorsePendingReactionSync doubles from a second). Only the server's own refusal ends it.
+// An edit or a delete is a conditional write on one version and is never sent again on its own.
+// The wait starts again from a second after each reconnection — pause() clears it — as MTProto resends what it holds
+// as soon as the connection is back.
+export function reactionRetryDelay(attempt: number): number { return Math.min(60000, 1000 * 2 ** (attempt - 1)) }
+const resendable = (action: Pick<StoredMessageAction, 'kind'>): boolean => action.kind === 'reaction' || action.kind === 'poll-vote'
 
 export class MessageActions {
   private closed = false
@@ -110,6 +111,8 @@ export class MessageActions {
     this.waking = setTimeout(() => { this.waking = null; this.kick() }, Math.max(50, Math.min(...due) - now))
   }
   resume(): void { void this.publish(); this.kick() }
+  // The network is back (reachability.ts): a reaction or a vote waiting out its wait goes now, and its waits start over.
+  retryNow(): void { this.retries.clear(); this.unschedule(); this.kick() }
   private kick(): void {
     if (!this.active(this.generation.signal)) return
     if (this.task) { this.rerun = true; return }
@@ -191,7 +194,11 @@ export class MessageActions {
       this.busy = action.id; this.checked.add(action.id); void this.publish()
       if (!this.context().dialogs.has(action.chatId)) { await this.store({ kind: 'action-finish', id: action.id }); continue }
       if (action.state === 'uncertain') {
-        try { await this.resolve(action, signal) } catch { /* keep the durable uncertainty */ }
+        // Left unsettled by an app that ended mid-send (or by an earlier version): read once. A reaction or a vote the
+        // server does not show as applied goes back into the queue under its revision.
+        try {
+          if (await this.resolve(action, signal) !== 'done' && resendable(action) && this.active(signal)) await this.store({ kind: 'action-state', id: action.id, state: 'queued', reason: '' })
+        } catch (error) { recordRetry(action.kind, 'check', error) /* keep the durable uncertainty */ }
         continue
       }
       let attempted = false
@@ -199,10 +206,20 @@ export class MessageActions {
         const doc = await this.exact(action, signal), dialog = this.context().dialogs.get(action.chatId)
         const message = doc && dialog ? decodeMessage(doc, dialog) : null
         if (!doc || !message) { await this.store({ kind: 'action-finish', id: action.id }); continue }
-        if (!dialog || documentVersion(doc) !== action.version || !canApplyAction(action, message, dialog)) throw new MessageMutationFailure(tr('메시지가 변경되었습니다. 최신 메시지에서 다시 선택해 주세요.'), true)
+        // A vote is the one action that does not need the message to have stood still: the tally lives on
+        // the message, so anyone else voting moves its version, and an edit or a delete is a conditional
+        // write where a vote is not — the server applies one clientRevision once
+        // (morse-release-authority.js keeps it in pollVotes/{uid}). Requiring the version here killed a
+        // vote with «메시지가 변경되었습니다» whenever someone else answered first, which in a busy poll
+        // is most of the time.
+        const moved = documentVersion(doc) !== action.version
+        if (!dialog || (moved && action.kind !== 'poll-vote') || !canApplyAction(action, message, dialog)) throw new MessageMutationFailure(tr('메시지가 변경되었습니다. 최신 메시지에서 다시 선택해 주세요.'), true)
         if (action.kind === 'delete' && await this.exact(action, signal, 'revokedForAll')) throw new MessageMutationFailure(tr('이미 삭제 기록이 있는 메시지입니다. 대화를 새로 불러와 주세요.'), true)
         if (!this.active(signal)) return
-        if (!await this.store<boolean>({ kind: 'action-claim', id: action.id })) continue
+        // An edit or a delete is marked as possibly sent before it goes, so one an ended app left mid-send is checked
+        // rather than repeated. A reaction or a vote needs no such mark — whatever became of it, it goes again under
+        // its revision — so it stays 'queued' and is never shown as unsettled before anything was sent.
+        if (!resendable(action) && !await this.store<boolean>({ kind: 'action-claim', id: action.id })) continue
         if (!this.active(signal)) return
         const reader = this.context().reader!
         attempted = true
@@ -214,8 +231,13 @@ export class MessageActions {
         this.retries.delete(action.id)
         await this.store({ kind: 'action-finish', id: action.id })
       } catch (error) {
+        // A reaction or a vote interrupted by the connection going is still 'queued' and goes when it is back.
         if (!this.active(signal)) return
-        if ((action.kind === 'reaction' || action.kind === 'poll-vote') && !(error instanceof MessageMutationFailure && error.definitive) && await this.retried(action, attempted, signal)) continue
+        if (resendable(action) && !(error instanceof MessageMutationFailure && error.definitive)) {
+          // NotEmitted: the request never left (morse-callable.ts 'not-sent'), so there is nothing to look for.
+          await this.retried(action, attempted && !(error instanceof NotEmitted), signal, attempted ? 'send' : 'read', error); continue
+        }
+        recordRetry(action.kind, attempted ? 'send' : 'read', error)
         if (!attempted || error instanceof NotEmitted || (error instanceof MessageMutationFailure && error.definitive)) {
           await this.store({ kind: 'action-state', id: action.id, state: 'failed', reason: error instanceof MessageMutationFailure ? error.message : tr('요청을 보내지 못했습니다. 연결과 최신 메시지를 확인해 주세요.') })
         } else {
@@ -226,23 +248,21 @@ export class MessageActions {
       this.busy = null; void this.publish()
     }
   }
-  // A reaction the connection could not settle goes back in the queue instead of onto the account: the same
-  // selection under the same revision, after a growing wait. True when this attempt is dealt with here — the row is
-  // waiting for its next try, or the receipt proved it had applied after all.
-  private async retried(action: StoredMessageAction, attempted: boolean, signal: AbortSignal): Promise<boolean> {
+  // A reaction or a vote the connection could not settle goes back in the queue instead of onto the account: the same
+  // selection under the same revision, after a growing wait.
+  private async retried(action: StoredMessageAction, emitted: boolean, signal: AbortSignal, stage: string, failure: unknown): Promise<void> {
     // It may have applied after all. The receipt says so for certain, and then there is nothing left to send.
-    if (attempted) {
-      try { if (await this.resolve(action, signal) === 'done') { this.retries.delete(action.id); return true } }
-      catch { /* the canonical read may be unavailable too; treat it as one more unsettled attempt */ }
-      if (!this.active(signal)) return false
+    if (emitted) {
+      try { if (await this.resolve(action, signal) === 'done') { this.retries.delete(action.id); this.busy = null; void this.publish(); return } }
+      catch (error) { recordRetry(action.kind, 'check', error) /* the canonical read may be unavailable too; treat it as one more unsettled attempt */ }
+      if (!this.active(signal)) return
     }
     const attempt = (this.retries.get(action.id)?.attempt ?? 0) + 1
-    if (attempt > reactionRetryLimit) { this.retries.delete(action.id); return false }
+    recordRetry(action.kind, stage, failure, reactionRetryDelay(attempt))
     this.retries.set(action.id, { attempt, at: Date.now() + reactionRetryDelay(attempt) })
     // 'queued' and no reason: the account is told nothing while the app is still trying, as on iOS and Android.
     await this.store({ kind: 'action-state', id: action.id, state: 'queued', reason: '' })
     this.busy = null; void this.publish()
-    return true
   }
   async inspect(chatId: string, id: string): Promise<void> {
     if (this.task || !this.active(this.generation.signal)) throw new Error(tr('진행 중인 작업이 끝난 뒤 다시 시도해 주세요.'))
@@ -252,13 +272,9 @@ export class MessageActions {
       const action = (await this.store<StoredMessageAction[]>({ kind: 'action-list' })).find(row => row.id === id && row.chatId === chatId)
       if (!action || action.state !== 'uncertain') return
       const result = await this.resolve(action, signal)
-      // Only a user-requested retry of the identical conditional write is safe.
-      if (result === 'same' && action.kind !== 'reaction' && this.active(signal)) await this.store({ kind: 'action-state', id, state: 'queued', reason: '' })
-      // A reaction leaves no permanent receipt, so a check that comes back 'unknown' will come back 'unknown' for
-      // ever. Say so once and let the row go, instead of keeping a journal entry the account can neither resolve
-      // nor dismiss. Reacting again is the way to set the selection, and that no longer waits on this row.
-      else if (result === 'unknown' && this.active(signal)) await this.store({ kind: 'action-state', id, state: 'failed',
-        reason: tr('반응이 적용되었는지 확인하지 못했습니다. 메시지의 반응을 보고 필요하면 다시 선택해 주세요.') })
+      // An edit or a delete that did not apply goes again only on this request: the identical conditional write. A
+      // reaction or a vote the server does not show goes back into the queue under its revision.
+      if (result !== 'done' && this.active(signal)) await this.store({ kind: 'action-state', id, state: 'queued', reason: '' })
     })()
     this.task = task
     try { await task } finally { this.task = null; this.busy = null; this.rerun = false; void this.publish(); this.kick() }

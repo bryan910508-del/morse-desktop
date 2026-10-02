@@ -27,7 +27,9 @@ import { autoDeleteSummary, canChangeAutoDelete } from '../../../shared/chat-aut
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { UserAvatar } from '../ui/user-avatar'
 import { usePresence } from '../app/presence'
+import { openPersonalChannel, PersonalChannelSection, usePersonalChannelCard } from './personal-channel'
 import { tr } from '../../../shared/i18n'
+import { clampChatTitle, maxChatTitle } from '../../../shared/chat-title'
 
 export function InfoRow({ icon, value, label, onClick }: { icon: ReactNode; value: string; label: string; onClick?(): void }) {
   const content = <><span className="info-row-icon">{icon}</span><span className="info-row-text"><span className="selectable">{value}</span><small>{label}</small></span></>
@@ -67,7 +69,7 @@ function ContactDetailsBox({ accountUid, requestId, profile, close }: { accountU
   </Box>
 }
 
-function ContactProfile({ accountUid, uid, fromChat }: { accountUid: string; uid: string; fromChat: boolean }) {
+export function ContactProfile({ accountUid, uid, fromChat }: { accountUid: string; uid: string; fromChat: boolean }) {
   const [requestId, setRequestId] = useState(() => crypto.randomUUID())
   const snapshot = useDesktop(state => state?.contacts?.profile ?? null)
   const inContacts = useDesktop(state => Boolean(state?.contacts?.items.some(item => item.uid === uid)))
@@ -88,6 +90,9 @@ function ContactProfile({ accountUid, uid, fromChat }: { accountUid: string; uid
   // Another action borrowed main's single profile selection; select this peer again.
   useEffect(() => onContactProfileReleased(() => { if (desktop.value?.contacts?.profile?.requestId !== requestId) setRequestId(crypto.randomUUID()) }), [requestId])
   const profile = own && own.status !== 'loading' ? own : last.current?.uid === uid ? last.current : null
+  // The channel this person linked, shown where their bio is: to a mutual contact, never for a withdrawn account.
+  const linkedChannel = profile?.status === 'ready' && profile.visibility === 'visible' && profile.personalChannelId ? profile.personalChannelId : null
+  const channelCard = usePersonalChannelCard(accountUid, uid, linkedChannel)
   if (!profile) return <div className="empty-state"><Spinner size={22} /></div>
   if (profile.status !== 'ready') return <div className="empty-state">{profile.message || tr('프로필을 확인할 수 없습니다.')}</div>
   const live = own?.status === 'ready' ? own : null
@@ -150,6 +155,10 @@ function ContactProfile({ accountUid, uid, fromChat }: { accountUid: string; uid
       {profile.originalName && profile.originalName !== profile.displayName && <span>{tr('원래 이름 {0}', [profile.originalName])}</span>}
     </div>
     {!fromChat && <div className="info-actions"><button className="button secondary" disabled={!live} onClick={() => { void startChat() }}><MessageCircle size={18} />{tr('메시지 보내기')}</button></div>}
+    {/* DetailsFiller::buildSections puts the personal channel first, above the username and bio. */}
+    {channelCard && <div className="info-section">
+      <PersonalChannelSection accountUid={accountUid} card={channelCard} onOpen={() => { void openPersonalChannel(accountUid, channelCard.channelId) }} />
+    </div>}
     <div className="info-section">
       {profile.visibility === 'visible' && profile.userId && <InfoRow icon={<AtSign size={20} />} value={`@${profile.userId}`} label={tr('Morse ID · 눌러서 복사')} onClick={() => { void copyId() }} />}
       {profile.visibility === 'visible' && profile.bio && <InfoRow icon={<FileText size={20} />} value={profile.bio} label={tr('소개')} />}
@@ -195,7 +204,7 @@ function GroupInfo({ accountUid, dialog, onProfile }: { accountUid: string; dial
   const self = members.find(member => member.self && !member.withdrawn)
   const owner = Boolean(self?.owner), plain = !current.discussion
   const capacity = Math.max(0, 100 - dialog.participantUids.length)
-  const editName = (): void => showTextEditBox({ title: tr('그룹 이름'), label: tr('이름'), initial: current.groupName ?? dialog.title, maxLength: 50,
+  const editName = (): void => showTextEditBox({ title: tr('그룹 이름'), label: tr('이름'), initial: current.groupName ?? dialog.title, maxLength: maxChatTitle, clamp: clampChatTitle,
     save: name => window.morse.saveGroupName(accountUid, { id: crypto.randomUUID(), requestId, chatId: dialog.id, version, name }) })
   const editAnnouncement = (): void => showTextEditBox({ title: tr('그룹 소개'), label: tr('소개'), initial: current.groupAnnouncement ?? '', maxLength: groupAnnouncementLimit, multiline: true,
     save: text => window.morse.saveGroupAnnouncement(accountUid, { id: crypto.randomUUID(), requestId, chatId: dialog.id, version, text }) })

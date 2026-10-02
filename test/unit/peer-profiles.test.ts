@@ -10,7 +10,7 @@ import type { FirestoreReader, WatchEvents } from '../../src/main/network/firest
 // this person still has this account as a contact. No row opens a read of its own.
 const me = 'me1'
 const user = (uid: string, fields: Record<string, unknown>): FirestoreDocument => ({
-  name: `${documents}/users/${uid}`, updateTime: { seconds: '1', nanos: 0 }, fields
+  name: `${documents}/publicProfiles/${uid}`, updateTime: { seconds: '1', nanos: 0 }, fields
 } as unknown as FirestoreDocument)
 const named = (uid: string, name: string, photo = ''): FirestoreDocument => user(uid, { displayName: { stringValue: name }, ...(photo ? { photoURL: { stringValue: photo } } : {}) })
 const reciprocal = (uid: string): FirestoreDocument => ({ name: `${documents}/users/${uid}/contacts/${me}`, fields: {} } as unknown as FirestoreDocument)
@@ -60,7 +60,7 @@ test('every contact is read by the account, five people and ten documents a targ
   profiles.bind(reader, all)
   assert.equal(peerProfileGroup, 5)
   assert.deepEqual(targets.map(target => target.paths.length), [10, 10, 4])
-  assert.deepEqual(targets[0]!.paths, [...contacts(5).map(uid => `${documents}/users/${uid}`), ...contacts(5).map(uid => `${documents}/users/${uid}/contacts/${me}`)])
+  assert.deepEqual(targets[0]!.paths, [...contacts(5).map(uid => `${documents}/publicProfiles/${uid}`), ...contacts(5).map(uid => `${documents}/users/${uid}/contacts/${me}`)])
   assert.equal(profiles.hasAnswer('u000'), false)
   targets[0]!.events.snapshot(rows(named('u000', '민지', 'gs://photo1'), reciprocal('u000'), named('u001', '지훈', 'gs://photo2')))
   assert.deepEqual(profiles.profile('u000'), { name: '민지', photo: 'gs://photo1', mutual: true })
@@ -81,7 +81,7 @@ test('every contact is read by the account, five people and ten documents a targ
   assert.deepEqual(commands.at(-1), { kind: 'userpic-owner', owner: 'user:u000', raw: null })
 })
 
-test('adding or removing a contact restarts only that target, and a refused read leaves those people unknown', async () => {
+test('adding or removing a contact restarts only that target, and a refused read leaves only that person unknown', async () => {
   const { reader, targets, live } = fakeReader()
   const { profiles, cache } = peerProfiles()
   await cache.load()
@@ -92,17 +92,26 @@ test('adding or removing a contact restarts only that target, and a refused read
   assert.equal(targets.length, 2, 'the same contacts start nothing new')
   profiles.bind(reader, [...all, 'u900'])
   assert.equal(targets.length, 3)
-  assert.deepEqual(targets[2]!.paths, [`${documents}/users/u900`, `${documents}/users/u900/contacts/${me}`])
+  assert.deepEqual(targets[2]!.paths, [`${documents}/publicProfiles/u900`, `${documents}/users/u900/contacts/${me}`])
   profiles.bind(reader, [...all.filter(uid => uid !== 'u000'), 'u900'])
   assert.equal(targets[0]!.stopped, true)
   assert.equal(targets[1]!.stopped, false, 'the other target keeps reading')
   assert.equal(profiles.name('u005'), '민지')
   assert.equal(live().length, 3)
+  // A7: one refused document fails the whole target; its five people are read again one by one.
   targets[1]!.events.state('error')
-  assert.equal(profiles.profile('u005'), null)
-  assert.equal(profiles.hasAnswer('u005'), false, 'unknown again, so the row falls back to what was confirmed')
+  assert.equal(targets[1]!.stopped, true)
+  const singles = live().filter(target => target.paths.length === 2 && !target.paths.includes(`${documents}/publicProfiles/u900`))
+  assert.deepEqual(singles.map(target => target.paths[0]), ['u005', 'u006', 'u007', 'u008', 'u009'].map(uid => `${documents}/publicProfiles/${uid}`))
+  assert.equal(profiles.name('u005'), '민지', 'what was known stays while they are read again')
+  singles[1]!.events.state('error')
+  singles[0]!.events.snapshot(rows(named('u005', '민지 새 이름', 'gs://p'), reciprocal('u005')))
+  assert.equal(profiles.name('u005'), '민지 새 이름', 'the others go on')
+  assert.equal(profiles.profile('u006'), null)
+  assert.equal(profiles.hasAnswer('u006'), false, 'only the refused person is unknown, so their row falls back to what was confirmed')
+  const before = targets.length
   profiles.bind(reader, [...all.filter(uid => uid !== 'u000'), 'u900'])
-  assert.ok(live().some(target => target.paths.includes(`${documents}/users/u005`)), 'the refused target is read again')
+  assert.equal(targets.length, before, 'a refused person is not asked again with every change of the list')
   profiles.close()
   assert.equal(live().length, 0)
 })

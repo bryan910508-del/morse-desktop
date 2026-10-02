@@ -2,9 +2,7 @@ import type { ChannelShareRequest } from '../../shared/channel-share'
 import { ChannelPostVisibilityEditor } from './channel-post-visibility'
 import type { PostVisibilityRequest } from '../../shared/channel-post-visibility'
 import { validatePostVisibility, type PostVisibilitySource } from '../network/channel-post-visibility-write'
-import { ChannelPostRemovalEditor } from './channel-post-removal'
 import type { PostRemovalTarget } from '../../shared/channel-post-removal'
-import { postRemovalContentEligible, validatePostRemoval, type PostRemovalSource } from '../network/channel-post-removal-write'
 import type { PostCreationSource } from '../network/channel-post-creation-write'
 import { channelPostAuthoring } from './channel-post-authoring'
 import { ChannelPostPinResolutionEditor } from './channel-post-pin-resolution'
@@ -18,14 +16,11 @@ import type { ChannelPostPinEdit } from '../../shared/channel-post-pin-edit'
 import type { ChannelPinWriteSource } from '../network/channel-post-pin-write'
 import { documentVersion } from '../network/firestore-values'
 import { channelPinReference, channelPostPinFlag, channelPostPinInfo } from './channel-post-pins'
-import { ChannelPostTextEditor } from './channel-post-text'
 import { editablePostText } from '../network/channel-post-text-write'
-import type { ChannelPostTextEdit } from '../../shared/channel-post-text-edit'
 import { ChannelComments } from './channel-comments'
 import type { ChannelCommentsRequest } from '../../shared/channel-comments'
-import { ChannelPostLikeEditor } from './channel-post-like'
 import { channelPostLikeState } from './channel-post-like-state'
-import type { ChannelPostLikeRequest } from '../../shared/channel-post-like'
+import { ChannelListUnavailable } from './channel-list-availability'
 import { ChannelPostMediaSession } from './channel-post-media'
 import type { ChannelPostMediaRequest } from '../../shared/channel-post-media'
 import { channelPostMedia, channelPostRevision } from '../media/channel-post-media-document'
@@ -63,7 +58,7 @@ export function decodeChannelPost(doc: FirestoreDocument, channelId: string, sco
   }
   const media = channelPostMedia(doc, channelId)
   const likes = channelPostLikeState(doc, uid).info
-  return { removalEligible: postRemovalContentEligible(doc), pinFlag: channelPostPinFlag(doc), own: stringField(f, 'authorId', 160) === uid, editableText: editablePostText(doc), likes, visibility: visibility as 'public' | 'subscribers', id, revision: channelPostRevision(doc), mediaCount: media.count, media: media.items.map(({ path: _path, videoPath: _videoPath, ...item }) => item), position: timestamp(f.createdAt.timestampValue, id), text: stringField(f, 'text', 100000), hasMedia,
+  return { pinFlag: channelPostPinFlag(doc), own: stringField(f, 'authorId', 160) === uid, editableText: editablePostText(doc), likes, visibility: visibility as 'public' | 'subscribers', id, revision: channelPostRevision(doc), mediaCount: media.count, media: media.items.map(({ path: _path, videoPath: _videoPath, ...item }) => item), position: timestamp(f.createdAt.timestampValue, id), text: stringField(f, 'text', 100000), hasMedia,
     pinned: f.isPinned?.booleanValue === true, likeCount: likes.storedCount, commentCount: counter('commentCount') }
 }
 
@@ -74,13 +69,10 @@ const maxPostPictures = 4, maxWantedPictures = 40
 
 export class ChannelPosts {
   readonly visibilityEditor: ChannelPostVisibilityEditor
-  readonly removalEditor: ChannelPostRemovalEditor
   readonly pinResolutionEditor: ChannelPostPinResolutionEditor
   readonly extraPinEditor: ChannelPostExtraPinEditor
   readonly pinEditor: ChannelPostPinEditor
-  readonly textEditor: ChannelPostTextEditor
   readonly comments: ChannelComments
-  readonly likes: ChannelPostLikeEditor
   readonly media: ChannelPostMediaSession
   readonly pictures: ChannelPostPictures
   private rows = new Map<string, FirestoreDocument>()
@@ -92,7 +84,7 @@ export class ChannelPosts {
   private generation = 0
   private feedGeneration = 0
   constructor(private readonly uid: string, private readonly auth: ReadCredentials,
-    private readonly source: (id: string) => { doc: FirestoreDocument; reader: FirestoreReader }, private readonly changed: () => void) { this.visibilityEditor = new ChannelPostVisibilityEditor(uid, auth, (request, exact) => this.visibilitySource(request, exact)); this.removalEditor = new ChannelPostRemovalEditor(uid, auth, (request, exact) => this.removalSource(request, exact)); this.pinResolutionEditor = new ChannelPostPinResolutionEditor(uid, auth, (request, exact) => this.pinResolutionSource(request, exact)); this.extraPinEditor = new ChannelPostExtraPinEditor(uid, auth, (request, exact) => this.extraPinSource(request, exact)); this.pinEditor = new ChannelPostPinEditor(uid, auth, (request, exact) => this.pinSource(request, exact)); this.textEditor = new ChannelPostTextEditor(uid, auth, (request, exact) => this.textSource(request, exact)); this.media = new ChannelPostMediaSession(auth, request => this.mediaSource(request), changed); this.pictures = new ChannelPostPictures(auth, key => this.pictureSource(key), changed, '__channel-post-picture'); this.likes = new ChannelPostLikeEditor(uid, auth, (request, exact) => this.likeSource(request, exact)); this.comments = new ChannelComments(uid, auth, (request, exact) => this.commentSource(request, exact), changed) }
+    private readonly source: (id: string) => { doc: FirestoreDocument; reader: FirestoreReader }, private readonly changed: () => void) { this.visibilityEditor = new ChannelPostVisibilityEditor(uid, auth, (request, exact) => this.visibilitySource(request, exact)); this.pinResolutionEditor = new ChannelPostPinResolutionEditor(uid, auth, (request, exact) => this.pinResolutionSource(request, exact)); this.extraPinEditor = new ChannelPostExtraPinEditor(uid, auth, (request, exact) => this.extraPinSource(request, exact)); this.pinEditor = new ChannelPostPinEditor(uid, auth, (request, exact) => this.pinSource(request, exact)); this.media = new ChannelPostMediaSession(auth, request => this.mediaSource(request), changed); this.pictures = new ChannelPostPictures(auth, key => this.pictureSource(key), changed, '__channel-post-picture'); this.comments = new ChannelComments(uid, auth, (request, exact) => this.commentSource(request, exact), changed) }
   // The open channel's posts among `ids`, with the moments they were posted (for its read mark).
   seenPosts(channelId: string, ids: readonly string[]): { id: string; position: MessagePosition; own: boolean }[] {
     const value = this.value
@@ -108,7 +100,13 @@ export class ChannelPosts {
       return { ...value, authoring: value.status === 'ready' && this.policy ? channelPostAuthoring(this.uid, value.channelId, this.base(value.channelId).doc, this.policy.channel, this.policy.admin) : null, pins: value.status === 'ready' ? channelPostPinInfo(this.base(value.channelId).doc, value.posts, this.uid) : null, comments: this.comments.snapshot, media: this.media.snapshot,
         posts: value.posts.map(post => ({ ...post, likes: { ...post.likes }, position: { ...post.position },
           media: post.media.map(item => ({ ...item, picture: this.pictures.snapshot(`${value.channelId}/${post.id}/${item.index}`) })) })) }
-    } catch { return { ...value, authoring: null, pins: null, status: 'blocked', scope: null, comments: null, posts: [], media: null, message: tr('현재 게시물 접근 범위를 확인할 수 없습니다. 채널을 다시 열어 주세요.') } }
+    } catch (error) {
+      // A list that is only being read is not a refusal, and this screen is opened from places the channels tab
+      // is not beside (`startPolicy`): it waits, as it does for any other read.
+      const waiting = error instanceof ChannelListUnavailable
+      return { ...value, authoring: null, pins: null, status: waiting ? 'loading' : 'blocked', scope: null, comments: null, posts: [], media: null,
+        message: waiting ? tr('내 채널 목록을 확인하고 있습니다.') : tr('현재 게시물 접근 범위를 확인할 수 없습니다. 채널을 다시 열어 주세요.') }
+    }
   }
   private base(id: string): { doc: FirestoreDocument; reader: FirestoreReader } {
     this.auth.signal.throwIfAborted()
@@ -218,15 +216,6 @@ export class ChannelPosts {
     if (exact) validatePostVisibility(this.uid, request, source)
     return source
   }
-  private removalSource(request: PostRemovalTarget, exact: boolean): PostRemovalSource {
-    if (this.value?.channelId !== request.channelId || this.value.requestId !== request.requestId || this.value.status !== 'ready') throw new Error(tr('현재 채널 게시물을 확인해 주세요.'))
-    this.validate(request.channelId)
-    const channel = this.base(request.channelId).doc, post = this.rows.get(`${documents}/channels/${request.channelId}/posts/${request.postId}`) ?? null
-    if (stringField(channel.fields, 'ownerId', 160) !== this.uid || (post && stringField(post.fields, 'authorId', 160) !== this.uid)) throw new Error(tr('현재 채널 소유자·게시물 작성자를 확인해 주세요.'))
-    const source = { channel, post }
-    if (exact) validatePostRemoval(this.uid, request, source)
-    return source
-  }
   private pinResolutionSource(request: ChannelPostPinResolution, exact: boolean): PinResolutionWriteSource {
     const value = this.value
     if (!value || value.status !== 'ready' || value.requestId !== request.requestId || value.channelId !== request.channelId) throw new Error(tr('현재 게시물 목록을 다시 확인해 주세요.'))
@@ -268,13 +257,6 @@ export class ChannelPosts {
     }
     return { channel, previous, next }
   }
-  private textSource(request: ChannelPostTextEdit, exact: boolean): FirestoreDocument {
-    const value = this.value
-    if (!value || value.status !== 'ready' || value.requestId !== request.requestId || value.channelId !== request.channelId) throw new Error(tr('현재 게시물 선택을 확인해 주세요.'))
-    const doc = this.creationSource(request)
-    if (stringField(doc.fields, 'authorId', 160) !== this.uid || (exact && (channelPostRevision(doc) !== request.revision || editablePostText(doc) !== request.original))) throw new Error(tr('게시물 본문이나 작성자 정보가 변경되었습니다.'))
-    return doc
-  }
   // The uids in a loaded post's likedBy, for its likers list.
   likerUids(channelId: string, postId: string): string[] | null {
     const value = this.value
@@ -282,17 +264,8 @@ export class ChannelPosts {
     const doc = this.rows.get(`${documents}/channels/${channelId}/posts/${postId}`)
     return doc ? channelPostLikeState(doc, this.uid).members : null
   }
-  private likeSource(request: ChannelPostLikeRequest, exact: boolean): FirestoreDocument {
-    const value = this.value
-    if (!value || value.status !== 'ready' || value.requestId !== request.requestId || value.channelId !== request.channelId) throw new Error('Post selection unavailable')
-    const scope = this.validate(request.channelId), doc = this.rows.get(`${documents}/channels/${request.channelId}/posts/${request.postId}`)
-    if (!doc || (exact && channelPostRevision(doc) !== request.revision)) throw new Error('Post changed')
-    const post = decodeChannelPost(doc, request.channelId, scope, this.uid)
-    if (exact && (post.likes.status !== 'ready' || post.likes.selected !== request.selected || post.likes.count !== request.count)) throw new Error('Like state changed')
-    return doc
-  }
   private clearFeed(): void {
-    this.likes.pause(); this.textEditor.pause(); this.pinEditor.pause(); this.extraPinEditor.pause(); this.pinResolutionEditor.pause(); this.removalEditor.pause(); this.visibilityEditor.pause(); this.comments.clear()
+    this.pinEditor.pause(); this.extraPinEditor.pause(); this.pinResolutionEditor.pause(); this.visibilityEditor.pause(); this.comments.clear()
     this.feedGeneration++; this.stop?.(); this.stop = null; this.rows.clear(); this.media.clear()
     if (this.value) { this.value.authoring = null; this.value.posts = []; this.value.media = null; this.value.comments = null; this.value.scope = null }
   }
@@ -300,7 +273,7 @@ export class ChannelPosts {
     const request = this.value
     if (!request) return
     const source = this.base(request.channelId), scope = this.scope(request.channelId)
-    if (scope && this.stop && request.scope === scope) { this.media.prune(); this.likes.prune(); this.textEditor.prune(); this.pinEditor.prune(); this.extraPinEditor.prune(); this.pinResolutionEditor.prune(); this.removalEditor.prune(); this.visibilityEditor.prune(); this.comments.prune(); return }
+    if (scope && this.stop && request.scope === scope) { this.media.prune(); this.pinEditor.prune(); this.extraPinEditor.prune(); this.pinResolutionEditor.prune(); this.visibilityEditor.prune(); this.comments.prune(); return }
     this.clearFeed()
     if (!scope) { request.status = 'blocked'; request.message = tr('현재 역할이나 채널 공개 범위로는 게시물을 표시할 수 없습니다.'); return }
     request.scope = scope; request.status = 'loading'; request.message = tr('확인된 접근 범위의 게시물을 불러오고 있습니다.')
@@ -317,14 +290,17 @@ export class ChannelPosts {
         if (!current()) return
         try {
           this.validate(request.channelId)
-          if (rows.size > 500) { this.rows.clear(); this.media.clear(); this.likes.pause(); this.textEditor.pause(); this.pinEditor.pause(); this.extraPinEditor.pause(); this.pinResolutionEditor.pause(); this.removalEditor.pause(); this.visibilityEditor.pause(); this.comments.clear(); request.status = 'limit'; request.posts = []; request.message = tr('조회 가능한 게시물이 500개를 넘습니다. 일부 결과를 최신 목록으로 표시하지 않습니다.') }
-          else { request.posts = [...rows.values()].map(doc => decodeChannelPost(doc, request.channelId, scope, this.uid)).sort((a, b) => comparePosition(b.position, a.position)); this.rows = new Map(rows); request.status = 'ready'; request.message = ''; this.wantPictures(); this.media.prune(); this.likes.prune(); this.textEditor.prune(); this.pinEditor.prune(); this.extraPinEditor.prune(); this.pinResolutionEditor.prune(); this.removalEditor.prune(); this.visibilityEditor.prune(); this.comments.prune() }
-        } catch { this.rows.clear(); this.media.clear(); this.likes.pause(); this.textEditor.pause(); this.pinEditor.pause(); this.extraPinEditor.pause(); this.pinResolutionEditor.pause(); this.removalEditor.pause(); this.visibilityEditor.pause(); this.comments.clear(); request.posts = []; request.status = 'error'; request.message = tr('게시물의 접근 범위 또는 데이터를 확인하지 못했습니다. 다시 불러와 주세요.') }
+          if (rows.size > 500) { this.rows.clear(); this.media.clear(); this.pinEditor.pause(); this.extraPinEditor.pause(); this.pinResolutionEditor.pause(); this.visibilityEditor.pause(); this.comments.clear(); request.status = 'limit'; request.posts = []; request.message = tr('조회 가능한 게시물이 500개를 넘습니다. 일부 결과를 최신 목록으로 표시하지 않습니다.') }
+          else { request.posts = [...rows.values()].map(doc => decodeChannelPost(doc, request.channelId, scope, this.uid)).sort((a, b) => comparePosition(b.position, a.position)); this.rows = new Map(rows); request.status = 'ready'; request.message = ''; this.wantPictures(); this.media.prune(); this.pinEditor.prune(); this.extraPinEditor.prune(); this.pinResolutionEditor.prune(); this.visibilityEditor.prune(); this.comments.prune() }
+        } catch { this.rows.clear(); this.media.clear(); this.pinEditor.pause(); this.extraPinEditor.pause(); this.pinResolutionEditor.pause(); this.visibilityEditor.pause(); this.comments.clear(); request.posts = []; request.status = 'error'; request.message = tr('게시물의 접근 범위 또는 데이터를 확인하지 못했습니다. 다시 불러와 주세요.') }
         this.changed()
       },
+      // Telegram keeps a channel's posts on screen while the connection comes back; the next consistent snapshot
+      // replaces them. Posts on their way or being changed carry on meanwhile (channel-operations.ts).
+      reconnecting: () => {},
       state: (state, error) => {
         if (!current() || state === 'ready') return
-        this.rows.clear(); this.media.clear(); this.likes.pause(); this.textEditor.pause(); this.pinEditor.pause(); this.extraPinEditor.pause(); this.pinResolutionEditor.pause(); this.removalEditor.pause(); this.visibilityEditor.pause(); this.comments.clear(); request.posts = []; request.status = state
+        this.rows.clear(); this.media.clear(); this.pinEditor.pause(); this.extraPinEditor.pause(); this.pinResolutionEditor.pause(); this.visibilityEditor.pause(); this.comments.clear(); request.posts = []; request.status = state
         request.message = state === 'loading' ? tr('게시물 연결을 확인하고 있습니다.') : error?.code === 'index' ? tr('게시물 조회에 필요한 서버 인덱스를 확인해야 합니다.') : tr('게시물을 읽지 못했습니다. 연결·권한을 확인한 뒤 다시 불러와 주세요.')
         this.changed()
       }
@@ -332,14 +308,30 @@ export class ChannelPosts {
   }
   open(request: ChannelPostsRequest): void {
     this.clear()
-    this.likes.open(request.requestId); this.textEditor.open(request.requestId); this.pinEditor.open(request.requestId); this.extraPinEditor.open(request.requestId); this.pinResolutionEditor.open(request.requestId); this.removalEditor.open(request.requestId); this.visibilityEditor.open(request.requestId)
+    this.pinEditor.open(request.requestId); this.extraPinEditor.open(request.requestId); this.pinResolutionEditor.open(request.requestId); this.visibilityEditor.open(request.requestId)
     this.value = { ...request, authoring: null, pins: null, comments: null, scope: null, status: 'loading', posts: [], media: null, message: tr('게시물 접근 범위를 확인하고 있습니다.') }
+    this.startPolicy()
+    this.changed()
+  }
+  // The channel list may still be being read when this screen is opened — from the chat list, a link, or a window
+  // that starts with a channel open. That is not a refusal: the channel is named again as soon as the list arrives
+  // (`prune`), the way Telegram's sections wait for the peer to be loaded instead of answering «not yours».
+  private startPolicy(): void {
+    const request = this.value
+    if (!request || this.stopPolicy) return
     let source: ReturnType<ChannelPosts['base']>
     try { source = this.base(request.channelId); this.reader = source.reader }
-    catch { this.value.status = 'blocked'; this.value.message = tr('현재 내 채널 목록에서 채널을 확인해 주세요.'); this.changed(); return }
+    catch (error) {
+      this.clearFeed(); this.policy = null
+      const waiting = error instanceof ChannelListUnavailable
+      request.status = waiting ? 'loading' : 'blocked'
+      request.message = waiting ? tr('내 채널 목록을 확인하고 있습니다.') : tr('현재 내 채널 목록에서 채널을 확인해 주세요.')
+      return
+    }
+    request.status = 'loading'; request.message = tr('게시물 접근 범위를 확인하고 있습니다.')
     const root = `${documents}/channels/${request.channelId}`, sub = `${root}/subscribers/${this.uid}`, admin = `${root}/admins/${this.uid}`
     const names = [root, sub, admin], generation = this.generation
-    const current = () => generation === this.generation && this.value?.requestId === request.requestId
+    const current = () => generation === this.generation && this.value === request
     this.stopPolicy = source.reader.watch({ documents: { documents: names } }, this.auth.signal, {
       snapshot: rows => {
         if (!current() || !this.value) return
@@ -353,6 +345,8 @@ export class ChannelPosts {
         } catch { this.policy = null; this.clearFeed(); this.value.status = 'error'; this.value.message = tr('현재 채널과 본인의 게시물 접근 범위를 확인하지 못했습니다.') }
         this.changed()
       },
+      // What this account may see in the channel does not change because the watch reconnects: keep it and the feed.
+      reconnecting: () => {},
       state: state => {
         if (!current() || !this.value || state === 'ready') return
         this.policy = null; this.clearFeed(); this.value.status = state
@@ -360,16 +354,30 @@ export class ChannelPosts {
         this.changed()
       }
     }, 3, 1024 * 1024)
-    this.changed()
   }
   prune(): void {
     if (!this.value) return
-    try { this.base(this.value.channelId); if (this.policy) this.startFeed(); this.media.prune() }
-    catch {
+    try {
+      this.base(this.value.channelId)
+      if (!this.stopPolicy) { this.startPolicy(); return }
+      if (this.policy) this.startFeed()
+      this.media.prune()
+    }
+    catch (error) {
+      // The list is only being read again: hold the request, and name the channel once more when it arrives.
+      if (error instanceof ChannelListUnavailable) { this.hold(); return }
       const request = this.value; this.clear()
       this.value = { requestId: request.requestId, channelId: request.channelId, authoring: null, pins: null, comments: null, scope: null, status: 'blocked', posts: [], media: null, message: tr('채널 접근 정보가 변경되었습니다. 게시물을 다시 열어 주세요.') }
     }
   }
+  // The channel list is read again from the start (a refresh, a list that failed, a lock): the open screen's request is
+  // kept and its posts let go, and it is named again once the list is back (`prune`). The screen asks for its posts
+  // only when it opens, so a request dropped here left it loading for good.
+  hold(): void {
+    if (!this.value) return
+    this.clearFeed(); this.stopPolicy?.(); this.stopPolicy = null; this.policy = null; this.reader = null
+    this.value.status = 'loading'; this.value.message = tr('내 채널 목록을 확인하고 있습니다.')
+  }
   dismiss(requestId: string): void { if (this.value?.requestId === requestId) { this.clear(); this.changed() } }
-  clear(): void { if (this.value) { this.likes.dismiss(this.value.requestId); this.textEditor.dismiss(this.value.requestId); this.pinEditor.dismiss(this.value.requestId); this.extraPinEditor.dismiss(this.value.requestId); this.pinResolutionEditor.dismiss(this.value.requestId); this.removalEditor.dismiss(this.value.requestId); this.visibilityEditor.dismiss(this.value.requestId) }; this.clearFeed(); this.generation++; this.stopPolicy?.(); this.stopPolicy = null; this.policy = null; this.reader = null; this.value = null }
+  clear(): void { if (this.value) { this.pinEditor.dismiss(this.value.requestId); this.extraPinEditor.dismiss(this.value.requestId); this.pinResolutionEditor.dismiss(this.value.requestId); this.visibilityEditor.dismiss(this.value.requestId) }; this.clearFeed(); this.generation++; this.stopPolicy?.(); this.stopPolicy = null; this.policy = null; this.reader = null; this.value = null }
 }

@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { ChannelInquiriesSnapshot, InquiryAttachmentMode, InquiryAttachmentRequest, InquiryAutoDeleteRequest, InquiryVoiceRequest, InquiryListRequest, InquiryListSnapshot, InquiryMessageItem, InquiryMessageKind, InquiryPhotoRequest, InquiryReactionRequest, InquiryRole, InquirySummary,
   InquiryScheduleRequest, InquiryTargetRequest, InquiryTextRequest, InquiryThreadRequest, InquiryThreadSnapshot } from '../../shared/channel-inquiries'
-import { inquiryChatMessage, inquiryPreviewText, inquiryQueueChatId } from '../../shared/channel-inquiries'
+import { inquiryChatMessage, inquiryPreviewText, inquiryQueueChatId, maxInquiryPhotoBytes } from '../../shared/channel-inquiries'
+import type { HistoryClearRequest } from '../../shared/history-clears'
 import type { ForwardMediaSource } from '../media/forward-media'
 import type { PreparedForwardMedia } from '../storage/forward-media-protocol'
 import { maxScheduleAheadMs } from '../../shared/deferred-send'
@@ -18,7 +19,8 @@ import { autoDeleteNoticeText, autoDeleteWirePrefix } from '../../shared/auto-de
 import { setMessageReaction } from '../network/message-reaction-api'
 import { autoDeleteSecondsValue } from '../../shared/chat-auto-delete'
 import { freePinLimit } from '../../shared/pinned-messages'
-import { inquiryAttachmentExtension, uploadInquiryAttachment, uploadInquiryPhoto } from '../network/inquiry-photo-upload-api'
+import { inquiryAttachmentExtension, inquiryAttachmentPath, maxInquiryAttachmentBytes } from '../network/inquiry-photo-upload-api'
+import type { InquirySendRequest } from './inquiry-sends'
 import { AttachmentStaging } from '../media/attachment-staging'
 import { forwardMediaFormat } from '../media/forward-media-format'
 import { mediaType } from '../media/media-type'
@@ -27,6 +29,7 @@ import { stickerSidePx } from '../../shared/stickers'
 import type { AttachmentDraft, VideoFacts } from '../../shared/uploads'
 import { callMorseFunction, MorseCallableFailure } from '../network/morse-callable'
 import type { PeoplePhotoResolver } from './channel-people-photos'
+import type { ContactCreateFields } from '../network/participant-contact-write'
 import { ReactionUpdates } from './reaction-updates'
 import { tr } from '../../shared/i18n'
 
@@ -34,6 +37,9 @@ interface Inquiry extends InquirySummary { role: InquiryRole; cutoff: number | n
 interface ListState { request: InquiryListRequest; stop: (() => void) | null; value: InquiryListSnapshot }
 // The listened documents stay so an explicit photo selection can be resolved against the same row.
 interface ThreadState { request: InquiryThreadRequest; stop: (() => void) | null; roomStop: (() => void) | null; inquiry: Inquiry | null; marked: string; marking: boolean
+  // What the room keeps about the person on the other side: their photo address (ChannelPeoplePhotos
+  // resolves it) and whether the account is gone.
+  peer: { photo: string; deleted: boolean }
   rows: Map<string, FirestoreDocument>; value: InquiryThreadSnapshot; expiryTimer?: ReturnType<typeof setTimeout>; expired?: ExpiredMessages
   reactionUpdates: ReactionUpdates }
 
@@ -55,6 +61,14 @@ function inquiryOutboxRead(f: Record<string, WireObject>, peer: string): ReadCur
     const cursor = readCursor(timestamp(raw, id))
     return cursor.at > 0 ? cursor : null
   } catch { return null }
+}
+// The person the room keeps for the side this account is talking to. Only an owner has one: a subscriber's
+// side of the room is the channel, whose picture is a channel photo, not a person's.
+function inquiryPeerRecord(doc: FirestoreDocument, uid: string): { photo: string; deleted: boolean } {
+  const f = doc.fields
+  if (stringField(f, 'channelOwnerId', 160) !== uid) return { photo: '', deleted: false }
+  const deleted = boolField(f, 'subscriberAccountDeleted')
+  return { photo: deleted ? '' : stringField(f, 'subscriberPhotoURL', 10000), deleted }
 }
 function decodeInquiry(doc: FirestoreDocument, uid: string): Inquiry {
   const prefix = `${documents}/channelInquiries/`, id = doc.name.slice(prefix.length), f = doc.fields
@@ -139,6 +153,19 @@ export function inquiryQueueFields(request: InquiryScheduleRequest, uid: string)
 }
 
 // ChannelInquiryService on Desktop: the owner's list for one channel and one open room, both live.
+// The newest message of a room sent by the other side, whether or not this side deleted it for itself.
+export function newestFromOther(rows: Iterable<FirestoreDocument>, uid: string): { id: string } | null {
+  let best: { id: string; at: number } | null = null
+  for (const doc of rows) {
+    if (stringField(doc.fields, 'senderId', 160) === uid) continue
+    const raw = doc.fields.createdAt?.timestampValue
+    let at = Number.MAX_SAFE_INTEGER
+    if (raw) { try { at = positionMilliseconds(timestamp(raw, '')) } catch { continue } }
+    const id = doc.name.slice(doc.name.lastIndexOf('/') + 1)
+    if (!best || at > best.at || (at === best.at && id > best.id)) best = { id, at }
+  }
+  return best
+}
 export class ChannelInquiries {
   // The video or file picked for the open room, held here until it is sent or put down.
   private readonly attachments = new AttachmentStaging('__inquiry-draft')
@@ -154,8 +181,12 @@ export class ChannelInquiries {
   private readonly scheduled: DeferredMessages
   constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly allowed: () => void,
     private readonly author: () => { authorName: string; authorPhotoURL: string | null }, private readonly foreground: () => boolean, private readonly changed: () => void,
+    // The device's queue a message is handed to (inquiry-sends.ts), and what a deleted room leaves in it.
+    private readonly enqueue: (request: InquirySendRequest) => Promise<void>, private readonly forgetRoom: (inquiryId: string) => Promise<void>,
     // «나에게만 삭제»: a message this device hides, kept on the server for the other side.
-    private readonly hidden: (inquiryId: string, messageId: string) => boolean = () => false) {
+    private readonly hidden: (inquiryId: string, messageId: string) => boolean = () => false,
+    // «대화 기록 모두 삭제»: the device queue that sends it with its fixed boundary until answered (history-clears.ts, A4).
+    private readonly clearHistory: (request: HistoryClearRequest) => Promise<'done' | 'unconfirmed'> = async () => 'unconfirmed') {
     this.scheduled = new DeferredMessages(uid, auth.signal, () => this.changed())
   }
 
@@ -163,7 +194,19 @@ export class ChannelInquiries {
     if (!this.list && !this.thread) return null
     return { list: this.list ? { ...this.list.value, items: this.list.value.items.map(item => ({ ...item, photo: this.people?.(item.peerUid, this.photos.get(item.id) ?? null) ?? null })) } : null,
       thread: this.thread ? { ...this.thread.value, items: this.thread.value.items.map(item => ({ ...item })),
+        photo: this.people?.(this.thread.value.peerUid, this.thread.peer.photo || null) ?? null,
         scheduled: this.scheduled.snapshot(inquiryQueueChatId(this.thread.request.inquiryId))?.items ?? [] } : null }
+  }
+  // «연락처에 추가» from the room that is open: the person's name and picture are the room's own copy, the
+  // one this account is already looking at. iOS makes the same stub of them
+  // (ChannelInquiryChatView.subscriberMorseUserStubForOwnerProfile) — a room carries no Morse ID, so the
+  // contact is saved without one and takes it from their profile once they can be read.
+  contactSource(inquiryId: string, uid: string): ContactCreateFields {
+    const state = this.thread, inquiry = state?.inquiry
+    if (this.closed || this.locked || !state || state.request.inquiryId !== inquiryId || !inquiry || inquiry.id !== inquiryId ||
+      inquiry.role !== 'owner' || state.peer.deleted || !inquiry.peerUid || inquiry.peerUid !== uid || uid === this.uid ||
+      !inquiry.peerName.trim()) throw new Error(tr('현재 문의방에서 상대를 확인할 수 없습니다.'))
+    return { uid, userId: '', displayName: inquiry.peerName.trim(), photoURL: state.peer.photo }
   }
   private get source(): FirestoreReader {
     if (this.closed) throw new Error(tr('계정이 변경되었습니다.'))
@@ -230,6 +273,8 @@ export class ChannelInquiries {
         this.photos = photos
         this.changed()
       },
+      // The channel's rooms stay listed while their watch reconnects.
+      reconnecting: () => {},
       state: status => {
         if (this.list !== state || status === 'ready') return
         state.value = { ...state.value, status, message: status === 'error' ? tr('문의 목록을 불러오지 못했습니다.') : '' }
@@ -246,7 +291,8 @@ export class ChannelInquiries {
   openThread(request: InquiryThreadRequest): void {
     this.closeThread()
     const state: ThreadState = { request, stop: null, roomStop: null, inquiry: null, marked: '', marking: false, rows: new Map(), reactionUpdates: new ReactionUpdates(),
-      value: { ...request, channelId: '', role: 'subscriber', title: '', channelName: '', status: 'loading', items: [], message: '', pinnedIds: [], autoDeleteSeconds: 0, autoDeleteMyOnly: false, scheduled: [], outboxRead: null } }
+      peer: { photo: '', deleted: false },
+      value: { ...request, channelId: '', role: 'subscriber', title: '', channelName: '', peerUid: '', status: 'loading', items: [], message: '', pinnedIds: [], autoDeleteSeconds: 0, autoDeleteMyOnly: false, scheduled: [], outboxRead: null } }
     this.thread = state
     this.changed()
     void this.startThread(state)
@@ -260,7 +306,8 @@ export class ChannelInquiries {
       if (!doc) { state.value = { ...state.value, status: 'error', message: tr('문의를 찾을 수 없습니다.') }; this.changed(); return }
       const inquiry = decodeInquiry(doc, this.uid)
       state.inquiry = inquiry
-      state.value = { ...state.value, channelId: inquiry.channelId, role: inquiry.role, title: inquiry.peerName, channelName: inquiry.channelName, pinnedIds: pinnedMessageIds(doc.fields), outboxRead: inquiry.outboxRead }
+      state.peer = inquiryPeerRecord(doc, this.uid)
+      state.value = { ...state.value, channelId: inquiry.channelId, role: inquiry.role, title: inquiry.peerName, channelName: inquiry.channelName, peerUid: inquiry.peerUid, pinnedIds: pinnedMessageIds(doc.fields), outboxRead: inquiry.outboxRead }
       // Only a scheduled queue exists for a room: an inquiry has no «온라인시 보내기».
       this.scheduled.bind(inquiryQueueChatId(state.request.inquiryId), reader, ['scheduled'])
       // checkTTLs(): the open room takes an expired message from both sides, as ChatRoomView does for a chat.
@@ -275,7 +322,8 @@ export class ChannelInquiries {
           try {
             const current = decodeInquiry(room, this.uid)
             state.inquiry = { ...current, cutoff: current.cutoff }
-            state.value = { ...state.value, title: current.peerName, channelName: current.channelName, pinnedIds: pinnedMessageIds(room.fields),
+            state.peer = inquiryPeerRecord(room, this.uid)
+            state.value = { ...state.value, title: current.peerName, channelName: current.channelName, peerUid: current.peerUid, pinnedIds: pinnedMessageIds(room.fields),
               autoDeleteSeconds: current.autoDeleteSeconds, autoDeleteMyOnly: current.autoDeleteMyOnly, outboxRead: current.outboxRead }
             this.changed()
           } catch { /* The room stays as it was read. */ }
@@ -301,6 +349,8 @@ export class ChannelInquiries {
           this.expireMessages(state)
           this.changed(); this.markRead(state)
         },
+        // The room's messages stay on screen while their watch reconnects, and an empty room stays open to write in.
+        reconnecting: () => {},
         state: status => {
           if (this.thread !== state || status === 'ready') return
           state.value = { ...state.value, status: status === 'error' ? 'error' : state.value.items.length ? 'ready' : 'loading', message: status === 'error' ? tr('메시지를 불러오지 못했습니다.') : '' }
@@ -324,6 +374,14 @@ export class ChannelInquiries {
   private requireThread(request: InquiryThreadRequest): ThreadState {
     const state = this.thread
     if (!state || state.request.requestId !== request.requestId || state.request.inquiryId !== request.inquiryId || !state.inquiry || state.value.status !== 'ready') throw new Error(tr('문의를 다시 열어 주세요.'))
+    return state
+  }
+  // A message written into the room needs only the room itself: who this account is in it. Its messages may still be
+  // loading or reconnecting, and the connection may be down: what is written goes to the device queue, which sends it
+  // when it can (inquiry-sends.ts), as Telegram lets a chat be written in while it connects.
+  private requireRoom(request: InquiryThreadRequest): ThreadState {
+    const state = this.thread
+    if (!state || state.request.requestId !== request.requestId || state.request.inquiryId !== request.inquiryId || !state.inquiry || state.value.status === 'error') throw new Error(tr('문의를 다시 열어 주세요.'))
     return state
   }
 
@@ -383,48 +441,28 @@ export class ChannelInquiries {
     return { message: inquiryChatMessage(item, inquiryId), resources }
   }
 
-  // ChannelInquiryChatView uploadAndSendImage: the bytes reach storage first, then the same
-  // canonical send the text path uses carries the download URL (iOS keeps it in text as well).
-  async sendPhoto(request: InquiryPhotoRequest, bytes: Uint8Array): Promise<'sent' | 'unconfirmed'> {
-    const state = this.requireThread(request)
-    const validate = (): void => {
-      this.allowed()
-      if (this.closed || this.locked || this.thread !== state) throw new Error(tr('문의를 다시 열어 주세요.'))
-    }
-    validate()
-    const url = await uploadInquiryPhoto(this.auth, this.uid,
-      { inquiryId: request.inquiryId, messageId: request.messageId, bytes,
-        sha256: createHash('sha256').update(bytes).digest('hex'), md5: createHash('md5').update(bytes).digest('base64') },
-      AbortSignal.any([this.auth.signal, AbortSignal.timeout(180000)]), () => {}, validate)
-    const payload = { inquiryId: request.inquiryId, clientMessageId: request.messageId, senderId: this.uid, senderType: state.value.role,
-      type: 'image', text: url, mediaUrl: url, ...(request.caption ? { imageCaption: request.caption } : {}), ...this.replyFields(state, request.replyToId) }
-    for (let attempt = 0; ; attempt++) {
-      validate()
-      try { await callMorseFunction(this.auth, 'sendMorseInquiryMessage', payload, AbortSignal.timeout(65000)); return 'sent' }
-      catch (error) {
-        if (!(error instanceof MorseCallableFailure && error.uncertain)) throw new Error(tr('사진을 보내지 못했습니다. 연결과 채널 구독 상태를 확인해 주세요.'))
-        if (attempt >= 2) return 'unconfirmed'
-        await new Promise(resolve => setTimeout(resolve, 1500 * (attempt + 1)))
-        if (this.closed) return 'unconfirmed'
-      }
-    }
+  // ChannelInquiryChatView uploadAndSendImage: the bytes reach storage first, then the same canonical send the text
+  // path uses carries the download URL (iOS keeps it in text as well). Both are the queue's (inquiry-sends.ts): the
+  // photo is handed over with the message and goes when it can, under the message's id.
+  async sendPhoto(request: InquiryPhotoRequest, bytes: Uint8Array): Promise<'queued'> {
+    const state = this.requireRoom(request)
+    if (!bytes.byteLength || bytes.byteLength >= maxInquiryPhotoBytes) throw new Error(tr('10 MB 미만의 사진만 보낼 수 있습니다.'))
+    inquiryAttachmentPath(request.inquiryId, request.messageId, 'jpg')
+    await this.enqueue({ id: request.messageId, inquiryId: request.inquiryId,
+      message: { senderType: state.value.role, type: 'image', ...(request.caption ? { imageCaption: request.caption } : {}), ...this.replyFields(state, request.replyToId) },
+      preview: { kind: 'image', text: tr('사진') }, media: { bytes, extension: 'jpg', noun: tr('사진'), urlInText: true } })
+    return 'queued'
   }
   // A sticker of this device's library, sent into a room as it is sent into a chat: the object goes to the room's
   // own folder and the message is a «sticker» of the usual 512 by 512 (ChatRoomView.sendStickerMessage).
-  async sendSticker(request: InquiryTargetRequest, sticker: { extension: 'png' | 'gif' | 'webp' | 'mp4'; bytes: Buffer }): Promise<'sent' | 'unconfirmed'> {
-    const state = this.requireThread(request)
-    const validate = (): void => {
-      this.allowed()
-      if (this.closed || this.locked || this.thread !== state) throw new Error(tr('문의를 다시 열어 주세요.'))
-    }
-    validate()
-    const url = await uploadInquiryAttachment(this.auth, this.uid,
-      { inquiryId: request.inquiryId, messageId: request.messageId, bytes: sticker.bytes, extension: sticker.extension, noun: tr('스티커'),
-        sha256: createHash('sha256').update(sticker.bytes).digest('hex'), md5: createHash('md5').update(sticker.bytes).digest('base64') },
-      AbortSignal.any([this.auth.signal, AbortSignal.timeout(180000)]), () => {}, validate)
-    const payload = { inquiryId: request.inquiryId, clientMessageId: request.messageId, senderId: this.uid, senderType: state.value.role,
-      type: 'sticker', text: '', mediaUrl: url, mediaWidthPx: stickerSidePx, mediaHeightPx: stickerSidePx }
-    try { await this.callSend(payload, validate); return 'sent' } catch (error) { throw error instanceof Error ? error : new Error(tr('스티커를 보내지 못했습니다.')) }
+  async sendSticker(request: InquiryTargetRequest, sticker: { extension: 'png' | 'gif' | 'webp' | 'mp4'; bytes: Buffer }): Promise<'queued'> {
+    const state = this.requireRoom(request)
+    inquiryAttachmentPath(request.inquiryId, request.messageId, sticker.extension)
+    if (!sticker.bytes.byteLength || sticker.bytes.byteLength >= maxInquiryAttachmentBytes) throw new Error(tr('스티커를 보내지 못했습니다.'))
+    await this.enqueue({ id: request.messageId, inquiryId: request.inquiryId,
+      message: { senderType: state.value.role, type: 'sticker', text: '', mediaWidthPx: stickerSidePx, mediaHeightPx: stickerSidePx },
+      preview: { kind: 'sticker', text: tr('스티커') }, media: { bytes: sticker.bytes, extension: sticker.extension, noun: tr('스티커'), urlInText: false } })
+    return 'queued'
   }
   // ChannelInquiryChatView also sends videos and files. One is picked into this room's staging; a
   // video must be one (the picker also lists photos, which go through the photo send instead).
@@ -444,120 +482,74 @@ export class ChannelInquiries {
   }
   // Stored the way iOS stores it, then sent with the fields iOS sends (ChannelInquiryService.sendMessage):
   // a video's caption in text with its length, a file's name in text and fileName with its size. A video
-  // also carries its size and thumbnail, which the server keeps and Telegram clients send.
-  async sendAttachment(request: InquiryAttachmentRequest, video: VideoFacts | null): Promise<'sent' | 'unconfirmed'> {
-    const state = this.requireThread(request)
-    const validate = (): void => {
-      this.allowed()
-      if (this.closed || this.locked || this.thread !== state) throw new Error(tr('문의를 다시 열어 주세요.'))
-    }
-    validate()
+  // also carries its size and thumbnail, which the server keeps and Telegram clients send. The staged file is put down
+  // only once the queue holds it.
+  async sendAttachment(request: InquiryAttachmentRequest, video: VideoFacts | null): Promise<'queued'> {
+    const state = this.requireRoom(request)
     const part = this.attachments.take(request.inquiryId, request.draftId, request.itemId)
     if (!part || (part.kind !== 'video' && part.kind !== 'file')) throw new Error(tr('첨부를 다시 선택해 주세요.'))
     const kind = part.kind, noun = kind === 'video' ? tr('동영상') : tr('파일')
     try {
+      if (!part.bytes.byteLength || part.bytes.byteLength >= maxInquiryAttachmentBytes) throw new Error(tr('50 MB 미만의 {0}만 보낼 수 있습니다.', [noun]))
       const extension = kind === 'file' ? 'bin' : part.extension === 'mov' ? 'mov' : 'mp4'
-      const url = await uploadInquiryAttachment(this.auth, this.uid,
-        { inquiryId: request.inquiryId, messageId: request.messageId, bytes: part.bytes, extension, noun,
-          sha256: createHash('sha256').update(part.bytes).digest('hex'), md5: createHash('md5').update(part.bytes).digest('base64') },
-        AbortSignal.any([this.auth.signal, AbortSignal.timeout(600000)]), () => {}, validate)
-      const payload = { inquiryId: request.inquiryId, clientMessageId: request.messageId, senderId: this.uid, senderType: state.value.role, mediaUrl: url,
-        ...inquiryAttachmentFields(kind, part.name, part.size, request.caption, video), ...this.replyFields(state, request.replyToId) }
-      for (let attempt = 0; ; attempt++) {
-        validate()
-        try { await callMorseFunction(this.auth, 'sendMorseInquiryMessage', payload, AbortSignal.timeout(65000)); this.attachments.clear(request.draftId); return 'sent' }
-        catch (error) {
-          if (!(error instanceof MorseCallableFailure && error.uncertain)) throw new Error(tr('{0}을(를) 보내지 못했습니다. 연결과 채널 구독 상태를 확인해 주세요.', [noun]))
-          if (attempt >= 2) { this.attachments.clear(request.draftId); return 'unconfirmed' }
-          await new Promise(resolve => setTimeout(resolve, 1500 * (attempt + 1)))
-          if (this.closed) return 'unconfirmed'
-        }
-      }
+      inquiryAttachmentPath(request.inquiryId, request.messageId, extension)
+      await this.enqueue({ id: request.messageId, inquiryId: request.inquiryId,
+        message: { senderType: state.value.role, ...inquiryAttachmentFields(kind, part.name, part.size, request.caption, video), ...this.replyFields(state, request.replyToId) },
+        preview: { kind, text: kind === 'video' ? tr('동영상') : part.name }, media: { bytes: part.bytes, extension, noun, urlInText: false } })
+      this.attachments.clear(request.draftId)
+      return 'queued'
     } finally { part.bytes.fill(0) }
   }
   // ChannelInquiryChatView.uploadAndSendVideo(isCircle: true): a video message recorded here, stored as MP4 and
   // sent as a round video with its square size, whole seconds and thumbnail.
-  async sendRoundVideo(request: InquiryTargetRequest & { replyToId?: string }, bytes: Uint8Array, facts: { duration: number; thumb: string }, side: number): Promise<'sent' | 'unconfirmed'> {
-    const state = this.requireThread(request)
-    const validate = (): void => {
-      this.allowed()
-      if (this.closed || this.locked || this.thread !== state) throw new Error(tr('문의를 다시 열어 주세요.'))
-    }
-    validate()
+  async sendRoundVideo(request: InquiryTargetRequest & { replyToId?: string }, bytes: Uint8Array, facts: { duration: number; thumb: string }, side: number): Promise<'queued'> {
+    const state = this.requireRoom(request)
     const source = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
     const type = mediaType(source)
     if (type.kind !== 'video' || type.extension !== 'mp4' || source.length >= 50 * 1024 * 1024) throw new Error(tr('녹화한 영상 메시지의 형식이나 크기를 확인해 주세요.'))
-    const url = await uploadInquiryAttachment(this.auth, this.uid,
-      { inquiryId: request.inquiryId, messageId: request.messageId, bytes: source, extension: 'mp4', noun: tr('영상 메시지'),
-        sha256: createHash('sha256').update(source).digest('hex'), md5: createHash('md5').update(source).digest('base64') },
-      AbortSignal.any([this.auth.signal, AbortSignal.timeout(600000)]), () => {}, validate)
-    const payload = { inquiryId: request.inquiryId, clientMessageId: request.messageId, senderId: this.uid, senderType: state.value.role, mediaUrl: url,
-      ...inquiryAttachmentFields('video', 'video-message.mp4', source.length, '', { duration: facts.duration, width: side, height: side, thumb: facts.thumb }), isCircleVideo: true,
-      ...this.replyFields(state, request.replyToId) }
-    for (let attempt = 0; ; attempt++) {
-      validate()
-      try { await callMorseFunction(this.auth, 'sendMorseInquiryMessage', payload, AbortSignal.timeout(65000)); return 'sent' }
-      catch (error) {
-        if (!(error instanceof MorseCallableFailure && error.uncertain)) throw new Error(tr('영상 메시지를 보내지 못했습니다. 연결과 채널 구독 상태를 확인해 주세요.'))
-        if (attempt >= 2) return 'unconfirmed'
-        await new Promise(resolve => setTimeout(resolve, 1500 * (attempt + 1)))
-        if (this.closed) return 'unconfirmed'
-      }
-    }
+    inquiryAttachmentPath(request.inquiryId, request.messageId, 'mp4')
+    await this.enqueue({ id: request.messageId, inquiryId: request.inquiryId,
+      message: { senderType: state.value.role, ...inquiryAttachmentFields('video', 'video-message.mp4', source.length, '', { duration: facts.duration, width: side, height: side, thumb: facts.thumb }), isCircleVideo: true,
+        ...this.replyFields(state, request.replyToId) },
+      preview: { kind: 'video', text: tr('영상 메시지') }, media: { bytes: source, extension: 'mp4', noun: tr('영상 메시지'), urlInText: false } })
+    return 'queued'
   }
   // ChannelInquiryChatView.uploadAndSendVoice: the recording is stored as M4A, then sent with its whole
-  // seconds and waveform and no text.
-  async sendVoice(request: InquiryVoiceRequest, bytes: Uint8Array): Promise<'sent' | 'unconfirmed'> {
-    const state = this.requireThread(request)
-    const validate = (): void => {
-      this.allowed()
-      if (this.closed || this.locked || this.thread !== state) throw new Error(tr('문의를 다시 열어 주세요.'))
-    }
-    validate()
+  // seconds and waveform and no text. The capture is put down by the caller only once the queue holds it.
+  async sendVoice(request: InquiryVoiceRequest, bytes: Uint8Array): Promise<'queued'> {
+    const state = this.requireRoom(request)
     const source = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
     if (source.length < 16 || source.length >= maxVoiceCaptureBytes) throw new Error(tr('녹음 크기를 확인해 주세요.'))
     forwardMediaFormat('voice', source)
-    const url = await uploadInquiryAttachment(this.auth, this.uid,
-      { inquiryId: request.inquiryId, messageId: request.messageId, bytes: source, extension: 'm4a', noun: tr('음성 메시지'),
-        sha256: createHash('sha256').update(source).digest('hex'), md5: createHash('md5').update(source).digest('base64') },
-      AbortSignal.any([this.auth.signal, AbortSignal.timeout(180000)]), () => {}, validate)
-    const payload = { inquiryId: request.inquiryId, clientMessageId: request.messageId, senderId: this.uid, senderType: state.value.role,
-      ...inquiryVoiceFields(url, request.duration, request.waveform), ...this.replyFields(state, request.replyToId) }
-    for (let attempt = 0; ; attempt++) {
-      validate()
-      try { await callMorseFunction(this.auth, 'sendMorseInquiryMessage', payload, AbortSignal.timeout(65000)); return 'sent' }
-      catch (error) {
-        if (!(error instanceof MorseCallableFailure && error.uncertain)) throw new Error(tr('음성 메시지를 보내지 못했습니다. 연결과 채널 구독 상태를 확인해 주세요.'))
-        if (attempt >= 2) return 'unconfirmed'
-        await new Promise(resolve => setTimeout(resolve, 1500 * (attempt + 1)))
-        if (this.closed) return 'unconfirmed'
-      }
-    }
+    inquiryAttachmentPath(request.inquiryId, request.messageId, 'm4a')
+    const { mediaUrl: _url, ...voice } = inquiryVoiceFields('', request.duration, request.waveform)
+    const seconds = Math.max(1, Math.round(request.duration))
+    await this.enqueue({ id: request.messageId, inquiryId: request.inquiryId,
+      message: { senderType: state.value.role, ...voice, ...this.replyFields(state, request.replyToId) },
+      preview: { kind: 'voice', text: tr('음성 메시지 · {0}:{1}', [Math.floor(seconds / 60), String(seconds % 60).padStart(2, '0')]) },
+      media: { bytes: source, extension: 'm4a', noun: tr('음성 메시지'), urlInText: false } })
+    return 'queued'
   }
-  // markMorseInquiryRead: the newest message from the other side, once, while the room is on screen.
+  // markMorseInquiryRead: the newest message from the other side, once, while the room is on screen. One this side
+  // deleted for itself counts too: deleting it is past reading it, and the server counts unread messages after the
+  // position it is given, so a room whose unread messages were all deleted here would otherwise keep counting them
+  // (Telegram leaves deleted messages out of the unread count).
   private markRead(state: ThreadState): void {
-    const latest = [...state.value.items].reverse().find(item => !item.own)
+    const latest = newestFromOther(state.rows.values(), this.uid)
     if (!latest || state.marked === latest.id || state.marking || this.locked || this.closed || !this.foreground()) return
     state.marking = true
     void callMorseFunction(this.auth, 'markMorseInquiryRead', { inquiryId: state.request.inquiryId, messageId: latest.id, expectedUid: this.uid }, AbortSignal.timeout(65000))
       .then(() => { state.marking = false; state.marked = latest.id; if (this.thread === state) this.markRead(state) }, () => { state.marking = false })
   }
 
-  // sendMorseInquiryMessage accepts one message per client id, so an unconfirmed attempt is repeated with the same id.
-  async send(request: InquiryTextRequest & { replyToId?: string }): Promise<'sent' | 'unconfirmed'> {
-    const state = this.requireThread(request)
-    const payload = { inquiryId: request.inquiryId, clientMessageId: request.messageId, senderId: this.uid, senderType: state.value.role, type: 'text', text: request.text,
-      ...this.replyFields(state, request.replyToId) }
-    for (let attempt = 0; ; attempt++) {
-      this.allowed()
-      try { await callMorseFunction(this.auth, 'sendMorseInquiryMessage', payload, AbortSignal.timeout(65000)); return 'sent' }
-      catch (error) {
-        if (!(error instanceof MorseCallableFailure && error.uncertain)) throw new Error(tr('메시지를 보내지 못했습니다. 연결과 채널 구독 상태를 확인해 주세요.'))
-        if (attempt >= 2) return 'unconfirmed'
-        await new Promise(resolve => setTimeout(resolve, 1500 * (attempt + 1)))
-        if (this.closed) return 'unconfirmed'
-      }
-    }
+  // sendMorseInquiryMessage accepts one message per client id, so the queue sends it again under that id until the
+  // server has it (inquiry-sends.ts).
+  async send(request: InquiryTextRequest & { replyToId?: string }): Promise<'queued'> {
+    const state = this.requireRoom(request)
+    await this.enqueue({ id: request.messageId, inquiryId: request.inquiryId,
+      message: { senderType: state.value.role, type: 'text', text: request.text, ...this.replyFields(state, request.replyToId) },
+      preview: { kind: 'text', text: request.text } })
+    return 'queued'
   }
   // The message a send answers must be one of this room, and not a notice line: what the room shows, the send says.
   private replyFields(state: ThreadState, replyToId?: string): { replyToId?: string } {
@@ -569,44 +561,34 @@ export class ChannelInquiries {
 
   // A message forwarded into a room, from a chat or from another room. Telegram re-sends the content, so it goes in
   // through the room's own send (sendMorseInquiryMessage) — the room does not have to be open, and the server decides
-  // the sender's side from the room document, as it does for every message of a room.
+  // the sender's side from the room document, as it does for every message of a room. Each part is handed to the queue
+  // under an id of its own, which it keeps however many times it has to go.
   async deliverForward(inquiryId: string, content: { kind: 'text'; text: string } | { kind: 'media'; media: PreparedForwardMedia }, validate: () => void): Promise<void> {
     this.allowed(); validate()
     const doc = await this.source.getDocument(`${documents}/channelInquiries/${inquiryId}`, this.signal())
     if (!doc) throw new Error(tr('문의를 찾을 수 없습니다.'))
     const inquiry = decodeInquiry(doc, this.uid)
     validate()
-    if (content.kind === 'text') { await this.callSend({ inquiryId, clientMessageId: randomUUID().toUpperCase(), senderId: this.uid, senderType: inquiry.role, type: 'text', text: content.text }, validate); return }
+    if (content.kind === 'text') {
+      await this.enqueue({ id: randomUUID().toUpperCase(), inquiryId, message: { senderType: inquiry.role, type: 'text', text: content.text }, preview: { kind: 'text', text: content.text } })
+      return
+    }
     const media = content.media
     if (media.kind === 'sticker') throw new Error(tr('스티커는 문의방으로 전달할 수 없습니다.'))
     const noun = media.kind === 'video' ? tr('동영상') : media.kind === 'voice' ? tr('음성 메시지') : media.kind === 'file' ? tr('파일') : tr('사진')
     for (const [index, part] of media.parts.entries()) {
       validate()
-      const messageId = randomUUID().toUpperCase()
-      const url = await uploadInquiryAttachment(this.auth, this.uid,
-        { inquiryId, messageId, bytes: part.bytes, extension: inquiryAttachmentExtension(part.extension), noun, sha256: part.sha256, md5: part.md5 },
-        AbortSignal.any([this.auth.signal, AbortSignal.timeout(600000)]), () => {}, validate)
+      const messageId = randomUUID().toUpperCase(), extension = inquiryAttachmentExtension(part.extension)
+      if (!part.bytes.byteLength || part.bytes.byteLength >= maxInquiryAttachmentBytes) throw new Error(tr('50 MB 미만의 {0}만 보낼 수 있습니다.', [noun]))
       // Only the first message of an album carries the caption, as one message carried it before.
       const caption = index === 0 ? media.caption : ''
-      const common = { inquiryId, clientMessageId: messageId, senderId: this.uid, senderType: inquiry.role, mediaUrl: url }
-      const payload = media.kind === 'image' ? { ...common, type: 'image', text: url, ...(caption ? { imageCaption: caption } : {}) }
-        : media.kind === 'voice' ? { ...common, ...inquiryVoiceFields(url, media.metadata.voiceDuration ?? 1, media.metadata.voiceWaveform ?? []) }
-          : { ...common, ...inquiryAttachmentFields(media.kind === 'video' ? 'video' : 'file', part.name, part.bytes.length, caption,
-            media.kind === 'video' ? { duration: media.metadata.videoDuration ?? 0, width: media.metadata.videoWidthPx ?? 0, height: media.metadata.videoHeightPx ?? 0, thumb: media.metadata.thumbData ?? '' } : null) }
-      await this.callSend(payload, validate)
-    }
-  }
-  // One send of a room, repeated only while the answer is uncertain, as every send of a room is.
-  private async callSend(payload: Record<string, unknown>, validate: () => void): Promise<void> {
-    for (let attempt = 0; ; attempt++) {
-      validate()
-      try { await callMorseFunction(this.auth, 'sendMorseInquiryMessage', payload, AbortSignal.timeout(65000)); return }
-      catch (error) {
-        if (!(error instanceof MorseCallableFailure && error.uncertain)) throw new Error(tr('문의방으로 전달하지 못했습니다. 연결과 채널 구독 상태를 확인해 주세요.'))
-        if (attempt >= 2) return
-        await new Promise(resolve => setTimeout(resolve, 1500 * (attempt + 1)))
-        if (this.closed) return
-      }
+      const voice = media.kind === 'voice' ? (({ mediaUrl: _url, ...fields }) => fields)(inquiryVoiceFields('', media.metadata.voiceDuration ?? 1, media.metadata.voiceWaveform ?? [])) : null
+      const message = media.kind === 'image' ? { type: 'image', ...(caption ? { imageCaption: caption } : {}) }
+        : voice ?? inquiryAttachmentFields(media.kind === 'video' ? 'video' : 'file', part.name, part.bytes.length, caption,
+          media.kind === 'video' ? { duration: media.metadata.videoDuration ?? 0, width: media.metadata.videoWidthPx ?? 0, height: media.metadata.videoHeightPx ?? 0, thumb: media.metadata.thumbData ?? '' } : null)
+      const kind = media.kind === 'image' ? 'image' : media.kind === 'voice' ? 'voice' : media.kind === 'video' ? 'video' : 'file'
+      await this.enqueue({ id: messageId, inquiryId, message: { senderType: inquiry.role, ...message },
+        preview: { kind, text: kind === 'file' ? part.name : noun }, media: { bytes: part.bytes, extension, noun, urlInText: media.kind === 'image' } })
     }
   }
   // «모두에게 고정» / «고정 해제»: the room document keeps the ids, as a chat does (AppState.pinMessageForAll).
@@ -678,21 +660,40 @@ export class ChannelInquiries {
     try { await this.source.deleteInquiryMessage(request.inquiryId, request.messageId, this.signal()) }
     catch (error) { throw new Error(error instanceof DocumentWriteFailure && error.uncertain ? tr('삭제 결과를 확인하지 못했습니다. 잠시 후 대화를 확인해 주세요.') : tr('메시지를 삭제하지 못했습니다.')) }
   }
+  // A4: the boundary is the newest message this device has from the server when the person presses (not one still on
+  // its way), and the room here drops everything up to it at once, as Telegram does up to max_id. What stays after that
+  // follows the room document's own boundary (historyRevokedAt), not the answer's.
   async clear(request: InquiryThreadRequest): Promise<'done' | 'unconfirmed'> {
     const state = this.requireThread(request)
     this.allowed()
-    let result: Record<string, unknown>
-    try { result = await callMorseFunction(this.auth, 'clearMorseInquiryHistory', { inquiryId: request.inquiryId }, AbortSignal.timeout(65000)) }
-    catch (error) {
-      if (error instanceof MorseCallableFailure && error.uncertain) return 'unconfirmed'
-      throw new Error(tr('대화 기록을 삭제하지 못했습니다.'))
-    }
-    if (this.thread === state && state.inquiry) {
-      const cutoff = typeof result.cutoff === 'number' ? result.cutoff : Date.now()
-      state.inquiry.cutoff = cutoff
-      state.value = { ...state.value, items: state.value.items.filter(item => item.createdAt !== null && item.createdAt > cutoff) }
+    const newest = state.value.items.filter(item => item.createdAt !== null).reduce<InquiryMessageItem | null>((last, item) => !last || item.createdAt! > last.createdAt! ? item : last, null)
+    const upTo = newest ? { messageId: newest.id, createdAtMillis: Math.floor(newest.createdAt!) } : null
+    if (newest && this.thread === state) {
+      state.value = { ...state.value, items: state.value.items.filter(item => item.createdAt === null || item.createdAt > newest.createdAt!) }
       this.changed()
     }
+    return this.clearHistory({ id: randomUUID(), kind: 'inquiry-clear', targetId: request.inquiryId, seen: null, upTo })
+  }
+
+  // iOS ChannelInquiryService.deleteInquiry: the room is one document both sides read, so removing it
+  // removes the conversation for the other person as well. Its messages go through the same server call
+  // «대화 기록 모두 삭제» uses — it pages through them and leaves a cleanup job behind — and then the
+  // room itself. A room already gone is not an error.
+  async deleteRoom(inquiryId: string): Promise<'done' | 'unconfirmed'> {
+    this.allowed()
+    const reader = this.source
+    const doc = await reader.getDocument(`${documents}/channelInquiries/${inquiryId}`, this.signal())
+      .catch(() => { throw new Error(tr('문의를 불러오지 못했습니다. 연결을 확인해 주세요.')) })
+    if (!doc) return 'done'
+    decodeInquiry(doc, this.uid)
+    try { await callMorseFunction(this.auth, 'clearMorseInquiryHistory', { inquiryId }, AbortSignal.timeout(65000)) }
+    catch (error) {
+      if (error instanceof MorseCallableFailure && error.uncertain) return 'unconfirmed'
+      throw new Error(tr('문의를 삭제하지 못했습니다.'))
+    }
+    try { await reader.deleteInquiryRoom(inquiryId, this.signal()) } catch { return 'unconfirmed' }
+    if (this.thread?.request.inquiryId === inquiryId) this.closeThread()
+    await this.forgetRoom(inquiryId).catch(() => {})
     return 'done'
   }
 

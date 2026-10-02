@@ -8,6 +8,15 @@
 const neverSent = new Set(['UND_ERR_CONNECT_TIMEOUT', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH', 'ENETDOWN', 'ENOTFOUND', 'EAI_AGAIN'])
 const delays = [1000, 2000, 4000]
 
+// A failure's short name for connection-check.log: the errno or failure code it carries, else its class. Never its
+// text, which can hold an address or an account's data.
+export function causeCode(error: unknown): string {
+  const cause = error instanceof Error && error.cause && typeof error.cause === 'object' ? (error.cause as { code?: unknown }).code : undefined
+  if (typeof cause === 'string' && /^[\w:.-]{1,40}$/.test(cause)) return cause
+  const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
+  if (typeof code === 'string' && /^[\w:.-]{1,40}$/.test(code)) return code
+  return error instanceof Error ? error.name.slice(0, 40) : typeof error
+}
 export function unsentReason(error: unknown): string {
   const cause = error instanceof Error ? error.cause : null
   const code = cause && typeof cause === 'object' ? (cause as { code?: unknown }).code : undefined

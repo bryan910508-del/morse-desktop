@@ -2,7 +2,9 @@ import { io, type Socket } from 'socket.io-client'
 import type { ChatMessage, ConnectionState, MessagePosition, SendAcknowledgement, SendWire } from '../../shared/model'
 import type { ReadAcknowledgement } from '../../shared/read-receipts'
 import { committedReadAck, committedSendAck, incomingMessage, NotEmitted, ProtocolFailure, serverContract } from './contracts'
+import { registrationDelay, registrationOutcome } from './registration-outcome'
 import { tr } from '../../shared/i18n'
+import { reachability } from './reachability'
 
 export interface SessionCredentials {
   uid: string
@@ -14,6 +16,9 @@ export interface TransportEvents {
   message(message: ChatMessage): void
   needsReconciliation(): void
   rejected?(reason: string): void
+  // A refusal that may mean the sign-in is gone (registration-outcome.ts 'confirm'): the account asks the server
+  // (startMorseDeviceSession) and says whether it answered «session-revoked», confirmed the session, or could not tell.
+  confirm?(): Promise<'revoked' | 'confirmed' | 'unknown'>
   // A line for connection-check.log: the step and a reason, nothing that names the account.
   step?(step: string, detail?: string): void
   // reactionUpdated (docs/reaction-socket-contract-2026-09-22.md §3): a message's full reaction state, sent to every
@@ -48,8 +53,11 @@ export class SocketMessageTransport {
   private fallback = false
   private everConnected = false
   private connectFailures = 0
+  // Listening for the network coming back (reachability.ts) while this connection is being made.
+  private unsubscribe: (() => void) | null = null
 
-  constructor(private readonly version: string, private readonly events: TransportEvents) {}
+  // open: how a Socket.IO connection is made (a stand-in in unit tests).
+  constructor(private readonly version: string, private readonly events: TransportEvents, private readonly open: typeof io = io) {}
   get ready(): boolean { return this.currentState === 'ready' }
   get state(): ConnectionState { return this.currentState }
   private transition(value: ConnectionState): void { this.currentState = value; this.events.state(value) }
@@ -71,13 +79,20 @@ export class SocketMessageTransport {
     // its connect timeout grows from one second to eight (kMinConnectedTimeout 1000,
     // kMaxConnectedTimeout 8000). The long poll is kept for a network where the websocket never works
     // at all — see fallbackAfter — not as the way every connection starts.
-    const socket = io(serverContract.socketURL, {
+    const socket = this.open(serverContract.socketURL, {
       autoConnect: false, reconnection: true, reconnectionAttempts: Infinity,
       reconnectionDelay: 1000, reconnectionDelayMax: 30000, randomizationFactor: 0.5,
       transports: this.fallback ? ['polling', 'websocket'] : ['websocket'], timeout: 5000
     })
     this.socket = socket
     const active = (): boolean => generation === this.generation && socket === this.socket
+    // SessionPrivate::restartNow: when the network is back, a connection still waiting to reconnect is made again
+    // now instead of after Socket.IO's own wait (reconnectionDelay growing to reconnectionDelayMax, 30 s).
+    this.unsubscribe = reachability.subscribe(reason => {
+      if (!active() || (this.currentState !== 'connecting' && this.currentState !== 'offline')) return
+      this.events.step?.('restart-now', reason)
+      this.connect(credentials, forceRefresh)
+    })
     const register = async (): Promise<void> => {
       if (!active() || !socket.connected) return
       const cycle = this.invalidateRegistration()
@@ -128,7 +143,7 @@ export class SocketMessageTransport {
       if (!active() || !socket.connected || this.currentState !== 'registering') return
       const cycle = this.invalidateRegistration()
       this.registerAttempt += 1
-      const delay = Math.min(30000, 1000 * 2 ** Math.min(this.registerAttempt, 5)) * (0.8 + Math.random() * 0.4)
+      const delay = registrationDelay(this.registerAttempt)
       this.registrationTimer = setTimeout(() => {
         if (active() && cycle === this.registrationCycle && this.currentState === 'registering') void register()
       }, delay)
@@ -174,24 +189,57 @@ export class SocketMessageTransport {
       this.registerAttempt = 0
       this.events.step?.(renewed ? 'renewed' : 'registered')
       if (!renewed) this.transition('ready')
+      // A socket that registers has the network: anything else still waiting for it goes now.
+      if (!renewed) reachability.returned('socket')
       scheduleRenewal()
       // A renewal leaves the socket unregistered for a moment; what the server sent then is read again.
       this.events.needsReconciliation()
     })
+    // Telegram retries whatever the server says that is not «this sign-in is gone» (registration-outcome.ts): the
+    // token is fetched again and the registration made again, a little later each time. Before registration that
+    // is a new `register` on this socket; after it — a renewal refused, or the server's own watch of the account
+    // failing and dropping the socket — the connection is made again, which registers again.
+    const retryLater = (): void => {
+      if (this.currentState === 'registering' && !this.renewing && socket.connected) { retryRegister(); return }
+      this.registerAttempt += 1
+      const delay = registrationDelay(this.registerAttempt)
+      this.stop('connecting')
+      const nextGeneration = this.generation
+      this.registrationTimer = setTimeout(() => { if (this.generation === nextGeneration) this.connect(credentials, true) }, delay)
+    }
+    // A5 contract §3-1: the socket's word that the sign-in may be gone is only a reason to ask. Only the server's
+    // «session-revoked» ends this connection as rejected (and the account signs out); a confirmed session, or an
+    // answer that did not come, registers again with a fresh token, a little later each time.
+    const confirmThenRetry = (reason: string): void => {
+      this.stop('connecting')
+      const nextGeneration = this.generation
+      const attempt = this.registerAttempt += 1
+      const asked = this.events.confirm ? this.events.confirm() : Promise.resolve('unknown' as const)
+      void asked.catch(() => 'unknown' as const).then(answer => {
+        if (this.generation !== nextGeneration) return
+        this.events.step?.('session-confirm', `${reason}:${answer}`)
+        if (answer === 'revoked') { this.events.rejected?.(reason); this.stop('rejected'); return }
+        this.registrationTimer = setTimeout(() => { if (this.generation === nextGeneration) this.connect(credentials, true) }, registrationDelay(attempt))
+      })
+    }
     socket.on('registrationFailed', (body: { reason?: string; error?: string }) => {
       if (!active()) return
       this.events.step?.('registration-failed', `${body?.error ?? ''}:${body?.reason ?? ''}${this.renewing ? ':renewing' : ''}`)
+      const outcome = registrationOutcome(body)
       // The server disconnects the namespace after token expiry. Socket.IO does
       // not automatically reconnect a server-disconnected namespace.
-      if (body?.reason === 'token-expired') {
+      if (outcome === 'renew') {
         this.stop('connecting')
         const nextGeneration = this.generation
         this.registrationTimer = setTimeout(() => {
           if (this.generation === nextGeneration) this.connect(credentials, true)
         }, 2000)
-      } else if (body?.error === 'SERVICE_UNAVAILABLE') retryRegister()
+      } else if (outcome === 'retry') retryLater()
+      else if (outcome === 'confirm') confirmThenRetry(typeof body?.reason === 'string' ? body.reason : '')
       else {
-        this.events.rejected?.(typeof body?.reason === 'string' ? body.reason : 'authentication-failed')
+        // A version this build cannot speak, or a malformed registration: the account is told why and keeps what it
+        // kept (auth/controller.ts connectionChanged).
+        this.events.rejected?.(typeof body?.reason === 'string' && body.reason ? body.reason : typeof body?.error === 'string' ? body.error : 'authentication-failed')
         this.stop('rejected')
       }
     })
@@ -265,6 +313,7 @@ export class SocketMessageTransport {
     if (credentials) this.connect(credentials)
   }
   stop(state: ConnectionState = 'offline'): void {
+    this.unsubscribe?.(); this.unsubscribe = null
     this.generation += 1
     this.invalidateRegistration()
     this.socket?.removeAllListeners()

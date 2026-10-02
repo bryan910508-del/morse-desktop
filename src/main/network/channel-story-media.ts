@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto'
 import { object } from '../../shared/validation'
 import type { ReadCredentials } from './firestore-rpc'
+import { callMorseFunction } from './morse-callable'
 import { storageBucket } from '../media/media-document'
 
 // Files of channel stories. Reading goes through authorizeMorseMediaRead, which checks the story document
 // (not expired, not hidden from this person, and the channel public or this person its owner, admin or
 // subscriber) before Storage answers; writing is the channel owner's, with ownerUid and storyId metadata as
 // iOS StoryService.commitUpload sets them.
-const grantURL = 'https://asia-northeast3-talky-a38c3.cloudfunctions.net/authorizeMorseMediaRead'
 
 async function body(response: Response, max: number, signal: AbortSignal): Promise<Buffer> {
   const header = response.headers.get('content-length'), length = header === null ? null : Number(header)
@@ -41,19 +41,13 @@ export function channelStoryObject(address: string, channelId: string): string |
 }
 
 export async function downloadChannelStoryFile(auth: ReadCredentials, path: string, storyId: string, authorId: string, types: string[], maxBytes: number, signal: AbortSignal): Promise<{ bytes: Buffer; contentType: string }> {
+  const resourceURL = `gs://${storageBucket}/${path}`
+  // The grant is the one callable of a read; morse-callable.ts sends it again while the connection was never made.
+  const grant = await callMorseFunction(auth, 'authorizeMorseMediaRead', { resourceURL }, signal, { limit: 64 * 1024 })
+  if (grant.ok !== true || grant.resourceURL !== resourceURL) throw new Error('Channel story authorization denied')
+  signal.throwIfAborted()
   const authorization = await auth.authorize(signal, false)
   signal.throwIfAborted()
-  const resourceURL = `gs://${storageBucket}/${path}`
-  const grant = await fetch(grantURL, {
-    method: 'POST', signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken },
-    body: JSON.stringify({ data: { resourceURL } })
-  })
-  const answer = await body(grant, 64 * 1024, signal)
-  try {
-    const wire = object(JSON.parse(answer.toString('utf8'))), result = object(wire.result ?? wire.data)
-    if (wire.error !== undefined || result.ok !== true || result.resourceURL !== resourceURL) throw new Error('Channel story authorization denied')
-  } finally { answer.fill(0) }
   const endpoint = `https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}`
   const get = (url: string): Promise<Response> => fetch(url, { signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
     headers: { Authorization: `Firebase ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken } })

@@ -1,4 +1,4 @@
-import { comparePosition, positionAt, positionMilliseconds, type DialogSummary, type MessagePosition } from '../../shared/model'
+import { comparePosition, positionAt, positionMilliseconds, withinCutoff, type DialogSummary, type MessagePosition } from '../../shared/model'
 import type { HiddenChatCommand } from '../storage/hidden-chat-table'
 import type { ReadDialog } from '../network/firestore-values'
 import { tr } from '../../shared/i18n'
@@ -105,7 +105,7 @@ export class HiddenChats {
 export function withLocalDeletion(dialog: ReadDialog, deleted: MessagePosition | null): void {
   if (!deleted || (dialog.cutoff && comparePosition(dialog.cutoff, deleted) >= 0)) return
   dialog.cutoff = deleted
-  if (!dialog.summary.top || comparePosition(dialog.summary.top, deleted) < 0) dialog.summary.preview = ''
+  if (!dialog.summary.top || withinCutoff(dialog.summary.top, deleted)) dialog.summary.preview = ''
 }
 
 // A private room whose history was deleted for everyone and that has nothing after that boundary has no last
@@ -118,5 +118,5 @@ export function withLocalDeletion(dialog: ReadDialog, deleted: MessagePosition |
 // iOS's «메시지 비우기» clears it on the server, which writes exactly the boundary this rule reads.
 export function emptyRevokedDirect(summary: DialogSummary, revoked: MessagePosition | null, savedId = ''): boolean {
   if (savedId && summary.id === savedId) return false
-  return summary.kind === 'direct' && revoked !== null && (!summary.top || comparePosition(summary.top, revoked) < 0)
+  return summary.kind === 'direct' && revoked !== null && (!summary.top || withinCutoff(summary.top, revoked))
 }

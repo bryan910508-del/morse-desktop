@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, CheckCheck, CircleAlert, Clock, Clock3, Copy, Download, EllipsisVertical, File as FileIcon, Film, Forward, Image as ImageIcon, Mic, Pencil, Pin, PinOff, Plus, Reply, RotateCcw, Send, Smile, Sticker, Timer, Trash2, X } from 'lucide-react'
-import { inquiryChatMessage, maxInquiryText, type InquiryMessageItem } from '../../../shared/channel-inquiries'
+import { ArrowLeft, CheckCheck, CircleAlert, Clock, Clock3, Copy, Download, EllipsisVertical, File as FileIcon, Film, Flag, Forward, Image as ImageIcon, Mic, Pencil, Pin, PinOff, Plus, Reply, RotateCcw, Send, Smile, Sticker, Timer, Trash2, UserPlus, X } from 'lucide-react'
+import { inquiryChatMessage, maxInquiryText, ownedChannelDiscussion, type InquiryMessageItem } from '../../../shared/channel-inquiries'
 import type { ChatMessage } from '../../../shared/model'
 import { readCovers, readCursor } from '../../../shared/read-receipts'
 import { canForwardMessage } from '../../../shared/forward'
@@ -10,7 +10,7 @@ import { prepareChannelPostPhoto } from '../photos/prepare-channel-post-photo'
 import { composingKey } from '../../../shared/shortcuts'
 import { useDesktop } from '../app/store'
 import { controller } from '../app/ui'
-import { dialogTime, errorText, messageTime, sameDay, serviceDate } from '../app/format'
+import { dialogTime, errorText, messageTime, positionTime, sameDay, serviceDate } from '../app/format'
 import { copyText } from '../app/clipboard'
 import { trackWrite } from '../app/drafts'
 import { Spinner, TextField } from '../ui/controls'
@@ -18,6 +18,9 @@ import { Box, confirmBox } from '../ui/layers'
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { showInquiryThread } from './channel-ui'
 import { UserAvatar } from '../ui/user-avatar'
+import { ActionRow, ContactProfile } from '../info/info-panel'
+import { showReportBox } from '../boxes/report-box'
+import { Avatar, PeerAvatar } from '../ui/avatar'
 import { LocalMessageView, MessageView, type MessageLayout } from '../history/message'
 import { chooseDeletion, ReactionStrip, saveAttachment, saveSticker } from '../history/history-widget'
 import { EntityPanel } from '../history/entity-panel'
@@ -30,7 +33,7 @@ import { autoDeleteSummary } from '../../../shared/chat-auto-delete'
 import { InquiryVoiceBar, type InquiryVoiceSend } from './inquiry-voice'
 import { RecordButton, type HeldRef } from '../history/record-button'
 import { RoundVideoRecorder, type RoundVideoTarget } from '../history/round-video-record'
-import { inquiryRetry, markInquirySent, setInquiryRetry, updateInquiryPending, useInquiryPending, useInquirySendState, type PendingEntry } from './inquiry-sends'
+import { useInquiryPending, useInquirySendState, type PendingEntry } from './inquiry-sends'
 import { tr } from '../../../shared/i18n'
 
 function InquiryList({ accountUid, channelId }: { accountUid: string; channelId: string }) {
@@ -40,10 +43,21 @@ function InquiryList({ accountUid, channelId }: { accountUid: string; channelId:
     return () => { void window.morse.closeInquiryList(accountUid, requestId).catch(() => {}) }
   }, [accountUid, channelId, requestId])
   const list = useDesktop(state => { const value = state?.channelInquiries?.list; return value?.requestId === requestId ? value : null })
-  if (!list || (list.status === 'loading' && !list.items.length)) return <div className="empty-state"><Spinner size={22} /></div>
+  // iOS MorseChannelInquiryFolderViewController: the channel's discussion room is the folder's first row —
+  // the room has no row of its own in the chat list, and this is the way into it from there.
+  const discussion = useDesktop(state => state?.dialogs.find(dialog => ownedChannelDiscussion(dialog, accountUid) === channelId) ?? null)
+  const room = discussion ? <button type="button" className="inquiry-row" onClick={() => controller.openChat(discussion.id)}>
+    <PeerAvatar id={discussion.id} name={discussion.title} image={discussion.avatar} size={42} surface="dialogs" />
+    <span className="inquiry-row-body">
+      <span className="inquiry-row-line"><strong className="ellipsis">{tr('토론방')}</strong><time>{dialogTime(positionTime(discussion.top))}</time></span>
+      <span className="inquiry-row-line"><span className="inquiry-row-preview ellipsis">{discussion.preview || tr('메시지 없음')}</span>
+        {discussion.unreadCount > 0 && <span className="inquiry-row-badge">{discussion.unreadCount > 999 ? '999+' : discussion.unreadCount}</span>}</span>
+    </span>
+  </button> : null
+  if (!list || (list.status === 'loading' && !list.items.length)) return room ? <div className="inquiry-list">{room}</div> : <div className="empty-state"><Spinner size={22} /></div>
   if (list.status === 'error') return <div className="empty-state">{list.message || tr('문의 목록을 불러오지 못했습니다.')}</div>
-  if (!list.items.length) return <div className="empty-state">{tr('아직 받은 1:1 문의가 없습니다.')}</div>
-  return <div className="inquiry-list">{list.items.map(item => <InquiryListRow key={item.id} accountUid={accountUid} channelId={channelId} item={item} />)}</div>
+  if (!list.items.length && !room) return <div className="empty-state">{tr('아직 받은 1:1 문의가 없습니다.')}</div>
+  return <div className="inquiry-list">{room}{list.items.map(item => <InquiryListRow key={item.id} accountUid={accountUid} channelId={channelId} item={item} />)}</div>
 }
 // iOS MorseInquiryListUIKitCell (1f27102b): an inquiry's row marks a message of mine that did not go beside the name,
 // and a clock under the time while one is on its way, as a chat's row does.
@@ -93,17 +107,18 @@ function inquiryLocal(entry: PendingEntry, inquiryId: string): LocalOutgoing {
 const attachWindowMs = 900 * 1000
 
 // One inquiry room: messages from both sides and the reply composer.
-function InquiryThread({ accountUid, channelId, inquiryId, fromList }: { accountUid: string; channelId: string; inquiryId: string; fromList: boolean }) {
+function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }: { accountUid: string; channelId: string; inquiryId: string; fromList: boolean; oneColumn?: boolean }) {
   const [requestId] = useState(() => crypto.randomUUID())
   useEffect(() => {
     void window.morse.openInquiryThread(accountUid, { requestId, inquiryId }).catch(reason => controller.toast(errorText(reason, tr('문의를 열지 못했습니다.')), 'error'))
     return () => { void window.morse.closeInquiryThread(accountUid, requestId).catch(() => {}) }
   }, [accountUid, inquiryId, requestId])
   const thread = useDesktop(state => { const value = state?.channelInquiries?.thread; return value?.requestId === requestId ? value : null })
+  // The channel's own picture, the one its row in the chat list already holds.
+  const channelPhoto = useDesktop(state => state?.inquiryRows?.find(row => row.channelId === channelId)?.photo ?? null)
   const enterToSend = useDesktop(state => state?.preferences.enterToSend ?? true)
   const [text, setText] = useState(''), [picking, setPicking] = useState(false)
   const pending = useInquiryPending(accountUid, inquiryId)
-  const setPending = (update: (current: PendingEntry[]) => PendingEntry[]): void => updateInquiryPending(accountUid, inquiryId, update)
   const [entities, setEntities] = useState(false)
   // The message this send answers, as a chat's composer keeps its reply.
   const [replyTo, setReplyTo] = useState<InquiryMessageItem | null>(null)
@@ -118,7 +133,6 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList }: { account
   const list = useRef<HTMLDivElement>(null), field = useRef<HTMLTextAreaElement>(null)
   const items = thread?.items ?? [], ready = thread?.status === 'ready', pinnedIds = thread?.pinnedIds ?? []
   const waiting = pending.filter(entry => !items.some(item => item.id === entry.id))
-  useEffect(() => { setPending(current => { const next = current.filter(entry => !items.some(item => item.id === entry.id)); return next.length === current.length ? current : next }) }, [items])
   useLayoutEffect(() => { const element = list.current; if (element) element.scrollTop = element.scrollHeight }, [items.length, waiting.length])
   useLayoutEffect(() => {
     const element = field.current
@@ -127,39 +141,30 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList }: { account
     element.style.height = `${Math.min(224, element.scrollHeight)}px`
   }, [text])
 
+  // The composer empties in the frame the message leaves, reply and all (HistoryWidget::send → cancelReply), and the
+  // message is the device queue's from then on: drawn as on its way until the room shows it, sent again by itself
+  // under its id, and kept through a restart. Only one the queue could not take comes back to the composer.
   async function send(): Promise<void> {
     const value = text.trim()
     if (!value || !ready) return
-    const entry = { id: crypto.randomUUID().toUpperCase(), text: value, at: Date.now() }
-    // The composer empties in the frame the message leaves, reply and all (HistoryWidget::send → cancelReply).
     const answering = takeReply()
-    setPending(current => [...current, entry]); setText('')
-    const attempt = async (): Promise<void> => {
-      const result = await trackWrite(window.morse.sendInquiryMessage(accountUid, { requestId, inquiryId, messageId: entry.id, text: value, ...(answering ? { replyToId: answering.id } : {}) }))
-      if (result === 'unconfirmed') controller.toast(tr('전송 결과를 확인하지 못했습니다. 잠시 후 대화를 확인해 주세요.'))
-        markInquirySent(accountUid, inquiryId, entry.id)
-    }
-    await sendPending(entry.id, attempt, tr('메시지를 보내지 못했습니다.'))
-  }
-  // A send that failed is kept with its way of going again; the failure reads on the bubble as a chat's does.
-  async function sendPending(id: string, attempt: () => Promise<void>, failure: string): Promise<void> {
-    setInquiryRetry(accountUid, inquiryId, id, attempt)
-    try { await attempt(); setInquiryRetry(accountUid, inquiryId, id, null) }
+    setText('')
+    try { await trackWrite(window.morse.sendInquiryMessage(accountUid, { requestId, inquiryId, messageId: crypto.randomUUID().toUpperCase(), text: value, ...(answering ? { replyToId: answering.id } : {}) })) }
     catch (reason) {
-      const message = errorText(reason, failure)
-      setPending(current => current.map(item => item.id === id ? { ...item, failed: message } : item))
+      setText(current => current || value); restoreReply(answering)
+      controller.toast(errorText(reason, tr('메시지를 보내지 못했습니다.')), 'error')
     }
   }
+  // One the server refused stays where it was, marked, until it is sent again under its id or deleted (HistoryMessage
+  // failed state, iOS «다시 보내기»).
   function pendingMenu(entry: PendingEntry, point: { x: number; y: number }): void {
     if (entry.failed === undefined) return
-    const retry = inquiryRetry(accountUid, inquiryId, entry.id)
     popupMenu.open(point, [
-      retry && { label: tr('다시 보내기'), icon: <RotateCcw size={18} />, onSelect: () => {
-        setPending(current => current.map(item => item.id === entry.id ? { id: item.id, text: item.text, at: item.at } : item))
-        void sendPending(entry.id, retry, tr('메시지를 보내지 못했습니다.'))
+      { label: tr('다시 보내기'), icon: <RotateCcw size={18} />, onSelect: () => {
+        void window.morse.retryInquirySend(accountUid, entry.id).catch(reason => controller.toast(errorText(reason, tr('메시지를 보내지 못했습니다.')), 'error'))
       } },
       { label: tr('삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => {
-        setPending(current => current.filter(item => item.id !== entry.id))
+        void window.morse.discardInquirySend(accountUid, entry.id).catch(reason => controller.toast(errorText(reason, tr('메시지를 삭제하지 못했습니다.')), 'error'))
       } },
     ])
   }
@@ -173,10 +178,10 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList }: { account
     requestAnimationFrame(() => { const target = field.current; if (target) { target.focus(); target.setSelectionRange(start + emoji.length, start + emoji.length) } })
   }
   // A sticker of this device's library, or one of an installed set, sent into the room as into a chat.
-  async function sendSticker(send: () => Promise<'sent' | 'unconfirmed'>): Promise<void> {
+  async function sendSticker(send: () => Promise<'queued'>): Promise<void> {
     setEntities(false)
     if (!ready) return
-    try { if (await send() === 'unconfirmed') controller.toast(tr('전송 결과를 확인하지 못했습니다. 잠시 후 대화를 확인해 주세요.')) }
+    try { await send() }
     catch (reason) { controller.toast(errorText(reason, tr('스티커를 보내지 못했습니다.')), 'error') }
   }
   // Answering a message of this room: the composer keeps it and the field takes the caret, as a chat does.
@@ -215,23 +220,16 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList }: { account
   async function sendPhoto(): Promise<void> {
     if (!ready || picking) return
     setPicking(true)
-    const entry = { id: crypto.randomUUID().toUpperCase(), text: tr('사진'), at: Date.now() }
     let answering: InquiryMessageItem | null = null
     try {
       const picked = await window.morse.pickInquiryPhoto(accountUid)
       if (!picked) return
       const bytes = await prepareChannelPostPhoto(picked, new AbortController().signal)
-      setPending(current => [...current, entry])
       answering = takeReply()
-      const replying = answering
-      await sendPending(entry.id, async () => {
-        const result = await trackWrite(window.morse.sendInquiryPhoto(accountUid, { requestId, inquiryId, messageId: entry.id, caption: '', ...(replying ? { replyToId: replying.id } : {}) }, bytes))
-        if (result === 'unconfirmed') controller.toast(tr('전송 결과를 확인하지 못했습니다. 잠시 후 대화를 확인해 주세요.'))
-        markInquirySent(accountUid, inquiryId, entry.id)
-      }, tr('사진을 보내지 못했습니다.'))
+      await trackWrite(window.morse.sendInquiryPhoto(accountUid, { requestId, inquiryId, messageId: crypto.randomUUID().toUpperCase(), caption: '', ...(answering ? { replyToId: answering.id } : {}) }, bytes))
     } catch (reason) {
-      // The picture could not be read or prepared: nothing was sent.
-      setPending(current => current.filter(item => item.id !== entry.id)); restoreReply(answering)
+      // The picture could not be read, prepared or handed to the queue: nothing was sent.
+      restoreReply(answering)
       controller.toast(errorText(reason, tr('사진을 보내지 못했습니다.')), 'error')
     } finally { setPicking(false) }
   }
@@ -248,14 +246,9 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList }: { account
     const picked = draft
     showAttachmentBox(picked, {
       send: async (caption, itemIds, video) => {
-        const entry = { id: crypto.randomUUID().toUpperCase(), text: mode === 'video' ? tr('동영상') : picked.name, at: Date.now() }
-        setPending(current => [...current, entry])
         const answering = takeReply()
-        try {
-          const result = await trackWrite(window.morse.sendInquiryAttachment(accountUid, { requestId, inquiryId, messageId: entry.id, draftId: picked.id, itemId: itemIds[0]!, caption, ...(answering ? { replyToId: answering.id } : {}) }, video))
-          if (result === 'unconfirmed') controller.toast(tr('전송 결과를 확인하지 못했습니다. 잠시 후 대화를 확인해 주세요.'))
-        markInquirySent(accountUid, inquiryId, entry.id)
-        } catch (reason) { setPending(current => current.filter(item => item.id !== entry.id)); restoreReply(answering); throw reason }
+        try { await trackWrite(window.morse.sendInquiryAttachment(accountUid, { requestId, inquiryId, messageId: crypto.randomUUID().toUpperCase(), draftId: picked.id, itemId: itemIds[0]!, caption, ...(answering ? { replyToId: answering.id } : {}) }, video)) }
+        catch (reason) { restoreReply(answering); throw reason }
       },
       discard: () => { void window.morse.discardInquiryAttachment(accountUid, picked.id).catch(() => {}) }
     })
@@ -266,27 +259,17 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList }: { account
     begin: captureId => window.morse.beginInquiryRoundVideo(accountUid, { requestId, inquiryId, captureId }),
     activate: captureId => window.morse.activateInquiryVoice(accountUid, { requestId, inquiryId, captureId }),
     send: async (captureId, bytes, facts) => {
-      const entry = { id: crypto.randomUUID().toUpperCase(), text: tr('영상 메시지'), at: Date.now() }
-      setPending(current => [...current, entry])
       const answering = takeReply()
-      try {
-        const result = await trackWrite(window.morse.sendInquiryRoundVideo(accountUid, { requestId, inquiryId, captureId, messageId: entry.id, duration: facts.duration, thumb: facts.thumb, ...(answering ? { replyToId: answering.id } : {}) }, bytes))
-        if (result === 'unconfirmed') controller.toast(tr('전송 결과를 확인하지 못했습니다. 잠시 후 대화를 확인해 주세요.'))
-        markInquirySent(accountUid, inquiryId, entry.id)
-      } catch (reason) { setPending(current => current.filter(item => item.id !== entry.id)); restoreReply(answering); throw reason }
+      try { await trackWrite(window.morse.sendInquiryRoundVideo(accountUid, { requestId, inquiryId, captureId, messageId: crypto.randomUUID().toUpperCase(), duration: facts.duration, thumb: facts.thumb, ...(answering ? { replyToId: answering.id } : {}) }, bytes)) }
+      catch (reason) { restoreReply(answering); throw reason }
     }
   }
   const endRecording = (): void => { held.current = undefined; setRecording(false) }
   // ChannelInquiryChatView.uploadAndSendVoice: the previewed recording goes to the room; a retry keeps its message id.
   async function sendVoice(voice: InquiryVoiceSend): Promise<void> {
-    const entry = { id: voice.messageId, text: tr('음성 메시지 · {0}:{1}', [Math.floor(voice.duration / 60), String(Math.round(voice.duration) % 60).padStart(2, '0')]), at: Date.now() }
-    setPending(current => current.some(item => item.id === entry.id) ? current : [...current, entry])
     const answering = takeReply()
-    try {
-      const result = await trackWrite(window.morse.sendInquiryVoice(accountUid, { requestId, inquiryId, messageId: voice.messageId, duration: voice.duration, waveform: voice.waveform, captureId: voice.captureId, sha256: voice.sha256, ...(answering ? { replyToId: answering.id } : {}) }))
-      if (result === 'unconfirmed') controller.toast(tr('전송 결과를 확인하지 못했습니다. 잠시 후 대화를 확인해 주세요.'))
-        markInquirySent(accountUid, inquiryId, entry.id)
-    } catch (reason) { setPending(current => current.filter(item => item.id !== entry.id)); restoreReply(answering); throw reason }
+    try { await trackWrite(window.morse.sendInquiryVoice(accountUid, { requestId, inquiryId, messageId: voice.messageId, duration: voice.duration, waveform: voice.waveform, captureId: voice.captureId, sha256: voice.sha256, ...(answering ? { replyToId: answering.id } : {}) })) }
+    catch (reason) { restoreReply(answering); throw reason }
   }
   // A reaction shows at once, as a chat's does (message-overlay toggleReaction), and gives way to the room's own
   // copy once that copy has changed; a refused one goes back.
@@ -399,15 +382,28 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList }: { account
         <button className="button flat" disabled={!canForwardSelected} onClick={() => { showShareBox(accountUid, selected.map(item => inquiryChatMessage(item, inquiryId)), { kind: 'inquiry', inquiryId }); setSelection(null) }}><Forward size={18} />{tr('전달')}</button>
         <button className="button flat danger" disabled={!canDeleteSelected} onClick={() => { void remove(selected) }}><Trash2 size={18} />{tr('삭제')}</button>
       </> : <>
-      {fromList && <button className="icon-button" aria-label={tr('문의 목록으로')} onClick={() => showInquiryThread(channelId, null)}><ArrowLeft size={20} /></button>}
-      <strong className="side-title ellipsis">{thread?.title || tr('1:1 문의')}</strong>
+      {fromList ? <button className="icon-button" aria-label={tr('문의 목록으로')} onClick={() => showInquiryThread(channelId, null)}><ArrowLeft size={20} /></button>
+        : oneColumn ? <button className="icon-button" aria-label={tr('뒤로')} onClick={() => controller.closeInquiry()}><ArrowLeft size={20} /></button> : null}
+      {/* A room is a conversation, and says at the top who it is with, as a chat's own bar does: the person
+          who asked when this account owns the channel, and the channel itself when it does not. */}
+      {/* ChannelInquiryChatView.handleProfileTap: the side that is asking reaches the channel from here.
+          The owner's side names a person, who has no screen of their own here yet, so it stays a label. */}
+      {thread?.role === 'owner'
+        ? <button type="button" className="top-bar-peer" onClick={() => controller.toggleRight('info')}>
+          <UserAvatar uid={thread.peerUid} name={thread.title} size={40} image={thread.photo} />
+          <span className="top-bar-title"><strong className="ellipsis">{thread.title}</strong><span className="ellipsis">{tr('연락처 정보')}</span></span>
+        </button>
+        : <button type="button" className="top-bar-peer" onClick={() => controller.openChannelInfo(channelId)}>
+          <Avatar name={thread?.title || tr('채널')} url={channelPhoto?.status === 'ready' ? channelPhoto.url : null} size={40} kind="channel" />
+          <span className="top-bar-title"><strong className="ellipsis">{thread?.title || tr('1:1 문의')}</strong><span className="ellipsis">{tr('채널 정보')}</span></span>
+        </button>}
       <button className="icon-button" aria-label={tr('더 보기')} disabled={!ready} onClick={event => popupMenu.open(pointFor(event, event.currentTarget), [
         { label: thread?.autoDeleteSeconds ? autoDeleteSummary(thread.autoDeleteSeconds) : tr('자동 삭제'), icon: <Timer size={18} />,
           onSelect: () => showInquiryAutoDeleteBox(accountUid, { requestId, inquiryId }, { seconds: thread?.autoDeleteSeconds ?? 0 }) },
         'separator',
         { label: tr('대화 기록 모두 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void clear() } }
       ])}><EllipsisVertical size={20} /></button>
-      <button className="icon-button" aria-label={tr('문의 닫기')} onClick={() => controller.setRight(null)}><X size={20} /></button>
+      <button className="icon-button" aria-label={tr('문의 닫기')} onClick={() => controller.closeInquiry()}><X size={20} /></button>
       </>}
     </header>
     {pinnedItem && <button type="button" className="pinned-bar" aria-label={tr('고정된 메시지로 이동')}
@@ -475,12 +471,59 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList }: { account
   </section>
 }
 
-export function ChannelInquiryPanel({ accountUid, channelId, thread, fromList }: { accountUid: string; channelId: string; thread: string | null; fromList: boolean }) {
-  if (thread) return <InquiryThread key={thread} accountUid={accountUid} channelId={channelId} inquiryId={thread} fromList={fromList} />
+// iOS ChannelInquiryChatView.handleProfileTap for an owner: the person who asked, from the room's own copy
+// of their name and picture. Their profile itself cannot be read until they are a contact — firestore.rules
+// canReadUserProfile — so until then this is what iOS calls the stub, with the way to add them.
+export function InquiryPeerPanel({ accountUid, inquiryId }: { accountUid: string; inquiryId: string }) {
+  const thread = useDesktop(state => { const value = state?.channelInquiries?.thread; return value?.inquiryId === inquiryId && value.role === 'owner' ? value : null })
+  const peerUid = thread?.peerUid ?? ''
+  const inContacts = useDesktop(state => Boolean(peerUid && state?.contacts?.items.some(item => item.uid === peerUid)))
+  const [adding, setAdding] = useState(false)
+  async function add(): Promise<void> {
+    if (adding) return
+    // Pressing a button never does nothing: if the room no longer names the person, it says so.
+    if (!peerUid) { controller.toast(tr('상대를 확인할 수 없습니다.'), 'error'); return }
+    setAdding(true)
+    try {
+      const result = await trackWrite(window.morse.addInquiryContact(accountUid, { id: crypto.randomUUID(), inquiryId, uid: peerUid }))
+      controller.toast(result.outcome === 'added' ? tr('{0}님을 연락처에 추가했습니다.', [thread?.title ?? '']) : result.outcome === 'exists' ? tr('이미 연락처에 있습니다.') : result.message,
+        result.outcome === 'rejected' ? 'error' : 'default')
+    } catch (reason) { controller.toast(errorText(reason, tr('연락처에 추가하지 못했습니다.')), 'error') }
+    finally { setAdding(false) }
+  }
+  return <section className="side-panel" aria-label={tr('연락처 정보')}>
+    <header className="top-bar">
+      <strong className="side-title">{tr('연락처 정보')}</strong>
+      <button className="icon-button" aria-label={tr('정보 닫기')} onClick={() => controller.setRight(null)}><X size={20} /></button>
+    </header>
+    <div className="side-panel-body">
+      {!thread || !peerUid ? <div className="empty-state">{tr('상대를 확인할 수 없습니다.')}</div>
+        : inContacts ? <ContactProfile key={peerUid} accountUid={accountUid} uid={peerUid} fromChat={false} />
+          : <>
+            <div className="info-cover">
+              <UserAvatar uid={peerUid} name={thread.title} size={88} image={thread.photo} />
+              <h2 className="selectable">{thread.title}</h2>
+              <span>{tr('연락처에 없는 사용자')}</span>
+            </div>
+            <div className="info-section">
+              <ActionRow icon={adding ? <Spinner size={20} /> : <UserPlus size={20} />} label={tr('연락처에 추가')} disabled={adding} onClick={() => { void add() }} />
+            </div>
+            <div className="info-section">
+              <ActionRow icon={<Flag size={20} />} label={tr('사용자 신고')} danger
+                onClick={() => showReportBox(accountUid, { type: 'user', targetId: peerUid }, tr('사용자 신고'), { uid: peerUid, userId: '', displayName: thread.title })} />
+            </div>
+          </>}
+    </div>
+  </section>
+}
+
+export function ChannelInquiryPanel({ accountUid, channelId, thread, fromList, oneColumn }: { accountUid: string; channelId: string; thread: string | null; fromList: boolean; oneColumn?: boolean }) {
+  if (thread) return <InquiryThread key={thread} accountUid={accountUid} channelId={channelId} inquiryId={thread} fromList={fromList} oneColumn={oneColumn} />
   return <section className="side-panel channel-comments-panel inquiry-panel" aria-label={tr('1:1 문의')}>
     <header className="top-bar">
+      {oneColumn && <button className="icon-button" aria-label={tr('뒤로')} onClick={() => controller.closeInquiry()}><ArrowLeft size={20} /></button>}
       <strong className="side-title">{tr('1:1 문의')}</strong>
-      <button className="icon-button" aria-label={tr('문의 닫기')} onClick={() => controller.setRight(null)}><X size={20} /></button>
+      <button className="icon-button" aria-label={tr('문의 닫기')} onClick={() => controller.closeInquiry()}><X size={20} /></button>
     </header>
     <InquiryList accountUid={accountUid} channelId={channelId} />
   </section>

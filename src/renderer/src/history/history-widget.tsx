@@ -64,6 +64,12 @@ function canMutate(message: ChatMessage, dialog: DialogSummary | null): boolean 
   return Boolean(dialog && dialog.kind !== 'secret' && message.version && !message.encrypted && !message.system && message.serverConfirmed &&
     (dialog.historyAccess === undefined || dialog.historyAccess === 'ready'))
 }
+// «Delete for everyone» (A1 §3-6, Telegram's supergroup rule, telegram-refs R-1/R-2): in a channel's discussion room
+// only the channel's owner or a canDeleteMessages admin removes someone else's message; anyone their own. Other rooms
+// keep their rule.
+function canDeleteForEveryone(message: ChatMessage, dialog: DialogSummary | null, accountUid: string): boolean {
+  return canMutate(message, dialog) && (!dialog?.discussion || message.senderId === accountUid || dialog.moderates === true)
+}
 function attachable(entry: Entry): boolean {
   return entry.kind === 'local' || (!entry.message.system && !entry.message.encrypted && entry.message.kind !== 'channelPost' && entry.message.kind !== 'unsupported')
 }
@@ -343,7 +349,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     // Telegram's box there offers a plain Delete, and it takes the note off the server. Deleting it
     // only in this window left it on the phone and brought it back on the next install.
     const saved = chatId === `memo_${accountUid}`
-    const forEveryone = messages.every(message => canMutate(message, dialogRef.current))
+    const forEveryone = messages.every(message => canDeleteForEveryone(message, dialogRef.current, accountUid))
     const choice = saved ? (forEveryone && await confirmBox({ title: messages.length > 1 ? tr('메모 {0}개 삭제', [messages.length]) : tr('메모 삭제'),
       text: tr('저장한 메시지에서 지웁니다. 다른 기기에서도 사라져요. 되돌릴 수 없어요.'), confirm: tr('삭제'), danger: true }) ? 'everyone' : null)
       : await chooseDeletion(messages.length, forEveryone, messages.every(message => message.senderId === accountUid))

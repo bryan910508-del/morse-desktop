@@ -25,6 +25,8 @@ export class HiddenMessages {
   has(chatId: string, messageId: string): boolean {
     return !this.closed && this.ids.get(chatId)?.has(messageId) === true
   }
+  // How many of a room's messages are hidden here: a room list line needs another look only where there are some.
+  count(chatId: string): number { return this.closed ? 0 : this.ids.get(chatId)?.size ?? 0 }
   // Shown as gone at once; kept on this device before the promise settles.
   async hide(chatId: string, messageIds: string[]): Promise<void> {
     if (this.closed) throw new Error(tr('계정이 변경되었습니다.'))

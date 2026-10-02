@@ -53,7 +53,7 @@ import { ChannelAccessEditor } from './channel-access-edit'
 import { ChannelPhotoUpload } from './channel-photo-upload'
 import type { ChannelPhotoBinding } from '../../shared/channel-photo-upload'
 import type { AccountProfile, ConnectionState, DialogSummary, HistorySnapshot, MessagePosition, ReadStatus } from '../../shared/model'
-import { comparePosition, positionMilliseconds } from '../../shared/model'
+import { comparePosition, positionMilliseconds, withinCutoff } from '../../shared/model'
 import type { ChatBackgroundEdit, ChatBackgroundRecord } from '../../shared/chat-background'
 import { BackgroundStorage } from './background-storage'
 import { GroupPhoto } from './group-photo'
@@ -77,7 +77,7 @@ import type { TextForwardBatchRequest } from '../../shared/forward-text-batch'
 import type { ForwardBatchRequest } from '../../shared/forward-batch'
 import { prepareForwardBatch } from '../media/forward-batch'
 import type { ParticipantAddRequest, ParticipantAddResult, ParticipantContactRequest, ParticipantsSnapshot } from '../../shared/participants'
-import { participantSnapshot } from './participants'
+import { participantSnapshot, roomContactFields } from './participants'
 import { ParticipantContactAdd, type ChatContactTarget } from './participant-contact-add'
 import { DialogPins } from './dialog-pins'
 import type { DialogPinRequest } from '../../shared/dialog-pins'
@@ -85,7 +85,7 @@ import { ManualUnread } from './manual-unread'
 import { effectiveUnreadCount, type ManualUnreadRequest } from '../../shared/manual-unread'
 import type { ContactCreateFields } from '../network/participant-contact-write'
 import { FirestoreReader } from '../network/firestore-rpc'
-import { boolField, childId, decodeDialog, historyReadable, documents, documentVersion, mapField, numberField, stringField, ReadFailure, type FirestoreDocument, type ReadDialog, type WireObject } from '../network/firestore-values'
+import { boolField, childId, decodeDialog, readDialogs, historyReadable, documents, positionValue, timestamp, documentVersion, mapField, numberField, stringField, ReadFailure, type FirestoreDocument, type ReadDialog, type WireObject } from '../network/firestore-values'
 import { HistoryReader } from './history-reader'
 import { OutboxPump, type AccountAuthorization } from '../messaging/outbox'
 import type { OutgoingSnapshot } from '../../shared/delivery'
@@ -97,6 +97,7 @@ import { MediaSession } from '../media/media-session'
 import type { AttachmentMode, AttachmentDropMode } from '../../shared/uploads'
 import { AccountNotifications, type NotificationHost } from '../messaging/notifications'
 import { ChannelInquiries } from './channel-inquiries'
+import { InquirySends } from './inquiry-sends'
 import type { NotificationHint } from '../../shared/notifications'
 import { MessageSearch } from './message-search'
 import type { SearchSnapshot, SharedMediaFilter } from '../../shared/search'
@@ -119,6 +120,7 @@ import { ChatFolderWatch } from './chat-folder-watch'
 import { DialogPreferenceWatch } from './dialog-preference-watch'
 import { ChannelStories } from './channel-stories'
 import { DiscussionAvatars } from './discussion-avatars'
+import { PersonalChannels } from './personal-channel'
 import { PhotoPreviews } from '../media/photo-previews'
 import { HiddenChats, emptyRevokedDirect, withLocalDeletion } from './hidden-chats'
 import { HiddenMessages } from './hidden-messages'
@@ -138,6 +140,7 @@ import { roundVideoSide, type RoundVideoSendRequest } from '../../shared/round-v
 import { channelDiscussionReference } from './channel-discussion-reference'
 import type { HiddenChatCommand } from '../storage/hidden-chat-table'
 import { recordDeferredStep } from '../platform/deferred-diagnostics'
+import { recordHistoryStep } from '../platform/history-diagnostics'
 import { EventReminders } from './event-reminders'
 import type { EventReminderRequest } from '../../shared/chat-event'
 import { maxScheduleAheadMs, type DeferredKind, type DeferredMessagesSnapshot, type DeferredSendRequest } from '../../shared/deferred-send'
@@ -145,7 +148,7 @@ import { freePinLimit, premiumPinLimit, type PinMessageRequest, type PinnedMessa
 import { canReply, type ReplyBinding, type ReplyDraftSnapshot } from '../../shared/reply-draft'
 import { canForwardMessage, canForwardMedia, canForwardText, savedMessagesFirst, type ForwardProgress, type ForwardRequest, type ForwardSource, type ForwardTarget } from '../../shared/forward'
 import { prepareForwardMedia, type ForwardMediaSource } from '../media/forward-media'
-import { inquiryIdentifier, inquiryOfQueueChatId, inquiryQueueChatId, type InquiryForwardRequest, type InquiryForwardRoom } from '../../shared/channel-inquiries'
+import { inquiryIdentifier, inquiryOfQueueChatId, inquiryQueueChatId, type InquiryContactRequest, type InquiryForwardRequest, type InquiryForwardRoom } from '../../shared/channel-inquiries'
 import { outgoingText } from '../../shared/validation'
 import { tr } from '../../shared/i18n'
 import type { VideoEdit } from '../media/attachment-staging'
@@ -155,6 +158,10 @@ import { InquiryNotifications } from './inquiry-notifications'
 import { PeerPhotoAlbum } from './peer-photo-album'
 import { peerProfilesFor } from './peer-profiles'
 import { StoryMediaCache } from './story-media-cache'
+import { reachability } from '../network/reachability'
+import { RoomPresence } from './room-presence'
+import { ChannelOperations } from './channel-operations'
+import { HistoryClears, type HistoryClearSession } from './history-clears'
 
 export interface AccountEvents {
   storyStealth(): boolean
@@ -178,6 +185,9 @@ export class AccountSession {
   private generation = 0
   private revision = 0
   private closed = false
+  private readonly stopReachability: () => void
+  // chats/{id}/watchers/{uid}: the room this account is in, as iOS publishes it (room-presence.ts).
+  private readonly roomPresence: RoomPresence
   private connection: ConnectionState = 'offline'
   private status: ReadStatus = 'loading'
   private message = ''
@@ -260,6 +270,11 @@ export class AccountSession {
   readonly channelInquiries: ChannelInquiries
   // The chat list's 1:1 inquiry rooms, watched for the whole session.
   readonly inquiryRows: InquiryRows
+  // Messages sent into inquiry rooms that the server has not accepted yet, kept on the device (inquiry-sends.ts).
+  readonly inquirySends: InquirySends
+  // Likes, new words and deletes of channel posts and comments, kept until the server shows them (channel-operations.ts).
+  readonly channelOperations: ChannelOperations
+  readonly historyClears: HistoryClears
   // The account's chat folders, followed for the whole session.
   private readonly folders: ChatFolderWatch
   private readonly dialogPreferences: DialogPreferenceWatch
@@ -281,6 +296,8 @@ export class AccountSession {
   readonly ownStories: OwnStories
   readonly spaceNotes: SpaceNotesReader
   readonly channelDiscovery: ChannelDiscovery
+  // The channel a profile shows (users/{uid}.personalChannelId) and the chooser's list of this account's channels.
+  readonly personalChannels: PersonalChannels
   readonly channelHome: ChannelHome
   readonly channelStories: ChannelStories
   readonly contactDiscovery: ContactDiscovery
@@ -328,6 +345,7 @@ export class AccountSession {
     this.ownStories = new OwnStories(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
     this.spaceNotes = new SpaceNotesReader(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
     this.channelDiscovery = new ChannelDiscovery(credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
+    this.personalChannels = new PersonalChannels(profile.uid, credentials, () => { if (!this.closed) events.changed() })
     this.channelHome = new ChannelHome(profile.uid, credentials, { items: () => this.channels.snapshot.items, status: () => this.channels.listStatus, document: id => this.channels.currentDocument(id) },
       () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
     this.channelStories = new ChannelStories(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
@@ -578,13 +596,39 @@ export class AccountSession {
     this.channelMembershipApi = new ChannelMembershipApi(profile.uid, credentials, connected)
     this.storyBarApi = new StoryBarApi(profile.uid, credentials, () => { if (this.closed || this.locked) throw new Error(tr('계정 연결을 확인해 주세요.')) }, uid => this.contacts.has(uid))
     this.accountTools = new AccountToolsApi(profile.uid, credentials, connected)
+    this.inquirySends = new InquirySends(profile.uid, credentials, connected, command => this.delivery.inquirySendState(command), () => { if (!this.closed) events.changed() })
+    void Promise.resolve().then(() => this.inquirySends.load()).catch(() => {})
+    this.channelOperations = new ChannelOperations(profile.uid, credentials, connected, command => this.delivery.channelOperationState(command), () => { if (!this.closed) events.changed() },
+      request => { if (!this.closed) this.channelHome.refreshPost(request.channelId, request.postId) })
+    void Promise.resolve().then(() => this.channelOperations.load()).catch(() => {})
+    // A4: a history cleared for everyone goes with the boundary fixed when it was pressed, again until answered.
+    this.historyClears = new HistoryClears(connected, command => this.delivery.historyClearState(command), () => this.historyClearSession(credentials),
+      (request, cutoff, done) => {
+        if (this.closed || request.kind !== 'chat-clear') return
+        this.hiddenChats.endClear(request.targetId)
+        if (done && cutoff !== null) void this.hiddenChats.noteCleared(request.targetId, cutoff)
+        if (this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() }
+      })
+    void Promise.resolve().then(() => this.historyClears.load()).catch(() => {})
+    // The network is back (reachability.ts): reactions, votes, posts, comments and inquiry messages waiting out a wait
+    // go now, and their waits start over (Telegram SessionPrivate::restartNow).
+    this.roomPresence = new RoomPresence(() => this.reader ? {
+      enter: (chatId, signal) => this.reader!.enterChatWatcher(chatId, this.profile.uid, signal),
+      leave: (chatId, signal) => this.reader!.leaveChatWatcher(chatId, this.profile.uid, signal)
+    } : null, credentials.signal)
+    this.stopReachability = reachability.subscribe(() => {
+      if (this.closed) return
+      this.actions.retryNow(); this.inquirySends.retryNow(); this.channelOperations.retryNow(); this.historyClears.retryNow(); this.postCreation.resume(); this.commentCreation.resume()
+    })
     this.channelInquiries = new ChannelInquiries(profile.uid, credentials, connected, () => this.selfProfile.commentAuthor(), () => events.canRead(), () => { if (!this.closed) events.changed() },
-      (inquiryId, messageId) => this.hiddenMessages.has(inquiryQueueChatId(inquiryId), messageId))
+      request => this.inquirySends.enqueue(request), inquiryId => this.inquirySends.forgetRoom(inquiryId),
+      (inquiryId, messageId) => this.hiddenMessages.has(inquiryQueueChatId(inquiryId), messageId), request => this.historyClears.enqueue(request))
     this.inquiryNotifications = new InquiryNotifications({ ...events.notifications,
       foreground: inquiryId => events.canRead() && this.channelInquiries.openThreadId === inquiryId,
       open: (channelId, inquiryId) => events.notifications.openInquiry(channelId, inquiryId) })
     this.inquiryRows = new InquiryRows(profile.uid, credentials, connected, () => { if (!this.closed) events.changed() },
-      rooms => { if (!this.closed && !this.locked) this.inquiryNotifications.observe(rooms) })
+      rooms => { if (!this.closed && !this.locked) this.inquiryNotifications.observe(rooms) },
+      { count: inquiryId => this.hiddenMessages.count(inquiryQueueChatId(inquiryId)), has: (inquiryId, messageId) => this.hiddenMessages.has(inquiryQueueChatId(inquiryId), messageId) })
     this.folders = new ChatFolderWatch(profile.uid, credentials, connected, () => { if (!this.closed) events.changed() })
     // A mute or archive chosen on another device of this account replaces what this device holds.
     this.dialogPreferences = new DialogPreferenceWatch(profile.uid, credentials, connected, (chatId, patch) => {
@@ -603,6 +647,7 @@ export class AccountSession {
   setLocked(locked: boolean): void {
     if (this.locked === locked) return
     this.locked = locked
+    this.syncPresence()
     if (locked) this.channelPeople.clear()
     this.channels.setLocked(locked)
     if (!locked) this.topicDeletions.connectionChanged()
@@ -614,13 +659,16 @@ export class AccountSession {
     this.folders.setLocked(locked)
     this.dialogPreferences.setLocked(locked)
     this.discussionAvatars.setLocked(locked)
+    this.personalChannels.setLocked(locked)
     if (locked) this.photoPreviews.clear()
     if (this.chatsCurrent && this.pinsCurrent) this.rebuild()
     if (locked) { this.dialogAvatars.clear(); this.storyMedia.clear() }
     this.voiceDraftStorage.invalidate();this.backgroundStorage.invalidate()
-    if (locked) { this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); this.groupName.pause(); this.groupAnnouncement.pause(); this.groupPhoto.clear(); this.groupPhotoEditor.pause(); this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause() }
-    if (locked) { this.ownStories.pause(); this.spaceNotes.pause(); this.channelPublicPreview.pause(); this.channelDiscovery.pause(); this.contactDiscovery.pause(); this.participantAdd.pause(); this.dialogPins.pause(); this.manualUnread.pause(); this.draftReply.clear(); this.cancelForwardPreparation() }
+    if (locked) { this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); this.groupName.pause(); this.groupAnnouncement.pause(); this.groupPhoto.clear(); this.groupPhotoEditor.pause(); this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause() }
+    if (locked) { this.ownStories.pause(); this.spaceNotes.pause(); this.channelPublicPreview.pause(); this.channelPublicPreview.comments.forget(); this.channelDiscovery.pause(); this.contactDiscovery.pause(); this.participantAdd.pause(); this.dialogPins.pause(); this.manualUnread.pause(); this.draftReply.clear(); this.cancelForwardPreparation() }
     else if (this.selected && this.reader) this.draftReply.bind(this.selected.dialog, this.reader)
+    // A post or a comment on its way goes on once the screen is open again.
+    if (!locked) { this.postCreation.resume(); this.commentCreation.resume(); this.inquirySends.resume(); this.channelOperations.resume(); this.historyClears.resume() }
   }
   pendingDirects() { return this.delivery.pendingDirects() }
   // The account's default for new chats, as iOS reads it from users/{uid}/private/chatSettings and Telegram reads
@@ -823,6 +871,10 @@ export class AccountSession {
   addParticipantContact(request: ParticipantAddRequest): Promise<ParticipantAddResult> {
     return this.addChatContact({ id: request.id, chatId: request.chatId, uid: request.uid })
   }
+  deleteInquiryRoom(inquiryId: string): Promise<'done' | 'unconfirmed'> { return this.channelInquiries.deleteRoom(inquiryId) }
+  addInquiryContact(request: InquiryContactRequest): Promise<ParticipantAddResult> {
+    return this.addChatContact({ id: request.id, chatId: request.inquiryId, uid: request.uid, kind: 'inquiry' })
+  }
   addChatContact(target: ChatContactTarget): Promise<ParticipantAddResult> {
     if (!this.contacts.ready) throw new Error(tr('연락처 목록을 불러온 뒤 다시 선택해 주세요.'))
     return this.participantAdd.add(target)
@@ -831,15 +883,14 @@ export class AccountSession {
   // its participant info. The chat's version is not compared: read receipts and new messages
   // change the chat document all the time and do not change who can be added.
   private resolveChatContact(target: ChatContactTarget, fresh?: FirestoreDocument): ContactCreateFields {
+    if (target.kind === 'inquiry') return this.channelInquiries.contactSource(target.chatId, target.uid)
     const path = `${documents}/chats/${target.chatId}`, doc = fresh ?? this.chatRows.get(path)
     if (this.closed || this.locked || !doc || doc.name !== path) throw new Error(tr('대화 정보를 확인할 수 없습니다.'))
     const dialog = decodeDialog(doc, this.profile.uid)
     if (dialog.summary.kind === 'secret' || target.uid === this.profile.uid || !dialog.summary.participantUids.includes(this.profile.uid) || !dialog.summary.participantUids.includes(target.uid)) throw new Error(tr('현재 참여자를 확인할 수 없습니다.'))
     const info = participantSnapshot('contact-add', doc, dialog, () => false)
     if (info.discussion || !info.members.some(member => member.uid === target.uid && !member.withdrawn)) throw new Error(tr('현재 참여자를 확인할 수 없습니다.'))
-    const data = mapField(mapField(doc.fields, 'participantInfo'), target.uid), displayName = stringField(data, 'displayName', 512).trim()
-    if (!displayName) throw new Error(tr('추가할 참여자 이름을 확인할 수 없습니다.'))
-    return { uid: target.uid, userId: stringField(data, 'userId', 160), displayName, photoURL: stringField(data, 'photoURL', 10000) }
+    return roomContactFields(doc, target.uid)
   }
   private discussionDestination(request: ChannelDiscussionNavigation) {
     this.credentials.signal.throwIfAborted()
@@ -946,6 +997,7 @@ export class AccountSession {
     this.media.clear()
     const old = this.selected
     this.selected = null
+    this.syncPresence()
     old?.close()
     if (old) this.events.history(old.dialog.summary.id, this.empty(status, message))
   }
@@ -984,13 +1036,13 @@ export class AccountSession {
     this.connection = state
     // A contact's stories are read from Firestore and their reaction and view receipt are written there, so
     // they are not stopped by the socket going down; only what is sent through the socket waits for it.
-    if (state !== 'ready') { this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause(); this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); }
-    else { void this.channelJoinDecisions.refresh().catch(() => {}); void this.channelAccess.refresh().catch(() => {}); void this.channelPhotoUpload.refresh().catch(() => {}); void this.groupPhotoUpload.refresh().catch(() => {}); void this.discussionJoin.refresh().catch(() => {}) }
+    if (state !== 'ready') { this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause(); this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); }
+    else { void this.channelJoinDecisions.refresh().catch(() => {}); void this.channelAccess.refresh().catch(() => {}); void this.channelPhotoUpload.refresh().catch(() => {}); void this.groupPhotoUpload.refresh().catch(() => {}); void this.discussionJoin.refresh().catch(() => {}); this.postCreation.resume(); this.commentCreation.resume(); this.inquirySends.resume(); this.channelOperations.resume(); this.historyClears.resume() }
     // What is read and shown — the contacts, the profiles, their pictures — is not told about a socket that went
     // down: telling them would throw away what is on screen (Contacts.invalidate clears the pictures) and Telegram
     // keeps its userpics through a reconnect. They are started again when the connection is back.
     if (state === 'ready') {
-      this.selfProfile.connection(true); this.contacts.connection(true); this.channels.connection(true); this.channelHome.resume()
+      this.selfProfile.connection(true); this.contacts.connection(true); this.channels.connection(true); this.channelHome.resume(); this.personalChannels.resume()
     }
     // My own stories, the notes, a public channel's preview and the searches are read from Firestore too:
     // Dialogs::Stories keeps the row it has while the connection comes back, and the list beside it keeps
@@ -1059,17 +1111,25 @@ export class AccountSession {
   }
   private rebuild(): void {
     if (!this.chatsCurrent || !this.pinsCurrent) return
+    // F-ST-002: a document this build cannot read is left out, and only that one. Telegram keeps the list when an
+    // entry cannot be read and replaces just that entry; here one malformed room used to empty the list and stop the
+    // sending, read marks and notifications of every other chat with it. Each check a document fails is still made
+    // in full — the room is simply not listed — and the count of rooms left out is recorded, without naming any.
+    let skipped = 0
     const pins = new Map<string, { pinned: boolean; rank: number; version: string }>()
     for (const doc of this.pinRows.values()) {
-      const id = childId(doc.name, `${documents}/users/${this.profile.uid}/dialogStates`)
-      const rank = numberField(doc.fields, 'rank')
-      if (rank < 0 || rank > 1e12) throw new ReadFailure('data')
-      pins.set(id, { pinned: boolField(doc.fields, 'isPinned'), rank, version: documentVersion(doc) })
+      try {
+        const id = childId(doc.name, `${documents}/users/${this.profile.uid}/dialogStates`)
+        const rank = numberField(doc.fields, 'rank')
+        if (rank < 0 || rank > 1e12) throw new ReadFailure('data')
+        pins.set(id, { pinned: boolField(doc.fields, 'isPinned'), rank, version: documentVersion(doc) })
+      } catch { skipped++ }
     }
     this.discussionHistory.setSource(this.locked ? null : this.reader, this.chatRows)
     const index = new Map<string, ReadDialog>(), unlisted = new Set<string>()
-    for (const doc of this.chatRows.values()) {
-      const value = decodeDialog(doc, this.profile.uid)
+    const read = readDialogs(this.chatRows.values(), this.profile.uid)
+    skipped += read.skipped
+    for (const { doc, value } of read.dialogs) {
       this.discussionHistory.apply(doc, value)
       // The server's boundary, before this device's own deletion moment replaces it.
       if (emptyRevokedDirect(value.summary, value.cutoff, `memo_${this.profile.uid}`) && value.cutoff && !this.hiddenChats.keepsCleared(value.summary.id, value.cutoff)) unlisted.add(value.summary.id)
@@ -1082,6 +1142,7 @@ export class AccountSession {
       value.summary.pinVersion = pins.get(value.summary.id)?.version ?? ''
       index.set(value.summary.id, value)
     }
+    if (skipped) recordHistoryStep('dialog-skipped', String(skipped))
     this.index = index
     // A discussion row shows its channel's picture, so the channel documents follow the list.
     this.discussionAvatars.setVisible([...index.values()].flatMap(value =>
@@ -1158,6 +1219,7 @@ export class AccountSession {
       }
     }, () => ++this.revision, messageId => this.hiddenMessages.has(dialog.summary.id, messageId), () => !this.closed && !this.locked && this.selected === history)
     this.selected = history
+    this.syncPresence()
     if (!this.locked) this.draftReply.bind(dialog, this.reader)
     queueMicrotask(() => { if (this.selected === history) this.acknowledgeReaction() })
     history.start(); this.notifications.resume(); return history
@@ -1563,14 +1625,15 @@ export class AccountSession {
       this.events.changed()
       return 'done'
     }
-    if (this.connection !== 'ready' || !this.reader) throw new Error(tr('계정 연결을 확인해 주세요.'))
-    if (dialog.kind === 'group' && dialog.createdBy !== this.profile.uid) throw new Error(tr('그룹은 만든 사람만 삭제할 수 있어요. 그룹 나가기를 사용해 주세요.'))
     // Telegram deletes a private chat as messages.deleteHistory(peer, max_id, revoke): the peer and its dialog stay,
     // the history up to the boundary goes, and the chat leaves the list because it has no last message
     // (ApiWrap::deleteHistory → Data::Session::deleteConversationLocally → History::clear(DeleteChat)). iOS does the
     // same (AppState.deleteDirectChatHistory). The 1:1 document is the dialog - its id is the pair's - so it is kept:
-    // deleting it threw the boundary away, and the room came back under the same id without one.
-    if (dialog.kind === 'direct') return await this.accountTools.revokeDirectHistory(chatId) === 'unconfirmed' ? 'unconfirmed' : 'done'
+    // deleting it threw the boundary away, and the room came back under the same id without one. The device queue
+    // keeps it with its boundary and sends it when it can, connected or not (A4, history-clears.ts).
+    if (dialog.kind === 'direct') return this.historyClears.enqueue({ id: randomUUID(), kind: 'direct-delete', targetId: chatId, seen: seenTop(dialog.top), upTo: null })
+    if (this.connection !== 'ready' || !this.reader) throw new Error(tr('계정 연결을 확인해 주세요.'))
+    if (dialog.kind === 'group' && dialog.createdBy !== this.profile.uid) throw new Error(tr('그룹은 만든 사람만 삭제할 수 있어요. 그룹 나가기를 사용해 주세요.'))
     try { await this.reader.deleteChatDocument(chatId, this.credentials.signal) }
     catch (error) {
       throw new Error((error as { uncertain?: boolean }).uncertain
@@ -1580,16 +1643,31 @@ export class AccountSession {
   }
   // Telegram's "Clear history" for both sides (ApiWrap::clearHistory → just_clear): the chat stays in the list. The
   // boundary the server wrote is kept so that the emptied room is not taken for a deleted one (HiddenChats.keepsCleared).
+  // A4: the boundary is the room's last message as the person saw it when they pressed (Telegram's top_message); the
+  // device queue sends it until the server answers (history-clears.ts). What the room shows follows the room document's
+  // own boundary (historyRevokedAt), not the answer.
   async clearChatHistory(chatId: string): Promise<'done' | 'unconfirmed'> {
-    if (this.closed || this.locked) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    const dialog = this.index.get(chatId)?.summary
+    if (this.closed || this.locked || !dialog) throw new Error(tr('대화를 다시 선택해 주세요.'))
     this.hiddenChats.beginClear(chatId)
-    try {
-      const result = await this.accountTools.clearChatHistory(chatId)
-      if (result.cutoff !== null) await this.hiddenChats.noteCleared(chatId, result.cutoff)
-      return result.state
-    } finally {
-      this.hiddenChats.endClear(chatId)
-      if (!this.closed && this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() }
+    return this.historyClears.enqueue({ id: randomUUID(), kind: 'chat-clear', targetId: chatId, seen: seenTop(dialog.top), upTo: null })
+  }
+  // The newest message of a room at or before what the person saw, after the room's current boundary (A4 §3-1).
+  private historyClearSession(credentials: AccountAuthorization): HistoryClearSession {
+    return {
+      newest: async (chatId, seen, signal) => {
+        const reader = new FirestoreReader(credentials)
+        try {
+          const docs = await reader.query(`${documents}/chats/${chatId}`, { from: [{ collectionId: 'messages' }],
+            where: { fieldFilter: { field: { fieldPath: 'createdAt' }, op: 'LESS_THAN_OR_EQUAL', value: positionValue({ ...seen, id: '' }) } },
+            orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' }, { field: { fieldPath: '__name__' }, direction: 'DESCENDING' }], limit: { value: 1 } }, signal)
+          const doc = docs[0]
+          if (!doc) return null
+          const at = timestamp(doc.fields?.createdAt?.timestampValue, childId(doc.name, `${documents}/chats/${chatId}/messages`))
+          return withinCutoff(at, this.index.get(chatId)?.cutoff) ? null : { id: at.id, seconds: at.seconds, nanoseconds: at.nanoseconds }
+        } finally { reader.close() }
+      },
+      call: (name, data, signal) => callMorseFunction(credentials, name, data, AbortSignal.any([signal, AbortSignal.timeout(65000)]))
     }
   }
   // Posts of a channel on screen in the channel section or the channel tab feed (MorseChannelPostReadMarks.noteSeen):
@@ -1732,13 +1810,13 @@ export class AccountSession {
     await this.sendSticker(chatId, id, stickerId, reply)
   }
   // The same sticker sent into a 1:1 inquiry room, from this device's library or from an installed set.
-  async sendInquirySticker(request: import('../../shared/channel-inquiries').InquiryTargetRequest, stickerId: string): Promise<'sent' | 'unconfirmed'> {
+  async sendInquirySticker(request: import('../../shared/channel-inquiries').InquiryTargetRequest, stickerId: string): Promise<'queued'> {
     if (this.closed || this.locked) throw new Error(tr('문의를 다시 열어 주세요.'))
     const stored = await this.delivery.stickerState<{ kind: StickerKind; data: Uint8Array } | null>({ kind: 'sticker-read', id: stickerId })
     if (!stored) throw new Error(tr('스티커를 찾지 못했습니다. 보관함을 확인해 주세요.'))
     return this.channelInquiries.sendSticker(request, { extension: stored.kind, bytes: Buffer.from(stored.data) })
   }
-  async sendInquiryPackSticker(request: import('../../shared/channel-inquiries').InquiryTargetRequest, setId: string, itemId: string): Promise<'sent' | 'unconfirmed'> {
+  async sendInquiryPackSticker(request: import('../../shared/channel-inquiries').InquiryTargetRequest, setId: string, itemId: string): Promise<'queued'> {
     if (this.closed || this.locked) throw new Error(tr('문의를 다시 열어 주세요.'))
     const bytes = await this.stickerPacks.itemBytes(setId, itemId)
     const stickerId = await this.addSticker(new Uint8Array(bytes))
@@ -1980,6 +2058,7 @@ export class AccountSession {
   }
   readingActivityChanged(): void {
     if (this.events.canRead()) this.reads.resume(); else this.reads.pause()
+    this.syncPresence()
     this.notifications.resume()
     this.channelInquiries.activity()
   }
@@ -2186,6 +2265,14 @@ export class AccountSession {
   typingState(): TypingSnapshot | null {
     return this.closed || this.locked || !this.selected ? null : this.typing.snapshot()
   }
+  // In the room: its chat is open, in front of this person (the same test as reading it), and it is a room the others
+  // can see them in — not a secret chat, not the memo space. Anything else and the room is left.
+  private syncPresence(): void {
+    const summary = this.selected?.dialog.summary
+    const room = summary && !this.closed && !this.locked && this.events.canRead() && summary.kind !== 'secret' && !summary.id.startsWith('memo_') &&
+      summary.participantUids.includes(this.profile.uid) ? summary.id : null
+    this.roomPresence.set(room)
+  }
   // The composer's typing state for the open chat, written like iOS updateTypingStateIfNeeded.
   reportTyping(chatId: string, typing: boolean): void {
     const selected = this.selected?.dialog.summary, reader = this.reader
@@ -2299,8 +2386,8 @@ export class AccountSession {
   discard(chatId: string, id: string) { return this.delivery.discard(chatId, id) }
   async close(purge: boolean): Promise<void> {
     if (this.closed) return
-    this.closed = true; this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.photoPreviews.close(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
-    this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); 
+    this.roomPresence.close(); this.closed = true; this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
+    this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); 
     await storyClose
     await noteClose
     await presenceClose
@@ -2364,4 +2451,9 @@ function forumCategoriesValue(categories: ForumCategory[]): WireObject {
   return { arrayValue: { values: [...categories].sort((a, b) => a.sortOrder - b.sortOrder).map(category => ({ mapValue: { fields: {
     id: { stringValue: category.id }, name: { stringValue: category.name }, sortOrder: { integerValue: String(category.sortOrder) },
     ...(category.icon ? { icon: { stringValue: category.icon } } : {}), ...(category.isGeneral ? { isGeneral: { booleanValue: true } } : {}) } } })) } }
+}
+
+// A room's last message time as the list showed it (lastMessageAt): the A4 boundary is found at or before it.
+function seenTop(top: MessagePosition | null | undefined): { seconds: number; nanoseconds: number } | null {
+  return top && (top.seconds > 0 || top.nanoseconds > 0) ? { seconds: top.seconds, nanoseconds: top.nanoseconds } : null
 }

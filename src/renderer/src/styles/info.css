@@ -35,10 +35,32 @@ button.info-row:hover { background: var(--card-pressed) }
 
 .peer-list { max-height: 420px; margin: 8px -22px 0; overflow-y: auto }
 .peer-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 6px 22px; text-align: left }
+/* The Morse ID result is a row that is read, not pressed: its own button is what acts. */
+.external-contact .peer-row-text { flex: 1; min-width: 0 }
+.external-contact .button { flex: none }
 .peer-row:hover:not(:disabled) { background: var(--card-pressed) }
 .peer-row-text { flex: 1; min-width: 0; display: grid; gap: 2px }
 .peer-row-text strong { font-size: var(--t-body); font-weight: 500 }
 .peer-row-text small { font-size: var(--t-caption); color: var(--text-weak) }
+
+/* A profile's personal channel (tdesktop DetailsFiller::makePersonalChannel; iOS ProfileView.personalChannelSection). */
+.personal-channel { display: grid; gap: 8px; width: 100%; padding: 10px 20px; text-align: left; color: var(--text) }
+.personal-channel:hover { background: var(--card-pressed) }
+.personal-channel-head { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: var(--t-caption); color: var(--text-weak) }
+.personal-channel-head svg { flex: none }
+.personal-channel-label { flex: 1; min-width: 0 }
+.personal-channel-row { display: flex; align-items: center; gap: 12px; min-width: 0 }
+.personal-channel-text { flex: 1; min-width: 0; display: grid; gap: 2px }
+.personal-channel-line { display: flex; align-items: center; gap: 8px; min-width: 0 }
+.personal-channel-line strong { flex: 1; min-width: 0; font-size: var(--t-body); font-weight: 600 }
+.personal-channel-line time { flex: none; font-size: 12px; color: var(--text-weak) }
+.personal-channel-preview { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; font-size: var(--t-caption); line-height: 1.4; color: var(--text-weak); white-space: pre-line; overflow-wrap: anywhere }
+/* The personal channel chooser: its title over «내 채널을 고르세요», and «채널 숨기기» in the accent colour. */
+.box-title-stack { display: grid; gap: 2px }
+.box-title-stack small { font-size: var(--t-caption); font-weight: 400; color: var(--text-weak) }
+.personal-channel-hide { color: var(--accent) }
+.personal-channel-hide .peer-row-text strong { font-weight: 600 }
+.personal-channel-hide-icon { flex: none; display: grid; place-items: center; width: 40px; height: 40px }
 
 .send-files-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 6px }
 .send-files-grid.files { grid-template-columns: 1fr }
@@ -186,6 +208,22 @@ button.info-row:hover { background: var(--card-pressed) }
 .settings-list-box .box-content { padding-inline: 0 }
 .settings-list-box .box-note, .settings-list-box .box-error { padding: 8px 22px 0 }
 .session-icon { flex: none; width: 42px; height: 42px; display: grid; place-items: center; border-radius: 50%; background: var(--card-pressed); color: var(--icon-muted) }
+/* Active sessions (A6): Morse iOS draws a session as a round gradient mark, the device in semibold, the rest in caption. */
+.sessions-box .session-icon, .session-info .session-icon { background: linear-gradient(135deg, var(--accent), #8b5cf6); color: #fff }
+.session-row .peer-row-text strong { font-weight: 600 }
+.session-row-wrap { position: relative }
+.session-row-wrap .session-row { padding-right: 56px }
+.session-terminate { position: absolute; top: 50%; right: 14px; transform: translateY(-50%); color: var(--icon-muted) }
+.session-terminate:hover { color: var(--danger) }
+.sessions-box .list-button-value { flex: none; color: var(--accent); font-size: var(--t-body) }
+.session-icon.large { width: 72px; height: 72px }
+.session-icon.large svg { width: 34px; height: 34px }
+.session-info-head { display: grid; justify-items: center; gap: 4px; padding: 8px 22px 14px; text-align: center }
+.session-info-head strong { margin-top: 8px; font-size: 18px; font-weight: 600 }
+.session-info-head small { font-size: var(--t-caption); color: var(--text-weak) }
+.session-info-row { display: flex; justify-content: space-between; gap: 16px; padding: 8px 22px; font-size: var(--t-body) }
+.session-info-row span { color: var(--text-weak) }
+.session-info-row strong { font-weight: 500; text-align: right }
 
 /* Invite link box. */
 .invite-box .box-content { display: grid; gap: 8px }

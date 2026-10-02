@@ -48,6 +48,10 @@
 .channel-post-head { display: flex; align-items: center; gap: 8px; padding: 0 14px 9px }
 .channel-post-author { min-width: 0; font-size: var(--t-body); font-weight: 600; color: var(--text) }
 .channel-post-text { margin: 0; padding: 2px 14px 10px; font-size: var(--message-font-size, var(--t-body)); line-height: 1.45; white-space: pre-wrap; word-break: break-word }
+/* New words on their way (drawn as the post's words) and words the server refused, kept for another try. */
+.channel-post-edit { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; margin: -4px 14px 10px; font-size: var(--t-caption); color: var(--text-weak) }
+.channel-post-edit.failed { color: var(--danger, #ff3b30) }
+.channel-post-edit button { color: var(--accent); font-size: var(--t-caption); font-weight: 600 }
 .channel-post-media { display: flex; flex-direction: column; gap: 2px }
 .channel-post-picture { position: relative; display: grid; place-items: center; width: 100%; min-height: 140px; overflow: hidden; background: var(--sheet) }
 .channel-post-picture img { width: 100%; height: 100%; object-fit: cover; display: block }
@@ -91,6 +95,7 @@
 .channel-comments-panel .compose { flex: none }
 .channel-comments-post { flex: none; display: -webkit-box; margin: 0; padding: 10px 16px; overflow: hidden; border-bottom: 1px solid var(--divider); font-size: var(--t-caption); line-height: 1.45; color: var(--text-medium); white-space: pre-wrap; -webkit-line-clamp: 3; -webkit-box-orient: vertical }
 .channel-comments-list { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 0 }
+.channel-comments-waiting { margin: 0; padding: 4px 16px 8px; color: var(--text-weak); font-size: var(--t-caption); text-align: center }
 .channel-comment { display: flex; align-items: flex-start; gap: 10px; padding: 6px 16px }
 .channel-comment.reply { padding-left: 60px }
 .channel-comment:hover { background: var(--card-pressed) }
@@ -109,6 +114,8 @@
 .channel-discovery-limit { padding: 8px 22px }
 .channel-preview { display: grid; gap: 4px }
 .channel-preview .info-cover { padding-top: 4px }
+/* A closed channel's lock beside its name, as on the channel screen (.channel-profile-text h1 svg). */
+.channel-preview .info-cover h2 svg { margin-left: 6px; vertical-align: -1px; color: var(--text-weak) }
 .channel-preview-description { margin: 0 0 4px; font-size: var(--t-body); line-height: 1.45; white-space: pre-wrap; word-break: break-word }
 .channel-preview-tags { margin: 0 0 6px; font-size: var(--t-caption); color: var(--accent) }
 .channel-preview-posts { display: grid; gap: 6px; max-height: 280px; overflow-y: auto }
@@ -218,6 +225,9 @@
 .channel-home-post-image.placeholder { display: grid; place-items: center; aspect-ratio: 1 }
 /* The emoji and sticker panel of a room's composer follows the panel's own width (a third column is narrower). */
 .inquiry-panel .entity-panel { left: 8px; right: 8px; width: auto; max-width: 360px }
+/* A room says who it is with, the way a chat's own bar does; nothing here is pressed, so it does not light up. */
+.inquiry-peer { padding-left: 0 }
+.inquiry-peer:hover { background: none }
 /* immediateThumbnailData: the tiny thumb the post carries, drawn blurred and scaled up until the picture is ready. */
 .channel-home-post-image img.blurred, .channel-post-picture img.blurred { filter: blur(12px); transform: scale(1.08) }
 .channel-home-post-video { position: absolute; left: 50%; top: 50%; display: grid; place-items: center; width: 44px; height: 44px; margin: -22px 0 0 -22px; border-radius: 50%; background: rgb(0 0 0 / .45); color: #fff }

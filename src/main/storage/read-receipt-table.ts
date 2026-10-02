@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3-multiple-ciphers'
-import { comparePosition } from '../../shared/model'
+import { withinCutoff } from '../../shared/model'
 import { compareReadCursor, readCovers, readCursor, type ReadCursor } from '../../shared/read-receipts'
 import { historyPosition, identifier, object } from '../../shared/validation'
 import type { ReadReceiptCommand, StoredReadReceipt } from './read-receipt-protocol'
@@ -60,7 +60,7 @@ export function executeReadReceipt(db: Database.Database, command: ReadReceiptCo
         const authority = new Map(command.authorities.map(value => [identifier(value.chatId), value]))
         for (const row of rows) {
           const current = authority.get(row.chatId)
-          if (!current || (current.cutoff && comparePosition(row.observed, current.cutoff) < 0)) {
+          if (!current || withinCutoff(row.observed, current.cutoff)) {
             db.prepare('DELETE FROM read_receipts WHERE chat_id=?').run(row.chatId)
           } else if (current.cursor) confirm(row, cursorValue(current.cursor))
         }

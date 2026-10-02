@@ -2,23 +2,23 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Copy, Reply, Send, Trash2, X } from 'lucide-react'
 import type { ChannelCommentItem } from '../../../shared/channel-comments'
 import type { CommentDraftRecord, CommentReplyTarget } from '../../../shared/channel-comment-drafts'
-import { channelCommentRemoval } from '../../../shared/channel-comment-removal'
 import { composingKey } from '../../../shared/shortcuts'
 import { useDesktop } from '../app/store'
+import { useShownConnection } from '../app/connection'
 import { controller } from '../app/ui'
 import { errorText, messageTime, positionTime, serviceDate } from '../app/format'
 import { copyText } from '../app/clipboard'
 import { draftFlushers } from '../app/drafts'
 import { DraftWriter } from '../app/channel-drafts'
-import { publishComment } from '../app/channel-publish'
+import { publishComment, queuedCommentText } from '../app/channel-publish'
 import { Spinner } from '../ui/controls'
 import { confirmBox } from '../ui/layers'
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { arrangeComments } from './channel-comment-display'
 import type { ChannelSurface } from './channel-media-viewer'
-import { reportResult } from './channel-section'
 import { UserAvatar } from '../ui/user-avatar'
 import { locale, tr } from '../../../shared/i18n'
+import { enqueueChannelOperation, removedComments, useChannelOperations } from './channel-operations'
 
 interface ReplySelection extends CommentReplyTarget { author: string }
 interface ThreadPost { id: string; revision: string; commentCount: number | null }
@@ -83,7 +83,7 @@ function CommentComposer({ accountUid, channelId, postId, surface, reply, author
       if (!saved.revision) throw new Error(tr('초안을 저장하지 못했습니다.'))
       latest.current = ''; setText('')
       const result = await publishComment(accountUid, { ...preview, channelId, postId, text: saved.text, draftRevision: saved.revision, parent: saved.parent })
-      if (result === 'unconfirmed') controller.toast(tr('댓글 등록 결과를 확인하고 있습니다. 잠시 후 댓글을 확인해 주세요.'))
+      if (result === 'queued') controller.toast(queuedCommentText)
       const record = await writer.load()
       if (result === 'done' && record.parent) onReply(null)
     } catch (reason) {
@@ -124,7 +124,16 @@ export function CommentsThread({ accountUid, channelId, requestId, post, surface
   const snapshot = useDesktop(state => { const value = surface === 'public-preview' ? state?.channelPublicPreview?.comments : state?.channels?.posts?.comments; return value && value.selectionId === selectionId ? value : null })
   const last = useRef<ChannelCommentItem[] | null>(null)
   if (snapshot?.status === 'ready') last.current = snapshot.items
-  const items = snapshot?.status === 'ready' ? snapshot.items : last.current
+  // A pane with nothing to show yet says why when the connection is what it waits for (the chat list's «연결 대기 중»),
+  // instead of a bare spinner; comments received earlier are shown meanwhile, with the same words above them.
+  const connection = useShownConnection()
+  const operations = useChannelOperations(accountUid, channelId)
+  // A1 §3-5: the channel's owner or a canDeleteMessages admin deletes anyone's comment (the channel's own screen knows
+  // this account's role); everyone their own.
+  const moderates = useDesktop(state => surface !== 'public-preview' && state?.channels?.posts?.channelId === channelId && state.channels.posts.authoring?.moderates === true)
+  const gone = useMemo(() => removedComments(operations, postId), [operations, postId])
+  const shownItems = snapshot?.status === 'ready' ? snapshot.items : last.current
+  const items = useMemo(() => shownItems && gone.size ? shownItems.filter(item => !gone.has(item.id)) : shownItems, [shownItems, gone])
   const rows = useMemo(() => arrangeComments(items ?? [], 'threads').rows, [items])
   const authorOf = (id: string): string => items?.find(item => item.id === id)?.authorName ?? tr('원댓글')
 
@@ -134,16 +143,13 @@ export function CommentsThread({ accountUid, channelId, requestId, post, surface
     if (!root) { controller.toast(tr('원댓글을 찾을 수 없습니다.')); return }
     setReply({ id: root.id, revision: root.revision, author: item.authorName })
   }
+  // Telegram takes a deleted comment off at once; the device queue deletes it on the server (channel-operations.ts).
   async function remove(item: ChannelCommentItem): Promise<void> {
-    if (!selectionId || snapshot?.status !== 'ready') return
-    let request
-    try { request = channelCommentRemoval({ id: crypto.randomUUID(), selectionId, requestId, channelId, postId, revision, commentId: item.id, commentRevision: item.revision, text: item.text, count: snapshot.items.length }) }
-    catch (reason) { controller.toast(errorText(reason, tr('댓글 목록을 다시 확인해 주세요.')), 'error'); return }
     if (!await confirmBox({ title: tr('댓글 삭제'), text: tr('이 댓글을 삭제할까요?'), confirm: tr('삭제'), danger: true })) return
-    reportResult(surface === 'public-preview' ? window.morse.removePublicPreviewComment(accountUid, request) : window.morse.removeChannelComment(accountUid, request), tr('댓글을 삭제했습니다.'))
+    void enqueueChannelOperation(accountUid, { kind: 'comment-delete', id: crypto.randomUUID(), channelId, postId, commentId: item.id })
   }
   const openMenu = (item: ChannelCommentItem, point: { x: number; y: number }): void => {
-    const removable = item.own && snapshot?.status === 'ready' && post.commentCount === snapshot.items.length
+    const removable = item.own || moderates
     popupMenu.open(point, [
       item.parent === 'none' || item.parent === 'present' ? { label: tr('답글'), icon: <Reply size={18} />, onSelect: () => replyTo(item) } : null,
       item.text ? { label: tr('텍스트 복사'), icon: <Copy size={18} />, onSelect: () => { const copied = copyText(item.text); controller.toast(copied ? tr('텍스트를 복사했습니다.') : tr('텍스트를 복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null,
@@ -152,9 +158,12 @@ export function CommentsThread({ accountUid, channelId, requestId, post, surface
     ])
   }
 
+  const waiting = snapshot?.waiting === true || (!items && (!snapshot || snapshot.status === 'loading') && connection !== 'ready')
   return <>
     <div className="channel-comments-list">
-      {!items ? <div className="empty-state">{snapshot && snapshot.status !== 'loading' ? snapshot.message || tr('댓글을 불러오지 못했습니다.') : <Spinner size={22} />}</div>
+      {items && waiting && <p className="channel-comments-waiting" role="status">{tr('연결 대기 중')}</p>}
+      {!items ? <div className="empty-state">{snapshot && snapshot.status !== 'loading' ? snapshot.message || tr('댓글을 불러오지 못했습니다.')
+        : waiting ? <><Spinner size={22} /><strong>{tr('연결 대기 중')}</strong><span>{tr('연결되면 댓글을 불러옵니다.')}</span></> : <Spinner size={22} />}</div>
         : !rows.length ? <div className="empty-state">{tr('아직 댓글이 없습니다. 첫 댓글을 남겨 보세요.')}</div>
           : rows.map(({ item, depth }) => {
             const time = positionTime(item.position)
@@ -177,6 +186,8 @@ export function CommentsThread({ accountUid, channelId, requestId, post, surface
 // Replies section for one channel post, shown in the third column.
 export function ChannelCommentsPanel({ accountUid, channelId, postId }: { accountUid: string; channelId: string; postId: string }) {
   const posts = useDesktop(state => { const value = state?.channels?.posts; return value?.channelId === channelId && value.status === 'ready' ? value : null })
+  // The channel's posts are being read again (the channel list came back): the post is not «not found» meanwhile.
+  const reading = useDesktop(state => { const value = state?.channels?.posts; return value?.channelId === channelId && value.status === 'loading' })
   const post = posts?.posts.find(item => item.id === postId) ?? null
   const total = post?.commentCount ?? 0
   return <section className="side-panel channel-comments-panel" aria-label={tr('댓글')}>
@@ -184,7 +195,7 @@ export function ChannelCommentsPanel({ accountUid, channelId, postId }: { accoun
       <strong className="side-title">{tr('댓글{0}', [total ? ` ${total.toLocaleString(locale())}` : ''])}</strong>
       <button className="icon-button" aria-label={tr('댓글 닫기')} onClick={() => controller.setRight(null)}><X size={20} /></button>
     </header>
-    {!post || !posts ? <div className="empty-state">{tr('게시물을 찾을 수 없습니다.')}</div> : <>
+    {!post || !posts ? <div className="empty-state">{reading ? <Spinner size={22} /> : tr('게시물을 찾을 수 없습니다.')}</div> : <>
       {post.text && <p className="channel-comments-post">{post.text}</p>}
       <CommentsThread accountUid={accountUid} channelId={channelId} requestId={posts.requestId} post={post} surface="channel" />
     </>}

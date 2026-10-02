@@ -8,6 +8,7 @@ import { retainChannels } from '../app/channel-visibility'
 import { Spinner, TextField } from '../ui/controls'
 import { Box } from '../ui/layers'
 import { tr } from '../../../shared/i18n'
+import { clampChatTitle, maxChatTitle } from '../../../shared/chat-title'
 
 // Telegram "New Channel": name and description, created in one step.
 function ChannelCreateBox({ accountUid, close }: { accountUid: string; close(): void }) {
@@ -43,7 +44,7 @@ function ChannelCreateBox({ accountUid, close }: { accountUid: string; close(): 
     <button className="button flat" disabled={busy} onClick={close}>{tr('취소')}</button>
     <button className="button flat" disabled={busy || !name.trim()} onClick={() => { void create() }}>{busy && <Spinner size={14} />}{tr('만들기')}</button>
   </>}>
-    <TextField label={tr('채널 이름')} value={name} onChange={setName} maxLength={50} counter autoFocus disabled={busy} onSubmit={() => { void create() }} />
+    <TextField label={tr('채널 이름')} value={name} onChange={value => setName(clampChatTitle(value))} maxLength={maxChatTitle} counter autoFocus disabled={busy} onSubmit={() => { void create() }} />
     <TextField label={tr('소개 (선택)')} value={description} onChange={setDescription} maxLength={500} multiline rows={4} counter disabled={busy} />
     <p className="box-note">{tr('사진과 커버는 채널을 만든 뒤 채널 정보에서 바꿀 수 있습니다.')}</p>
     {error && <p className="box-error" role="alert">{error}</p>}

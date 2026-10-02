@@ -21,10 +21,26 @@ function channelName(fields: Record<string, WireObject>): string {
   return boolField(fields, 'channelDeleted') ? tr('알 수 없는 채널') : stringField(fields, 'channelName', 512) || tr('채널')
 }
 
+// The line of one message as the server writes a room's `lastMessage` (functions morse-message-preview.js
+// lastMessagePreview), for a room whose newest messages this device deleted for itself.
+export function messageLine(fields: Record<string, WireObject>): string {
+  const type = stringField(fields, 'type', 32) || 'text', text = stringField(fields, 'text', 100000)
+  if (type === 'text' || type === 'channelPost') return text
+  if (type === 'file') return stringField(fields, 'fileName', 1000) || text || '📎 File'
+  if (type === 'event' && stringField(fields, 'eventTitle', 1000)) return `📅 ${stringField(fields, 'eventTitle', 1000)}`
+  if (type === 'poll') return stringField(fields, 'pollQuestion', 1000)
+  return ({ image: '📷 Photo', video: '🎬 Video', voice: '🎤 Voice message', sticker: 'Sticker', location: 'Location', event: 'Event', contact: 'Contact' } as Record<string, string>)[type] ?? ''
+}
+// What a room's line shows in place of the room document's own when its newest messages are deleted here: the newest
+// message left, and when it was sent (null keeps the room's time), or nothing to say (null).
+export type RemainingLine = (inquiryId: string, roomAt: number | null) => { preview: string; lastMessageAt: number | null } | null
+// Messages this device deleted for itself in inquiry rooms (hidden-messages.ts, by the room's queue id).
+export interface HiddenInquiryMessages { count(inquiryId: string): number; has(inquiryId: string, messageId: string): boolean }
+
 // ChatListView's rows for these rooms: one per inquiry for a subscriber, one folder per channel for
 // an owner (ChannelInquirySummary gathers that channel's rooms). `addresses` keeps each channel's
 // cached picture address, taken from the newest room that carries one.
-export function buildInquiryRows(uid: string, subscriber: Iterable<FirestoreDocument>, owner: Iterable<FirestoreDocument>): { rows: InquiryRow[]; addresses: Map<string, string> } {
+export function buildInquiryRows(uid: string, subscriber: Iterable<FirestoreDocument>, owner: Iterable<FirestoreDocument>, remaining: RemainingLine = () => null): { rows: InquiryRow[]; addresses: Map<string, string> } {
   const addresses = new Map<string, string>(), rows: InquiryRow[] = []
   const remember = (channelId: string, fields: Record<string, WireObject>): void => {
     const raw = boolField(fields, 'channelDeleted') ? '' : stringField(fields, 'channelPhotoURL', 10000)
@@ -34,25 +50,27 @@ export function buildInquiryRows(uid: string, subscriber: Iterable<FirestoreDocu
     const f = doc.fields, channelId = stringField(f, 'channelId', 160), id = doc.name.slice(doc.name.lastIndexOf('/') + 1)
     if (!channelId || !id || stringField(f, 'subscriberId', 160) !== uid) continue
     remember(channelId, f)
-    rows.push({ id: subscriberRowId(id), kind: 'subscriber', channelId, inquiryId: id, title: channelName(f), preview: preview(f),
-      lastMessageAt: time(f, 'lastMessageAt'), unread: Math.max(0, Math.trunc(numberField(f, 'unreadForSubscriber'))), rooms: 1 })
+    const roomAt = time(f, 'lastMessageAt'), left = remaining(id, roomAt)
+    rows.push({ id: subscriberRowId(id), kind: 'subscriber', channelId, inquiryId: id, title: channelName(f), preview: left ? left.preview : preview(f),
+      lastMessageAt: left?.lastMessageAt ?? roomAt, unread: Math.max(0, Math.trunc(numberField(f, 'unreadForSubscriber'))), rooms: 1 })
   }
   const folders = new Map<string, InquiryRow>()
   for (const doc of owner) {
     const f = doc.fields, channelId = stringField(f, 'channelId', 160)
     if (!channelId || stringField(f, 'channelOwnerId', 160) !== uid) continue
     remember(channelId, f)
-    const at = time(f, 'lastMessageAt'), unread = Math.max(0, Math.trunc(numberField(f, 'unreadForOwner')))
+    const id = doc.name.slice(doc.name.lastIndexOf('/') + 1), roomAt = time(f, 'lastMessageAt'), left = id ? remaining(id, roomAt) : null
+    const at = left?.lastMessageAt ?? roomAt, line = left ? left.preview : preview(f), unread = Math.max(0, Math.trunc(numberField(f, 'unreadForOwner')))
     const current = folders.get(channelId)
     if (!current) {
       folders.set(channelId, { id: ownerRowId(channelId), kind: 'ownerFolder', channelId, inquiryId: null, title: channelName(f),
-        preview: preview(f), lastMessageAt: at, unread, rooms: 1 })
+        preview: line, lastMessageAt: at, unread, rooms: 1 })
       continue
     }
     current.rooms += 1
     current.unread += unread
     if (at !== null && (current.lastMessageAt === null || at > current.lastMessageAt)) {
-      current.lastMessageAt = at; current.preview = preview(f); current.title = channelName(f)
+      current.lastMessageAt = at; current.preview = line; current.title = channelName(f)
     }
   }
   rows.push(...folders.values())
@@ -74,11 +92,15 @@ export class InquiryRows {
   private readonly photos: ChannelImages
   private addresses = new Map<string, string>()
   private visible: string[] = []
+  // The newest message left in rooms whose newest messages are deleted here, read once per room time and hidden count.
+  private readonly remaining = new Map<string, { key: string; value: { preview: string; lastMessageAt: number | null } | null }>()
+  private readonly reading = new Set<string>()
 
   constructor(private readonly uid: string, private readonly auth: ReadCredentials,
     private readonly allowed: () => void, private readonly changed: () => void,
     // What each room's newest message is, for the banner this window shows in place of a push.
-    private readonly noticed: (rooms: InquiryNotice[]) => void = () => {}) {
+    private readonly noticed: (rooms: InquiryNotice[]) => void = () => {},
+    private readonly hidden: HiddenInquiryMessages | null = null) {
     this.photos = new ChannelImages(auth, id => ({ name: `${documents}/channels/${id}`,
       fields: { photoURL: { stringValue: this.addresses.get(id) ?? '' } } } as unknown as FirestoreDocument), () => { if (!this.closed) this.changed() })
   }
@@ -135,11 +157,37 @@ export class InquiryRows {
     this.visible = ids
     this.photos.setVisible(ids)
   }
+  // Telegram's dialog row shows the last message it still has. A room document carries only its newest message, so a
+  // room with messages deleted here has its latest ones read, once for each newest-message time, and the newest one
+  // left becomes its line; until that read answers, the room's own line stays.
+  private remainingLine(inquiryId: string, roomAt: number | null): { preview: string; lastMessageAt: number | null } | null {
+    const count = this.hidden?.count(inquiryId) ?? 0
+    if (!count) return null
+    const key = `${roomAt ?? 0}:${count}`, known = this.remaining.get(inquiryId)
+    if (known?.key === key) return known.value
+    if (!this.reading.has(key + inquiryId)) void this.readRemaining(inquiryId, key, count)
+    return null
+  }
+  private async readRemaining(inquiryId: string, key: string, count: number): Promise<void> {
+    const reader = this.reader, hidden = this.hidden
+    if (!reader || !hidden || this.closed) return
+    this.reading.add(key + inquiryId)
+    try {
+      const docs = await reader.query(`${documents}/channelInquiries/${inquiryId}`, { from: [{ collectionId: 'messages' }],
+        orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' }, { field: { fieldPath: '__name__' }, direction: 'DESCENDING' }],
+        limit: { value: Math.min(100, count + 1) } }, this.auth.signal)
+      if (this.closed) return
+      const left = docs.find(doc => !hidden.has(inquiryId, doc.name.slice(doc.name.lastIndexOf('/') + 1)))
+      this.remaining.set(inquiryId, { key, value: left ? { preview: inquiryPreviewText(messageLine(left.fields).slice(0, 300)), lastMessageAt: time(left.fields, 'createdAt') } : { preview: '', lastMessageAt: null } })
+      this.changed()
+    } catch { /* The room's own line stays; the next change of the room asks again. */ }
+    finally { this.reading.delete(key + inquiryId) }
+  }
   snapshot(): InquiryRow[] {
     if (this.closed || this.locked) return []
     // A fault here must not break the whole snapshot; the rows simply stay away until the next one.
     try {
-      const { rows } = buildInquiryRows(this.uid, this.subscriber.values(), this.owner.values())
+      const { rows } = buildInquiryRows(this.uid, this.subscriber.values(), this.owner.values(), (id, at) => this.remainingLine(id, at))
       return rows.map(row => ({ ...row, photo: this.photos.snapshot(row.channelId) }))
     } catch { return [] }
   }

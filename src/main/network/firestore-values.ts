@@ -3,7 +3,7 @@ import { autoDeleteNoticeText, autoDeleteWirePrefix, type AutoDeleteNotice } fro
 import { chatListPreviewText } from '../../shared/chat-list-preview'
 import { messageStorySource } from './message-story-source'
 import type { ChatMessage, DialogSummary, MessagePoll, MessagePosition } from '../../shared/model'
-import { comparePosition, positionMilliseconds } from '../../shared/model'
+import { positionMilliseconds, withinCutoff } from '../../shared/model'
 import { identifier, object } from '../../shared/validation'
 import { idleReadSync, outboxReadTill, readCursor } from '../../shared/read-receipts'
 import { mediaCaption, mediaResources } from '../media/media-document'
@@ -18,7 +18,8 @@ export const documents = `${database}/documents`
 export const pageSize = 80
 export const historyLimit = 320
 export class ReadFailure extends Error {
-  constructor(readonly code: 'network' | 'permission' | 'index' | 'data' | 'cancelled') {
+  // reason: what the transport said (firestore-rpc.ts failure), for connection-check.log only.
+  constructor(readonly code: 'network' | 'permission' | 'index' | 'data' | 'cancelled', readonly reason = '') {
     super({ network: tr('대화를 불러오지 못했습니다. 연결을 확인한 뒤 새로고침해 주세요.'),
       permission: tr('이 대화를 읽을 권한을 확인하지 못했습니다.'), index: tr('대화 조회에 필요한 서버 인덱스를 확인해야 합니다.'),
       data: tr('대화 데이터를 읽을 수 없습니다.'), cancelled: tr('대화 조회가 취소되었습니다.') }[code])
@@ -68,6 +69,16 @@ export function stringField(fields: Record<string, WireObject>, key: string, max
   if (typeof value !== 'string' || value.length > max) throw new ReadFailure('data')
   return value
 }
+// A name or a line that is only ever shown. One longer than this build expects is cut, not refused: Telegram replaces
+// what it cannot read and keeps the list (Telegram-iOS StoreMessage_Telegram.swift), and a group named at length
+// by another app must not take every other chat down with it (F-ST-002). A value of another type is no text at all.
+// Cut by whole characters, so an emoji at the edge is not split in two.
+export function displayField(fields: Record<string, WireObject>, key: string, max: number): string {
+  const value = field(fields, key).stringValue
+  if (typeof value !== 'string') return ''
+  if (value.length <= max) return value
+  return Array.from(value.slice(0, max * 2)).slice(0, max).join('')
+}
 export function boolField(fields: Record<string, WireObject>, key: string): boolean { return field(fields, key).booleanValue === true }
 // Existing iOS message ingress accepts these legacy Boolean representations.
 function messageFlag(fields: Record<string, WireObject>, key: string): boolean {
@@ -105,6 +116,16 @@ export function rawPosition(doc: FirestoreDocument, chatId: string): MessagePosi
   if (!position) throw new ReadFailure('data')
   return position
 }
+// The chat list's rooms, each read on its own: one this build cannot read is left out and counted, and the rest are
+// listed (F-ST-002 — Telegram replaces the entry it cannot read and keeps the list).
+export function readDialogs(docs: Iterable<FirestoreDocument>, uid: string): { dialogs: { doc: FirestoreDocument; value: ReadDialog }[]; skipped: number } {
+  const dialogs: { doc: FirestoreDocument; value: ReadDialog }[] = []
+  let skipped = 0
+  for (const doc of docs) {
+    try { dialogs.push({ doc, value: decodeDialog(doc, uid) }) } catch { skipped++ }
+  }
+  return { dialogs, skipped }
+}
 export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
   const id = childId(doc.name, `${documents}/chats`), f = doc.fields
   const kind = stringField(f, 'type', 32)
@@ -117,11 +138,11 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
   const info = mapField(f, 'participantInfo')
   const participantNames = Object.fromEntries(participants.map(id => {
     const participant = mapField(info, id)
-    return [id, boolField(participant, 'accountDeleted') ? tr('탈퇴한 계정') : stringField(participant, 'displayName', 512) || tr('참여자')]
+    return [id, boolField(participant, 'accountDeleted') ? tr('탈퇴한 계정') : displayField(participant, 'displayName', 512) || tr('참여자')]
   }))
   const peer = other ? mapField(info, other) : {}
-  const title = id === `memo_${uid}` ? tr('내 메모') : kind === 'group' ? stringField(f, 'name', 512) || tr('이름 없는 그룹') :
-    boolField(peer, 'accountDeleted') ? tr('탈퇴한 계정') : stringField(peer, 'displayName', 512) || stringField(f, 'name', 512) || tr('알 수 없음')
+  const title = id === `memo_${uid}` ? tr('내 메모') : kind === 'group' ? displayField(f, 'name', 512) || tr('이름 없는 그룹') :
+    boolField(peer, 'accountDeleted') ? tr('탈퇴한 계정') : displayField(peer, 'displayName', 512) || displayField(f, 'name', 512) || tr('알 수 없음')
   // A channel's discussion room speaks for the channel, not for the person who owns it: iOS names the
   // owner's messages after the room (MorseGroupChatSenderDisplay.displayName — «채널 토론방 방장 uid는
   // 방 이름으로»), and the server keeps that copy in the room itself (syncDiscussionChatMetadataAfterChannelUpdate
@@ -129,7 +150,10 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
   // written would otherwise show the owner's own name on every post.
   const discussionOwner = boolField(f, 'isChannelDiscussion') || id.startsWith('channel_discuss_') ? stringField(f, 'createdBy', 160) : ''
   if (discussionOwner && participantNames[discussionOwner]) participantNames[discussionOwner] = title
-  const cutoff = kind === 'direct' ? timeField(f, 'historyRevokedAt', '') : null
+  // F-SY-002: «기록 모두 지우기» holds for every kind of room — a group, a channel's discussion room — as it does on
+  // Android and in Telegram (messages.deleteHistory with revoke reaches every participant and session). Only
+  // leaving an emptied room out of the list is a rule for private chats (hidden-chats.ts emptyRevokedDirect).
+  const cutoff = timeField(f, 'historyRevokedAt', '')
   const top = timeField(f, 'lastMessageAt', id)
   const readTimes = mapField(f, 'lastReadAt'), readIds = mapField(f, 'lastReadMessageId')
   const readPositions = Object.fromEntries(participants.flatMap(participant => {
@@ -138,9 +162,9 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
     const at = timeField(readTimes, participant, messageId)
     return at && positionMilliseconds(at) > 0 ? [[participant, readCursor(at)]] : []
   }))
-  let preview = stringField(f, 'lastMessage', 100000)
+  let preview = displayField(f, 'lastMessage', 100000)
   if (kind === 'secret') preview = tr('비밀 대화')
-  else if (preview.startsWith('__deleted__:') || (cutoff && top && comparePosition(top, cutoff) < 0)) preview = ''
+  else if (preview.startsWith('__deleted__:') || (cutoff && top && withinCutoff(top, cutoff))) preview = ''
   else if (preview.startsWith(autoDeleteWirePrefix)) preview = ''
   else if (preview === '__TALKY_SECRET__') preview = tr('비밀 메시지')
   // A media label is stored in whatever language wrote it, and shown in this window's own; the kind the
@@ -245,7 +269,7 @@ function messagePoll(f: Record<string, WireObject>): MessagePoll | undefined {
   }
 }
 
-  if (dialog.cutoff && comparePosition(position, dialog.cutoff) < 0) return null
+  if (withinCutoff(position, dialog.cutoff)) return null
   const deleteAt = timeField(f, 'deleteAt', position.id)
   if (deleteAt && positionMilliseconds(deleteAt) <= now) return null
   const text = stringField(f, 'text', 100000)
@@ -295,7 +319,7 @@ export function messagesQuery(dialog: ReadDialog, before?: MessagePosition): Wir
   const query: WireObject = { from: [{ collectionId: 'messages' }],
     orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'DESCENDING' }, { field: { fieldPath: '__name__' }, direction: 'DESCENDING' }],
     limit: { value: pageSize + 1 } }
-  if (dialog.cutoff) query.where = { fieldFilter: { field: { fieldPath: 'createdAt' }, op: 'GREATER_THAN_OR_EQUAL', value: positionValue(dialog.cutoff) } }
+  if (dialog.cutoff) query.where = { fieldFilter: { field: { fieldPath: 'createdAt' }, op: 'GREATER_THAN', value: positionValue(dialog.cutoff) } }
   if (before) query.startAt = { before: false, values: [positionValue(before),
     { referenceValue: `${documents}/chats/${dialog.summary.id}/messages/${identifier(before.id)}` }] }
   return query

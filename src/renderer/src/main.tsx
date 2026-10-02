@@ -10,13 +10,13 @@ import './styles/info.css'
 import './styles/auth.css'
 import { desktop, useDesktop } from './app/store'
 import { installShortcuts } from './app/shortcuts'
-import { openInquiries } from './channels/channel-ui'
 import { flushDrafts } from './app/drafts'
 import { controller } from './app/ui'
 import { preventFileDropNavigation } from './app/drop'
 import { MainWindow } from './window/main-window'
 import { openLink } from './app/links'
 import { language, tr } from '../../shared/i18n'
+import { useChannelOperationNotices } from './channels/channel-operations'
 
 function takeOpenLink(): void {
   void window.morse.takeOpenLink().then(url => {
@@ -55,6 +55,8 @@ function App() {
   const platform = useDesktop(snapshot => snapshot?.platform ?? 'unsupported')
   const account = useDesktop(snapshot => snapshot?.activeAccountUid ?? null)
   useAppearance()
+  // A change to a channel post or comment the server refused is told once, wherever the person is.
+  useChannelOperationNotices(account)
   useEffect(() => installShortcuts(platform), [platform])
   useEffect(() => {
     controller.resetAccount()
@@ -76,7 +78,7 @@ function App() {
     }
     // A 1:1 inquiry room opens beside its channel, the way its row in the list opens it.
     else if (event.type === 'open-notification-inquiry') {
-      if (desktop.value?.activeAccountUid === event.accountUid) { controller.openChannel(event.channelId); openInquiries(event.channelId, event.inquiryId) }
+      if (desktop.value?.activeAccountUid === event.accountUid) controller.openInquiryRoom(event.channelId, event.inquiryId)
     }
   }), [])
   if (!ready) return <div className="boot"><img src="/morse.png" alt="" />{failure ? <p>{failure}</p> : <span className="spinner" style={{ width: 22, height: 22 }} />}</div>

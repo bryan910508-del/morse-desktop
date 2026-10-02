@@ -1,12 +1,12 @@
 import { memo, useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Archive, ArchiveRestore, ArrowLeft, ArrowUpDown, Bell, BellOff, CircleAlert, Clock3, FolderPlus, Lock, LogOut, Mail, MailOpen, Menu, Pencil, Pin, PinOff, Search, StickyNote, Trash2, Users, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowLeft, ArrowUpDown, Bell, BellOff, CircleAlert, Clock3, FolderPlus, Lock, LogOut, Mail, MailOpen, Megaphone, Menu, Pencil, Pin, PinOff, Search, StickyNote, Trash2, Users, X } from 'lucide-react'
 import type { ContactSummary } from '../../../shared/contacts'
 import { folderContains, folderTitle, type ChatFolder } from '../../../shared/chat-folders'
 import type { ConnectionState, DialogSummary } from '../../../shared/model'
-import type { InquiryRow } from '../../../shared/channel-inquiries'
-import { openInquiries } from '../channels/channel-ui'
+import { foldOwnedDiscussions, ownedChannelDiscussion, type DiscussionFold, type InquiryRow } from '../../../shared/channel-inquiries'
 import { useInquirySendState } from '../channels/inquiry-sends'
+import { inquiryRowState, setInquiryRowState, useInquiryRowState, useInquiryRowStates } from './inquiry-row-state'
 import { leaveDiscussionRoom } from '../channels/discussion-leave'
 import type { PendingDirect } from '../../../shared/delivery'
 import { effectiveUnreadCount } from '../../../shared/manual-unread'
@@ -73,21 +73,38 @@ function ChatDeleteBox({ close, onChoose, title, text, selfLabel }: {
 
 // A subscriber's inquiry room, and an owner's folder of them (which opens that channel's list). The room marks a
 // message of mine that did not go and one on its way, as iOS MorseInquiryListRowModel does; a folder is not a room.
-function InquiryDialogRow({ accountUid, inquiry, style, index }: { accountUid: string; inquiry: InquiryRow; style: CSSProperties; index: number }) {
+function InquiryDialogRow({ accountUid, inquiry, style, index, onMenu }: { accountUid: string; inquiry: InquiryRow; style: CSSProperties; index: number; onMenu(inquiry: InquiryRow, point: { x: number; y: number }): void }) {
   const sends = useInquirySendState(accountUid, inquiry.kind === 'ownerFolder' ? null : inquiry.inquiryId)
-  return <button type="button" className="dialog-row" style={style} data-row={index}
-    onClick={() => { controller.openChannelPanel(inquiry.channelId); openInquiries(inquiry.channelId, inquiry.inquiryId) }}>
-    <PeerAvatar id={inquiry.channelId} name={inquiry.title} image={inquiry.photo ?? null} surface="dialogs" />
+  const local = useInquiryRowState(accountUid, inquiry.id)
+  // MorseChatListUIKitCells.configure: a channel of this account's is marked with the «채널» badge beside its
+  // name, and a channel somebody else runs with a megaphone. Each row's line is the message itself, with
+  // nothing in front of it: an owner's row holds the discussion room as well as the inquiries, so a count of
+  // inquiries would not describe what it is showing.
+  const owner = inquiry.kind === 'ownerFolder'
+  // The room being read is the row that is marked, as a chat's is.
+  const active = useUi(state => state.inquiry?.channelId === inquiry.channelId && state.channelId === null)
+  // The row opens that conversation and nothing else: a channel is reached from the channels tab and
+  // from a profile, so the chat list never puts one in front of the person who pressed a room.
+  return <button type="button" className={`dialog-row${active ? ' active' : ''}`} style={style} data-row={index} aria-current={active ? 'true' : undefined}
+    onClick={() => controller.openInquiryRoom(inquiry.channelId, inquiry.inquiryId)}
+    onContextMenu={event => { event.preventDefault(); onMenu(inquiry, pointFor(event, event.currentTarget)) }}
+    onKeyDown={event => { if ((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') { event.preventDefault(); onMenu(inquiry, pointFor(null, event.currentTarget)) } }}>
+    <PeerAvatar id={inquiry.channelId} name={inquiry.title} image={inquiry.photo ?? null} surface="dialogs" kind="channel" />
     <span className="dialog-row-body">
       <span className="dialog-row-line">
+        {owner ? <span className="dialog-row-channel">{tr('채널')}</span>
+          : <Megaphone size={14} className="dialog-row-kind channel" aria-label={tr('채널')} />}
         <span className="dialog-row-name ellipsis">{inquiry.title}</span>
         {sends.failed && <CircleAlert size={14} className="dialog-row-failed" aria-label={tr('보내지 못한 메시지가 있습니다')} />}
+        {local.muted && <BellOff size={13} className="dialog-row-status" aria-label={tr('알림 꺼짐')} />}
         <span className="dialog-row-time">{dialogTime(inquiry.lastMessageAt)}</span>
       </span>
       <span className="dialog-row-line">
-        <span className="dialog-row-preview ellipsis">{inquiry.kind === 'ownerFolder' ? tr('1:1 문의 {0}개', [inquiry.rooms]) : tr('1:1 문의')} · {inquiry.preview || tr('메시지 없음')}</span>
+        <span className="dialog-row-preview ellipsis">{inquiry.preview || tr('메시지 없음')}</span>
         {sends.sending && <Clock3 size={12} className="dialog-row-sending" aria-label={tr('보내는 중')} />}
-        {inquiry.unread > 0 && <span className="dialog-row-badge" aria-label={tr('읽지 않은 메시지 {0}개', [inquiry.unread])}>{inquiry.unread > 999 ? '999+' : inquiry.unread}</span>}
+        {inquiry.unread > 0 ? <span className={`dialog-row-badge${local.muted ? ' muted' : ''}`} aria-label={tr('읽지 않은 메시지 {0}개', [inquiry.unread])}>{inquiry.unread > 999 ? '999+' : inquiry.unread}</span>
+          : local.unread ? <span className={`dialog-row-badge mark${local.muted ? ' muted' : ''}`} aria-label={tr('읽지 않음 표시')} />
+            : local.pinned ? <Pin size={14} className="dialog-row-status" aria-label={tr('고정됨')} /> : null}
       </span>
     </span>
   </button>
@@ -187,30 +204,45 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
   const updateReady = useDesktop(snapshot => snapshot?.appUpdate?.status === 'ready')
   // MorseNotesListPreview: the newest note once the notes list has been read, else «나만 볼 수 있어요».
   const latestNote = useDesktop(snapshot => snapshot?.spaceNotes?.status === 'ready' ? snapshot.spaceNotes.rows[0] ?? null : null)
+  const rowState = useInquiryRowStates(accountUid)
   const rows = useMemo<Row[]>(() => {
     const needle = searchFold(query)
     const matches = (title: string): boolean => !needle || searchFold(title).includes(needle)
     const result: Row[] = []
     if (!archived && !needle && folder === 'all') {
       const stored = listed.filter(dialog => dialog.archived)
-      if (stored.length) result.push({ kind: 'archive', count: stored.length, unread: stored.filter(dialog => effectiveUnreadCount(dialog) > 0).length })
+      const storedInquiries = inquiryRows.filter(row => rowState(row.id).archived)
+      if (stored.length || storedInquiries.length) result.push({ kind: 'archive', count: stored.length + storedInquiries.length,
+        unread: stored.filter(dialog => effectiveUnreadCount(dialog) > 0).length + storedInquiries.filter(row => row.unread > 0 || rowState(row.id).unread).length })
       // iOS ChatListView's notes row (MorseDialogRow.memo), pinned at the top by default.
       result.push({ kind: 'notes' })
       for (const item of pending) result.push({ kind: 'pending', pending: item })
     } else if (needle && !archived) for (const item of pending) if (matches(item.displayName)) result.push({ kind: 'pending', pending: item })
     const context = { uid: accountUid, contacts: contactSet }, inCustom = custom && !archived && !needle ? custom : null
     const pinnedChats: Row[] = [], timedChats: Row[] = []
+    // iOS shouldHideChannelDiscussionOnMainList: my own channel's discussion room is not a row of its own —
+    // the channel's row stands for it, and carries what it has to say.
+    const discussions: DiscussionFold[] = []
     for (const dialog of listed) {
+      const owned = archived ? '' : ownedChannelDiscussion(dialog, accountUid)
+      if (owned) {
+        if (!dialog.archived) discussions.push({ channelId: owned, title: dialog.title, preview: dialog.preview,
+          at: positionTime(dialog.top), unread: effectiveUnreadCount(dialog) })
+        continue
+      }
       if (!matches(dialog.title)) continue
       if (inCustom) { if (!folderContains(dialog, inCustom, context, effectiveUnreadCount(dialog))) continue }
       else if (!needle && (dialog.archived !== archived || !inFolder(dialog, folder))) continue
       ;(!inCustom && dialogFlags(dialog).pinned ? pinnedChats : timedChats).push({ kind: 'dialog', dialog })
     }
-    // ChatListView keeps inquiry rooms beside the chats and orders them together by latest message;
-    // they are never archived, belong to no folder, and this device cannot pin them yet.
-    const inquiries: Row[] = !archived && !inCustom ? inquiryRows.flatMap(row => {
-      if (!matches(row.title)) return []
-      if (!needle && folder !== 'all' && !(folder === 'unread' && row.unread > 0)) return []
+    // ChatListView keeps inquiry rooms beside the chats and orders them together by latest message. They
+    // belong to no folder, and what this device made of them — pinned, muted, marked unread, put away —
+    // is kept here (inquiry-row-state), as iOS keeps it in UserDefaults.
+    const inquiries: Row[] = !inCustom ? foldOwnedDiscussions(inquiryRows, discussions).flatMap(row => {
+      const local = rowState(row.id)
+      if (!matches(row.title) || local.archived !== archived) return []
+      if (!needle && folder !== 'all' && !(folder === 'unread' && (row.unread > 0 || local.unread))) return []
+      if (local.pinned && !needle) { pinnedChats.push({ kind: 'inquiry' as const, inquiry: row }); return [] }
       return [{ kind: 'inquiry' as const, inquiry: row }]
     }) : []
     const at = (row: Row): number => row.kind === 'inquiry' ? row.inquiry.lastMessageAt ?? -Infinity
@@ -223,9 +255,36 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       result.sort((a, b) => { const x = key(a), y = key(b); return x === y ? 0 : x < y ? -1 : 1 })
     }
     return result
-  }, [listed, pending, inquiryRows, query, folder, archived, overridesVersion, custom, contactSet, accountUid])
+  }, [listed, pending, inquiryRows, rowState, query, folder, archived, overridesVersion, custom, contactSet, accountUid])
 
   const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => scroll.current, estimateSize: () => 62, overscan: 10, getItemKey: index => rowKey(rows[index]!) })
+
+  // iOS gives an inquiry row the same swipe actions a chat row has, all kept on the device that set them
+  // (ChatListView+Table.inquirySwipeContext → ChatListLocalStateStore); a desktop keeps them behind the
+  // right button. Deleting is the one that is not local: the room is a single document both sides read.
+  function openInquiryMenu(inquiry: InquiryRow, point: { x: number; y: number }): void {
+    const local = inquiryRowState(accountUid, inquiry.id)
+    const unread = inquiry.unread > 0 || local.unread
+    const set = (patch: Partial<typeof local>): void => setInquiryRowState(accountUid, inquiry.id, patch)
+    popupMenu.open(point, [
+      { label: unread ? tr('읽음으로 표시') : tr('읽지 않음으로 표시'), icon: unread ? <MailOpen size={18} /> : <Mail size={18} />,
+        onSelect: () => set({ unread: !unread }) },
+      { label: local.pinned ? tr('고정 해제') : tr('고정'), icon: local.pinned ? <PinOff size={18} /> : <Pin size={18} />, onSelect: () => set({ pinned: !local.pinned }) },
+      { label: local.muted ? tr('알림 켜기') : tr('알림 끄기'), icon: local.muted ? <Bell size={18} /> : <BellOff size={18} />, onSelect: () => set({ muted: !local.muted }) },
+      { label: local.archived ? tr('보관 취소') : tr('보관'), icon: local.archived ? <ArchiveRestore size={18} /> : <Archive size={18} />, onSelect: () => set({ archived: !local.archived }) },
+      // A folder stands for every room of that channel and for its discussion room; only a room is a room.
+      inquiry.inquiryId ? 'separator' : null,
+      inquiry.inquiryId ? { label: tr('문의 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void removeInquiry(inquiry) } } : null
+    ])
+  }
+  async function removeInquiry(inquiry: InquiryRow): Promise<void> {
+    if (!inquiry.inquiryId) return
+    if (!await confirmBox({ title: inquiry.title, text: tr('이 문의를 삭제하면 상대방의 목록과 기록에서도 사라지고 되돌릴 수 없어요.'), confirm: tr('모두에게 삭제'), danger: true })) return
+    try {
+      const result = await trackWrite(window.morse.deleteInquiryRoom(accountUid, inquiry.inquiryId))
+      controller.toast(result === 'done' ? tr('문의를 삭제했습니다.') : tr('삭제 결과를 확인하고 있습니다. 잠시 후 목록을 확인해 주세요.'))
+    } catch (reason) { controller.toast(errorText(reason, tr('문의를 삭제하지 못했습니다.')), 'error') }
+  }
 
   function openMenu(dialog: DialogSummary, point: { x: number; y: number }): void {
     const flags = dialogFlags(dialog), secret = dialog.kind === 'secret'
@@ -378,7 +437,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
             const row = rows[item.index]!, style: CSSProperties = { transform: `translateY(${item.start}px)` }
             if (row.kind === 'dialog') return <DialogRow key={item.key} dialog={row.dialog} active={row.dialog.id === selected} style={style} index={item.index} flags={dialogFlags(row.dialog)} onMenu={openMenu} />
             // A subscriber row opens its room; an owner row opens that channel's inquiry list.
-            if (row.kind === 'inquiry') return <InquiryDialogRow key={item.key} accountUid={accountUid} inquiry={row.inquiry} style={style} index={item.index} />
+            if (row.kind === 'inquiry') return <InquiryDialogRow key={item.key} accountUid={accountUid} inquiry={row.inquiry} style={style} index={item.index} onMenu={openInquiryMenu} />
             if (row.kind === 'pending') return <button key={item.key} type="button" className={`dialog-row${row.pending.chatId === selected ? ' active' : ''}`} style={style} data-row={item.index} onClick={() => controller.openChat(row.pending.chatId)}>
               <PeerAvatar id={row.pending.chatId} name={row.pending.displayName} image={row.pending.avatar ?? null} surface="dialogs" />
               <span className="dialog-row-body">

@@ -1,4 +1,3 @@
-import { pendingPostCreation } from './channel-post-creation-table'
 import type Database from 'better-sqlite3-multiple-ciphers'
 import { postDraftTarget, postDraftContent, postDraftWrite, type PostDraftRecord, type PostDraftTarget, type PostDraftWrite } from '../../shared/channel-post-drafts'
 import { backgroundPhotoId } from '../../shared/chat-background'
@@ -18,7 +17,7 @@ export function executePostDraft(db: Database.Database, command: PostDraftComman
   }
   return db.transaction(() => {
     const request = postDraftWrite(command.request), target = { channelId: request.channelId }, current = read(db, target)
-    if (pendingPostCreation(db)?.channelId === target.channelId) return conflict()
+    // A post on its way holds its own words (channel-post-creation-table.ts), so the draft stays open for the next.
     if (current.revision === request.revision) { if (current.text === request.text && current.visibility === request.visibility) return current; return conflict() }
     if (current.revision !== request.expected || db.prepare('SELECT 1 FROM channel_post_drafts WHERE revision=?').get(request.revision)) return conflict()
     if (!current.revision && (db.prepare('SELECT COUNT(*) AS n FROM channel_post_drafts').get() as { n: number }).n >= 10000) return capacity()

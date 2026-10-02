@@ -7,6 +7,8 @@ export interface SelfProfile {
   userId: string
   displayName: string
   bio: string
+  // users/{uid}.personalChannelId: the channel linked to this profile, '' when none (personal-channel.ts).
+  personalChannelId: string
   premium: boolean
   hasPhoto: boolean
   version: string

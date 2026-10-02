@@ -1,4 +1,5 @@
 import type { ReadCredentials } from './firestore-rpc'
+import { callMorseFunction, MorseCallableFailure } from './morse-callable'
 import type { UploadDescriptor } from '../storage/upload-protocol'
 import { storageBucket } from '../media/media-document'
 import { object } from '../../shared/validation'
@@ -46,26 +47,26 @@ function confirmedURL(raw: Record<string, unknown>, upload: UploadDescriptor, ui
 export async function uploadAttachment(auth: ReadCredentials, uid: string, upload: UploadDescriptor, bytes: Buffer,
   saveSession: (url: string) => Promise<void>, progress: (loaded: number) => void, ownerSignal: AbortSignal, wasConfirmed = false): Promise<string> {
   const signal = AbortSignal.any([ownerSignal, auth.signal])
-  const request = async (url: string, init: { method: string; headers?: Record<string, string>; body?: string | Uint8Array }, callable = false): Promise<Response> => {
+  const request = async (url: string, init: { method: string; headers?: Record<string, string>; body?: string | Uint8Array }): Promise<Response> => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const bounded = AbortSignal.any([signal, AbortSignal.timeout(65000)])
       const authorization = await auth.authorize(bounded, attempt > 0)
       bounded.throwIfAborted()
       const response = await fetch(url, { ...init, body: typeof init.body === 'string' ? init.body : init.body ? new Uint8Array(init.body) : undefined,
         signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store',
-        headers: { ...init.headers, Authorization: `${callable ? 'Bearer' : 'Firebase'} ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken } })
+        headers: { ...init.headers, Authorization: `Firebase ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken } })
       if (response.status === 401 && attempt === 0) { await response.body?.cancel(); continue }
       if ([401, 403].includes(response.status)) { await response.body?.cancel(); throw new UploadFailure('upload-permission') }
       return response
     }
     throw new UploadFailure('upload-network')
   }
-  const preparation = await request('https://asia-northeast3-talky-a38c3.cloudfunctions.net/prepareMorseChatMedia', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data: { chatId: upload.chatId, expectedUid: uid } })
-  }, true)
-  if (!preparation.ok) { await preparation.body?.cancel(); throw new UploadFailure(preparation.status < 500 ? 'upload-permission' : 'upload-network') }
-  const prepared = await json(preparation), result = object(prepared.result ?? prepared.data ?? {})
-  if (prepared.error || result.ok !== true || result.chatId !== upload.chatId) throw new UploadFailure('upload-permission')
+  // prepareMorseChatMedia checks the room and this account before any byte goes up. One that never left or whose
+  // outcome is unknown is a network failure the queue resumes; an answer from the function is a refusal.
+  let prepared: Record<string, unknown>
+  try { prepared = await callMorseFunction(auth, 'prepareMorseChatMedia', { chatId: upload.chatId, expectedUid: uid }, signal, { limit: 2 * 1024 * 1024, refreshUnauthenticated: true }) }
+  catch (error) { throw new UploadFailure(error instanceof MorseCallableFailure && error.delivery === 'answered' ? 'upload-permission' : 'upload-network') }
+  if (prepared.ok !== true || prepared.chatId !== upload.chatId) throw new UploadFailure('upload-permission')
   const objectURL = `https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(upload.path)}`
   const metadata = async (): Promise<string | null> => {
     const response = await request(objectURL, { method: 'GET' })

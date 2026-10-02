@@ -129,9 +129,9 @@ function watchedAvatar(owners: { owner: string; raw: string }[]) {
     create: () => new DirectAvatar(binding, auth, () => binding, async () => new Response(null, { status: 403 }), () => { changes++ }, '__contact-avatar') }
 }
 const profileRows = (raw: string, mutual: boolean): Map<string, FirestoreDocument> => {
-  const root = `${documents}/users/peer1`, rows = new Map<string, FirestoreDocument>()
+  const root = `${documents}/publicProfiles/peer1`, reciprocal = `${documents}/users/peer1/contacts/me1`, rows = new Map<string, FirestoreDocument>()
   rows.set(root, { name: root, fields: { displayName: { stringValue: '민지' }, photoURL: { stringValue: raw } } } as unknown as FirestoreDocument)
-  if (mutual) rows.set(`${root}/contacts/me1`, { name: `${root}/contacts/me1`, fields: {} } as unknown as FirestoreDocument)
+  if (mutual) rows.set(reciprocal, { name: reciprocal, fields: {} } as unknown as FirestoreDocument)
   return rows
 }
 

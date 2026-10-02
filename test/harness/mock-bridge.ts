@@ -168,7 +168,7 @@ function harnessChannels(): unknown {
   const picture = (index: number, hue: number, video = false) => ({ index, kind: video ? 'video' : 'image', available: true, videoAvailable: video,
     blur: '', width: 800, height: 600, picture: { status: 'ready', url: photo(hue), width: 800, height: 600, video, blur: '' } })
   const post = (index: number, minutes: number, text: string, media: unknown[], pinFlag = 'unpinned') => ({
-    removalEligible: true, pinFlag, own: true, editableText: text, visibility: 'public', id: `cpost-${index}`, revision: revision(index),
+    pinFlag, own: true, editableText: text, visibility: 'public', id: `cpost-${index}`, revision: revision(index),
     likes: { status: 'ready', selected: index % 3 === 0, count: 4 + index, storedCount: 4 + index, message: '' },
     mediaCount: media.length, media, position: at(minutes), text, hasMedia: media.length > 0, pinned: pinFlag === 'pinned',
     likeCount: 4 + index, commentCount: index % 4
@@ -177,8 +177,16 @@ function harnessChannels(): unknown {
     id: 'ch-mine', version: '4:0', publicSharing: { name: 'mine', version: '4:0' }, hasAvatar: true, hasCover: true,
     avatar: { status: 'ready', url: photo(280), message: '' }, cover: { status: 'ready', url: photo(200), message: '' },
     status: 'ready', access: null, editableAccess: null, discussion: { status: 'known', chatId: 'harness-discussion' },
-    tags: ['모스', '소식'], name: '내 채널', description: '사진과 글을 올리는 채널입니다.', ownerName: '테스트', owned: true,
+    tags: ['모스', '소식'], name: '내 채널', description: '사진과 글을 올리는 채널입니다.', owned: true,
     subscriptionListed: true, type: 'public', subscriberCount: 1234, postCount: 9, updated: at(5)
+  }, {
+    // Somebody else's channel, the way it is subscribed to: this screen is opened from the chat list's 1:1
+    // inquiry row and from a shared link, not only from the channels tab, and must look right from that side.
+    id: 'ch-a', version: '2:0', publicSharing: { name: 'a', version: '2:0' }, hasAvatar: true, hasCover: true,
+    avatar: { status: 'ready', url: photo(120), message: '' }, cover: { status: 'ready', url: photo(340), message: '' },
+    status: 'ready', access: null, editableAccess: null, discussion: { status: 'known', chatId: 'harness-discussion' },
+    tags: ['소식'], name: '구독 중인 채널', description: '다른 사람이 운영하는 채널입니다.', owned: false,
+    subscriptionListed: true, type: 'public', subscriberCount: 58, postCount: 4, updated: at(12)
   }]
   const posts = [
     post(1, 5, '고정된 게시물입니다.', [picture(0, 10)], 'pinned'),
@@ -190,12 +198,17 @@ function harnessChannels(): unknown {
     post(7, 900, '사진 한 장', [picture(0, 230)]),
     post(8, 1500, '사진 한 장 더', [picture(0, 320)])
   ]
+  // Whose channel is open decides what may be done in it: only its owner writes, pins and removes.
+  const open = items.find(item => item.id === channelPostsRequest?.channelId) ?? items[0]!
+  const owned = open.owned
   return {
     status: 'ready', message: '', items, admins: null, subscribers: null, joinRequests: null, membership: null,
     posts: channelPostsRequest ? {
-      ...channelPostsRequest, status: 'ready', message: '', posts, media: null, scope: 'member',
-      authoring: { channelId: 'ch-mine', channelVersion: '4:0', role: 'owner', permission: 'allowed', permissionSource: 'owner', adminVersion: null, discussion: { status: 'known', chatId: 'harness-discussion' }, publicChannel: true },
-      pins: { owned: true, channelVersion: '4:0', reference: { status: 'known', postId: 'cpost-1', source: 'value' }, targetFlag: 'pinned', flaggedCount: 1, missingCount: 0, unknownCount: 0, comparison: 'compatible', message: '' },
+      ...channelPostsRequest, status: 'ready', message: '', media: null, scope: 'member',
+      posts: owned ? posts : posts.map(post => ({ ...post, own: false, editableText: '' })),
+      authoring: { channelId: open.id, channelVersion: open.version, role: owned ? 'owner' : 'subscriber', permission: owned ? 'allowed' : 'denied',
+        permissionSource: owned ? 'owner' : 'none', adminVersion: null, discussion: { status: 'known', chatId: 'harness-discussion' }, publicChannel: true },
+      pins: { owned, channelVersion: open.version, reference: { status: 'known', postId: 'cpost-1', source: 'value' }, targetFlag: 'pinned', flaggedCount: 1, missingCount: 0, unknownCount: 0, comparison: 'compatible', message: '' },
       comments: null
     } : null
   }
@@ -231,7 +244,11 @@ function snapshot(): unknown {
       // A channel discussion room: deleting it from the list leaves it, as iOS does.
       { id: 'harness-discussion', version: '3:0', kind: 'group', title: '구독 채널 토론방', participantUids: [me, peer], preview: '댓글이 달렸어요', unreadCount: 0,
         markedUnread: false, readPositions: {}, readSync: { status: 'ready' }, pinned: false, pinVersion: '', muted: false, archived: false,
-        top: messages.at(-2)!.position, avatar: null, draft: localDrafts.get('harness-discussion') ?? '', pinnedForAll: [], discussion: true, channelId: 'harness-channel2', createdBy: peer }],
+        top: messages.at(-2)!.position, avatar: null, draft: localDrafts.get('harness-discussion') ?? '', pinnedForAll: [], discussion: true, channelId: 'ch-a', createdBy: peer },
+      // My own channel's discussion room: not a row of its own — the channel's row stands for it and counts it.
+      { id: 'channel_discuss_ch-mine', version: '2:0', kind: 'group', title: '내 채널', participantUids: [me, peer], preview: '토론방에 새 글이 올라왔어요', unreadCount: 3,
+        markedUnread: false, readPositions: {}, readSync: { status: 'ready' }, pinned: false, pinVersion: '', muted: false, archived: false,
+        top: messages.at(-1)!.position, avatar: null, pinnedForAll: [], discussion: true, channelId: 'ch-mine', createdBy: me }],
     spaceNotes: notesSnapshot(),
     dialogStatus: 'ready', dialogMessage: '', dialogPin: null, manualUnread: null, dialogActionsAvailable: true, signInAvailable: true,
     authentication: { available: true, phase: 'signed-in', account: null, message: '' },
@@ -248,14 +265,14 @@ function snapshot(): unknown {
     deferredMessages: { chatId, items: [] }, typing: typingUntil ? { chatId, until: typingUntil } : null, listTyping, channelInquiries: inquiryThread(),
     // Chat list rows for 1:1 channel inquiries: an owner folder and a subscriber room.
     inquiryRows: [
-      { id: 'own_inq_harness-channel', kind: 'ownerFolder', channelId: 'harness-channel', inquiryId: null, title: '내 채널',
+      { id: 'own_inq_ch-mine', kind: 'ownerFolder', channelId: 'ch-mine', inquiryId: null, title: '내 채널',
         preview: '문의 드립니다', lastMessageAt: 1_750_000_300_000, unread: 4, rooms: 2, photo: null },
-      { id: 'sub_inq_harness-channel2_harness-me', kind: 'subscriber', channelId: 'harness-channel2', inquiryId: 'harness-channel2_harness-me',
+      { id: 'sub_inq_ch-a_harness-me', kind: 'subscriber', channelId: 'ch-a', inquiryId: 'ch-a_harness-me',
         title: '구독 중인 채널', preview: '사진', lastMessageAt: 1_750_000_100_000, unread: 0, rooms: 1, photo: null }
     ],
     notifications: { supported: true, message: '' }, platformIntegration: { trayAvailable: false, message: '' },
     selfProfile: selfPhoto ? { status: 'ready', profile: { uid: me, userId: 'harness1', displayName: '테스트', bio: '', premium: false, hasPhoto: true }, message: '',
-      photo: { url: selfPhoto, status: 'ready', message: '' } } : null, contacts: { status: 'ready', items: [], message: '' }, channels: harnessChannels(), participants: null, contactSearch: null, pendingDirects: [],
+      photo: { url: selfPhoto, status: 'ready', message: '' } } : null, contacts: { status: 'ready', items: harnessContacts, message: '' }, channels: harnessChannels(), participants: null, contactSearch: contactSearch, pendingDirects: [],
     channelHome: harnessChannelHome(), channelStories
   }
 }
@@ -304,11 +321,29 @@ async function recordedVideo(seconds: number): Promise<string> {
   await stopped
   return URL.createObjectURL(new Blob(chunks, { type: 'video/webm' }))
 }
-let inquiryThreadRequest = ''
+// The contacts box: a few people, and the Morse ID lookup its search makes for anybody not listed
+// (iOS ContactListView.triggerExternalSearch). «abcd2345» is somebody new, «mine2345» is this account.
+const harnessContacts = [
+  { uid: 'harness-peer', displayName: '상대', originalName: '상대', favorite: true, avatar: null },
+  { uid: 'harness-friend', displayName: '친구 둘', avatar: null }
+]
+let contactSearch: unknown = null
+let inquiryThreadRequest = '', inquiryThreadId = 'ch-a_harness-me', inquiryListRequest = ''
+// The owner's side of a room: a person asked about my channel. Both sides are here, so the room and the
+// profile beside it can be looked at from either.
+const ownerInquiryId = 'ch-mine_harness-asker'
+function inquiryList(): unknown {
+  return inquiryListRequest ? { requestId: inquiryListRequest, channelId: 'ch-mine', status: 'ready', message: '', items: [
+    { id: ownerInquiryId, peerUid: 'harness-asker', channelId: 'ch-mine', channelName: '내 채널', peerName: '문의한 사람',
+      lastMessage: '문의 드립니다', lastMessageAt: Date.now() - 600000, unread: 2, photo: null }
+  ] } : null
+}
 function inquiryThread(): unknown {
-  return inquiryThreadRequest ? { list: null, thread: {
-    requestId: inquiryThreadRequest, inquiryId: 'harness-channel2_harness-me', channelId: 'harness-channel2', role: 'subscriber',
-    title: '구독 중인 채널', channelName: '구독 중인 채널', status: 'ready', message: '', items: [
+  const owner = inquiryThreadId === ownerInquiryId
+  return inquiryThreadRequest || inquiryListRequest ? { list: inquiryList(), thread: !inquiryThreadRequest ? null : {
+    requestId: inquiryThreadRequest, inquiryId: inquiryThreadId, channelId: owner ? 'ch-mine' : 'ch-a', role: owner ? 'owner' : 'subscriber',
+    peerUid: owner ? 'harness-asker' : '', photo: null,
+    title: owner ? '문의한 사람' : '구독 중인 채널', channelName: owner ? '내 채널' : '구독 중인 채널', status: 'ready', message: '', items: [
       { id: 'IM-1', own: false, senderType: 'owner', kind: 'text', text: '무엇을 도와드릴까요?', label: '', createdAt: 1_750_000_000_000, edited: false, version: '1:0' },
       { id: 'IM-2', own: true, senderType: 'subscriber', kind: 'image', text: '', label: '사진', createdAt: 1_750_000_100_000, edited: false, version: '2:0',
         attachments: [{ index: 0, kind: 'image', name: '사진', available: true, blind: false }] },
@@ -329,7 +364,11 @@ function inquiryThread(): unknown {
 }
 // A batch that does not follow the current revision makes the store resync, which is all we need.
 const fetchedPhotos = new Set<string>()
-const refresh = (): void => { harness.emit({ type: 'data', batch: { base: -1, revision: revision + 1000, fields: {} } } as unknown as DesktopEvent) }
+let refreshAgain: ReturnType<typeof setTimeout> | undefined
+const resync = (): void => { harness.emit({ type: 'data', batch: { base: -1, revision: revision + 1000, fields: {} } } as unknown as DesktopEvent) }
+// Two stubs answering in the same tick used to share one read, which took the snapshot before the second
+// had changed anything. The second read settles what the first missed.
+const refresh = (): void => { resync(); clearTimeout(refreshAgain); refreshAgain = setTimeout(resync, 30) }
 
 // Every bridge method answers; the ones the chat screen reads return realistic shapes.
 const implemented: Record<string, (...args: unknown[]) => unknown> = {
@@ -342,7 +381,7 @@ const implemented: Record<string, (...args: unknown[]) => unknown> = {
     { chatId: 'harness-discussion', title: '구독 채널 토론방', kind: 'group', preview: '댓글이 달렸어요' }
   ],
   inquiryForwardRooms: async () => [
-    { inquiryId: 'harness-channel2_harness-me', channelId: 'harness-channel2', title: '구독 중인 채널', role: 'subscriber' }
+    { inquiryId: 'ch-a_harness-me', channelId: 'ch-a', title: '구독 중인 채널', role: 'subscriber' }
   ],
   openChannelPosts: async (_uid: unknown, request: unknown) => { channelPostsRequest = request as { requestId: string; channelId: string }; refresh() },
   closeChannelPosts: async () => { channelPostsRequest = null; refresh() },
@@ -378,10 +417,27 @@ const implemented: Record<string, (...args: unknown[]) => unknown> = {
       .map(message => ({ id: message.id, position: message.position, kind: message.kind, sender: message.senderName, snippet: filter === 'links' ? 'https://example.com/docs?page=2' : message.caption ?? '', message })) }),
   // ChannelInquiries.openThread, then the panel's photo: MediaSession.open serves the bytes locally.
   openInquiryThread: async (_uid: unknown, request: unknown) => {
-    inquiryThreadRequest = (request as { requestId: string }).requestId
+    const value = request as { requestId: string; inquiryId: string }
+    inquiryThreadRequest = value.requestId; inquiryThreadId = value.inquiryId
     refresh()
   },
   closeInquiryThread: async () => { inquiryThreadRequest = ''; refresh() },
+  openInquiryList: async (_uid: unknown, request: unknown) => { inquiryListRequest = (request as { requestId: string }).requestId; refresh() },
+  closeInquiryList: async () => { inquiryListRequest = ''; refresh() },
+  addInquiryContact: async () => ({ outcome: 'added', message: '' }),
+  searchContact: async (_uid: unknown, requestId: unknown, publicId: unknown) => {
+    const id = String(publicId)
+    contactSearch = { requestId, status: id === 'abcd2345' || id === 'mine2345' ? 'ready' : 'empty', adding: false, outcome: 'none',
+      message: id === 'abcd2345' || id === 'mine2345' ? '' : '일치하는 사용자가 없습니다.',
+      result: id === 'abcd2345' ? { uid: 'harness-stranger', displayName: '새 사람', avatar: null } : id === 'mine2345' ? { uid: me, displayName: '나', avatar: null } : null }
+    refresh()
+  },
+  closeContactSearch: async () => { contactSearch = null; refresh() },
+  addContact: async (_uid: unknown, requestId: unknown) => {
+    contactSearch = { ...(contactSearch as Record<string, unknown>), requestId, outcome: 'added', adding: false }
+    refresh()
+  },
+  deleteInquiryRoom: async () => 'done',
   // A very tall picture, so the full-size view can be checked for letterboxing rather than cropping.
   openMedia: async (_uid: unknown, _chat: unknown, request: unknown) => (request as { messageId: string }).messageId === messages[total - 12]!.id
     ? { requestId: (request as { requestId: string }).requestId, url: await recordedVideo(2), presentation: 'video', name: '원형 영상.webm', size: 1 } : ({
@@ -431,17 +487,17 @@ const implemented: Record<string, (...args: unknown[]) => unknown> = {
   chatFolders: async () => liveFolders ?? [],
   // A video or file picked for an inquiry: staged in the main process, previewed over its own route.
   pickInquiryAttachment: async (_uid: unknown, _request: unknown, mode: unknown) => mode === 'file'
-    ? { id: 'inq-draft-file', chatId: 'harness-channel2_harness-me', name: '견적서.pdf', kind: 'file', size: 48213, items: [{ id: 'inq-item-file', name: '견적서.pdf', kind: 'file', size: 48213 }] }
-    : { id: 'inq-draft-video', chatId: 'harness-channel2_harness-me', name: 'clip.mp4', kind: 'video', size: 812345, items: [{ id: 'inq-item-video', name: 'clip.mp4', kind: 'video', size: 812345, previewUrl: 'morse://app/__inquiry-draft/inq-draft-video/inq-item-video' }] },
+    ? { id: 'inq-draft-file', chatId: 'ch-a_harness-me', name: '견적서.pdf', kind: 'file', size: 48213, items: [{ id: 'inq-item-file', name: '견적서.pdf', kind: 'file', size: 48213 }] }
+    : { id: 'inq-draft-video', chatId: 'ch-a_harness-me', name: 'clip.mp4', kind: 'video', size: 812345, items: [{ id: 'inq-item-video', name: 'clip.mp4', kind: 'video', size: 812345, previewUrl: 'morse://app/__inquiry-draft/inq-draft-video/inq-item-video' }] },
   sendInquiryAttachment: async () => 'sent',
   // As VoiceCaptures.finish: the recording kept in the main process and a preview address for it.
   finishInquiryVoice: async (_uid: unknown, target: unknown, bytes: unknown) => ({ id: (target as { captureId: string }).captureId, chatId: (target as { inquiryId: string }).inquiryId,
     expiresAt: Date.now() + 600000, url: '', bytes: (bytes as Uint8Array).byteLength, sha256: 'a'.repeat(64) }),
   sendInquiryVoice: async () => 'sent',
   // Leaving a discussion room from the chat list goes through the same departure as the channel panel.
-  discussionRowDeparture: async (_uid: unknown, chatId: unknown) => ({ channelId: 'harness-channel2', version: '5:0', chatId }),
+  discussionRowDeparture: async (_uid: unknown, chatId: unknown) => ({ channelId: 'ch-a', version: '5:0', chatId }),
   resolveDiscussionDeparture: async (_uid: unknown, request: unknown) => ({ chatId: (request as { chatId: string }).chatId, version: '3:0', title: '구독 채널 토론방',
-    owner: false, participantCount: 2, discussion: { channelId: 'harness-channel2', version: '5:0', title: '구독 중인 채널' } }),
+    owner: false, participantCount: 2, discussion: { channelId: 'ch-a', version: '5:0', title: '구독 중인 채널' } }),
   discussionLeaveWork: async () => ({ outgoingItems: [], actionItems: [], chatId: 'harness-discussion', draft: '', reply: null, outgoing: 0, actions: 0, selectedAttachment: false, voiceDraft: false }),
   leaveGroup: async () => 'done',
   sendInquiryPhoto: async () => 'sent',

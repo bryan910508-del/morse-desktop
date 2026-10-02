@@ -1,4 +1,5 @@
 import { backgroundPhotoId } from './chat-background'
+import { validChatTitle } from './chat-title'
 import { identifier, object } from './validation'
 import { tr } from './i18n'
 export interface ChannelCreationPrepare { id: string; name: string; description: string }
@@ -13,10 +14,10 @@ export interface ChannelCreationSnapshot {
   pending: (ChannelCreationPrepare & { state: ChannelCreationState; ownerName: string }) | null
 }
 export interface ChannelCreationAction { id: string; state: ChannelCreationState; action: 'send' | 'dismiss' | 'check' }
-const fail = (): never => { throw new Error(tr('채널 이름은 1~50자, 소개는 500자 이내로 입력하고 현재 소유자 정보를 확인해 주세요.')) }
+const fail = (): never => { throw new Error(tr('채널 이름은 1~128자, 소개는 500자 이내로 입력하고 현재 소유자 정보를 확인해 주세요.')) }
 export function channelCreationPrepare(raw: unknown): ChannelCreationPrepare {
   const v = object(raw)
-  if (Object.keys(v).some(k => !['id', 'name', 'description'].includes(k)) || typeof v.name !== 'string' || !v.name.trim() || v.name.length > 50 || typeof v.description !== 'string' || v.description.length > 500) return fail()
+  if (Object.keys(v).some(k => !['id', 'name', 'description'].includes(k)) || !validChatTitle(v.name) || typeof v.description !== 'string' || v.description.length > 500) return fail()
   return { id: backgroundPhotoId(v.id), name: v.name, description: v.description }
 }
 export function channelCreationRequest(raw: unknown): ChannelCreationRequest {

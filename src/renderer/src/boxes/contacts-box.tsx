@@ -72,11 +72,62 @@ export function showAddContactBox(accountUid: string, initial = ''): void {
   controller.showLayer(close => <AddContactBox accountUid={accountUid} initial={initial} close={close} />)
 }
 
+// iOS ContactListView.triggerExternalSearch: what is typed here is looked up as a Morse ID as well, half a
+// second after the typing stops, so somebody who is not a contact yet is found by their exact ID — through the
+// server's lookupUserByTalkyId (contact-lookup.ts), which hands out only public fields and hides private accounts
+// (Telegram contacts.resolveUsername). Nothing here reads anyone's account document.
+function ExternalContact({ accountUid, query, close }: { accountUid: string; query: string; close(): void }) {
+  const [requestId, setRequestId] = useState<string | null>(null)
+  const snapshot = useDesktop(state => state?.contactSearch ?? null)
+  const search = requestId && snapshot?.requestId === requestId ? snapshot : null
+  const known = useDesktop(state => state?.contacts?.items ?? null)
+  const self = useDesktop(state => state?.activeAccountUid ?? null)
+  let id = ''
+  try { id = publicMorseId(query) } catch { id = '' }
+  useEffect(() => {
+    if (!id) { setRequestId(null); return }
+    const next = crypto.randomUUID()
+    const timer = setTimeout(() => { setRequestId(next); void window.morse.searchContact(accountUid, next, id).catch(() => {}) }, 500)
+    return () => { clearTimeout(timer); void window.morse.closeContactSearch(accountUid, next).catch(() => {}) }
+  }, [accountUid, id])
+  if (!id) return null
+  const found = search?.status === 'ready' ? search.result : null
+  // Somebody already listed is in the list above; the row here only offers the way into a conversation.
+  const already = Boolean(found && known?.some(item => item.uid === found.uid))
+  const added = already || search?.outcome === 'added' || search?.outcome === 'exists'
+  async function add(): Promise<void> {
+    if (!requestId) return
+    try { await trackWrite(window.morse.addContact(accountUid, requestId)) }
+    catch (reason) { controller.toast(errorText(reason, tr('연락처에 추가하지 못했습니다.')), 'error') }
+  }
+  async function message(uid: string): Promise<void> {
+    try {
+      await waitFor(() => desktop.value?.contacts?.items.some(item => item.uid === uid) ? true : null, 10000, tr('연락처 목록에 반영되지 않았습니다. 잠시 후 다시 시도해 주세요.'))
+      close(); await openContactChat(accountUid, uid)
+    } catch (reason) { controller.toast(errorText(reason, tr('대화를 열지 못했습니다.')), 'error') }
+  }
+  return <>
+    <div className="section-label">{tr('Morse ID 검색')}</div>
+    {!search || search.status === 'loading' ? <div className="empty-state"><Spinner size={20} /></div>
+      : !found ? <p className="box-note">{search.message || tr('일치하는 사용자가 없습니다.')}</p>
+        : found.uid === self ? <p className="box-note">{tr('내 Morse ID입니다.')}</p>
+          : <div className="peer-row external-contact">
+            <ContactAvatar contact={found} />
+            <span className="peer-row-text"><strong className="ellipsis">{found.displayName}</strong><small className="ellipsis">@{id}</small></span>
+            {added ? <button type="button" className="button flat" onClick={() => { void message(found.uid) }}>{tr('메시지 보내기')}</button>
+              : <button type="button" className="button flat" disabled={search.adding} onClick={() => { void add() }}>{search.adding && <Spinner size={14} />}{tr('추가')}</button>}
+          </div>}
+  </>
+}
+
 function ContactsBox({ accountUid, close }: { accountUid: string; close(): void }) {
   const contacts = useContactList()
   const [query, setQuery] = useState(''), [showArchived, setShowArchived] = useState(false)
   // iOS ContactListView: favourites first, then every contact; archived ones sit in their own folder.
   const matched = useMemo(() => contacts.items.filter(item => !query || searchFold(item.displayName).includes(searchFold(query))), [contacts.items, query])
+  // A whole Morse ID is answered by the lookup below, which says itself whether anybody has it.
+  let searchedId = false
+  try { publicMorseId(query); searchedId = true } catch { searchedId = false }
   const archivedCount = contacts.items.filter(item => item.archived).length
   const rows = matched.filter(item => showArchived ? item.archived : !item.archived)
   const favorites = showArchived || query ? [] : rows.filter(item => item.favorite)
@@ -111,11 +162,12 @@ function ContactsBox({ accountUid, close }: { accountUid: string; close(): void 
     <AvatarScope accountUid={accountUid} enabled surface="contacts">
       <div className="peer-list tall">
         {contacts.status !== 'ready' ? <div className="empty-state">{contacts.status === 'error' ? contacts.message || tr('연락처를 불러오지 못했습니다.') : <Spinner size={22} />}</div>
-          : !rows.length ? <div className="empty-state">{query ? tr('검색 결과가 없습니다.') : showArchived ? tr('보관된 연락처가 없어요') : tr('아직 연락처가 없습니다. Morse ID로 친구를 추가해 보세요.')}</div>
+          : !rows.length && !(searchedId && !showArchived) ? <div className="empty-state">{query ? tr('검색 결과가 없습니다.') : showArchived ? tr('보관된 연락처가 없어요') : tr('아직 연락처가 없습니다. Morse ID로 친구를 추가해 보세요.')}</div>
             : <>
               {favorites.length > 0 && <><div className="section-label">{tr('즐겨찾기')}</div>{favorites.map(row)}<div className="section-label">{tr('모든 연락처')}</div></>}
               {others.map(row)}
             </>}
+        {!showArchived && <ExternalContact accountUid={accountUid} query={query} close={close} />}
         {!showArchived && !query && archivedCount > 0 && <button type="button" className="peer-row archive-row" onClick={() => setShowArchived(true)}>
           <span className="avatar avatar-archive" style={{ width: 40, height: 40 }}><Archive size={20} /></span>
           <span className="peer-row-text"><strong>{tr('보관된 연락처')}</strong><small>{tr('{0}명', [archivedCount])}</small></span>

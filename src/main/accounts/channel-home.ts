@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import type { ChannelSummary } from '../../shared/channels'
 import { channelCategoryId, type ChannelCategoryId, type ChannelHomeChannel, type ChannelHomeImage, type ChannelHomePost, type ChannelHomeSnapshot } from '../../shared/channel-home'
 import type { ChannelPostText } from '../../shared/channel-posts'
@@ -8,7 +7,7 @@ import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
 import { documents, type FirestoreDocument, type WireObject } from '../network/firestore-values'
 import { callMorseFunction } from '../network/morse-callable'
 import { downloadChannelPostMedia } from '../network/channel-post-media'
-import { channelPostMedia, channelPostRevision } from '../media/channel-post-media-document'
+import { channelPostMedia } from '../media/channel-post-media-document'
 import { ChannelImages } from './channel-images'
 import { ChannelPostPictures, type PictureSource } from './channel-post-pictures'
 import { decodeChannelPost, publicChannelPosts } from './channel-posts'
@@ -29,7 +28,8 @@ export interface ListedChannels {
   status(): 'idle' | 'loading' | 'ready' | 'error'
   document(channelId: string): FirestoreDocument | null
 }
-interface FeedPost { channelId: string; doc: FirestoreDocument; post: ChannelPostText; promoted: boolean }
+// scope: how the post was read (as a member, or as a public post), so a copy read again is judged the same way.
+interface FeedPost { channelId: string; doc: FirestoreDocument; post: ChannelPostText; promoted: boolean; scope?: 'public' | 'member' }
 
 const isPublic: WireObject = { fieldFilter: { field: { fieldPath: 'isPublic' }, op: 'EQUAL', value: { booleanValue: true } } }
 function publicChannels(order: 'subscriberCount' | 'createdAt', limit: number, category?: ChannelCategoryId): WireObject {
@@ -138,23 +138,28 @@ export class ChannelHome {
     }
   }
 
-  // ChannelFeedInteractiveTimelineRow.toggleLike: the heart under a post in the tab, written the way the channel
-  // screen writes it (likedBy and likeCount together, on the post version that was read), then the post read again.
-  async like(channelId: string, postId: string): Promise<void> {
-    if (this.closed || !this.allowed()) throw new Error(tr('계정 연결을 확인해 주세요.'))
-    const items = [...this.boosted, ...this.feed].filter(item => item.channelId === channelId && item.post.id === postId)
-    const item = items[0]
-    if (!item) throw new Error(tr('게시물을 다시 불러와 주세요.'))
-    const { info } = channelPostLikeState(item.doc, this.uid)
-    if (info.status !== 'ready' || info.selected === null || info.count === null) throw new Error(info.message || tr('좋아요 상태를 확인하지 못했습니다.'))
-    const request = { id: randomUUID(), requestId: randomUUID(), channelId, postId, revision: channelPostRevision(item.doc), selected: info.selected, count: info.count, desired: !info.selected }
+  // A change the channel operation queue has finished (channel-operations.ts) — a like, new words, the post or one of
+  // its comments deleted: the tab keeps its own copy of each post, so that post is read again, as
+  // ChannelFeedInteractiveTimelineRow reads it after its toggle, instead of waiting for the next reload a minute on.
+  refreshPost(channelId: string, postId: string): void {
+    const first = [...this.boosted, ...this.feed].find(item => item.channelId === channelId && item.post.id === postId)
+    if (this.closed || !first) return
     const reader = new FirestoreReader(this.auth)
-    try {
-      await reader.setChannelPostLike(this.uid, request, this.auth.signal, () => item.doc)
-      const fresh = await reader.getDocument(item.doc.name, this.auth.signal)
-      if (fresh) for (const value of items) value.doc = fresh
-      this.changed()
-    } finally { reader.close() }
+    void reader.getDocument(first.doc.name, this.auth.signal).then(fresh => { if (!this.closed) this.refreshed(channelId, postId, fresh) })
+      .catch(() => {}).finally(() => reader.close())
+  }
+  // The copy read again: its words, counts and heart replace the old; a post the server no longer has (or that this
+  // account may no longer read) leaves the tab, as Telegram takes a deleted message away locally at once (tdesktop
+  // Histories::deleteMessages destroys the item).
+  private refreshed(channelId: string, postId: string, fresh: FirestoreDocument | null): void {
+    const drop = new Set<FeedPost>()
+    for (const item of [...this.boosted, ...this.feed]) {
+      if (item.channelId !== channelId || item.post.id !== postId) continue
+      if (!fresh) { drop.add(item); continue }
+      try { item.post = decodeChannelPost(fresh, channelId, item.scope ?? 'member', this.uid); item.doc = fresh } catch { drop.add(item) }
+    }
+    if (drop.size) { this.feed = this.feed.filter(item => !drop.has(item)); this.boosted = this.boosted.filter(item => !drop.has(item)); this.wantImages() }
+    this.changed()
   }
 
   open(): void {
@@ -232,7 +237,7 @@ export class ChannelHome {
           current()
           for (const doc of docs) {
             // The query succeeded as this member, so both public and subscriber posts are readable.
-            try { posts.push({ channelId: item.id, doc, post: decodeChannelPost(doc, item.id, 'member', this.uid), promoted: false }) } catch { /* A malformed post stays out. */ }
+            try { posts.push({ channelId: item.id, doc, post: decodeChannelPost(doc, item.id, 'member', this.uid), promoted: false, scope: 'member' }) } catch { /* A malformed post stays out. */ }
           }
         } catch (error) { if (signal.aborted) throw error /* A channel whose posts cannot be read stays out of the feed. */ }
       })
@@ -281,7 +286,7 @@ export class ChannelHome {
           const postDoc = await reader.getDocument(`${documents}/channels/${promotion.channelId}/posts/${promotion.postId}`, signal).catch(() => null)
           current()
           if (!postDoc) continue
-          try { boosted.push({ channelId: promotion.channelId, doc: postDoc, post: decodeChannelPost(postDoc, promotion.channelId, scope, this.uid), promoted: true }) } catch { continue }
+          try { boosted.push({ channelId: promotion.channelId, doc: postDoc, post: decodeChannelPost(postDoc, promotion.channelId, scope, this.uid), promoted: true, scope }) } catch { continue }
           if (promotion.placements.includes('discover_rail') && !promoted.includes(promotion.channelId)) promoted.push(promotion.channelId)
         }
         for (const promotion of promotions) {

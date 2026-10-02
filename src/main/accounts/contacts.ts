@@ -9,8 +9,9 @@ import { boolField, childId, documents, documentVersion, stringField, type Fires
 import { ProfilePhoto } from './profile-photo'
 import { ContactAvatars } from './contact-avatars'
 import { ContactPhotos } from './contact-photos'
-import { contactNames, PeerProfiles, registerPeerProfiles } from './peer-profiles'
+import { contactNames, PeerProfiles, publicProfilePath, registerPeerProfiles } from './peer-profiles'
 import { userpicCacheFor } from './userpic-cache'
+import { personalChannelIdField } from './personal-channel'
 import type { ContactPhotoCommand } from '../storage/contact-photo-table'
 import { maxContactPhotoStorage, type ContactPhotoBinding, type ContactPhotoEdit, type ContactPhotoStorage, type ContactPhotoRemoval } from '../../shared/contact-photo'
 import type { BackgroundPhotoOwner } from '../platform/background-photos'
@@ -30,7 +31,7 @@ interface Peer {
 const noPhoto = (): ContactProfileSnapshot['photo'] => ({ url: null, status: 'none', message: '' })
 const noLocal = (): ContactDetailsSnapshot => ({ status: 'loading', nickname: '', note: '', version: '' })
 function emptyProfile(selection: Selection, status: ContactProfileSnapshot['status'], message = ''): ContactProfileSnapshot {
-  return { ...selection, status, displayName: '', originalName: '', contactVersion: '', local: noLocal(), personalPhoto: { status: 'loading', version: '', photoId: null }, visibility: 'unknown', userId: '', bio: '', message, photo: noPhoto() }
+  return { ...selection, status, displayName: '', originalName: '', contactVersion: '', local: noLocal(), personalPhoto: { status: 'loading', version: '', photoId: null }, visibility: 'unknown', userId: '', bio: '', personalChannelId: '', message, photo: noPhoto() }
 }
 
 // Contact membership comes from the owner's collection. Only an explicitly
@@ -66,7 +67,9 @@ export class ContactsSession {
   constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly changed: () => void,
     private readonly store: <T>(command: ContactDetailsCommand | ContactPhotoCommand, validate?: () => void) => Promise<T>,
     // The picture a person has now, for the album this device keeps of that person (ProfilePhotoHistory).
-    seen: (uid: string, raw: string) => void = () => {}) {
+    seen: (uid: string, raw: string) => void = () => {},
+    // The reads, over Firestore; a test gives its own.
+    private readonly openReader: () => FirestoreReader = () => new FirestoreReader(auth)) {
     this.profileNames = new PeerProfiles(uid, auth, auth.signal, () => { if (!this.closed) { this.order(); this.publish() } }, seen)
     registerPeerProfiles(auth, this.profileNames)
     this.personalPhotos = new ContactPhotos(store, uid => this.connected && !this.auth.signal.aborted && this.has(uid) && !this.unavailablePhotos.has(uid), () => this.publish())
@@ -161,7 +164,7 @@ export class ContactsSession {
       if (current()) { this.labels = new Map(rows.map(row => [row.uid, row.nickname])); this.order(); this.publish() }
     }).catch(() => { if (current()) { this.labels.clear(); this.order(); this.message = tr('이 기기의 연락처 별칭을 불러오지 못했습니다.'); this.publish() } })
     try {
-      const reader = new FirestoreReader(this.auth); this.reader = reader
+      const reader = this.openReader(); this.reader = reader
       const parent = `${documents}/users/${this.uid}`
       reader.watch({ query: { parent, structuredQuery: { from: [{ collectionId: 'contacts' }] } } }, this.auth.signal, {
         snapshot: rows => {
@@ -232,8 +235,16 @@ export class ContactsSession {
     void this.store<ContactDetails>({ kind: 'contact-details', uid: selection.uid }).then(value => {
       if (this.peer === peer) { peer.local = { ...value, status: 'ready' }; this.publish() }
     }).catch(() => { if (this.peer === peer) { peer.local = { ...noLocal(), status: 'error' }; this.publish() } })
-    const root = `${documents}/users/${selection.uid}`, reciprocal = `${root}/contacts/${this.uid}`
+    const root = publicProfilePath(selection.uid), reciprocal = `${documents}/users/${selection.uid}/contacts/${this.uid}`
     const current = (): boolean => this.peer === peer && this.has(selection.uid)
+    // No public profile to read (not made yet, refused, unreadable): the person is still this account's contact, so the
+    // profile opens with the name they were saved under and with everything that needs no profile — a message, the
+    // name and note on this device, deleting, blocking. Nothing the public profile would show is guessed.
+    const fallback = (): void => {
+      this.unavailablePhotos.delete(selection.uid)
+      const item = this.items.get(selection.uid)
+      peer.value = { ...emptyProfile(selection, 'ready'), displayName: this.profileNames.name(selection.uid) || item?.displayName || '', visibility: 'unknown' }
+    }
     peer.stop = reader.watch({ documents: { documents: [root, reciprocal] } }, this.auth.signal, {
       snapshot: rows => {
         if (!current()) return
@@ -241,24 +252,24 @@ export class ContactsSession {
           if ([...rows.keys()].some(name => name !== root && name !== reciprocal)) throw new Error('Profile scope mismatch')
           const doc = rows.get(root)
           const displayName = doc ? stringField(doc.fields, 'displayName', 512).trim() : ''
-          if (!doc || !displayName || boolField(doc.fields, 'accountDeleted')) {
+          // A withdrawn account's public profile keeps nothing but accountDeleted (A7 §3-1), no name.
+          if (doc && boolField(doc.fields, 'accountDeleted')) {
             this.cancelDeleteGrace(tr('상대 프로필을 확인할 수 없어 삭제 대기를 취소했습니다. 최신 연락처를 확인해 주세요.'))
             if (!this.unavailablePhotos.has(selection.uid)) { this.unavailablePhotos.add(selection.uid); this.personalPhotos.revoke() }
             cache?.confirm(`user:${selection.uid}`, null)
             peer.photo.clear(); peer.value = emptyProfile(selection, 'unavailable', tr('탈퇴했거나 현재 프로필을 확인할 수 없는 사용자입니다.'))
-          } else {
+          } else if (!doc || !displayName) fallback()
+          else {
             this.unavailablePhotos.delete(selection.uid)
             const visible = rows.has(reciprocal)
             peer.value = { ...emptyProfile(selection, 'ready'), displayName, visibility: visible ? 'visible' : 'hidden',
-              userId: visible ? stringField(doc.fields, 'userId', 160) : '', bio: visible ? stringField(doc.fields, 'bio', 500) : '' }
+              userId: visible ? stringField(doc.fields, 'userId', 160) : '', bio: visible ? stringField(doc.fields, 'bio', 500) : '',
+              personalChannelId: visible ? personalChannelIdField(doc.fields) : '' }
             const raw = visible ? stringField(doc.fields, 'photoURL', 10000) : ''
             cache?.confirm(`user:${selection.uid}`, raw || null)
             if (visible) void peer.photo.select(raw); else peer.photo.clear()
           }
-        } catch {
-          this.cancelDeleteGrace(tr('프로필을 확인할 수 없어 삭제 대기를 취소했습니다. 최신 연락처를 확인해 주세요.'))
-          peer.photo.clear(); peer.value = emptyProfile(selection, 'error', tr('프로필 데이터를 확인하지 못했습니다. 다시 불러와 주세요.'))
-        }
+        } catch { peer.photo.clear(); fallback() }
         this.publish()
       },
       state: (state, error) => {
@@ -266,9 +277,9 @@ export class ContactsSession {
         // Opening a story waits for this profile; the step and the try it happened on say whether the wait timed out.
         recordContactStep('profile-watch', `${state} ${++watchSteps}`)
         if (state === 'ready') return
+        if (state === 'error') { peer.photo.clear(); fallback(); this.publish(); return }
         this.cancelDeleteGrace(tr('프로필 연결이 변경되어 삭제 대기를 취소했습니다. 이 요청은 서버에 보내지 않았습니다.'))
-        peer.photo.clear(); peer.value = emptyProfile(selection, state === 'error' ? 'error' : 'loading',
-          error ? tr('프로필을 불러오지 못했습니다. 연결과 연락처 관계를 확인해 주세요.') : '')
+        peer.photo.clear(); peer.value = emptyProfile(selection, 'loading', error ? tr('프로필을 불러오지 못했습니다. 연결과 연락처 관계를 확인해 주세요.') : '')
         this.publish()
       }
     }, 2, 2 * 1024 * 1024)

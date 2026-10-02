@@ -29,9 +29,11 @@ export class CredentialVault {
   private readonly accounts: string
   private readonly indexFile: string
   private readonly codes: string
+  private readonly rotations: string
   constructor(private readonly directory: string) {
     this.legacy = join(directory, 'desktop-credential.bin'); this.accounts = join(directory, 'accounts'); this.indexFile = join(directory, 'accounts.json')
     this.codes = join(directory, 'backup-codes')
+    this.rotations = join(directory, 'backup-code-rotations')
   }
 
   private async requireEncryption(): Promise<void> {
@@ -169,11 +171,53 @@ export class CredentialVault {
       finally { encrypted.fill(0) }
     })
   }
+  // A3 §4: a recovery code change on its way — the code it proves ownership with and the new one — kept encrypted from
+  // the moment the new code is made until the server answers, so it can be sent again after a restart and neither code
+  // is lost meanwhile. One per account.
+  savePendingRotation(uid: string, rotation: { old: string; next: string }): Promise<void> {
+    return this.ordered(async () => {
+      if (![rotation.old, rotation.next].every(code => /^[A-Z0-9-]{1,64}$/.test(code))) throw new AuthenticationFailure('storage')
+      try {
+        await this.requireEncryption()
+        await mkdir(this.rotations, { recursive: true, mode: 0o700 })
+        const encrypted = await safeStorage.encryptStringAsync(JSON.stringify({ old: rotation.old, next: rotation.next }))
+        try {
+          const target = join(this.rotations, `${identifier(uid)}.bin`), pending = `${target}.pending`
+          const file = await open(pending, 'w', 0o600)
+          try { await file.writeFile(encrypted); await file.sync() }
+          finally { await file.close() }
+          await rename(pending, target)
+        } finally { encrypted.fill(0) }
+      } catch { throw new AuthenticationFailure('storage') }
+    })
+  }
+  pendingRotation(uid: string): Promise<{ old: string; next: string } | null> {
+    return this.ordered(async () => {
+      let encrypted: Buffer
+      try { encrypted = await readFile(join(this.rotations, `${identifier(uid)}.bin`)) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw new AuthenticationFailure('storage') }
+      try {
+        await this.requireEncryption()
+        const value = JSON.parse((await safeStorage.decryptStringAsync(encrypted)).result) as { old?: unknown; next?: unknown }
+        const valid = (code: unknown): code is string => typeof code === 'string' && /^[A-Z0-9-]{1,64}$/.test(code)
+        return valid(value.old) && valid(value.next) ? { old: value.old, next: value.next } : null
+      } catch { throw new AuthenticationFailure('storage') }
+      finally { encrypted.fill(0) }
+    })
+  }
+  clearPendingRotation(uid: string): Promise<void> {
+    return this.ordered(async () => {
+      const target = join(this.rotations, `${identifier(uid)}.bin`)
+      for (const file of [target, `${target}.pending`]) {
+        try { await unlink(file) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new AuthenticationFailure('storage') }
+      }
+    })
+  }
   remove(uid: string): Promise<void> {
     return this.ordered(async () => {
       // Delete both encrypted records and a kept recovery code; a leftover pending file is never restored.
-      const target = this.file(uid), code = join(this.codes, `${identifier(uid)}.bin`)
-      for (const file of [target, `${target}.pending`, code, `${code}.pending`]) {
+      const target = this.file(uid), code = join(this.codes, `${identifier(uid)}.bin`), rotation = join(this.rotations, `${identifier(uid)}.bin`)
+      for (const file of [target, `${target}.pending`, code, `${code}.pending`, rotation, `${rotation}.pending`]) {
         try { await unlink(file) }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new AuthenticationFailure('storage') }
       }

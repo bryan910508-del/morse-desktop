@@ -9,6 +9,10 @@ import { tr } from './i18n'
 // ChannelInquiryService: one 1:1 room per channel and subscriber (channelInquiries/{channelId}_{subscriberId}).
 export type InquiryRole = 'owner' | 'subscriber'
 export type InquiryMessageKind = 'text' | 'image' | 'video' | 'voice' | 'file' | 'sticker' | 'location' | 'event'
+// A message of this account on its way into a room, from the device's own queue (main/accounts/inquiry-sends.ts):
+// 'sending' until the server accepts it, 'failed' once the server refused it, 'sent' for a minute after it went, until
+// the room's own history shows it.
+export interface InquirySendItem { id: string; inquiryId: string; kind: InquiryMessageKind; text: string; at: number; state: 'sending' | 'failed' | 'sent'; reason: string; busy: boolean }
 export interface InquirySummary { id: string; peerUid: string; channelId: string; channelName: string; peerName: string; lastMessage: string; lastMessageAt: number | null; unread: number; photo?: import('./group-photo').GroupPhotoImage | null }
 export interface InquiryMessageItem { id: string; own: boolean; senderType: InquiryRole; kind: InquiryMessageKind; text: string; label: string; createdAt: number | null; edited: boolean
   // The message this one answers, and a few words of it, as a chat's reply carries (HistoryMessageReply).
@@ -25,6 +29,10 @@ export interface InquiryListSnapshot { requestId: string; channelId: string; sta
 export interface InquiryThreadSnapshot {
   requestId: string; inquiryId: string; channelId: string; role: InquiryRole; title: string; channelName: string
   status: 'loading' | 'ready' | 'error'; items: InquiryMessageItem[]; message: string
+  // Who the room is with, for its picture at the top: the subscriber for an owner, and for a subscriber the
+  // channel itself, which has no uid and whose picture the chat list already holds.
+  peerUid: string
+  photo?: import('./group-photo').GroupPhotoImage | null
   // «모두에게 고정»: the ids the room document keeps, newest first, as a chat keeps them.
   pinnedIds: string[]
   // The room's auto-delete policy, kept on the room document as a chat keeps its own.
@@ -187,6 +195,51 @@ export interface InquiryRow {
 }
 export const subscriberRowId = (inquiryId: string): string => `sub_inq_${inquiryId}`
 export const ownerRowId = (channelId: string): string => `own_inq_${channelId}`
+
+// The discussion group the server makes for every channel (onChannelCreatedEnsureDiscussion), named after it.
+export const discussionChatPrefix = 'channel_discuss_'
+// iOS AppState.shouldHideChannelDiscussionOnMainList: «소유자 메인 목록에 토론 그룹을 넣지 않음 — own_inq_* 한 줄만».
+// The discussion group of a channel this account owns is not a row of its own; the channel's one row stands for
+// it. The server writes that group with createdBy = the channel's owner and refuses any other identity, so the
+// room says whose channel it belongs to without the channel list being read.
+export function ownedChannelDiscussion(dialog: Pick<import('./model').DialogSummary, 'id' | 'kind' | 'discussion' | 'channelId' | 'createdBy'>, uid: string): string {
+  if (!uid || dialog.kind !== 'group' || dialog.createdBy !== uid) return ''
+  const named = dialog.id.startsWith(discussionChatPrefix) ? dialog.id.slice(discussionChatPrefix.length) : ''
+  if (!dialog.discussion && !named) return ''
+  return dialog.channelId || named
+}
+
+// What a channel's own discussion room adds to its row.
+export interface DiscussionFold { channelId: string; title: string; preview: string; at: number | null; unread: number }
+// iOS MorseChatListDialogProvider.buildOwnerChat: the channel's row counts the discussion room's unread messages
+// as well as its inquiries', and shows the discussion's newest message when that is the newer of the two. A
+// channel whose rooms have no inquiries at all still has its row (ownerInquirySummariesMerged).
+export function foldOwnedDiscussions(rows: readonly InquiryRow[], discussions: readonly DiscussionFold[]): InquiryRow[] {
+  if (!discussions.length) return [...rows]
+  const folded = rows.map(row => ({ ...row }))
+  const byChannel = new Map(folded.filter(row => row.kind === 'ownerFolder').map(row => [row.channelId, row]))
+  for (const discussion of discussions) {
+    const row = byChannel.get(discussion.channelId)
+    if (!row) {
+      folded.push({ id: ownerRowId(discussion.channelId), kind: 'ownerFolder', channelId: discussion.channelId, inquiryId: null,
+        title: discussion.title, preview: discussion.preview, lastMessageAt: discussion.at, unread: discussion.unread, rooms: 0 })
+      continue
+    }
+    row.unread += discussion.unread
+    if (discussion.at !== null && (row.lastMessageAt === null || discussion.at > row.lastMessageAt)) {
+      row.lastMessageAt = discussion.at; row.preview = discussion.preview
+    }
+  }
+  return folded.sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+}
+
+// «연락처에 추가» for the person on the other side of a room. Who that is comes from the room this account
+// has open, never from the window: the request only names which room and which person it means.
+export interface InquiryContactRequest { id: string; inquiryId: string; uid: string }
+export function inquiryContactRequest(raw: unknown): InquiryContactRequest {
+  const value = object(raw); keys(value, ['id', 'inquiryId', 'uid'])
+  return { id: identifier(value.id), inquiryId: inquiryIdentifier(value.inquiryId), uid: identifier(value.uid) }
+}
 
 // A photo send: the picked bytes are re-encoded to JPEG, so storage.rules isValidImage (under 10 MB,
 // image/*) holds, and the caption travels as imageCaption like ChannelInquiryChatView does.

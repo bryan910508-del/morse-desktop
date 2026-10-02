@@ -1,4 +1,4 @@
-import { publicChannelMetadata } from './channel-discovery-values'
+import { linkedChannelMetadata } from './channel-discovery-values'
 import type { ChannelMembershipRequest, ChannelMembershipSnapshot, ChannelMembershipInfo } from '../../shared/channel-membership-info'
 import { channelDiscussionReference } from './channel-discussion-reference'
 import { channelNotificationInfo } from './channel-notification-info'
@@ -7,14 +7,15 @@ import type { FirestoreReader, ReadCredentials } from '../network/firestore-rpc'
 import { documents, stringField, type FirestoreDocument } from '../network/firestore-values'
 import { tr } from '../../shared/i18n'
 
-// These observations never grant membership, post access or mutation authority.
+// These observations never grant membership, post access or mutation authority. `preview` is the channel preview's
+// reader: its channel is whatever the preview shows — a public one found by search, or any channel its link names.
 export class ChannelMembershipReader {
   private value: ChannelMembershipSnapshot | null = null
   private reader: FirestoreReader | null = null
   private stop: (() => void) | null = null
   private generation = 0
   constructor(private readonly uid: string, private readonly auth: ReadCredentials,
-    private readonly source: (id: string) => { doc: FirestoreDocument; reader: FirestoreReader }, private readonly changed: () => void, private readonly requirePublic = false) {}
+    private readonly source: (id: string) => { doc: FirestoreDocument; reader: FirestoreReader }, private readonly changed: () => void, private readonly preview = false) {}
   private validate(channelId: string): ReturnType<ChannelMembershipReader['source']> {
     this.auth.signal.throwIfAborted()
     const source = this.source(channelId)
@@ -31,7 +32,7 @@ export class ChannelMembershipReader {
     this.value = { ...request, status: 'loading', info: null, message: '' }
     let source: ReturnType<ChannelMembershipReader['validate']>
     try { source = this.validate(request.channelId); this.reader = source.reader }
-    catch { this.value.status = 'blocked'; this.value.message = this.requirePublic ? tr('현재 공개 미리보기에서 조회할 채널을 확인해 주세요.') : tr('현재 내 채널 목록에서 조회할 채널을 확인해 주세요.'); this.changed(); return }
+    catch { this.value.status = 'blocked'; this.value.message = this.preview ? tr('현재 공개 미리보기에서 조회할 채널을 확인해 주세요.') : tr('현재 내 채널 목록에서 조회할 채널을 확인해 주세요.'); this.changed(); return }
     const channel = `${documents}/channels/${request.channelId}`
     const subscriber = `${channel}/subscribers/${this.uid}`, subscription = `${documents}/users/${this.uid}/subscriptions/${request.channelId}`, join = `${channel}/joinRequests/${this.uid}`
     const admin = `${channel}/admins/${this.uid}`
@@ -46,7 +47,8 @@ export class ChannelMembershipReader {
           if (rows.size > names.length || [...rows].some(([name, doc]) => !names.includes(name) || doc.name !== name)) throw new Error('Unexpected membership scope')
           const root = rows.get(channel)
           if (!root) throw new Error('Channel no longer exists')
-          if (this.requirePublic) publicChannelMetadata(root)
+          // The preview decides which channels it shows (ChannelPublicPreview.begin); here the document must be one.
+          if (this.preview) linkedChannelMetadata(root)
           const owner = identifier(stringField(root.fields, 'ownerId', 160))
           const boundField = (path: string, key: string, expected: string) => {
             const doc = rows.get(path)
@@ -74,7 +76,7 @@ export class ChannelMembershipReader {
     try { this.validate(this.value.channelId) }
     catch {
       const request = this.value; this.clear()
-      this.value = { requestId: request.requestId, channelId: request.channelId, status: 'blocked', info: null, message: this.requirePublic ? tr('현재 공개 채널을 확인할 수 없습니다. 가입 상태를 다시 열어 주세요.') : tr('현재 채널 목록을 확인할 수 없습니다. 가입 상태를 다시 열어 주세요.') }
+      this.value = { requestId: request.requestId, channelId: request.channelId, status: 'blocked', info: null, message: this.preview ? tr('현재 공개 채널을 확인할 수 없습니다. 가입 상태를 다시 열어 주세요.') : tr('현재 채널 목록을 확인할 수 없습니다. 가입 상태를 다시 열어 주세요.') }
     }
   }
   dismiss(requestId: string): void { if (this.value?.requestId === requestId) { this.clear(); this.changed() } }

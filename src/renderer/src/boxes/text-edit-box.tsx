@@ -9,8 +9,11 @@ import { tr } from '../../../shared/i18n'
 export interface TextEditResult { outcome: 'saved' | 'rejected' | 'uncertain'; message: string }
 
 // Ui::InputField box used for names, bios and descriptions.
-export function TextEditBox({ title, label, initial, maxLength, multiline, allowEmpty = multiline, note, close, save }: {
-  title: string; label: string; initial: string; maxLength: number; multiline?: boolean; allowEmpty?: boolean; note?: string; close(): void; save(value: string): Promise<TextEditResult>
+export function TextEditBox({ title, label, initial, maxLength, multiline, allowEmpty = multiline, note, clamp, close, save }: {
+  title: string; label: string; initial: string; maxLength: number; multiline?: boolean; allowEmpty?: boolean; note?: string
+  // What the field keeps of what is typed or pasted (a title never ends in half a character).
+  clamp?: (value: string) => string
+  close(): void; save(value: string): Promise<TextEditResult>
 }) {
   const [value, setValue] = useState(initial), [busy, setBusy] = useState(false), [error, setError] = useState('')
   async function submit(): Promise<void> {
@@ -27,7 +30,7 @@ export function TextEditBox({ title, label, initial, maxLength, multiline, allow
     <button className="button flat" disabled={busy} onClick={close}>{tr('취소')}</button>
     <button className="button flat" disabled={busy || (!allowEmpty && !value.trim())} onClick={() => { void submit() }}>{busy && <Spinner size={14} />}{tr('저장')}</button>
   </>}>
-    <TextField label={label} value={value} onChange={setValue} maxLength={maxLength} multiline={multiline} rows={multiline ? 6 : undefined} counter autoFocus disabled={busy} onSubmit={() => { void submit() }} />
+    <TextField label={label} value={value} onChange={next => setValue(clamp ? clamp(next) : next)} maxLength={maxLength} multiline={multiline} rows={multiline ? 6 : undefined} counter autoFocus disabled={busy} onSubmit={() => { void submit() }} />
     {note && <p className="box-note">{note}</p>}
     {error && <p className="box-error" role="alert">{error}</p>}
   </Box>

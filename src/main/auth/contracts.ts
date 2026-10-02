@@ -30,9 +30,11 @@ export interface SavedCredential {
   // How this device signed in, for the server's session list (iOS sends the Firebase provider ID).
   provider?: 'apple.com'
 }
-export type AuthFailureCode = 'unavailable' | 'app-proof' | 'invalid-code' | 'rate-limited' | 'invalid-credential' | 'revoked' | 'network' | 'storage' | 'protocol' | 'cancelled' | 'id-taken' | 'account-limit' | 'saved-account' | 'already-added' | 'device-limit' | 'apple' | 'stale-identity'
+export type AuthFailureCode = 'unavailable' | 'update-required' | 'app-proof' | 'invalid-code' | 'rate-limited' | 'invalid-credential' | 'revoked' | 'network' | 'storage' | 'protocol' | 'cancelled' | 'id-taken' | 'account-limit' | 'saved-account' | 'already-added' | 'device-limit' | 'apple' | 'stale-identity'
 const messages: Record<AuthFailureCode, string> = {
   unavailable: tr('현재 이 버전에서는 계정을 연결할 수 없습니다.'),
+  // The server needs a newer Morse. What was waiting to go is still here, and goes once it is updated.
+  'update-required': tr('최신 버전의 Morse로 업데이트해야 연결할 수 있습니다. 보내지 않은 메시지와 초안은 그대로 있습니다.'),
   'app-proof': tr('보안 확인을 완료하지 못했습니다. 잠시 후 다시 시도해 주세요.'),
   'invalid-code': tr('복구 코드가 올바른지 확인해 주세요.'),
   'rate-limited': tr('요청이 많습니다. 잠시 후 다시 시도해 주세요.'),
@@ -50,6 +52,16 @@ const messages: Record<AuthFailureCode, string> = {
   apple: tr('Apple 로그인에 실패했어요. 다시 시도해 주세요.'),
   // The server refused to give a withdrawn account's Apple identity a new profile; signing in again gets a new one.
   'stale-identity': tr('Apple 로그인에 실패했어요. 다시 시도해 주세요.')
+}
+// What a failed token refresh does to the account on this device. When the sign-in itself is over — the refresh
+// token refused, or the session revoked — the account is signed out and what it kept is cleared, as Telegram does on
+// 401. A failure to save the new token in the Keychain is this device's own trouble, not the server's word: the
+// account is only disconnected, and the messages waiting to go, the uploads and drafts stay for when it connects
+// again (F-RT-001, 11_phase1-work §E-1).
+export function tokenFailureEffect(code: AuthFailureCode): 'none' | 'disconnect' | 'sign-out' {
+  if (code === 'invalid-credential' || code === 'revoked') return 'sign-out'
+  if (code === 'storage') return 'disconnect'
+  return 'none'
 }
 export class AuthenticationFailure extends Error {
   constructor(readonly code: AuthFailureCode) { super(messages[code]); this.name = 'AuthenticationFailure' }

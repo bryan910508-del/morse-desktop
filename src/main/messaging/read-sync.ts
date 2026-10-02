@@ -1,6 +1,6 @@
 import { historyReadable } from '../network/firestore-values'
 import type { MessagePosition } from '../../shared/model'
-import { comparePosition } from '../../shared/model'
+import { withinCutoff } from '../../shared/model'
 import { idleReadSync, type ReadSyncState } from '../../shared/read-receipts'
 import type { ReadDialog } from '../network/firestore-values'
 import { ServerRejection } from '../network/contracts'
@@ -49,7 +49,7 @@ export class ReadSync {
   private eligible(chatId: string, target: MessagePosition): boolean {
     const dialog = this.context().dialogs.get(chatId)
     return Boolean(!this.held.has(chatId) && dialog && historyReadable(dialog) && dialog.summary.kind !== 'secret' && dialog.summary.participantUids.includes(this.uid) &&
-      (!dialog.cutoff || comparePosition(target, dialog.cutoff) >= 0))
+      !withinCutoff(target, dialog.cutoff))
   }
   private async store<T = void>(command: ReadReceiptCommand): Promise<T> {
     if (this.closed || this.failed) throw new Error(tr('읽음 저장소를 사용할 수 없습니다.'))

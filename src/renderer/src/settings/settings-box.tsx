@@ -1,7 +1,7 @@
 import { autoDownloadChoiceLabel, autoDownloadChoices, autoDownloadSourceLabel } from '../../../shared/auto-download'
 import { changeBackupCode, deleteAccount, showBlockedUsersBox, showLastSeenBox, showSessionsBox } from './security-boxes'
 import { useEffect, useState, type ReactNode } from 'react'
-import { ArrowLeft, AtSign, Bell, Camera, ChevronRight, FileText, FolderOpen, HardDrive, Image as ImageIcon, Info, LogOut, MessageSquare, Palette, Shield, Star, Trash2, User, X, Clock3, KeyRound, ShieldOff, Timer, Lock, BatteryLow, Download, Lightbulb, CircleHelp, ShieldCheck, Users, QrCode as QrCodeIcon, Crown, CircleCheck, Globe, History, ImagePlus, Keyboard } from 'lucide-react'
+import { ArrowLeft, AtSign, Bell, Camera, ChevronRight, FileText, FolderOpen, HardDrive, Image as ImageIcon, Info, LogOut, Megaphone, MessageSquare, Palette, Shield, Star, Trash2, User, X, Clock3, KeyRound, ShieldOff, Timer, Lock, BatteryLow, Download, Lightbulb, CircleHelp, ShieldCheck, Users, QrCode as QrCodeIcon, Crown, CircleCheck, Globe, History, ImagePlus, Keyboard } from 'lucide-react'
 import type { Preferences, ThemePreference } from '../../../shared/model'
 import type { BackgroundStorageSnapshot } from '../../../shared/background-storage'
 import type { ContactPhotoStorage } from '../../../shared/contact-photo'
@@ -32,6 +32,7 @@ import { autoDeleteMonthOptions, type AccountPrivacy, type DataExport } from '..
 import { usePowerSaving } from '../app/power-saving'
 import { openPolicy, showGuideBox, showSupportBox } from './support-boxes'
 import { showProfileShareBox } from '../boxes/profile-share-box'
+import { openPersonalChannel, PersonalChannelSection, showPersonalChannelBox, useOwnedChannels, usePersonalChannelCard } from '../info/personal-channel'
 import { languageNames, languages, locale, tr, type Language } from '../../../shared/i18n'
 
 export type Page = 'main' | 'profile' | 'notifications' | 'chat' | 'privacy' | 'data' | 'storage' | 'power' | 'language' | 'about'
@@ -76,10 +77,19 @@ function UpdateStatus() {
   </div>
 }
 
-// Settings::Information: photo, name, bio and Morse ID.
-function ProfilePage({ accountUid }: { accountUid: string }) {
+// Settings::Information: photo, name, bio, Morse ID and the personal channel.
+function ProfilePage({ accountUid, close }: { accountUid: string; close(): void }) {
   const state = useDesktop(value => value?.selfProfile ?? null)
   const [photoBusy, setPhotoBusy] = useState(false)
+  // The personal channel (settings_information.cpp SetupPersonalChannel; iOS EditProfileView.personalChannelRow): the
+  // channel linked as the server has it, except while a pick made here is on its way — that one is shown until the
+  // server says the same, and goes back if the write is refused.
+  const owned = useOwnedChannels(accountUid)
+  const [pendingChannel, setPendingChannel] = useState<{ id: string | null } | null>(null)
+  const serverChannel = state?.profile?.personalChannelId || null
+  useEffect(() => { if (pendingChannel && pendingChannel.id === serverChannel) setPendingChannel(null) }, [pendingChannel, serverChannel])
+  const linkedChannel = pendingChannel ? pendingChannel.id : serverChannel
+  const channelCard = usePersonalChannelCard(accountUid, state?.profile?.uid ?? null, linkedChannel)
   if (!state || state.status === 'loading') return <div className="empty-state"><Spinner size={22} /></div>
   const self = state.status === 'ready' ? state.profile : null
   if (!self) return <div className="empty-state">
@@ -135,6 +145,22 @@ function ProfilePage({ accountUid }: { accountUid: string }) {
     try { await trackWrite(window.morse.profilePhotoHistoryAction(accountUid, { id, action: 'forget', version: self.version })) }
     catch (reason) { controller.toast(errorText(reason, tr('사진 기록을 지우지 못했습니다.')), 'error') }
   }
+  // editingOpenPersonalChannel / SavePersonalChannel: choosing the linked channel again does nothing; any other choice
+  // is written at once with its toast, and a refused write puts the row back.
+  function pickChannel(next: string | null, previous: string | null): void {
+    if (next === previous) return
+    controller.toast(next === null ? tr('개인 채널을 숨겼어요.') : previous === null ? tr('개인 채널을 추가했어요.') : tr('개인 채널을 바꿨어요.'))
+    const pick = { id: next }
+    setPendingChannel(pick)
+    const restore = (): void => setPendingChannel(current => current === pick ? null : current)
+    void trackWrite(window.morse.savePersonalChannel(accountUid, { channelId: next }))
+      .then(result => { if (result === 'unconfirmed') { restore(); controller.toast(tr('저장 결과를 확인하지 못했습니다.')) } })
+      .catch(reason => { restore(); controller.toast(errorText(reason, tr('저장하지 못했습니다.')), 'error') })
+  }
+  // PeerInfoSettingsItems settingsEditingItems: the row is there while a channel is linked or the account owns one.
+  const ownedList = owned && owned.status !== 'loading' ? owned : null
+  const ownedChannels = ownedList?.status === 'ready' ? ownedList.channels : []
+  const linkedName = linkedChannel ? ownedChannels.find(channel => channel.id === linkedChannel)?.name ?? null : null
   const busy = photoBusy || upload.busy || state.saving
   return <>
     <div className="profile-edit-cover">
@@ -157,9 +183,16 @@ function ProfilePage({ accountUid }: { accountUid: string }) {
     <Entry icon={<User size={20} />} label={self.displayName} detail={tr('이름')} chevron={false} onClick={editName} />
     <Entry icon={<FileText size={20} />} label={self.bio || tr('소개 추가')} detail={tr('소개')} chevron={false} onClick={editBio} />
     {self.userId && <Entry icon={<AtSign size={20} />} label={`@${self.userId}`} detail={tr('Morse ID · 눌러서 복사')} chevron={false} onClick={() => { void copyId() }} />}
+    {ownedList && (linkedChannel !== null || ownedChannels.length > 0) && <Entry icon={<Megaphone size={20} />} label={linkedName ?? tr('추가')} detail={tr('채널')} chevron={false}
+      onClick={() => showPersonalChannelBox({ accountUid, ownedRequestId: ownedList.requestId, linkedId: linkedChannel, pick: next => pickChannel(next, linkedChannel) })} />}
     {/* iOS shows the plan and keeps the purchase screen off (MorseFeatureFlags.premiumPurchaseUIEnabled = false). */}
     <Entry icon={<Crown size={20} />} label={tr('Morse 프리미엄')} detail={self.premium ? tr('프리미엄 사용 중 · 계정 4개, 메시지 고정 10개') : tr('무료 플랜 · 계정 2개, 메시지 고정 3개')} chevron={false}
       onClick={() => { if (!self.premium) controller.toast(tr('공개 예정')) }} />
+    {/* How others see the linked channel: this page is also my profile (the main menu's «내 프로필»). */}
+    {channelCard && <>
+      <div className="section-divider" />
+      <PersonalChannelSection accountUid={accountUid} card={channelCard} onOpen={() => { close(); void openPersonalChannel(accountUid, channelCard.channelId) }} />
+    </>}
     {/* tdesktop's My Profile shows the account's stories; Morse keeps adding and viewing them here. */}
     <div className="section-divider" />
     <Entry icon={<ImagePlus size={20} />} label={tr('스토리 올리기')} onClick={() => showStoryComposer(accountUid)} />
@@ -415,7 +448,7 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
         <div className="section-divider" />
         <Entry icon={<LogOut size={20} />} label={tr('로그아웃')} danger onClick={() => { void signOut() }} />
       </>}
-      {page === 'profile' && <ProfilePage accountUid={accountUid} />}
+      {page === 'profile' && <ProfilePage accountUid={accountUid} close={close} />}
       {page === 'notifications' && <>
         {notifications && !notifications.supported && <p className="settings-note">{notifications.message}</p>}
         <Toggle label={tr('데스크톱 알림')} checked={preferences.notifications} disabled={notifications?.supported === false} onChange={value => update({ notifications: value })} />
@@ -479,7 +512,7 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
         <div className="section-divider" />
         <div className="section-label">{tr('보안')}</div>
         <Entry icon={<Lock size={20} />} label={tr('로컬 암호')} detail={lockEnabled ? tr('켜짐') : tr('꺼짐')} onClick={() => showPasscodeSettings(lockEnabled)} />
-        <Entry icon={<KeyRound size={20} />} label={tr('로그인한 기기')} detail={tr('다른 기기에서 로그아웃')} onClick={() => showSessionsBox(accountUid)} />
+        <Entry icon={<KeyRound size={20} />} label={tr('활성 세션')} detail={tr('이 계정으로 로그인한 기기')} onClick={() => showSessionsBox(accountUid)} />
         <Entry icon={<KeyRound size={20} />} label={tr('복구 코드 바꾸기')} detail={tr('새 복구 코드를 만들어요')} onClick={() => { void changeBackupCode(accountUid) }} />
         <div className="section-divider" />
         <div className="section-label">{tr('데이터 관리')}</div>

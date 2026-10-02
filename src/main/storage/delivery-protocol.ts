@@ -22,6 +22,9 @@ import type { NoteDraftCommand } from './space-note-drafts'
 import type { ChannelCreationCommand } from './channel-creation-table'
 import type { CommentCreationCommand } from './channel-comment-creation-table'
 import type { PostCreationCommand } from './channel-post-creation-table'
+import type { InquirySendCommand } from './inquiry-send-table'
+import type { ChannelOperationCommand } from './channel-operation-table'
+import type { HistoryClearCommand } from './history-clear-table'
 import type { PostDraftCommand } from './channel-post-drafts'
 import type { CommentDraftCommand } from './channel-comment-drafts'
 import type { DiscussionJoinCommand } from './channel-discussion-join-table'
@@ -71,7 +74,7 @@ export type DeliveryCommand =
   | GroupPhotoUploadCommand
   | ChannelPhotoUploadCommand
   | ChannelAccessCommand
-  | StoryReplyDetachCommand | StoryReplySendCommand | StoryReplyDraftCommand | StoryViewReceiptCommand | StoryReactionChangeCommand | StoryHiddenChangeCommand | StoryPrivacyMoveCommand | StoryRemovalCommand | StoryCaptionSaveCommand | StoryCaptionDraftCommand | NoteRemovalCommand | NoteTextSaveCommand | NoteEditDraftCommand | NoteCreationCommand | StoryPublicationCommand | StoryVideoPublicationCommand | StoryComposerAudioCommand | StoryComposerVideoCommand | StoryComposerPhotoCommand | StoryComposerDraftCommand | NoteDraftCommand | ChannelCreationCommand | PostCreationCommand | PostDraftCommand | CommentCreationCommand | CommentDraftCommand
+  | StoryReplyDetachCommand | StoryReplySendCommand | StoryReplyDraftCommand | StoryViewReceiptCommand | StoryReactionChangeCommand | StoryHiddenChangeCommand | StoryPrivacyMoveCommand | StoryRemovalCommand | StoryCaptionSaveCommand | StoryCaptionDraftCommand | NoteRemovalCommand | NoteTextSaveCommand | NoteEditDraftCommand | NoteCreationCommand | StoryPublicationCommand | StoryVideoPublicationCommand | StoryComposerAudioCommand | StoryComposerVideoCommand | StoryComposerPhotoCommand | StoryComposerDraftCommand | NoteDraftCommand | ChannelCreationCommand | PostCreationCommand | PostDraftCommand | CommentCreationCommand | CommentDraftCommand | InquirySendCommand | ChannelOperationCommand | HistoryClearCommand
   | DiscussionJoinCommand
   | ChannelJoinDecisionCommand
   | ContactPhotoCommand

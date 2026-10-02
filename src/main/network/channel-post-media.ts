@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { object } from '../../shared/validation'
 import type { ReadCredentials } from './firestore-rpc'
+import { callMorseFunction } from './morse-callable'
 import { storageBucket } from '../media/media-document'
 
 async function bytes(response: Response, max: number, signal: AbortSignal, validate: () => void, progress?: (loaded: number) => void): Promise<Buffer> {
@@ -24,20 +25,12 @@ async function bytes(response: Response, max: number, signal: AbortSignal, valid
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); chunks.forEach(chunk => chunk.fill(0)) }
 }
 export async function downloadChannelPostMedia(auth: ReadCredentials, path: string, postId: string, signal: AbortSignal, validate: () => void, maxBytes: number, progress: (loaded: number, total: number) => void): Promise<Buffer> {
+  const resourceURL = `gs://${storageBucket}/${path}`
+  // The grant is the one callable of a read; morse-callable.ts sends it again while the connection was never made.
+  const grant = await callMorseFunction(auth, 'authorizeMorseMediaRead', { resourceURL }, signal, { validate, limit: 64 * 1024 })
+  if (grant.ok !== true || grant.resourceURL !== resourceURL) throw new Error('Channel media authorization denied')
   signal.throwIfAborted(); validate()
   const authorization = await auth.authorize(signal, false)
-  signal.throwIfAborted(); validate()
-  const resourceURL = `gs://${storageBucket}/${path}`
-  const grant = await fetch('https://asia-northeast3-talky-a38c3.cloudfunctions.net/authorizeMorseMediaRead', {
-    method: 'POST', signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken },
-    body: JSON.stringify({ data: { resourceURL } })
-  })
-  const payload = await bytes(grant, 64 * 1024, signal, validate)
-  try {
-    const wire = object(JSON.parse(payload.toString('utf8'))), result = object(wire.result ?? wire.data)
-    if (wire.error !== undefined || result.ok !== true || result.resourceURL !== resourceURL) throw new Error('Channel media authorization denied')
-  } finally { payload.fill(0) }
   signal.throwIfAborted(); validate()
   const endpoint = `https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}`
   const get = (url: string) => fetch(url, { signal, redirect: 'error', credentials: 'omit', cache: 'no-store',

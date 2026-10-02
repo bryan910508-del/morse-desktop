@@ -424,6 +424,9 @@ export class OutboxPump {
   noteCreationState<T>(command: NoteCreationCommand, validate: () => void): Promise<T> { return this.store<T>(command, validate) }
   channelCreationState<T>(command: ChannelCreationCommand, validate: () => void): Promise<T> { return this.store<T>(command, validate) }
   postCreationState<T>(command: PostCreationCommand, validate: () => void): Promise<T> { return this.store<T>(command, validate) }
+  inquirySendState<T>(command: import('../storage/inquiry-send-table').InquirySendCommand): Promise<T> { return this.store<T>(command) }
+  channelOperationState<T>(command: import('../storage/channel-operation-table').ChannelOperationCommand): Promise<T> { return this.store<T>(command) }
+  historyClearState<T>(command: import('../storage/history-clear-table').HistoryClearCommand): Promise<T> { return this.store<T>(command) }
   async storyCaptionDraftState<T>(command: StoryCaptionDraftCommand, validate: () => void = () => {}): Promise<T> {
     const key = command.kind === 'story-caption-draft-read' ? `${command.target.privacy}:${command.target.storyId}` : command.kind === 'story-caption-draft-write' ? `${command.request.privacy}:${command.request.storyId}` : null
     if (command.kind === 'story-caption-draft-write' && (!key || !this.storyCaptionDraftsKnown.has(key))) throw new Error(tr('편집 초안을 먼저 읽어 주세요.'))

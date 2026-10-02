@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto'
 import { object } from '../../shared/validation'
 import { MessageMutationFailure, NotEmitted } from './contracts'
-import type { ReadAuthorization, ReadCredentials } from './firestore-rpc'
+import type { ReadCredentials } from './firestore-rpc'
+import { callMorseFunction, MorseCallableFailure } from './morse-callable'
 import type { StoredMessageAction } from '../storage/message-action-protocol'
 import { tr } from '../../shared/i18n'
+import { recordRetry } from '../platform/connection-diagnostics'
 
 export function selectionDigest(reactions: string[]): string { return createHash('sha256').update(JSON.stringify(reactions)).digest('hex') }
 
@@ -26,41 +28,26 @@ export async function setMessageReaction(auth: ReadCredentials, uid: string, act
   if (sender?.reactions && sender.react) {
     let answer: unknown
     try { answer = await sender.react(payload, AbortSignal.any([signal, auth.signal])) }
-    catch { if (signal.aborted || auth.signal.aborted) throw new NotEmitted(tr('계정 연결을 확인하지 못했습니다.')) }
+    catch (error) {
+      if (signal.aborted || auth.signal.aborted) throw new NotEmitted(tr('계정 연결을 확인하지 못했습니다.'))
+      recordRetry('reaction', 'socket', error)
+    }
     if (answer !== undefined) {
       const value = object(answer)
       if (value.ok === true) { reactionResult(value, uid, action, inquiryId); return }
       if (finalReasons.has(String(value.reason ?? value.error ?? ''))) throw new MessageMutationFailure(tr('반응을 적용할 수 없습니다. 대화 권한과 최신 메시지를 확인해 주세요.'), true)
+      recordRetry('reaction', 'socket', { delivery: 'answered', code: `socket/${String(value.reason ?? value.error ?? 'OTHER').slice(0, 32)}` })
     }
   }
-  const bounded = AbortSignal.any([signal, auth.signal, AbortSignal.timeout(65000)])
-  let authorization: ReadAuthorization
-  try { authorization = await auth.authorize(bounded, false); bounded.throwIfAborted() }
-  catch { throw new NotEmitted(tr('계정 연결을 확인하지 못했습니다.')) }
-  const response = await fetch('https://asia-northeast3-talky-a38c3.cloudfunctions.net/setMorseMessageReaction', {
-    method: 'POST', signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken },
-    body: JSON.stringify({ data: payload }),
-  })
-  if (!response.body) throw new MessageMutationFailure(tr('반응 응답을 확인하지 못했습니다.'))
-  const reader = response.body.getReader(), chunks: Uint8Array[] = []
-  let size = 0
-  try {
-    while (true) {
-      const chunk = await reader.read()
-      if (chunk.done) break
-      size += chunk.value.byteLength
-      if (size > 2 * 1024 * 1024) { await reader.cancel(); throw new MessageMutationFailure(tr('반응 응답을 확인하지 못했습니다.')) }
-      chunks.push(chunk.value)
-    }
-  } finally { reader.releaseLock() }
-  const body = object(JSON.parse(Buffer.concat(chunks).toString('utf8')))
-  if (!response.ok || body.error !== undefined) {
-    const error = object(body.error ?? {})
-    const definitive = ['INVALID_ARGUMENT', 'PERMISSION_DENIED', 'UNAUTHENTICATED', 'FAILED_PRECONDITION', 'NOT_FOUND', 'ALREADY_EXISTS'].includes(String(error.status))
-    throw new MessageMutationFailure(definitive ? tr('반응을 적용할 수 없습니다. 대화 권한과 최신 메시지를 확인해 주세요.') : tr('반응 결과를 확인해야 합니다.'), definitive)
+  let result: Record<string, unknown>
+  try { result = await callMorseFunction(auth, 'setMorseMessageReaction', payload, signal, { limit: 2 * 1024 * 1024 }) }
+  catch (error) {
+    // A request that never left waits for the connection and goes again under the same clientRevision.
+    if (!(error instanceof MorseCallableFailure) || error.delivery === 'not-sent') throw new NotEmitted(tr('계정 연결을 확인하지 못했습니다.'))
+    if (error.delivery === 'answered') throw new MessageMutationFailure(tr('반응을 적용할 수 없습니다. 대화 권한과 최신 메시지를 확인해 주세요.'), true)
+    throw new MessageMutationFailure(tr('반응 결과를 확인해야 합니다.'))
   }
-  reactionResult(object(body.result ?? body.data), uid, action, inquiryId)
+  reactionResult(result, uid, action, inquiryId)
 }
 // The answer is for this request of this account, and holds the selection that was asked for.
 function reactionResult(result: Record<string, unknown>, uid: string, action: ReactionAction, inquiryId?: string): void {

@@ -11,6 +11,7 @@ import type { ProfileUploadCommand, ProfileUploadState } from '../storage/profil
 import type { BackgroundPhotoOwner } from '../platform/background-photos'
 import { tr } from '../../shared/i18n'
 import { userpicCacheFor } from './userpic-cache'
+import { personalChannelIdField } from './personal-channel'
 
 function photoSource(doc: FirestoreDocument): string {
   const raw = doc.fields.photoURL?.stringValue
@@ -58,7 +59,7 @@ export class SelfProfileSession {
     const version = documentVersion(doc), userId = stringField(doc.fields, 'userId', 160)
     if (!version || !userId) throw new Error('Invalid profile')
     return { uid: this.uid, userId, displayName: stringField(doc.fields, 'displayName', 512) || userId,
-      bio: stringField(doc.fields, 'bio', 500), premium: boolField(doc.fields, 'isPremium') || boolField(doc.fields, 'premium'), hasPhoto: typeof doc.fields.photoURL?.stringValue === 'string' && doc.fields.photoURL.stringValue.length > 0, version }
+      bio: stringField(doc.fields, 'bio', 500), personalChannelId: personalChannelIdField(doc.fields), premium: boolField(doc.fields, 'isPremium') || boolField(doc.fields, 'premium'), hasPhoto: typeof doc.fields.photoURL?.stringValue === 'string' && doc.fields.photoURL.stringValue.length > 0, version }
   }
   private invalidate(): void {
     this.displayAbort?.abort(); this.photoUpload.pause()

@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
-import { KeyRound } from 'lucide-react'
-import { lastSeenModes, type BlockedUser, type LastSeenMode, type LastSeenPrivacy, type SignInSession } from '../../../shared/account-tools'
+import { useEffect, useState, type ReactNode } from 'react'
+import { Hand, KeyRound, Laptop, Monitor, Smartphone, X } from 'lucide-react'
+import { lastSeenModes, sessionTtlDayOptions, type BlockedUser, type LastSeenMode, type LastSeenPrivacy, type SignInSession, type SignInSessions } from '../../../shared/account-tools'
 import { controller } from '../app/ui'
-import { errorText, fullTime } from '../app/format'
+import { errorText, fullTime, sessionActiveTime } from '../app/format'
 import { trackWrite } from '../app/drafts'
 import { loadBlockedUsers, setBlocked, useBlockedUsers } from '../app/blocked-users'
 import { BackupCodeBox } from '../boxes/backup-code-box'
@@ -64,35 +64,122 @@ function BlockedUsersBox({ accountUid, close }: { accountUid: string; close(): v
   </Box>
 }
 
-// ActiveSessionsView: users/{uid}/signInSessions, with sign-out requests for other devices.
+// Telegram's active sessions (tdesktop settings_active_sessions.cpp SessionsContent::Inner::setupContent; A6 contract §4):
+// this device; «terminate all other sessions» with its note, while there are others; the other sessions by last
+// activity; «automatically terminate old sessions» with its period. A row is the device model, «app version» and the
+// last activity (Row, api_authorizations.cpp); opening it shows the session (SessionInfoBox), where another device's
+// session is ended, as its row's own close button also does. How a device signed in is not shown. An ended session leaves the list at once: the server deletes it
+// and refuses its sign-in everywhere (A6 §3-1). Laid out in Morse's grouped settings style.
+const platformIcon = (session: SignInSession): ReactNode => session.platform === 'macOS' ? <Laptop size={20} />
+  : session.platform === 'Windows' ? <Monitor size={20} /> : session.platform === 'other' ? <KeyRound size={20} /> : <Smartphone size={20} />
+const appLine = (session: SignInSession): string => session.appVersion ? `${session.appName} ${session.appVersion}` : session.appName
+function ttlLabel(days: number): string {
+  return days === 7 ? tr('1주') : days === 90 ? tr('3개월') : days === 183 ? tr('6개월') : tr('1년')
+}
+// Row: another device's row also has tdesktop's small close button at its right (element 2, sessionTerminate:
+// smallCloseIcon in a 34px button, settings.style:353-359), which asks and ends that session; this device's has none.
+function SessionRow({ session, onOpen, onTerminate }: { session: SignInSession; onOpen(): void; onTerminate?(): void }) {
+  const last = session.lastSeenAt ?? session.createdAt
+  return <div className="session-row-wrap">
+    <button type="button" className="peer-row session-row" onClick={onOpen}>
+      <span className="session-icon">{platformIcon(session)}</span>
+      <span className="peer-row-text"><strong className="ellipsis">{session.deviceModel}</strong>
+        <small className="ellipsis">{appLine(session)}</small>
+        {session.current ? <small className="online">{tr('온라인')}</small> : last !== null && <small>{sessionActiveTime(last)}</small>}</span>
+    </button>
+    {onTerminate && !session.current && <button type="button" className="icon-button small session-terminate" aria-label={tr('세션 종료')} title={tr('세션 종료')}
+      onClick={onTerminate}><X size={16} /></button>}
+  </div>
+}
+// SessionInfoBox: the device, its last activity, the app and system, when it signed in; «terminate» for another device.
+function SessionInfoBox({ session, close, terminate }: { session: SignInSession; close(): void; terminate(): void }) {
+  const last = session.lastSeenAt ?? session.createdAt
+  return <Box width={380} className="settings-list-box session-info" buttons={<>
+    {!session.current && <button className="button flat danger" onClick={() => { close(); terminate() }}>{tr('세션 종료')}</button>}
+    <button className="button" onClick={close}>{tr('완료')}</button>
+  </>}>
+    <div className="session-info-head">
+      <span className="session-icon large">{platformIcon(session)}</span>
+      <strong>{session.deviceModel}</strong>
+      <small>{session.current ? tr('온라인') : last !== null ? fullTime(last) : ''}</small>
+    </div>
+    <div className="section-label">{tr('세션 정보')}</div>
+    <div className="session-info-row"><span>{tr('앱')}</span><strong>{appLine(session)}</strong></div>
+    {session.systemVersion && <div className="session-info-row"><span>{tr('시스템')}</span><strong>{session.systemVersion}</strong></div>}
+    {session.createdAt !== null && <div className="session-info-row"><span>{tr('로그인')}</span><strong>{fullTime(session.createdAt)}</strong></div>}
+  </Box>
+}
+// SelfDestructionBox (Type::Sessions): 1 week, 3, 6 or 12 months.
+function SessionTtlBox({ accountUid, days, close, saved }: { accountUid: string; days: number; close(): void; saved(days: number): void }) {
+  const [choice, setChoice] = useState(days), [busy, setBusy] = useState(false), [error, setError] = useState('')
+  async function save(): Promise<void> {
+    if (busy) return
+    if (choice === days) { close(); return }
+    setBusy(true); setError('')
+    try { await trackWrite(window.morse.setSessionTtl(accountUid, choice)); saved(choice); close() }
+    catch (reason) { setError(errorText(reason, tr('기간을 바꾸지 못했습니다.'))); setBusy(false) }
+  }
+  return <Box title={tr('오래된 세션 자동 종료')} width={380} className="settings-list-box" buttons={<>
+    <button className="button flat" disabled={busy} onClick={close}>{tr('취소')}</button>
+    <button className="button" disabled={busy} onClick={() => { void save() }}>{busy ? <Spinner size={14} /> : tr('저장')}</button>
+  </>}>
+    <p className="box-note">{tr('이 기간 동안 쓰지 않은 세션은 자동으로 종료돼요.')}</p>
+    {sessionTtlDayOptions.map(option => <label key={option} className="settings-radio">
+      <input type="radio" name="session-ttl" checked={choice === option} disabled={busy} onChange={() => setChoice(option)} /><span>{ttlLabel(option)}</span>
+    </label>)}
+    {error && <p className="box-error">{error}</p>}
+  </Box>
+}
 function SessionsBox({ accountUid, close }: { accountUid: string; close(): void }) {
-  const [rows, setRows] = useState<SignInSession[] | null>(null), [error, setError] = useState('')
+  const [value, setValue] = useState<SignInSessions | null>(null), [error, setError] = useState('')
   const [busy, setBusy] = useState(false), [reload, setReload] = useState(0)
   useEffect(() => {
     let alive = true
     setError('')
-    void window.morse.signInSessions(accountUid).then(next => { if (alive) setRows(next) })
-      .catch(reason => { if (alive) setError(errorText(reason, tr('기기 목록을 불러오지 못했습니다.'))) })
+    void window.morse.signInSessions(accountUid).then(next => { if (alive) setValue(next) })
+      .catch(reason => { if (alive) setError(errorText(reason, tr('세션 목록을 불러오지 못했습니다.'))) })
     return () => { alive = false }
   }, [accountUid, reload])
-  const others = rows?.filter(row => !row.current && !row.revokeRequested) ?? []
-  async function revoke(target: SignInSession | null): Promise<void> {
+  const current = value?.sessions.find(session => session.current) ?? null
+  const others = value?.sessions.filter(session => !session.current) ?? []
+  // SessionsContent::terminateOne / terminateAll: asked once, then gone from the list.
+  async function terminate(target: SignInSession | null): Promise<void> {
     if (busy) return
-    if (!await confirmBox(target ? { title: tr('기기 로그아웃'), text: tr('{0}에서 로그아웃할까요?', [target.deviceLabel]), confirm: tr('로그아웃'), danger: true }
-      : { title: tr('다른 기기 모두 로그아웃'), text: tr('이 기기를 제외한 {0}대에서 로그아웃할까요?', [others.length]), confirm: tr('모두 로그아웃'), danger: true })) return
+    if (!await confirmBox(target ? { text: tr('이 세션을 종료할까요?'), confirm: tr('종료'), danger: true }
+      : { text: tr('다른 모든 세션을 종료할까요?'), confirm: tr('종료'), danger: true })) return
     setBusy(true)
-    try { await trackWrite(window.morse.revokeSignInSessions(accountUid, target?.id ?? null)); controller.toast(tr('로그아웃을 요청했습니다.')); setReload(value => value + 1) }
-    catch (reason) { controller.toast(errorText(reason, tr('로그아웃을 요청하지 못했습니다.')), 'error') }
+    try {
+      await trackWrite(window.morse.revokeSignInSessions(accountUid, target?.id ?? null))
+      setValue(state => state && { ...state, sessions: state.sessions.filter(session => session.current || (target !== null && session.id !== target.id)) })
+      setReload(count => count + 1)
+    } catch (reason) { controller.toast(errorText(reason, tr('세션을 종료하지 못했습니다.')), 'error') }
     finally { setBusy(false) }
   }
-  return <Box title={tr('로그인한 기기')} width={420} onClose={close} buttons={others.length > 0 ? <button className="button flat danger" disabled={busy} onClick={() => { void revoke(null) }}>{tr('다른 기기 모두 로그아웃')}</button> : undefined}>
-    {!rows ? <div className="empty-state">{error || <Spinner size={22} />}</div>
-      : <div className="peer-list tall">{rows.map(row => <div key={row.id} className="peer-row">
-        <span className="session-icon"><KeyRound size={20} /></span>
-        <span className="peer-row-text"><strong className="ellipsis">{row.deviceLabel}{row.current ? tr(' · 이 기기') : ''}</strong>
-          <small>{row.revokeRequested ? tr('로그아웃 요청됨') : row.lastSeenAt ? tr('최근 활동 {0}', [fullTime(row.lastSeenAt)]) : tr('최근 활동 정보 없음')}</small></span>
-        {!row.current && !row.revokeRequested && <button className="button flat" disabled={busy} onClick={() => { void revoke(row) }}>{tr('로그아웃')}</button>}
-      </div>)}</div>}
+  const open = (session: SignInSession): void => { controller.showLayer(closeInfo => <SessionInfoBox session={session} close={closeInfo} terminate={() => { void terminate(session) }} />) }
+  const chooseTtl = (): void => {
+    if (!value) return
+    controller.showLayer(closeTtl => <SessionTtlBox accountUid={accountUid} days={value.ttlDays} close={closeTtl} saved={days => setValue(state => state && { ...state, ttlDays: days })} />)
+  }
+  return <Box title={tr('활성 세션')} width={420} className="settings-list-box sessions-box" onClose={close}>
+    {!value ? <div className="empty-state">{error || <Spinner size={22} />}</div> : <>
+      <div className="section-label">{tr('이 기기')}</div>
+      {current && <SessionRow session={current} onOpen={() => open(current)} />}
+      {others.length > 0 ? <>
+        <button type="button" className="list-button danger" disabled={busy} onClick={() => { void terminate(null) }}>
+          <span className="list-button-icon"><Hand size={20} /></span><span className="list-button-text"><span>{tr('다른 모든 세션 종료')}</span></span>
+        </button>
+        <p className="settings-note">{tr('이 기기를 제외한 모든 기기에서 로그아웃합니다.')}</p>
+        <div className="section-divider" />
+        <div className="section-label">{tr('활성 세션')}</div>
+        {others.map(session => <SessionRow key={session.id} session={session} onOpen={() => open(session)} onTerminate={busy ? undefined : () => { void terminate(session) }} />)}
+        <div className="section-divider" />
+        <div className="section-label">{tr('오래된 세션 자동 종료')}</div>
+        <button type="button" className="list-button" onClick={chooseTtl}>
+          <span className="list-button-text"><span>{tr('비활성 기간')}</span></span>
+          <span className="list-button-value">{ttlLabel(value.ttlDays)}</span>
+        </button>
+      </> : <p className="settings-note">{tr('같은 계정으로 다른 휴대폰, 태블릿, 컴퓨터에서 로그인할 수 있어요. 모든 데이터가 곧바로 동기화돼요.')}</p>}
+    </>}
   </Box>
 }
 

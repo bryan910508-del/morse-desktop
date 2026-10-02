@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Camera, Copy, FileText, Hash, Image as ImageIcon, Link, LogOut, MessageCircle, Pencil, Shield, SlidersHorizontal, Trash2, User, UserPlus, Users, X, Inbox, MessageSquare, Flag } from 'lucide-react'
+import { Camera, Copy, FileText, Hash, Image as ImageIcon, Link, LogOut, MessageCircle, Pencil, Shield, SlidersHorizontal, Trash2, UserPlus, Users, X, Inbox, MessageSquare, Flag } from 'lucide-react'
 import type { RightPanel } from '../app/ui'
 import { channelIntroductionLimit } from '../../../shared/channel-introduction'
 import { channelShareURL } from '../../../shared/channel-share'
@@ -14,7 +14,7 @@ import { changeChannelPhoto } from '../app/photos'
 import { showTextEditBox } from '../boxes/text-edit-box'
 import { ActionRow, InfoRow } from '../info/info-panel'
 import { showReportBox } from '../boxes/report-box'
-import { Avatar } from '../ui/avatar'
+import { AvatarScope, PeerAvatar } from '../ui/avatar'
 import { showPhotoViewer } from '../ui/photo-viewer'
 import { Spinner } from '../ui/controls'
 import { confirmBox } from '../ui/layers'
@@ -26,6 +26,7 @@ import { openInquiries, useCommentsPost, useInquiryTarget } from './channel-ui'
 import { ChannelInquiryPanel } from './channel-inquiry-panel'
 import { leaveDiscussionRoom } from './discussion-leave'
 import { locale, tr } from '../../../shared/i18n'
+import { clampChatTitle, maxChatTitle } from '../../../shared/chat-title'
 
 function ChannelInfoPanel({ accountUid, channelId }: { accountUid: string; channelId: string }) {
   const channel = useDesktop(state => state?.channels?.items.find(item => item.id === channelId) ?? null)
@@ -47,7 +48,7 @@ function ChannelInfoPanel({ accountUid, channelId }: { accountUid: string; chann
 
   const editName = (): void => {
     if (!ready || !version) return
-    showTextEditBox({ title: tr('채널 이름'), label: tr('이름'), initial: ready.name, maxLength: 50, save: async name => {
+    showTextEditBox({ title: tr('채널 이름'), label: tr('이름'), initial: ready.name, maxLength: maxChatTitle, clamp: clampChatTitle, save: async name => {
       const request = { id: crypto.randomUUID(), requestId: crypto.randomUUID(), channelId, version, name: ready.name }
       await window.morse.openChannelName(accountUid, request)
       try { return await window.morse.saveChannelName(accountUid, { ...request, name }) }
@@ -157,7 +158,8 @@ function ChannelInfoPanel({ accountUid, channelId }: { accountUid: string; chann
     finally { setLeaving(false) }
   }
 
-  return <section className="side-panel" aria-label={tr('채널 정보')}>
+  // Its own holder of the channels photo surface, for the same reason the channel screen is one.
+  return <AvatarScope accountUid={accountUid} enabled surface="channels"><section className="side-panel" aria-label={tr('채널 정보')}>
     <header className="top-bar">
       <strong className="side-title">{tr('채널 정보')}</strong>
       <button className="icon-button" aria-label={tr('정보 닫기')} onClick={() => controller.setRight(null)}><X size={20} /></button>
@@ -166,8 +168,8 @@ function ChannelInfoPanel({ accountUid, channelId }: { accountUid: string; chann
       {!ready ? <div className="empty-state">{channel?.status === 'loading' || !channel ? tr('채널 정보를 불러오는 중…') : tr('채널 정보를 확인할 수 없습니다.')}</div> : <>
         {coverUrl && <div className="channel-info-cover"><img src={coverUrl} alt="" draggable={false} /></div>}
         <div className="info-cover">
-          <Avatar name={ready.name} url={ready.avatar?.status === 'ready' ? ready.avatar.url : null} size={88} kind="channel"
-            onOpen={() => { if (ready.avatar?.status === 'ready' && ready.avatar.url) showPhotoViewer(ready.avatar.url, ready.name) }} />
+          <PeerAvatar id={channelId} name={ready.name} image={ready.avatar} size={88} kind="channel" surface="channels" priority
+            onOpen={ready.avatar?.status === 'ready' && ready.avatar.url ? () => showPhotoViewer(ready.avatar!.url!, ready.name) : undefined} />
           <h2 className="selectable">{ready.name}</h2>
           <span>{channelSubtitle(ready)}</span>
         </div>
@@ -176,7 +178,6 @@ function ChannelInfoPanel({ accountUid, channelId }: { accountUid: string; chann
           {link && <InfoRow icon={<Link size={20} />} value={link} label={tr('링크 · 눌러서 복사')} onClick={copyLink} />}
           {link && <ActionRow icon={<Copy size={20} />} label={tr('공유 문구 복사')} onClick={copyShareText} />}
           {ready.tags && ready.tags.length > 0 && <InfoRow icon={<Hash size={20} />} value={ready.tags.map(tag => `#${tag}`).join(' ')} label={tr('태그')} />}
-          {ready.ownerName && <InfoRow icon={<User size={20} />} value={ready.ownerName} label={tr('소유자')} />}
           {ready.postCount !== null && <InfoRow icon={<MessageCircle size={20} />} value={tr('{0}개', [ready.postCount.toLocaleString(locale())])} label={tr('게시물')} />}
         </div>
         {discussionId && <div className="info-section">
@@ -211,7 +212,7 @@ function ChannelInfoPanel({ accountUid, channelId }: { accountUid: string; chann
         </div>}
       </>}
     </div>
-  </section>
+  </section></AvatarScope>
 }
 
 // Third column for an open channel: the comments of a post or channel info.

@@ -5,7 +5,9 @@ import type { FirestoreDocument } from '../network/firestore-values'
 import { recordContactStep } from '../platform/contact-diagnostics'
 import { tr } from '../../shared/i18n'
 
-export interface ChatContactTarget { id: string; chatId: string; uid: string }
+// A person met in a chat, or in a channel's 1:1 inquiry room — whose name and picture come from
+// different records, so the caller's resolver is told which.
+export interface ChatContactTarget { id: string; chatId: string; uid: string; kind?: 'chat' | 'inquiry' }
 interface Active { target: ChatContactTarget; abort: AbortController; task: Promise<ParticipantAddResult> }
 
 // "Add to contacts" for a group member or a 1:1 peer (Telegram AddContactBox from a profile).

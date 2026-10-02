@@ -27,9 +27,26 @@ test('a broken tally is read as zero, not as a negative bar', () => {
   assert.deepEqual(pollBars([Number.NaN, 4], 4).map(bar => bar.percent), [0, 100])
 })
 
-test('with multiple answers the shares are of the votes, not of the people', () => {
-  // 3명이 각각 둘씩 골라 표가 6개다. 몫은 표 기준이어야 막대가 100 을 넘지 않는다.
-  assert.deepEqual(pollBars([3, 3], 3).map(bar => bar.percent), [50, 50])
+// 분모는 «사람 수»다. 공식 Telegram 의 CountNicePercent 가 total 로 나누고, 100 맞추기는 모자랄 때만
+// 한다 (AdjustPercentCount: `left > 0 && left <= count`). 복수 선택이면 합이 100 을 넘는 것이 맞다 —
+// «이 선택지를 고른 사람의 비율»이기 때문이다. 표 합계로 나누면 iOS·안드로이드와 숫자가 갈린다.
+test('with multiple answers each share is of the people, so the shares may pass a hundred', () => {
+  // 3명이 저마다 둘 다 골랐다. 각 선택지를 고른 사람은 셋 중 셋이다.
+  assert.deepEqual(pollBars([3, 3], 3).map(bar => bar.percent), [100, 100])
+  // 4명 중 3명·2명이 골랐다 (한 사람은 둘 다).
+  assert.deepEqual(pollBars([3, 2], 4).map(bar => bar.percent), [75, 50])
+})
+
+test('a share over a hundred is left alone, and one short of it is filled', () => {
+  // 모자랄 때만 채운다. 33+33+33 = 99 → 하나를 올려 100.
+  assert.equal(pollBars([1, 1, 1], 3).reduce((sum, bar) => sum + bar.percent, 0), 100)
+  // 넘칠 때는 손대지 않는다 — 내림한 값 그대로다.
+  assert.deepEqual(pollBars([2, 2, 2], 3).map(bar => bar.percent), [66, 66, 66])
+})
+
+test('a tally larger than the number of people is still read', () => {
+  // 사람 수가 0 인데 표가 있는 문서는 망가진 것이다. 막대를 그리지 않는다.
+  assert.deepEqual(pollBars([2, 1], 0).map(bar => bar.percent), [0, 0])
 })
 
 test('results are shown once you have voted, or once it is closed', () => {

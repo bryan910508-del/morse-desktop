@@ -13,6 +13,22 @@ module.exports = {
   ...base,
   artifactName: 'Morse-${version}-${os}-${arch}.${ext}',
   publish: [{ provider: 'github', owner: releaseOwner, repo: releaseRepository, releaseType: 'release' }],
+  // Electron's security checklist (docs/tutorial/fuses.md), set in the released binary before it is signed: the signed
+  // Morse cannot be run as plain Node (ELECTRON_RUN_AS_NODE), take NODE_OPTIONS or NODE_EXTRA_CA_CERTS, or open an
+  // inspector (--inspect, SIGUSR1), so nothing else borrows its microphone, camera or Keychain trust; it starts only
+  // from app.asar and only when app.asar matches the hash in Info.plist (Windows: the executable's resources); file://
+  // gets no more than a browser gives it (the window loads morse://); cookies on disk are encrypted with the Keychain
+  // key. Cookie encryption is one-way: turning it off again leaves the stored cookies unreadable. Development builds
+  // (package.json "build") keep the defaults, so the local test tools can still use the inspector.
+  electronFuses: {
+    runAsNode: false,
+    enableNodeOptionsEnvironmentVariable: false,
+    enableNodeCliInspectArguments: false,
+    enableEmbeddedAsarIntegrityValidation: true,
+    onlyLoadAppFromAsar: true,
+    grantFileProtocolExtraPrivileges: false,
+    enableCookieEncryption: true
+  },
   mac: {
     ...base.mac,
     identity: 'Developer ID Application',

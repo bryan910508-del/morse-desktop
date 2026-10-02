@@ -4,33 +4,46 @@ import { commentCreationRequest, type CommentCreationRequest } from '../../share
 import { database, documents, numberField, timestamp, type FirestoreDocument, type WireObject } from './firestore-values'
 import { channelPostRevision } from '../media/channel-post-media-document'
 import { object } from '../../shared/validation'
+import { grpcCode, grpcDelivery, type WriteDelivery } from './grpc-delivery'
 import { tr } from '../../shared/i18n'
+// As a post (channel-post-creation-write.ts): 'not-sent' goes again, 'unknown' is looked for and goes again under the
+// same id if it is not there, 'refused' ends the comment.
 export class ChannelCommentCreationFailure extends Error {
-  constructor(readonly uncertain: boolean) { super(uncertain ? tr('댓글 등록 응답을 확인하지 못했습니다. 이미 등록되었을 수 있어 같은 요청을 다시 보내지 않습니다.') : tr('게시물이나 작성자 정보가 변경되었거나 서버가 등록을 거절했습니다. 최신 정보에서 다시 준비해 주세요.')) }
+  // code: the gRPC status behind it, for connection-check.log only.
+  constructor(readonly delivery: WriteDelivery, readonly code = '') { super(delivery === 'refused' ? tr('게시물이나 작성자 정보가 변경되었거나 서버가 등록을 거절했습니다. 최신 정보에서 다시 준비해 주세요.') : tr('댓글 등록 응답을 확인하지 못했습니다.')) }
+  get uncertain(): boolean { return this.delivery === 'unknown' }
 }
+// Q87 / A1: a comment deleted by another device is not written again — the server keeps a deletion record and its
+// rules refuse the id (PERMISSION_DENIED, the only refusal a direct write gets). The queue reads that record from the
+// server when it finds the comment gone or refused (channel-comment-creation.ts, A1 §3-4).
+// ALREADY_EXISTS, FAILED_PRECONDITION and ABORTED are not taken as refusals: an earlier attempt may have created the
+// comment already, the post whose count it raises may have changed under it (a like), or the commit lost a race. The
+// comment is then looked for, and goes again under its id, against the post as it is then, if it is not there.
+const refusals = [status.INVALID_ARGUMENT, status.NOT_FOUND, status.PERMISSION_DENIED, status.UNAUTHENTICATED]
 export function commentCreationCount(post: FirestoreDocument): number {
   const raw = post.fields.commentCount, count = numberField(post.fields, 'commentCount')
   const validInteger = typeof raw?.integerValue === 'string' ? /^\d+$/.test(raw.integerValue) : typeof raw?.integerValue === 'number' && Number.isInteger(raw.integerValue)
   const validDouble = raw?.integerValue === undefined && typeof raw?.doubleValue === 'number'
-  if ((!validInteger && !validDouble) || !Number.isSafeInteger(count) || count < 0 || count >= Number.MAX_SAFE_INTEGER) throw new ChannelCommentCreationFailure(false)
+  if ((!validInteger && !validDouble) || !Number.isSafeInteger(count) || count < 0 || count >= Number.MAX_SAFE_INTEGER) throw new ChannelCommentCreationFailure('refused')
   return count
 }
 interface CommitClient { commit(request: WireObject, metadata: Metadata, options: { deadline: Date }, callback: (error: ServiceError | null, response: WireObject) => void): ClientUnaryCall }
 export async function writeChannelCommentCreation(client: CommitClient, auth: Metadata, uid: string, input: CommentCreationRequest, post: FirestoreDocument, signal: AbortSignal): Promise<void> {
   const request = commentCreationRequest(input), path = `${documents}/channels/${request.channelId}/posts/${request.postId}`
-  if (signal.aborted || request.authorId !== uid || post.name !== path || !post.updateTime || channelPostRevision(post) !== request.postRevision || commentCreationCount(post) !== request.count) throw new ChannelCommentCreationFailure(false)
+  if (signal.aborted) throw new ChannelCommentCreationFailure('not-sent')
+  if (request.authorId !== uid || post.name !== path || !post.updateTime || channelPostRevision(post) !== request.postRevision || commentCreationCount(post) !== request.count) throw new ChannelCommentCreationFailure('refused')
   const fields: WireObject = Object.fromEntries(Object.entries({ id: request.id, channelId: request.channelId, postId: request.postId, authorId: uid, authorName: request.authorName, text: request.text }).map(([k, v]) => [k, { stringValue: v }]))
   if (request.parent) { fields.parentCommentId = { stringValue: request.parent.id }; fields.parentAuthorName = { stringValue: request.parentAuthorName } }
   if (request.authorPhotoURL) fields.authorPhotoURL = { stringValue: request.authorPhotoURL }
   await new Promise<void>((resolve, reject) => {
     let settled = false
     const finish = (error?: ChannelCommentCreationFailure): void => { if (settled) return; settled = true; signal.removeEventListener('abort', cancel); if (error) reject(error); else resolve() }
-    const cancel = (): void => { call.cancel(); finish(new ChannelCommentCreationFailure(true)) }
+    const cancel = (): void => { call.cancel(); finish(new ChannelCommentCreationFailure('unknown')) }
     const call = client.commit({ database, writes: [
       { update: { name: `${path}/comments/${request.id}`, fields }, currentDocument: { exists: false }, updateTransforms: [{ fieldPath: 'createdAt', setToServerValue: 'REQUEST_TIME' }] },
       { update: { name: path, fields: { commentCount: { integerValue: String(request.count + 1) } } }, updateMask: { fieldPaths: ['commentCount'] }, currentDocument: { updateTime: post.updateTime } }
     ] }, auth, { deadline: new Date(Date.now() + 30000) }, (error, response) => {
-      if (error) { finish(new ChannelCommentCreationFailure(![status.ABORTED, status.ALREADY_EXISTS, status.FAILED_PRECONDITION, status.INVALID_ARGUMENT, status.NOT_FOUND, status.PERMISSION_DENIED, status.UNAUTHENTICATED].includes(error.code))); return }
+      if (error) { finish(new ChannelCommentCreationFailure(grpcDelivery(error, refusals), grpcCode(error))); return }
       try {
         if (!Array.isArray(response.writeResults) || response.writeResults.length !== 2 || !response.commitTime) throw new Error('Incomplete comment creation commit')
         timestamp(response.commitTime, '')
@@ -38,7 +51,7 @@ export async function writeChannelCommentCreation(client: CommitClient, auth: Me
         const transforms = object(response.writeResults[0]).transformResults
         if (!Array.isArray(transforms) || transforms.length !== 1) throw new Error('Comment timestamp response missing')
         timestamp(object(object(transforms[0]).timestampValue), ''); finish()
-      } catch { finish(new ChannelCommentCreationFailure(true)) }
+      } catch { finish(new ChannelCommentCreationFailure('unknown')) }
     })
     signal.addEventListener('abort', cancel, { once: true }); if (signal.aborted) cancel()
   })

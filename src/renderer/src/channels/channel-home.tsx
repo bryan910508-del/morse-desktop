@@ -3,21 +3,20 @@ import { usePostReads } from './post-reads'
 import { ArrowLeft, ChevronRight, CircleDashed, Compass, Film, Heart, Image as ImageIcon, Megaphone, MessageCircle, PenSquare, Plus, Search } from 'lucide-react'
 import { channelCategories, type ChannelCategoryId, type ChannelHomeChannel, type ChannelHomePost, type ChannelHomeSnapshot } from '../../../shared/channel-home'
 import { channelDiscoveryRequest, type ChannelDiscoveryRow } from '../../../shared/channel-discovery'
-import { channelShareURL } from '../../../shared/channel-share'
 import { positionMilliseconds } from '../../../shared/model'
 import { useDesktop } from '../app/store'
 import { controller, useUi } from '../app/ui'
-import { errorText } from '../app/format'
 import { retainChannels } from '../app/channel-visibility'
 import { AvatarScope, Avatar, PeerAvatar } from '../ui/avatar'
 import { Spinner } from '../ui/controls'
 import { confirmBox } from '../ui/layers'
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { showChannelCreateBox } from '../boxes/channel-create-box'
-import { showChannelDiscoveryBox } from './channel-discovery-box'
+import { openChannelOrPreview as openChannel } from './channel-discovery-box'
 import { ChannelStoryRing, showChannelStoryComposer, useChannelStoryVisibility } from './channel-stories'
 import { locale, tr } from '../../../shared/i18n'
 import { subscriberCountText } from '../../../shared/channel-subscriber-count'
+import { editView, enqueueChannelOperation, likeView, removedPosts, useChannelOperations } from './channel-operations'
 
 const noChannels: ChannelHomeChannel[] = []
 
@@ -39,12 +38,6 @@ function aspect(width: number, height: number): number {
   return width > 0 && height > 0 ? Math.min(Math.max(width / height, 3 / 4), 1.91) : 1
 }
 
-// A channel in the account's list opens in the chat pane; any other channel opens its public preview.
-function openChannel(accountUid: string, channelId: string, listed: boolean, postId: string | null = null): void {
-  if (listed) controller.openChannel(channelId, postId)
-  else showChannelDiscoveryBox(accountUid, channelShareURL(channelId, postId ?? undefined))
-}
-
 function ChannelAvatar({ channel, size }: { channel: Pick<ChannelHomeChannel, 'id' | 'name' | 'avatar'>; size: number }) {
   return <PeerAvatar id={channel.id} name={channel.name || tr('채널')} image={channel.avatar} size={size} kind="channel" surface="channels" />
 }
@@ -53,16 +46,17 @@ function PostCard({ accountUid, post, channel }: { accountUid: string; post: Cha
   const time = positionMilliseconds(post.position)
   const open = (): void => openChannel(accountUid, post.channelId, channel.listed, post.id)
   const image = post.image
-  // ChannelFeedInteractiveTimelineRow.toggleLike: the heart changes at once and goes back if the write fails.
-  const [pending, setPending] = useState<boolean | null>(null)
-  const liked = pending ?? post.liked
-  const likeCount = post.likeCount === null ? null : Math.max(0, post.likeCount + (pending === null || post.liked === null || pending === post.liked ? 0 : pending ? 1 : -1))
-  useEffect(() => { if (pending !== null && pending === post.liked) setPending(null) }, [post.liked, pending])
-  async function like(): Promise<void> {
-    if (pending !== null || post.liked === null) { if (post.liked === null) open(); return }
-    setPending(!post.liked)
-    try { await window.morse.likeChannelHomePost(accountUid, post.channelId, post.id) }
-    catch (reason) { setPending(null); controller.toast(errorText(reason, tr('좋아요를 바꾸지 못했습니다.')), 'error') }
+  // ChannelFeedInteractiveTimelineRow.toggleLike: the heart changes at once; the device queue carries the choice until
+  // the server shows it, and a newer press replaces one still waiting (channel-operations.ts).
+  const operations = useChannelOperations(accountUid, post.channelId)
+  const view = likeView({ selected: post.liked, count: post.likeCount }, operations, post.id)
+  const liked = view.selected, likeCount = view.count
+  // New words on their way or just confirmed are the post's words here too, as on the channel's own screen.
+  const edit = editView(operations, post.id)
+  const text = edit && edit.state !== 'failed' && edit.text !== null ? edit.text : post.text
+  function like(): void {
+    if (liked === null) { open(); return }
+    void enqueueChannelOperation(accountUid, { kind: 'post-like', id: crypto.randomUUID(), channelId: post.channelId, postId: post.id, liked: !liked })
   }
   return <article className="channel-home-post" data-channel-id={post.channelId} data-post-id={post.id}>
     <button type="button" className="channel-home-post-header" onClick={() => openChannel(accountUid, channel.id, channel.listed)}>
@@ -84,10 +78,10 @@ function PostCard({ accountUid, post, channel }: { accountUid: string; post: Cha
             {image.blur ? <img className="blurred" src={image.blur} alt="" draggable={false} decoding="async" /> : <Spinner size={18} />}
           </span>
           : <span className="channel-home-post-media">{image?.video ? <Film size={16} /> : <ImageIcon size={16} />}{tr('첨부 {0}개', [post.mediaCount])}</span>)}
-      {post.text && <span className="channel-home-post-text">{post.text}</span>}
+      {text && <span className="channel-home-post-text">{text}</span>}
     </button>
     <div className="channel-home-post-footer">
-      <button type="button" className={`channel-home-post-action${liked ? ' liked' : ''}`} onClick={() => { void like() }} aria-label={tr('좋아요')} aria-pressed={liked ?? undefined}>
+      <button type="button" className={`channel-home-post-action${liked ? ' liked' : ''}`} onClick={like} aria-label={tr('좋아요')} aria-pressed={liked ?? undefined}>
         <Heart size={17} fill={liked ? 'currentColor' : 'none'} />{likeCount ? likeCount.toLocaleString(locale()) : ''}
       </button>
       <button type="button" className="channel-home-post-action" onClick={open} aria-label={tr('댓글')}><MessageCircle size={17} />{post.commentCount ? post.commentCount.toLocaleString(locale()) : ''}</button>
@@ -97,6 +91,10 @@ function PostCard({ accountUid, post, channel }: { accountUid: string; post: Cha
 
 function Feed({ accountUid, home }: { accountUid: string; home: ChannelHomeSnapshot }) {
   const byId = useMemo(() => new Map(home.channels.map(channel => [channel.id, channel])), [home.channels])
+  // A deleted post leaves the tab at once, as it leaves the channel's own screen (Telegram takes a deleted message away
+  // locally: tdesktop Histories::deleteMessages); the tab's copy is read again once the server has it (channel-home.ts).
+  const operations = useChannelOperations(accountUid, null)
+  const posts = useMemo(() => home.posts.filter(post => !removedPosts(operations.filter(item => item.channelId === post.channelId)).has(post.id)), [home.posts, operations])
   const mine = home.mine
   // ChannelFeedView.presentChannelPlusAnchorMenu: one channel per account, a post goes to it.
   function plusMenu(point: { x: number; y: number }): void {
@@ -110,9 +108,9 @@ function Feed({ accountUid, home }: { accountUid: string; home: ChannelHomeSnaps
     if (!mine) { showChannelCreateBox(accountUid); return }
     if (await confirmBox({ title: tr('채널이 이미 있어요'), text: tr('계정당 1개의 채널만 만들 수 있어요.'), confirm: tr('내 채널로 이동') })) controller.openChannel(mine.id)
   }
-  const empty = !mine && !home.subscribed.length && !home.posts.length
+  const empty = !mine && !home.subscribed.length && !posts.length
   const feedPosts = useRef<HTMLDivElement>(null)
-  usePostReads(accountUid, feedPosts, home.posts.length > 0)
+  usePostReads(accountUid, feedPosts, posts.length > 0)
   useChannelStoryVisibility(accountUid, [...(mine ? [mine.id] : []), ...home.subscribed.map(channel => channel.id)])
   return <>
     <div className="channel-home-actions">
@@ -150,7 +148,7 @@ function Feed({ accountUid, home }: { accountUid: string; home: ChannelHomeSnaps
         </section>}
         {/* MorseChannelFeedReadTracker: a post of the feed on screen is read in its channel. */}
         <div ref={feedPosts} style={{ display: 'contents' }}>
-          {home.posts.map(post => { const channel = byId.get(post.channelId); return channel ? <PostCard key={`${post.promoted ? 'p' : 'f'}:${post.id}`} accountUid={accountUid} post={post} channel={channel} /> : null })}
+          {posts.map(post => { const channel = byId.get(post.channelId); return channel ? <PostCard key={`${post.promoted ? 'p' : 'f'}:${post.id}`} accountUid={accountUid} post={post} channel={channel} /> : null })}
         </div>
       </>}
   </>

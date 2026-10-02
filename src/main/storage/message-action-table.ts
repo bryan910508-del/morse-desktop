@@ -29,7 +29,10 @@ export function executeMessageAction(db: Database.Database, command: MessageActi
         .get(chatId, request.messageId) as { id: string; payload: string } | undefined
       if (pending) {
         const waiting = JSON.parse(pending.payload) as { kind?: string }
-        if (request.kind !== 'reaction' || waiting.kind !== 'reaction') throw Object.assign(new Error('Action pending'), { deliveryCode: 'conflict' })
+        // A newer vote on the same poll replaces the one still waiting in the same way: the last choice is the one
+        // that counts, and a vote whose outcome is unknown no longer holds the poll (user decision 2026-09-29).
+        const replaces = (request.kind === 'reaction' && waiting.kind === 'reaction') || (request.kind === 'poll-vote' && waiting.kind === 'poll-vote')
+        if (!replaces) throw Object.assign(new Error('Action pending'), { deliveryCode: 'conflict' })
         db.prepare("UPDATE message_actions SET state='dismissed',payload=NULL,reason='' WHERE id=?").run(pending.id)
       }
       const count = db.prepare('SELECT COUNT(*) AS count FROM message_actions WHERE payload IS NOT NULL').get() as { count: number }

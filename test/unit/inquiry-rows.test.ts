@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { buildInquiryRows, InquiryRows } from '../../src/main/accounts/inquiry-rows'
+import { buildInquiryRows, InquiryRows, messageLine } from '../../src/main/accounts/inquiry-rows'
+import { newestFromOther } from '../../src/main/accounts/channel-inquiries'
 import type { ReadCredentials } from '../../src/main/network/firestore-rpc'
 import { documents, type FirestoreDocument } from '../../src/main/network/firestore-values'
 
@@ -72,4 +73,27 @@ test('a room of another account, and a photo message preview', () => {
   const gone = buildInquiryRows(me, deleted, [])
   assert.equal(gone.rows[0]!.title, '알 수 없는 채널')
   assert.equal(gone.addresses.size, 0, 'a deleted channel keeps no picture')
+})
+
+// Telegram's dialog row shows the last message it still has. A room whose newest messages were deleted here shows the
+// newest one left, with its time; the line of one message is worded as the server words a room's lastMessage.
+test('a room whose newest messages were deleted here shows the newest one left', () => {
+  const rooms = [owned('r1', 'c1', 1_750_000_300, 0, '지운 메시지'), owned('r2', 'c2', 1_750_000_200, 0, '두 번째 방')]
+  const { rows } = buildInquiryRows(me, [], rooms, id => id === 'r1' ? { preview: '남은 메시지', lastMessageAt: 1_750_000_100_000 } : null)
+  assert.deepEqual(rows.map(row => [row.channelId, row.preview, row.lastMessageAt]), [['c2', '두 번째 방', 1_750_000_200_000], ['c1', '남은 메시지', 1_750_000_100_000]])
+  const emptied = buildInquiryRows(me, [], [owned('r1', 'c1', 1_750_000_300, 0, '지운 메시지')], () => ({ preview: '', lastMessageAt: null })).rows
+  assert.deepEqual(emptied.map(row => [row.preview, row.lastMessageAt]), [['', 1_750_000_300_000]], 'nothing left: no line, and the room keeps its place')
+  assert.equal(messageLine({ type: { stringValue: 'text' }, text: { stringValue: '안녕' } }), '안녕')
+  assert.equal(messageLine({ type: { stringValue: 'image' } }), '📷 Photo')
+  assert.equal(messageLine({ type: { stringValue: 'file' }, fileName: { stringValue: 'a.pdf' } }), 'a.pdf')
+})
+
+// markMorseInquiryRead counts the other side's messages after the position it is given. A message deleted here counts
+// as read: the position is the newest message from the other side, deleted or not (Telegram leaves deleted messages
+// out of the unread count).
+test('an inquiry room is read up to the other side\'s newest message, one deleted here included', () => {
+  const message = (id: string, sender: string, seconds: number): FirestoreDocument => ({ name: `${documents}/channelInquiries/r1/messages/${id}`,
+    fields: { senderId: { stringValue: sender }, createdAt: { timestampValue: { seconds: String(seconds), nanos: 0 } } } }) as unknown as FirestoreDocument
+  assert.deepEqual(newestFromOther([message('m1', 'them', 10), message('m2', 'them', 30), message('m3', 'me', 40)], 'me'), { id: 'm2', at: 30000 })
+  assert.equal(newestFromOther([message('m1', 'me', 10)], 'me'), null)
 })

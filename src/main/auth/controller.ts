@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomInt, randomUUID } from 'node:crypto'
+import { generateKeyPairSync, randomInt } from 'node:crypto'
 import type { AuthenticationSnapshot } from '../../shared/auth'
 import { morseUserId, morseUserIdAlphabet, normalizeBackupCode, type AccountCreationResult } from '../../shared/auth'
 import type { AccountProfile, ConnectionState } from '../../shared/model'
@@ -8,13 +8,14 @@ import { NotEmitted } from '../network/contracts'
 import { FirestoreReader } from '../network/firestore-rpc'
 import { documents, ReadFailure, stringField } from '../network/firestore-values'
 import { SocketMessageTransport } from '../network/socket-transport'
-import { AuthenticationFailure, asAuthFailure, type AuthFailureCode, type AuthTokens, type DesktopAuthConfiguration, type SavedCredential } from './contracts'
+import { purgesAccountData, registrationOutcome, rejectionFailure } from '../network/registration-outcome'
+import { AuthenticationFailure, asAuthFailure, tokenFailureEffect, type AuthFailureCode, type AuthTokens, type DesktopAuthConfiguration, type SavedCredential } from './contracts'
 import { CredentialVault } from './credential-vault'
 import { DeviceIdentity } from './device-identity'
 import { generateBackupCode } from './backup-code'
 import { authorizeWithApple } from './apple-authorization'
 import { FirebaseAuthenticationAPI } from './firebase-rest'
-import { recordConnectionStep } from '../platform/connection-diagnostics'
+import { recordConnectionStep, recordRetry, recordSignOutBasis } from '../platform/connection-diagnostics'
 import { tr } from '../../shared/i18n'
 
 // A Curve25519 key pair in the base64 form iOS CryptoService stores and the server keeps as publicKey.
@@ -31,6 +32,8 @@ interface CredentialOwner {
   transport: SocketMessageTransport
   refresh: Promise<string> | null
   established: boolean
+  // startMorseDeviceSession answered «session-revoked» when a socket refusal was checked (A5 contract §3-1).
+  revokedByServer?: boolean
   rejection: string
 }
 
@@ -106,6 +109,7 @@ export class AuthenticationController {
         const failure = controller.signal.aborted ? new AuthenticationFailure('cancelled') : asAuthFailure(error)
         if (this.owner?.controller === controller) this.detach()
         if (this.operation === controller && !this.closed) {
+          if (failure.code === 'revoked' || failure.code === 'invalid-credential') noteSignOut(`${restoring ? 'restore' : 'sign-in'} ${failure.code}`)
           if (failure.code === 'revoked' || failure.code === 'invalid-credential' ||
               (failure.code === 'cancelled' && this.newlySavedOperation === controller)) {
             try { if (this.boundUid) await this.vault.remove(this.boundUid) }
@@ -139,7 +143,7 @@ export class AuthenticationController {
       const tokens = await api.exchange(verified.customToken, verified.profile.uid, controller.signal)
       this.assertCurrent(controller)
       const record: SavedCredential = { version: 1, profile: verified.profile,
-        sessionId: previous?.sessionId ?? randomUUID(), refreshToken: tokens.refreshToken, authTime: tokens.authTime }
+        sessionId: await this.identity.sessionId(verified.profile.uid, previous?.sessionId), refreshToken: tokens.refreshToken, authTime: tokens.authTime }
       // The stable session ID must survive an unknown startSession response.
       // A stored credential is only a restore candidate, never authorization.
       await this.vault.save(record)
@@ -175,7 +179,7 @@ export class AuthenticationController {
       const tokens = await api.exchange(account.customToken, account.uid, controller.signal)
       this.assertCurrent(controller)
       const record: SavedCredential = { version: 1, profile: { uid: account.uid, userId, displayName: userId },
-        sessionId: randomUUID(), refreshToken: tokens.refreshToken, authTime: tokens.authTime }
+        sessionId: await this.identity.sessionId(account.uid), refreshToken: tokens.refreshToken, authTime: tokens.authTime }
       await this.vault.save(record)
       this.boundUid = record.profile.uid
       this.newlySavedOperation = controller
@@ -243,7 +247,7 @@ export class AuthenticationController {
       // Signing in again to a saved account keeps its device session ID.
       const previous = await this.vault.read(profile.uid).catch(() => null)
       this.assertCurrent(controller)
-      const record: SavedCredential = { version: 1, profile, sessionId: previous?.sessionId ?? randomUUID(),
+      const record: SavedCredential = { version: 1, profile, sessionId: await this.identity.sessionId(profile.uid, previous?.sessionId),
         refreshToken: tokens.refreshToken, authTime: tokens.authTime, provider: 'apple.com' }
       await this.vault.save(record)
       this.boundUid = record.profile.uid
@@ -267,21 +271,33 @@ export class AuthenticationController {
     } finally { reader.close() }
   }
   async restore(): Promise<void> {
+    // Which step a failed restore stopped at, for connection-check.log.
+    const progress = { stage: 'saved' }
     await this.operationScope(true, async (api, controller) => {
-      const record = this.boundUid ? await this.vault.read(this.boundUid) : null
-      this.assertCurrent(controller)
-      if (!record) { this.set('signed-out', tr('복구 코드로 기존 계정을 연결하세요.')); return }
-      const tokens = await api.refresh(record.refreshToken, record.profile.uid, record.authTime, controller.signal)
-      this.assertCurrent(controller)
-      // Commit rotated credentials before any later network operation can fail.
-      record.refreshToken = tokens.refreshToken
-      await this.vault.save(record)
-      this.assertCurrent(controller)
-      await this.establish(api, controller, record, tokens)
+      try {
+        const record = this.boundUid ? await this.vault.read(this.boundUid) : null
+        this.assertCurrent(controller)
+        if (!record) { this.set('signed-out', tr('복구 코드로 기존 계정을 연결하세요.')); return }
+        // A credential saved by an earlier build: its session ID is written down so a later sign-in reuses it (A6 §4).
+        void this.identity.sessionId(record.profile.uid, record.sessionId).catch(() => {})
+        progress.stage = 'token'
+        const tokens = await api.refresh(record.refreshToken, record.profile.uid, record.authTime, controller.signal)
+        this.assertCurrent(controller)
+        // Commit rotated credentials before any later network operation can fail.
+        record.refreshToken = tokens.refreshToken
+        progress.stage = 'saved'
+        await this.vault.save(record)
+        this.assertCurrent(controller)
+        await this.establish(api, controller, record, tokens, progress)
+      } catch (error) {
+        if (!controller.signal.aborted) recordRetry('restore', progress.stage, error)
+        throw error
+      }
     })
   }
-  private async establish(api: FirebaseAuthenticationAPI, controller: AbortController, record: SavedCredential, tokens: AuthTokens): Promise<void> {
+  private async establish(api: FirebaseAuthenticationAPI, controller: AbortController, record: SavedCredential, tokens: AuthTokens, progress = { stage: '' }): Promise<void> {
     this.set('connecting', tr('이 기기의 로그인을 확인하고 있습니다.'))
+    progress.stage = 'session'
     await api.startSession(tokens.idToken, record.sessionId, this.version, record.provider ?? 'custom', controller.signal)
     this.assertCurrent(controller)
     let ready!: () => void
@@ -290,6 +306,8 @@ export class AuthenticationController {
     let owner: CredentialOwner
     const transport = new SocketMessageTransport(this.version, {
       rejected: reason => { owner.rejection = reason },
+      // A socket refusal that may mean the sign-in is gone is asked of the server; only its «session-revoked» ends it.
+      confirm: () => this.confirmSession(api, owner),
       state: state => { recordConnectionStep('state', state); this.connectionChanged(owner, state, ready, failed) },
       step: (step, detail) => recordConnectionStep(step, detail),
       reactionUpdated: body => { if (this.owner === owner && !controller.signal.aborted && owner.established) this.accounts.reactionUpdated(record.profile.uid, body) },
@@ -309,6 +327,7 @@ export class AuthenticationController {
     const timer = setTimeout(() => failed(new AuthenticationFailure('network')), 45000)
     controller.signal.addEventListener('abort', cancel, { once: true })
     try {
+      progress.stage = 'socket'
       owner.transport.connect({ uid: record.profile.uid, sessionId: record.sessionId, idToken: force => this.idToken(owner, force) })
       await registration
       this.assertCurrent(controller)
@@ -365,10 +384,16 @@ export class AuthenticationController {
       ready()
       if (owner.established) this.set('signed-in', tr('계정이 연결되었습니다.'), owner)
     } else if (state === 'rejected') {
-      const revoked = ['session-revoked', 'credential-revoked', 'account-unavailable', 'token-account-mismatch'].includes(owner.rejection)
-      const error = new AuthenticationFailure(revoked ? 'revoked' : owner.rejection === 'authorization-monitor-failed' ? 'network' : 'unavailable')
+      const outcome = owner.revokedByServer ? 'revoked' : registrationOutcome({ reason: owner.rejection, error: owner.rejection })
+      const revoked = outcome === 'revoked'
+      const error = new AuthenticationFailure(rejectionFailure(outcome))
+      // Not yet established: the sign-in or restore fails with it, and notes it there (operationScope).
       if (!owner.established) { failed(error); return }
-      this.detach()
+      if (revoked) noteSignOut(`startMorseDeviceSession session-revoked, asked after socket ${owner.rejection}`)
+      // Only a sign-in the server says is gone clears what this device kept for the account: the messages not yet
+      // sent, uploads, drafts, what it hid. Anything else leaves them for the next connection (Telegram logs out
+      // on 401 alone).
+      this.detach(purgesAccountData(outcome))
       this.failure = error.code
       this.set('error', error.message)
       if (revoked) void this.vault.remove(owner.record.profile.uid).catch(() => {
@@ -376,6 +401,21 @@ export class AuthenticationController {
       })
     } else if (owner.established) {
       this.set('suspended', tr('계정 연결을 다시 확인하고 있습니다.'), owner)
+    }
+  }
+  // A5 contract §3-1: whether the server still holds this device's session, asked with a fresh token. «session-revoked»
+  // is the answer that signs out; a token the Firebase servers refuse signs out on the way (idToken, their answer too);
+  // anything else — the network, a proof, a slow server — is no answer, and the socket registers again later.
+  private async confirmSession(api: FirebaseAuthenticationAPI, owner: CredentialOwner): Promise<'revoked' | 'confirmed' | 'unknown'> {
+    if (this.owner !== owner || owner.controller.signal.aborted) return 'unknown'
+    try {
+      const idToken = await this.idToken(owner, true)
+      await api.startSession(idToken, owner.record.sessionId, this.version, owner.record.provider ?? 'custom', owner.controller.signal)
+      return 'confirmed'
+    } catch (error) {
+      if (asAuthFailure(error).code !== 'revoked' || this.owner !== owner) return 'unknown'
+      owner.revokedByServer = true
+      return 'revoked'
     }
   }
   private async idToken(owner: CredentialOwner, force: boolean): Promise<string> {
@@ -394,10 +434,11 @@ export class AuthenticationController {
     owner.refresh = task
     try { return await task }
     catch (error) {
-      const failure = asAuthFailure(error)
-      if (this.owner === owner && ['invalid-credential', 'revoked', 'storage'].includes(failure.code)) {
-        this.detach(); this.failure = failure.code; this.set('error', failure.message)
-        if (failure.code !== 'storage') await this.vault.remove(owner.record.profile.uid)
+      const failure = asAuthFailure(error), effect = tokenFailureEffect(failure.code)
+      if (this.owner === owner && effect !== 'none') {
+        if (effect === 'sign-out') noteSignOut(`token refresh ${failure.code}`)
+        this.detach(effect === 'sign-out'); this.failure = failure.code; this.set('error', failure.message)
+        if (effect === 'sign-out') await this.vault.remove(owner.record.profile.uid)
       }
       throw failure
     } finally { if (owner.refresh === task) owner.refresh = null }
@@ -442,9 +483,13 @@ export class AuthenticationController {
         // Explicit sign-out attempts the existing server revoke command. The
         // local credential is removed even if that remote operation is offline.
         this.logoutAbort = new AbortController()
-        try { await this.api.revokeSession(owner.tokens.idToken, owner.record.sessionId,
-          AbortSignal.any([this.logoutAbort.signal, AbortSignal.timeout(35000)])) }
-        catch { remoteFailed = true }
+        const signal = AbortSignal.any([this.logoutAbort.signal, AbortSignal.timeout(35000)])
+        try {
+          // A token about to run out is renewed first: an expired one would only be refused as unauthenticated.
+          const idToken = owner.tokens.expiresAt > Date.now() + 60000 ? owner.tokens.idToken
+            : (await this.api.refresh(owner.record.refreshToken, owner.record.profile.uid, owner.record.authTime, signal)).idToken
+          await this.api.signOutSession(idToken, owner.record.sessionId, signal)
+        } catch { remoteFailed = true }
       }
       if (!this.closed && remoteFailed) this.set('signed-out', tr('이 기기에서 로그아웃했습니다. 서버의 로그인 해제는 확인하지 못했습니다.'))
     } catch { if (!this.closed) this.set('error', new AuthenticationFailure('storage').message) }
@@ -473,3 +518,7 @@ export class AuthenticationController {
     await this.vault.flush()
   }
 }
+
+// A5 contract §4: before an account is signed out, which of the server's answers it was (§3-1) — nothing that names
+// the account or the session.
+function noteSignOut(basis: string): void { recordSignOutBasis(basis) }

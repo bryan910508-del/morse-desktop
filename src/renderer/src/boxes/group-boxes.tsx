@@ -10,6 +10,7 @@ import { Spinner, TextField } from '../ui/controls'
 import { Box } from '../ui/layers'
 import { PeerPicker } from './peer-picker'
 import { tr } from '../../../shared/i18n'
+import { clampChatTitle, maxChatTitle } from '../../../shared/chat-title'
 
 const toggle = (list: string[], uid: string): string[] => list.includes(uid) ? list.filter(item => item !== uid) : [...list, uid]
 
@@ -41,7 +42,7 @@ function CreateGroupBox({ accountUid, close }: { accountUid: string; close(): vo
     <button className="button flat" disabled={busy} onClick={close}>{tr('취소')}</button>
     <button className="button flat" disabled={busy || !name.trim()} onClick={() => { void create() }}>{busy && <Spinner size={14} />}{tr('만들기')}</button>
   </>}>
-    <TextField label={tr('그룹 이름')} value={name} onChange={setName} maxLength={50} counter autoFocus disabled={busy} onSubmit={() => { void create() }} />
+    <TextField label={tr('그룹 이름')} value={name} onChange={value => setName(clampChatTitle(value))} maxLength={maxChatTitle} counter autoFocus disabled={busy} onSubmit={() => { void create() }} />
     <p className="box-note">{tr('참여자 {0}명과 함께 그룹을 만듭니다.', [selected.length])}</p>
     {error && <p className="box-error" role="alert">{error}</p>}
   </Box>

@@ -42,6 +42,8 @@ export interface ContactProfileSnapshot {
   visibility: 'unknown' | 'hidden' | 'visible'
   userId: string
   bio: string
+  // The channel this person linked to their profile, read under the same condition as the bio; '' when none.
+  personalChannelId: string
   message: string
   photo: ProfileSnapshot['photo']
 }

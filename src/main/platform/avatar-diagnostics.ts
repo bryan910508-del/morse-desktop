@@ -5,7 +5,7 @@ import { join } from 'node:path'
 // Local diagnostics for list photos that stay as initials. Each line has the surface, a per-run
 // alias for the person or chat (never the uid), the step and a short technical detail. No photo
 // address, file name, token or account data is written. Repeated identical lines are skipped.
-export type AvatarLogSurface = 'dialogs' | 'contacts'
+export type AvatarLogSurface = 'dialogs' | 'contacts' | 'authors'
 const aliases = new Map<string, string>(), seen = new Set<string>()
 let written = 0, tail: Promise<unknown> = Promise.resolve()
 

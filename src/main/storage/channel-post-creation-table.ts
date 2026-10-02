@@ -5,7 +5,8 @@ import { backgroundPhotoId } from '../../shared/chat-background'
 import { channelPostPhotoPath, postPhotoBytes } from '../../shared/channel-post-photo'
 import { storageBucket } from '../media/media-document'
 export type PostCreationCommand = { kind: 'post-creation-read' } | { kind: 'post-creation-prepare'; request: PostCreationRequest; photos?: Uint8Array[] } |
-  { kind: 'post-photo-read'; id: string } | { kind: 'post-photo-state'; id: string; photoId: string; session?: string; uploaded?: true } | { kind: 'post-creation-state'; id: string; expected: PostCreationState; state: PostCreationState | 'dismissed' }
+  { kind: 'post-photo-read'; id: string } | { kind: 'post-photo-state'; id: string; photoId: string; session?: string; uploaded?: true } | { kind: 'post-creation-state'; id: string; expected: PostCreationState; state: PostCreationState | 'dismissed' } |
+  { kind: 'post-creation-rebase'; id: string; expected: 'prepared' | 'submitted'; request: PostCreationRequest }
 const conflict = (): never => { throw Object.assign(new Error('Post creation or saved draft changed'), { deliveryCode: 'conflict' }) }
 export function pendingPostCreation(db: Database.Database): PendingPostCreation | null {
   const rows = db.prepare('SELECT id,payload,state FROM channel_post_creations WHERE payload IS NOT NULL LIMIT 2').all() as { id: string; payload: string; state: PostCreationState }[]
@@ -21,6 +22,17 @@ function requireDraft(db: Database.Database, request: PostCreationRequest): void
   const row = db.prepare('SELECT text,visibility,revision FROM channel_post_drafts WHERE channel_id=?').get(request.channelId) as { text: string; visibility: string; revision: string } | undefined
   if (!row || row.revision !== request.draftRevision || row.text !== request.text || row.visibility !== request.visibility) return conflict()
 }
+// A post that is not going to be published after all gives its words back to the channel's draft, unless something
+// new has been written there since.
+function restoreDraft(db: Database.Database, request: PostCreationRequest): void {
+  const row = db.prepare('SELECT text,visibility FROM channel_post_drafts WHERE channel_id=?').get(request.channelId) as { text: string; visibility: string } | undefined
+  if (row && (row.text || row.visibility !== 'public')) return
+  db.prepare('INSERT INTO channel_post_drafts(channel_id,text,visibility,revision) VALUES(?,?,?,?) ON CONFLICT(channel_id) DO UPDATE SET text=excluded.text,visibility=excluded.visibility,revision=excluded.revision')
+    .run(request.channelId, request.text, request.visibility, randomUUID())
+}
+// What a post says and shows is fixed when it is handed over; only the channel conditions it was checked against may
+// be brought up to date before it goes again.
+const content = (request: PostCreationRequest): string => JSON.stringify([request.id, request.channelId, request.authorId, request.text, request.visibility, request.draftRevision, request.photos])
 export function executePostCreation(db: Database.Database, command: Exclude<PostCreationCommand, { kind: 'post-photo-read' | 'post-photo-state' }>, uid: string): PendingPostCreation | null {
   if (command.kind === 'post-creation-read') return pendingPostCreation(db)
   return db.transaction(() => {
@@ -33,6 +45,9 @@ export function executePostCreation(db: Database.Database, command: Exclude<Post
       if ((db.prepare('SELECT COUNT(*) AS n FROM channel_post_creations').get() as { n: number }).n >= 10000) throw Object.assign(new Error('Post creation capacity'), { deliveryCode: 'capacity' })
       requireDraft(db, request)
       db.prepare("INSERT INTO channel_post_creations(id,payload,state) VALUES(?,?,'prepared')").run(request.id, JSON.stringify(request))
+      // The post now holds its words, as Telegram's composer empties into the history the moment a message leaves:
+      // the draft is free for the next post at once, and the words come back only if this one is not published.
+      db.prepare("UPDATE channel_post_drafts SET text='',visibility='public',revision=? WHERE channel_id=?").run(randomUUID(), request.channelId)
       // The prepared photos are kept with the record until it is confirmed or closed.
       const photos = command.photos ?? []
       if (photos.length !== request.photos.length) return conflict()
@@ -41,13 +56,19 @@ export function executePostCreation(db: Database.Database, command: Exclude<Post
         if (bytes.byteLength !== info.size || createHash('sha256').update(bytes).digest('hex') !== info.sha256 || createHash('md5').update(bytes).digest('base64') !== info.md5) return conflict()
         db.prepare('INSERT INTO channel_post_photos(photo_id,post_id,position,source,session,uploaded) VALUES(?,?,?,?,NULL,0)').run(info.id, request.id, position, Buffer.from(bytes))
       })
+    } else if (command.kind === 'post-creation-rebase') {
+      // Before it goes again: the same post under the same id, checked against the channel as it is now.
+      const request = postCreationRequest(command.request)
+      if (!current || current.id !== command.id || request.id !== command.id || current.state !== command.expected || current.authorId !== uid || content(request) !== content(current)) return conflict()
+      db.prepare("UPDATE channel_post_creations SET state='prepared',payload=? WHERE id=?").run(JSON.stringify(request), command.id)
     } else {
       backgroundPhotoId(command.id)
       if (!current || current.id !== command.id || current.state !== command.expected || current.authorId !== uid) return conflict()
-      if (!(command.state === 'dismissed' || (current.state === 'prepared' && command.state === 'submitted') || (current.state === 'submitted' && ['confirmed', 'rejected'].includes(command.state)))) return conflict()
-      if (command.state === 'submitted' || command.state === 'confirmed') requireDraft(db, current)
-      // Consume only the exact acknowledged draft, atomically with its local completion record.
-      if (command.state === 'confirmed') db.prepare("UPDATE channel_post_drafts SET text='',visibility='public',revision=? WHERE channel_id=?").run(randomUUID(), current.channelId)
+      // submitted → prepared: the attempt never left, or the server has been seen not to have the post.
+      // prepared → rejected: the channel or the upload refused it before it was sent.
+      if (!(command.state === 'dismissed' || (current.state === 'prepared' && ['submitted', 'rejected'].includes(command.state)) ||
+        (current.state === 'submitted' && ['confirmed', 'rejected', 'prepared'].includes(command.state)))) return conflict()
+      if (command.state === 'rejected' || (command.state === 'dismissed' && ['prepared', 'submitted'].includes(current.state))) restoreDraft(db, current)
       db.prepare('UPDATE channel_post_creations SET state=?,payload=CASE WHEN ? THEN NULL ELSE payload END WHERE id=?').run(command.state, command.state === 'dismissed' ? 1 : 0, command.id)
       if (command.state === 'dismissed' || command.state === 'confirmed') db.prepare('DELETE FROM channel_post_photos WHERE post_id=?').run(command.id)
     }

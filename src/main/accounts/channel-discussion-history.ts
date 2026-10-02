@@ -1,11 +1,12 @@
 import { discussionComposePolicy, type DiscussionComposePolicy } from './channel-discussion-compose'
 import type { MessagePosition } from '../../shared/model'
-import { comparePosition } from '../../shared/model'
+import { comparePosition, withinCutoff } from '../../shared/model'
 import { identifier } from '../../shared/validation'
 import { channelAdminIndex } from './channel-admin-values'
 import type { FirestoreReader } from '../network/firestore-rpc'
 import { documents, stringField, timestamp, type FirestoreDocument, type ReadDialog } from '../network/firestore-values'
 import { tr } from '../../shared/i18n'
+import { channelDeleteRole } from './channel-delete-authority'
 
 type Policy = { state: 'loading' | 'blocked' | 'ready'; cutoff: MessagePosition | null; message: string }
 interface Batch { ids: string[]; state: 'loading' | 'blocked' | 'ready'; rows: Map<string, FirestoreDocument>; stop(): void }
@@ -18,6 +19,13 @@ export function discussionChannel(doc: FirestoreDocument): string | null {
   if (f.type?.stringValue !== 'group' || f.isChannelDiscussion?.booleanValue !== true) throw new Error('Invalid discussion marker')
   return identifier(f.channelId?.stringValue)
 }
+// The later of two history boundaries; none when neither is set.
+export function laterPosition(a: MessagePosition | null, b: MessagePosition | null): MessagePosition | null {
+  if (!a) return b
+  if (!b) return a
+  return comparePosition(a, b) >= 0 ? a : b
+}
+
 export class ChannelDiscussionHistory {
   private reader: FirestoreReader | null = null
   private batches: Batch[] = []
@@ -44,7 +52,10 @@ export class ChannelDiscussionHistory {
           batch.rows = rows; batch.state = [...rows].every(([name, doc]) => paths.includes(name) && doc.name === name) ? 'ready' : 'blocked'
           if (batch.state === 'blocked') batch.rows.clear()
           this.changed()
-        }, state: state => {
+        },
+        // A discussion room's history stays readable while this watch reconnects: what it allowed still holds.
+        reconnecting: () => {},
+        state: state => {
           if (generation !== this.generation || state === 'ready') return
           batch.state = state === 'loading' ? 'loading' : 'blocked'; batch.rows.clear()
           if (!starting) this.changed()
@@ -58,6 +69,7 @@ export class ChannelDiscussionHistory {
     try { id = discussionChannel(chat) } catch { this.assign(dialog, { state: 'blocked', cutoff: null, message: tr('토론방 소속 정보를 확인할 수 없습니다.') }); return }
     if (!id) return
     let compose: DiscussionComposePolicy | undefined
+    dialog.summary.moderates = false
     let policy: Policy = { state: 'blocked', cutoff: null, message: tr('토론방 기록 정책을 확인할 수 없습니다. 대화 목록을 다시 조회해 주세요.') }
     const batch = this.batches.find(value => value.ids.includes(id!))
     if (batch?.state === 'loading') policy = { state: 'loading', cutoff: null, message: tr('토론방 기록 공개 범위를 확인하는 중…') }
@@ -84,6 +96,7 @@ export class ChannelDiscussionHistory {
           }
         }
         if (policy.state === 'ready') compose = discussionComposePolicy(this.uid, channel, batch.rows.get(`${path}/subscribers/${this.uid}`), batch.rows.get(`${path}/admins/${this.uid}`))
+        dialog.summary.moderates = ['owner', 'moderator'].includes(channelDeleteRole(this.uid, channel, batch.rows.get(`${path}/admins/${this.uid}`), ''))
       } catch { /* Keep uncertainty closed; never turn failed lookup into unlimited history. */ }
     } else if (!batch && this.reader) policy.message = tr('토론방 기록 정책은 계정당 채널 100개까지 조회합니다. 이 토론방의 기록은 표시하지 않습니다.')
     this.assign(dialog, policy, compose)
@@ -92,7 +105,10 @@ export class ChannelDiscussionHistory {
     dialog.summary.composeAccess = policy.state === 'ready' && compose?.allowed === true
     dialog.summary.composeMessage = policy.state !== 'ready' ? tr('토론방 기록·작성 조건을 확인하는 동안 전송을 보류합니다. 기존 입력과 대기 항목은 보관합니다.') : compose?.message || ''
     dialog.summary.historyAccess = policy.state; dialog.summary.historyMessage = policy.message
-    dialog.cutoff = policy.cutoff
-    if (policy.state !== 'ready' || (policy.cutoff && (!dialog.summary.top || comparePosition(dialog.summary.top, policy.cutoff) < 0))) dialog.summary.preview = ''
+    // The room's own boundary (historyRevokedAt, its owner's «기록 모두 지우기») and the channel's history policy
+    // both hold: the later one wins. The policy used to replace the boundary, which was harmless only while groups
+    // had none.
+    dialog.cutoff = laterPosition(dialog.cutoff, policy.cutoff)
+    if (policy.state !== 'ready' || (dialog.cutoff && (!dialog.summary.top || withinCutoff(dialog.summary.top, dialog.cutoff)))) dialog.summary.preview = ''
   }
 }

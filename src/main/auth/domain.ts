@@ -5,6 +5,9 @@ import { AuthenticationController, type AuthenticatedAccountHooks } from './cont
 import { AuthenticationFailure, type DesktopAuthConfiguration } from './contracts'
 import type { CredentialVault } from './credential-vault'
 import { tr } from '../../shared/i18n'
+import { recordConnectionStep } from '../platform/connection-diagnostics'
+import { reachability } from '../network/reachability'
+import { restoreRetryDelay } from './restore-retry'
 
 export interface DomainHooks extends Omit<AuthenticatedAccountHooks, 'activated'> {
   activated(profile: AccountProfile, credentials: AccountAuthorization, makeActive: boolean): void
@@ -13,8 +16,6 @@ export interface DomainHooks extends Omit<AuthenticatedAccountHooks, 'activated'
 }
 export interface DomainAccountState { uid: string; userId: string; displayName: string; phase: AuthPhase; message: string }
 
-// A saved account whose connection failed on the network reconnects by itself a few times.
-const retryDelays = [5000, 15000, 45000, 120000]
 
 // Main::Domain: every saved account keeps its own authentication and connection. One more
 // controller runs "Add Account" (or the first sign-in) until its account is saved.
@@ -29,7 +30,10 @@ export class AuthenticationDomain {
   private suspended: string[] | null = null
   private closed = false
   constructor(private readonly configuration: DesktopAuthConfiguration | null, private readonly vault: CredentialVault,
-    private readonly version: string, private readonly changed: () => void, private readonly hooks: DomainHooks) {}
+    private readonly version: string, private readonly changed: () => void, private readonly hooks: DomainHooks) {
+    this.unsubscribe = reachability.subscribe(reason => this.restoreNow(reason))
+  }
+  private readonly unsubscribe: () => void
 
   get available(): boolean { return this.configuration !== null }
   private create(uid: string | null): AuthenticationController {
@@ -79,11 +83,24 @@ export class AuthenticationDomain {
     if (this.suspended) return
     const state = this.retries.get(uid) ?? { attempt: 0, timer: null }
     this.retries.set(uid, state)
-    if (state.timer || state.attempt >= retryDelays.length) return
+    if (state.timer) return
+    const delay = restoreRetryDelay(state.attempt)
+    recordConnectionStep('restore-wait', `${delay / 1000}s`)
     state.timer = setTimeout(() => {
       state.timer = null; state.attempt++
       if (!this.closed && !this.suspended && this.controllers.get(uid) === controller && !controller.connected) void controller.restore().catch(() => {})
-    }, retryDelays[state.attempt])
+    }, delay)
+  }
+  // The network is back: an account waiting out its wait to reconnect reconnects now, and its waits start over.
+  private restoreNow(reason: string): void {
+    if (this.closed || this.suspended) return
+    for (const [uid, controller] of this.controllers) {
+      const state = this.retries.get(uid)
+      if (!state?.timer || controller.connected) continue
+      recordConnectionStep('restore-now', reason)
+      this.clearRetry(uid)
+      void controller.restore().catch(() => {})
+    }
   }
   private clearRetry(uid: string): void {
     const state = this.retries.get(uid)
@@ -214,6 +231,7 @@ export class AuthenticationDomain {
   }
   async close(): Promise<void> {
     this.closed = true
+    this.unsubscribe()
     for (const uid of [...this.retries.keys()]) this.clearRetry(uid)
     await Promise.all(this.all().map(controller => controller.close()))
   }

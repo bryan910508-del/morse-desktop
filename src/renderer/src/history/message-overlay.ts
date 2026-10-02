@@ -38,8 +38,9 @@ export function reconcileMessages(chatId: string, messages: readonly ChatMessage
   if (changed) touch()
 }
 
-// An uncertain change is never sent again on its own: main checks it (and repeats
-// the same conditional write when nothing changed) only when the user asks.
+// An uncertain edit or delete is never sent again on its own: main checks it (and repeats
+// the same conditional write when nothing changed) only when the user asks. A reaction or a
+// vote is never left uncertain: main sends it again under its revision until the server answers.
 const notified = new Set<string>()
 export function reconcileActions(accountUid: string, chatId: string, snapshot: MessageActionsSnapshot): void {
   for (const item of snapshot.items) {

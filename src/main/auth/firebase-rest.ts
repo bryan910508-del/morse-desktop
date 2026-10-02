@@ -5,6 +5,8 @@ import { recordConnectionStep } from '../platform/connection-diagnostics'
 import { AuthenticationFailure, type AppCheckProof, type AuthTokens, type DesktopAuthConfiguration } from './contracts'
 import type { ReadAuthorization } from '../network/firestore-rpc'
 import { appleReturnURL, type AppleIdentity } from './apple-answer'
+import { reachability } from '../network/reachability'
+import { describeThisDevice } from '../platform/device-model'
 
 function string(value: unknown, max = 16384): string {
   if (typeof value !== 'string' || !value || value.length > max) throw new AuthenticationFailure('protocol')
@@ -66,7 +68,9 @@ export class FirebaseAuthenticationAPI {
   private async request(url: string, headers: Record<string, string>, body: string, signal: AbortSignal, kind: RequestKind = 'plain'): Promise<Record<string, unknown>> {
     const combined = AbortSignal.any([signal, AbortSignal.timeout(35000)])
     try {
-      const response = await sendAgain(combined, () => fetch(url, { method: 'POST', headers, body, signal: combined, redirect: 'error', credentials: 'omit', cache: 'no-store' }), (code, attempt) => recordConnectionStep('token-resend', `${code} ${attempt}`))
+      const response = await sendAgain(combined, () => fetch(url, { method: 'POST', headers, body, signal: combined, redirect: 'error', credentials: 'omit', cache: 'no-store' }),
+        (code, attempt) => { reachability.lost(); recordConnectionStep('token-resend', `${code} ${attempt}`) })
+      reachability.reached('https')
       // Bound the decoded response, including chunked responses with no length.
       if (!response.body) throw new AuthenticationFailure('protocol')
       const reader = response.body.getReader()
@@ -144,7 +148,13 @@ export class FirebaseAuthenticationAPI {
     // The securetoken endpoint returns a project number in project_id.
     if (result.user_id !== uid || result.project_id !== this.config.projectNumber || result.token_type !== 'Bearer') throw new AuthenticationFailure('protocol')
     const tokens = this.tokens(result.id_token, result.refresh_token, result.expires_in, uid)
-    if (tokens.authTime !== authTime) throw new AuthenticationFailure('invalid-credential')
+    // A refreshed token of another sign-in generation than the one saved is this device's own reading, not the server's
+    // word (A5 contract §3-1): morseAuthTime comes only from the custom token of that sign-in (talky-auth-callables.js
+    // createCustomToken) and no server code rewrites it, so it should never differ. If it does, the account is not
+    // used with it — its saved data belongs to the saved generation (storage scope) — but nothing is signed out or
+    // cleared: the step is noted and the connection is tried again later. Only the Firebase servers refusing the
+    // refresh token (failureFromBody) or startMorseDeviceSession's «session-revoked» sign out.
+    if (tokens.authTime !== authTime) { recordConnectionStep('token-generation-mismatch'); throw new AuthenticationFailure('protocol') }
     return tokens
   }
   private tokens(idValue: unknown, refreshValue: unknown, expires: unknown, uid: string): AuthTokens {
@@ -170,13 +180,29 @@ export class FirebaseAuthenticationAPI {
     const user = object(result.users[0])
     if (user.localId !== tokens.uid || user.disabled === true) throw new AuthenticationFailure('invalid-credential')
   }
+  // A6 §3-3: the row of the account's session list shows this computer's model and system, as Telegram Desktop sends
+  // them (platform/device-model.ts). deviceLabel stays for builds that read only it.
   async startSession(idToken: string, sessionId: string, version: string, provider: 'custom' | 'apple.com', signal: AbortSignal): Promise<void> {
+    const device = await describeThisDevice()
     const result = await this.callable('startMorseDeviceSession', { sessionId,
-      deviceLabel: `Morse · ${this.config.platform}`, platform: this.config.platform, appVersion: version, loginProvider: provider }, signal, idToken)
+      deviceLabel: `Morse · ${this.config.platform}`, platform: this.config.platform, appVersion: version, loginProvider: provider,
+      deviceModel: device.deviceModel, systemVersion: device.systemVersion }, signal, idToken)
     if (result.sessionId !== sessionId) throw new AuthenticationFailure('protocol')
   }
-  async revokeSession(idToken: string, sessionId: string, signal: AbortSignal): Promise<void> {
-    const result = await this.callable('revokeMorseDeviceSession', { sessionId }, signal, idToken)
-    if (result.ok !== true) throw new AuthenticationFailure('protocol')
+  // Signing this device out ends its own session on the server (A6 §3-1, `signOut: true`): the session leaves the list
+  // at once and its generation is refused everywhere, as Telegram sends auth.logOut (telegram-refs R-13). The answer to
+  // a request that reached the server can be lost; sent once more, the server then refuses the generation it has just
+  // ended («session-revoked», morse-callable-auth.js) — which is the sign-out done, as is a session already ended.
+  async signOutSession(idToken: string, sessionId: string, signal: AbortSignal): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const result = await this.callable('revokeMorseDeviceSession', { sessionId, signOut: true }, signal, idToken)
+        if (result.ok !== true) throw new AuthenticationFailure('protocol')
+        return
+      } catch (error) {
+        if (error instanceof AuthenticationFailure && error.code === 'revoked') return
+        if (attempt >= 1 || signal.aborted || !(error instanceof AuthenticationFailure && error.code === 'network')) throw error
+      }
+    }
   }
 }

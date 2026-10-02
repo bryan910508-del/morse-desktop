@@ -7,7 +7,8 @@ import { channelPostLikeState } from '../accounts/channel-post-like-state'
 import { object } from '../../shared/validation'
 import { tr } from '../../shared/i18n'
 export class ChannelPostLikeFailure extends Error {
-  constructor(readonly uncertain: boolean) { super(uncertain ? tr('좋아요 변경 결과를 확인하지 못했습니다. 같은 요청을 반복하지 말고 현재 게시물을 확인해 주세요.') : tr('게시물이나 좋아요 상태가 변경되었거나 쓰기 권한을 확인하지 못했습니다. 최신 게시물에서 다시 선택해 주세요.')) }
+  // code: the gRPC status the server answered with (0 when none), so a queue can tell a race from a refusal.
+  constructor(readonly uncertain: boolean, readonly code = 0) { super(uncertain ? tr('좋아요 변경 결과를 확인하지 못했습니다. 같은 요청을 반복하지 말고 현재 게시물을 확인해 주세요.') : tr('게시물이나 좋아요 상태가 변경되었거나 쓰기 권한을 확인하지 못했습니다. 최신 게시물에서 다시 선택해 주세요.')) }
 }
 interface CommitClient { commit(request: WireObject, metadata: Metadata, options: { deadline: Date }, callback: (error: ServiceError | null, response: WireObject) => void): ClientUnaryCall }
 export async function writeChannelPostLike(client: CommitClient, auth: Metadata, uid: string, input: ChannelPostLikeRequest, doc: FirestoreDocument, signal: AbortSignal): Promise<void> {
@@ -20,7 +21,7 @@ export async function writeChannelPostLike(client: CommitClient, auth: Metadata,
     const cancel = (): void => { call.cancel(); finish(new ChannelPostLikeFailure(true)) }
     const call = client.commit({ database, writes: [{ update: { name: path, fields: { likedBy: { arrayValue: { values: next.map(member => ({ stringValue: member })) } }, likeCount: { integerValue: String(next.length) } } },
       updateMask: { fieldPaths: ['likedBy', 'likeCount'] }, currentDocument: { updateTime: doc.updateTime } }] }, auth, { deadline: new Date(Date.now() + 30000) }, (error, response) => {
-      if (error) { finish(new ChannelPostLikeFailure(![status.ABORTED, status.ALREADY_EXISTS, status.FAILED_PRECONDITION, status.INVALID_ARGUMENT, status.NOT_FOUND, status.PERMISSION_DENIED, status.UNAUTHENTICATED].includes(error.code))); return }
+      if (error) { finish(new ChannelPostLikeFailure(![status.ABORTED, status.ALREADY_EXISTS, status.FAILED_PRECONDITION, status.INVALID_ARGUMENT, status.NOT_FOUND, status.PERMISSION_DENIED, status.UNAUTHENTICATED].includes(error.code), error.code)); return }
       try {
         if (!Array.isArray(response.writeResults) || response.writeResults.length !== 1 || !response.commitTime) throw new Error('Incomplete like commit')
         timestamp(response.commitTime, ''); timestamp(object(object(response.writeResults[0]).updateTime), ''); finish()

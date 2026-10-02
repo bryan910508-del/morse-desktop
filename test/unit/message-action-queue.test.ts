@@ -55,3 +55,17 @@ test('the same request sent twice stays one row, and a different one under that 
   assert.equal(list(run).length, 1)
   assert.throws(() => run({ kind: 'action-enqueue', action: reaction('a1', ['❤️']) }), /Action conflict/)
 })
+
+// User decision 2026-09-29: a vote whose outcome is unknown no longer holds the poll. The newest choice replaces the one
+// still waiting, as a reaction does; the server applies whichever revision reaches it last.
+test('a newer vote replaces the one still waiting on the same poll, even one whose outcome is unknown', () => {
+  const run = store()
+  const vote = (id: string, options: number[]): StoredMessageAction =>
+    ({ id, chatId: 'c1', messageId: 'm1', version: '1:1', kind: 'poll-vote', options, preview: '', state: 'queued', reason: '' })
+  run({ kind: 'action-enqueue', action: vote('v1', [0]) })
+  run({ kind: 'action-state', id: 'v1', state: 'uncertain', reason: '' })
+  run({ kind: 'action-enqueue', action: vote('v2', [1]) })
+  assert.deepEqual(list(run).map(row => [row.id, row.state]), [['v2', 'queued']])
+  // An edit is still not overtaken by a vote.
+  assert.throws(() => run({ kind: 'action-enqueue', action: edit('e1') }), /Action pending/)
+})

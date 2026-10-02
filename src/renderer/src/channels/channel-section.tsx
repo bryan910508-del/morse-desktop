@@ -5,7 +5,6 @@ import { AlignLeft, ArrowLeft, ChevronLeft, ChevronRight, Copy, Film, Globe, Hea
 import type { ChannelSummary } from '../../../shared/channels'
 import type { ChannelPostsSnapshot, ChannelPostText } from '../../../shared/channel-posts'
 import type { PostDraftRecord, PostDraftVisibility } from '../../../shared/channel-post-drafts'
-import { channelPostLikeRequest } from '../../../shared/channel-post-like'
 import { composingKey } from '../../../shared/shortcuts'
 import { useDesktop } from '../app/store'
 import { controller, useUi } from '../app/ui'
@@ -14,11 +13,11 @@ import { errorText, messageTime, positionTime } from '../app/format'
 import { copyText } from '../app/clipboard'
 import { draftFlushers, trackWrite } from '../app/drafts'
 import { DraftWriter } from '../app/channel-drafts'
-import { publishPost } from '../app/channel-publish'
+import { publishPost, queuedPostText } from '../app/channel-publish'
 import { prepareChannelPostPhoto } from '../photos/prepare-channel-post-photo'
 import { maxPostPhotos } from '../../../shared/channel-post-photo'
 import { retainChannels } from '../app/channel-visibility'
-import { Avatar } from '../ui/avatar'
+import { AvatarScope, PeerAvatar } from '../ui/avatar'
 import { Spinner } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
 import { showPhotoViewer } from '../ui/photo-viewer'
@@ -27,16 +26,16 @@ import { showTextEditBox } from '../boxes/text-edit-box'
 import { postPinBase, preparePostPin } from './channel-post-pin-state'
 import { canClearExtraPin, prepareExtraPin, preparePinResolution, referencedUnpinnedPost } from './channel-post-pin-extra-state'
 import { preparePostVisibility, visibilityEditable } from './channel-post-visibility-state'
-import { preparePostRemovalReview } from './channel-post-removal-state'
 import { showChannelMedia } from './channel-media-viewer'
 import { openComments } from './channel-ui'
 import '../styles/channels.css'
 import { usePostReads } from './post-reads'
 import { locale, tr } from '../../../shared/i18n'
 import { subscriberCountText } from '../../../shared/channel-subscriber-count'
+import { editView, enqueueChannelOperation, likeView, removedPosts, useChannelOperations } from './channel-operations'
+import type { ChannelOperationItem } from '../../../shared/channel-operations'
 
 type Result = { outcome: 'saved' | 'rejected' | 'uncertain'; message: string }
-interface LikeOverride { revision: string; selected: boolean; count: number }
 // ChannelDetailView.ViewMode: the pictures as a grid, the writing as cards.
 type ViewMode = 'media' | 'text'
 // MorseChannelFeedPreviewAspect: a picture in the feed between 3:4 and 1.91:1, as the channel tab shows it.
@@ -45,6 +44,8 @@ function feedAspect(width: number, height: number): number | null {
 }
 
 const typeLabels: Record<ChannelSummary['type'], string> = { public: tr('공개 채널'), private: tr('비공개 채널'), invite: tr('초대 전용 채널'), unknown: tr('채널') }
+// The same words wherever a channel says what kind it is: its screen, its information and its link preview.
+export function channelTypeLabel(type: ChannelSummary['type']): string { return typeLabels[type] }
 
 export function channelSubtitle(channel: ChannelSummary | null): string {
   if (channel?.status !== 'ready') return tr('채널')
@@ -115,7 +116,7 @@ function ChannelComposer({ accountUid, channelId, onSent }: { accountUid: string
       latest.current = { text: '', visibility: saved.visibility }; setText('')
       const result = await publishPost(accountUid, { channelId, text: saved.text, visibility: saved.visibility, draftRevision: saved.revision }, photos.map(photo => photo.bytes))
       setPhotos([])
-      if (result === 'unconfirmed') controller.toast(tr('게시 결과를 확인하고 있습니다. 잠시 후 채널을 확인해 주세요.'))
+      if (result === 'queued') controller.toast(queuedPostText)
       await writer.load().catch(() => {})
       onSent?.()
     } catch (reason) {
@@ -170,10 +171,13 @@ function showComposeBox(accountUid: string, channelId: string, name: string): vo
   </Box>)
 }
 
-function PostView({ post, name, likes, likeBusy, pinned, onLike, onLikers, onMedia, onComments, onMenu }: {
-  post: ChannelPostText; name: string; likes: { selected: boolean | null; count: number | null }; likeBusy: boolean; pinned: boolean
+function PostView({ post, name, likes, edit, pinned, onLike, onLikers, onMedia, onComments, onMenu, onEditAgain, onEditDrop }: {
+  post: ChannelPostText; name: string; likes: { selected: boolean | null; count: number | null }; edit: ChannelOperationItem | null; pinned: boolean
   onLike(): void; onLikers?(): void; onMedia(index: number): void; onComments(): void; onMenu(point: { x: number; y: number }): void
+  onEditAgain?(): void; onEditDrop?(id: string): void
 }) {
+  // Words on their way or just confirmed are the post's words; refused ones leave the post its own.
+  const text = edit && edit.state !== 'failed' && edit.text !== null ? edit.text : post.text
   const time = positionTime(post.position)
   return <article className="channel-post" onContextMenu={event => { event.preventDefault(); onMenu(pointFor(event, event.currentTarget)) }}>
     <div className="channel-post-head">
@@ -205,7 +209,7 @@ function PostView({ post, name, likes, likeBusy, pinned, onLike, onLikers, onMed
       {post.mediaCount > post.media.length && <span className="channel-media-more">{tr('외 {0}개', [post.mediaCount - post.media.length])}</span>}
     </div>}
     <div className="channel-post-footer">
-      <button type="button" className={`channel-like${likes.selected ? ' active' : ''}`} disabled={likeBusy || likes.selected === null} aria-pressed={likes.selected === true}
+      <button type="button" className={`channel-like${likes.selected ? ' active' : ''}`} disabled={likes.selected === null} aria-pressed={likes.selected === true}
         aria-label={likes.selected ? tr('좋아요 취소') : tr('좋아요')} onClick={onLike}>
         <Heart size={18} fill={likes.selected ? 'currentColor' : 'none'} />
       </button>
@@ -215,7 +219,13 @@ function PostView({ post, name, likes, likeBusy, pinned, onLike, onLikers, onMed
         <MessageCircle size={18} />{post.commentCount ? post.commentCount.toLocaleString(locale()) : ''}
       </button>
     </div>
-    {post.text && <p className="channel-post-text selectable">{post.text}</p>}
+    {text && <p className="channel-post-text selectable">{text}</p>}
+    {edit?.state === 'pending' && <p className="channel-post-edit">{tr('수정 중…')}</p>}
+    {edit?.state === 'failed' && <p className="channel-post-edit failed" role="alert">
+      <span>{tr('수정을 반영하지 못했습니다.')}</span>
+      {onEditAgain && <button type="button" onClick={onEditAgain}>{tr('다시 수정')}</button>}
+      {onEditDrop && <button type="button" onClick={() => onEditDrop(edit.id)}>{tr('취소')}</button>}
+    </p>}
     <button type="button" className="channel-post-comments" onClick={onComments}>
       <span>{post.commentCount ? tr('댓글 {0}개 모두 보기', [post.commentCount.toLocaleString(locale())]) : tr('댓글 남기기')}</span>
     </button>
@@ -281,7 +291,8 @@ function ChannelProfile({ accountUid, channelId, channel, posts, onDiscussion, d
   return <header className="channel-profile">
     <div className="channel-profile-cover">{coverUrl ? <img src={coverUrl} alt="" draggable={false} /> : <span aria-hidden="true">{name.slice(0, 1)}</span>}</div>
     <div className="channel-profile-main">
-      <Avatar name={name} url={avatarUrl} size={96} kind="channel" onOpen={() => { if (avatarUrl) showPhotoViewer(avatarUrl, name) }} />
+      <PeerAvatar id={channelId} name={name} image={ready?.avatar ?? null} size={96} kind="channel" surface="channels" priority
+        onOpen={avatarUrl ? () => showPhotoViewer(avatarUrl, name) : undefined} />
       <div className="channel-profile-text">
         <h1 className="selectable">{name}{ready && ready.type !== 'public' && <Lock size={15} aria-label={typeLabels[ready.type]} />}</h1>
         <p className="channel-profile-counts">
@@ -309,16 +320,16 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
   const [count, setCount] = useState(30)
   const [mode, setMode] = useState<ViewMode>('media')
   const [viewing, setViewing] = useState<string | null>(null)
-  const [likes, setLikes] = useState<Record<string, LikeOverride>>({})
-  const [likeBusy, setLikeBusy] = useState<ReadonlySet<string>>(new Set())
-  const busyRef = useRef(new Set<string>())
+  // Likes, new words and deletes still on their way, drawn as done (channel-operations.ts).
+  const operations = useChannelOperations(accountUid, channelId)
   const scroller = useRef<HTMLDivElement>(null)
   useEffect(() => retainChannels(accountUid), [accountUid])
   useEffect(() => {
     void window.morse.openChannelPosts(accountUid, { requestId, channelId }).catch(reason => controller.toast(errorText(reason, tr('채널 게시물을 불러오지 못했습니다.')), 'error'))
     return () => { void window.morse.closeChannelPosts(accountUid, requestId).catch(() => {}) }
   }, [accountUid, channelId, requestId, attempt])
-  const posts = snapshot?.status === 'ready' ? snapshot.posts : null
+  const gone = useMemo(() => removedPosts(operations), [operations])
+  const posts = useMemo(() => snapshot?.status === 'ready' ? snapshot.posts.filter(post => !gone.has(post.id)) : null, [snapshot, gone])
   // MorseChannelPostReadMarks: a post on screen here is read in this channel.
   usePostReads(accountUid, scroller, Boolean(posts?.length))
   const name = channel?.status === 'ready' ? channel.name : tr('채널')
@@ -358,28 +369,30 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
   useEffect(() => { if (viewing && posts && viewingIndex < 0) setViewing(null) }, [viewing, posts, viewingIndex])
 
   function likeState(post: ChannelPostText): { selected: boolean | null; count: number | null } {
-    const override = likes[post.id]
-    if (override && override.revision === post.revision && post.likes.selected !== override.selected) return override
-    return { selected: post.likes.selected, count: post.likes.count }
+    return likeView({ selected: post.likes.selected, count: post.likes.count }, operations, post.id)
   }
+  // The heart changes at once and the device queue carries the choice until the server shows it; a newer press
+  // replaces one still waiting, so the post ends as it was last left (Android Q88, Telegram's sendReaction).
   function toggleLike(post: ChannelPostText): void {
-    if (busyRef.current.has(post.id)) return
-    const info = post.likes
-    if (info.status !== 'ready' || info.selected === null || info.count === null) { controller.toast(info.message || tr('좋아요 상태를 확인하고 있습니다.')); return }
-    let request
-    try { request = channelPostLikeRequest({ id: crypto.randomUUID(), requestId, channelId, postId: post.id, revision: post.revision, selected: info.selected, count: info.count, desired: !info.selected }) }
-    catch (reason) { controller.toast(errorText(reason, tr('좋아요를 변경할 수 없습니다.')), 'error'); return }
-    const desired = request.desired, base = info.count
-    const setBusy = (busy: boolean): void => { if (busy) busyRef.current.add(post.id); else busyRef.current.delete(post.id); setLikeBusy(new Set(busyRef.current)) }
-    const revert = (): void => setLikes(value => { const next = { ...value }; delete next[post.id]; return next })
-    setBusy(true)
-    setLikes(value => ({ ...value, [post.id]: { revision: post.revision, selected: desired, count: Math.max(0, base + (desired ? 1 : -1)) } }))
-    void trackWrite(window.morse.setChannelPostLike(accountUid, request)).then(result => {
-      if (result.outcome === 'rejected') { revert(); controller.toast(result.message, 'error') }
-      else if (result.outcome === 'uncertain') controller.toast(result.message)
-    }).catch(() => { revert(); controller.toast(tr('좋아요를 변경하지 못했습니다.'), 'error') }).finally(() => setBusy(false))
+    const view = likeState(post)
+    if (post.likes.status !== 'ready' || view.selected === null) { controller.toast(post.likes.message || tr('좋아요 상태를 확인하고 있습니다.')); return }
+    void enqueueChannelOperation(accountUid, { kind: 'post-like', id: crypto.randomUUID(), channelId, postId: post.id, liked: !view.selected })
   }
 
+  // New words go to the device queue and show at once; words the server refused stay here for another try.
+  function editPost(post: ChannelPostText): void {
+    // Words the server has just confirmed are the post's words, whether or not its copy shows them yet: the edit starts
+    // from them, and they are not a change to keep or drop.
+    const shown = editView(operations, post.id), waiting = shown?.state === 'settled' ? null : shown
+    const original = post.editableText === null ? null : shown?.state === 'settled' && shown.text !== null ? shown.text : post.editableText
+    if (original === null) return
+    showTextEditBox({ title: tr('게시물 수정'), label: tr('본문'), initial: waiting?.text ?? original, maxLength: 5000, multiline: true, allowEmpty: false,
+      save: async text => {
+        if (text === original) { if (waiting) await window.morse.discardChannelOperation(accountUid, waiting.id); return { outcome: 'saved', message: '' } }
+        await trackWrite(window.morse.enqueueChannelOperation(accountUid, { kind: 'post-text', id: crypto.randomUUID(), channelId, postId: post.id, original, text }))
+        return { outcome: 'saved', message: '' }
+      } })
+  }
   function openPostMenu(state: ChannelPostsSnapshot, post: ChannelPostText, point: { x: number; y: number }): void {
     const base = postPinBase(state), owner = state.pins?.owned === true
     const sharing = channel?.status === 'ready' ? channel.publicSharing : null
@@ -393,22 +406,14 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
       try { reportResult(window.morse.clearChannelPostExtraPin(accountUid, prepareExtraPin(state, post.id)), tr('별도 고정 표시를 해제했습니다.')) }
       catch (reason) { controller.toast(errorText(reason, tr('고정 정보를 다시 확인해 주세요.')), 'error') }
     }
-    const edit = (): void => {
-      const original = post.editableText
-      if (original === null) return
-      showTextEditBox({ title: tr('게시물 수정'), label: tr('본문'), initial: original, maxLength: 5000, multiline: true, allowEmpty: false,
-        save: text => window.morse.saveChannelPostText(accountUid, { id: crypto.randomUUID(), requestId, channelId, postId: post.id, revision: post.revision, original, text }) })
-    }
     const visibility = (): void => {
       try { reportResult(window.morse.setPostVisibility(accountUid, preparePostVisibility(state, post.id)), tr('공개 범위를 변경했습니다.')) }
       catch (reason) { controller.toast(errorText(reason, tr('공개 범위를 다시 확인해 주세요.')), 'error') }
     }
+    // Telegram takes a deleted post off the screen at once; the device queue deletes it on the server.
     const remove = async (): Promise<void> => {
-      let target
-      try { target = preparePostRemovalReview(state, post.id).target }
-      catch (reason) { controller.toast(errorText(reason, tr('게시물을 다시 확인해 주세요.')), 'error'); return }
       if (!await confirmBox({ title: tr('게시물 삭제'), text: tr('이 게시물을 채널에서 삭제할까요?'), confirm: tr('삭제'), danger: true })) return
-      reportResult(window.morse.removeChannelPost(accountUid, target), tr('게시물을 삭제했습니다.'))
+      void enqueueChannelOperation(accountUid, { kind: 'post-delete', id: crypto.randomUUID(), channelId, postId: post.id })
     }
     popupMenu.open(point, [
       { label: tr('댓글 보기'), icon: <MessageCircle size={18} />, onSelect: () => openComments(channelId, post.id) },
@@ -421,16 +426,19 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
       canPin ? { label: base?.previous ? tr('이 게시물로 고정 교체') : tr('고정'), icon: <Pin size={18} />, onSelect: () => pin(post.id) } : null,
       canUnpin ? { label: tr('고정 해제'), icon: <PinOff size={18} />, onSelect: () => pin(null) } : null,
       canClearExtraPin(state, post.id) ? { label: tr('별도 고정 표시 해제'), icon: <PinOff size={18} />, onSelect: clearExtra } : null,
-      post.own && post.editableText !== null ? { label: tr('수정'), icon: <Pencil size={18} />, onSelect: edit } : null,
+      post.own && post.editableText !== null ? { label: tr('수정'), icon: <Pencil size={18} />, onSelect: () => editPost(post) } : null,
       post.own && visibilityEditable(state, post.id) ? { label: post.visibility === 'public' ? tr('구독자에게만 공개') : tr('모두에게 공개'), icon: post.visibility === 'public' ? <Lock size={18} /> : <Globe size={18} />, onSelect: visibility } : null,
-      post.own && state.pins?.channelVersion ? { label: tr('삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void remove() } } : null,
+      // A1 §3-5 (Telegram's rule): the owner or a canDeleteMessages admin deletes any post, an author their own, whatever
+      // comments or media it has; the server takes away its media, its discussion copy and the post count.
+      (post.own || state.authoring?.moderates === true) && state.pins?.channelVersion ? { label: tr('삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void remove() } } : null,
       // iOS ChannelDetailView post menu «신고» (ChannelReportView .post).
       !post.own ? 'separator' : null,
       !post.own ? { label: tr('신고'), icon: <Flag size={18} />, danger: true, onSelect: () => showReportBox(accountUid, { type: 'post', targetId: post.id, channelId }, tr('신고')) } : null
     ])
   }
 
-  const postCard = (post: ChannelPostText): ReactNode => <PostView post={post} name={name} likes={likeState(post)} likeBusy={likeBusy.has(post.id)} pinned={post.id === pinnedId}
+  const postCard = (post: ChannelPostText): ReactNode => <PostView post={post} name={name} likes={likeState(post)} edit={editView(operations, post.id)} pinned={post.id === pinnedId}
+    onEditAgain={() => editPost(post)} onEditDrop={id => { void window.morse.discardChannelOperation(accountUid, id).catch(() => {}) }}
     onLike={() => toggleLike(post)} onLikers={() => showPostLikers(accountUid, channelId, post.id)} onMedia={index => showChannelMedia(accountUid, channelId, requestId, post, index, name)}
     onComments={() => openComments(channelId, post.id)} onMenu={point => { if (snapshot) openPostMenu(snapshot, post, point) }} />
 
@@ -446,11 +454,14 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
   const authoring = snapshot?.authoring ?? null
   const canPost = authoring?.permission === 'allowed'
 
-  return <section className="channel-section" aria-label={name}>
+  // The channels tab is not always beside this screen (a chat-list inquiry row and a shared link open it on
+  // their own), so it asks for the channel's picture itself. Every mounted scope of one surface adds to the
+  // same list, so this never replaces what the tab is showing.
+  return <AvatarScope accountUid={accountUid} enabled surface="channels"><section className="channel-section" aria-label={name}>
     <header className={`top-bar${leftmost ? ' leftmost' : ''}`}>
       {oneColumn && <button className="icon-button" aria-label={tr('뒤로')} onClick={() => controller.closeChat()}><ArrowLeft size={20} /></button>}
       <button type="button" className="top-bar-peer" onClick={() => controller.toggleRight('info')}>
-        <Avatar name={name} url={channel?.avatar?.status === 'ready' ? channel.avatar.url : null} size={40} kind="channel" />
+        <PeerAvatar id={channelId} name={name} image={channel?.avatar ?? null} size={40} kind="channel" surface="channels" priority />
         <span className="top-bar-title"><strong className="ellipsis">{name}</strong><span className="ellipsis">{channelSubtitle(channel)}</span></span>
       </button>
       <button className="icon-button" aria-label={tr('채널 정보')} onClick={() => controller.toggleRight('info')}><Info size={20} /></button>
@@ -489,5 +500,5 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
     {canPost && viewingIndex < 0 && <button type="button" className="channel-compose-fab" aria-label={tr('새 게시물')} title={tr('새 게시물')} onClick={() => showComposeBox(accountUid, channelId, name)}><Plus size={26} /></button>}
     {viewingIndex >= 0 && <PostViewer posts={viewerPosts} index={viewingIndex} name={name} render={postCard}
       onIndex={next => setViewing(viewerPosts[next]?.id ?? null)} onClose={() => setViewing(null)} />}
-  </section>
+  </section></AvatarScope>
 }

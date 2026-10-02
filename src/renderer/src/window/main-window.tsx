@@ -15,6 +15,7 @@ import { InfoPanel } from '../info/info-panel'
 import { ChannelSection } from '../channels/channel-section'
 import { ChannelsWidget } from '../channels/channels-widget'
 import { ChannelSidePanel } from '../channels/channel-info-panel'
+import { ChannelInquiryPanel, InquiryPeerPanel } from '../channels/channel-inquiry-panel'
 import { NotesWidget } from '../notes/notes-widget'
 import { useNotesSession } from '../notes/notes-state'
 import { NoteEditor } from '../notes/note-editor'
@@ -77,6 +78,7 @@ function SessionWindow({ accountUid }: { accountUid: string }) {
   const chatId = useUi(state => state.chatId)
   const channelId = useUi(state => state.channelId)
   const noteId = useUi(state => state.noteId)
+  const inquiry = useUi(state => state.inquiry)
   const right = useUi(state => state.right)
   const mainMenu = useUi(state => state.mainMenu)
   const notes = section === 'notes', channels = section === 'channels'
@@ -84,11 +86,16 @@ function SessionWindow({ accountUid }: { accountUid: string }) {
   const movedTo = useDesktop(snapshot => chatId ? snapshot?.pendingDirects.find(item => item.chatId === chatId)?.supersededBy ?? null : null)
   useEffect(() => { if (movedTo) controller.openChat(movedTo) }, [movedTo])
   const oneColumn = width < leftMin + mainMin
-  const hasMain = chatId !== null || channelId !== null || (notes && noteId !== null)
+  // A room opened from the chat list has no channel screen behind it: it is the conversation, so it takes
+  // the main column, as a chat does. Beside an open channel it stays that channel's third column.
+  const inquiryMain = inquiry !== null && channelId === null && chatId === null
+  const hasMain = chatId !== null || channelId !== null || inquiryMain || (notes && noteId !== null)
   const left = oneColumn ? width : Math.round(Math.max(leftMin, Math.min(leftMax, width - mainMin, stored || width * defaultRatio)))
   const thirdSpace = width - left - mainMin
   const panel = chatId ? right === 'search' ? <ChatSearchPanel key={chatId} accountUid={accountUid} chatId={chatId} /> : <InfoPanel key={chatId} accountUid={accountUid} chatId={chatId} />
-    : channelId ? <ChannelSidePanel key={channelId} accountUid={accountUid} channelId={channelId} right={right} /> : null
+    : channelId ? <ChannelSidePanel key={channelId} accountUid={accountUid} channelId={channelId} right={right} />
+      // The person on the other side of a room, beside the room itself, as a chat's peer is.
+      : inquiryMain && inquiry.thread ? <InquiryPeerPanel key={inquiry.thread} accountUid={accountUid} inquiryId={inquiry.thread} /> : null
   const third = !oneColumn && hasMain && right !== null && panel && thirdSpace >= thirdMin ? Math.min(thirdMax, thirdSpace) : 0
   const showLeft = !oneColumn || !hasMain, showMain = !oneColumn || hasMain
   const dialogs = useDesktop(snapshot => snapshot?.dialogs)
@@ -133,6 +140,7 @@ function SessionWindow({ accountUid }: { accountUid: string }) {
       {showLeft && showMain && <ColumnResizer left={left} />}
       {showMain && <main className="column-main" data-region>
         {chatId ? <HistoryWidget key={chatId} accountUid={accountUid} chatId={chatId} oneColumn={oneColumn} leftmost={!showLeft} />
+          : inquiryMain ? <ChannelInquiryPanel key={inquiry.channelId} accountUid={accountUid} channelId={inquiry.channelId} thread={inquiry.thread} fromList={inquiry.fromList} oneColumn={oneColumn} />
           : channelId ? <ChannelSection key={channelId} accountUid={accountUid} channelId={channelId} oneColumn={oneColumn} leftmost={!showLeft} />
             : notes && noteId ? <NoteEditor key={noteId} accountUid={accountUid} noteId={noteId} oneColumn={oneColumn} leftmost={!showLeft} />
               : <div className="empty-main"><span className="service-pill">{notes ? tr('노트를 선택해 주세요') : tr('대화를 선택해 주세요')}</span></div>}

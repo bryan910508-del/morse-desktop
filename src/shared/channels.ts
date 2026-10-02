@@ -18,7 +18,6 @@ export interface ChannelSummary {
   tags: string[] | null
   name: string
   description: string
-  ownerName: string
   owned: boolean
   subscriptionListed: boolean
   type: 'public' | 'private' | 'invite' | 'unknown'
