@@ -268,6 +268,9 @@ export interface HistorySnapshot extends HistoryPage {
   message: string
   newerAvailable: boolean
   focusMessageId?: string
+  // The quotes of the messages still on their way from this device, by the id they answer: read the same way as a
+  // sent message's quote, so the bubble shows the same quote before and after the server has it (B46).
+  replyQuotes?: Record<string, ReplyPreview>
 }
 export interface DesktopSnapshot {
   revision: number
@@ -316,6 +319,8 @@ export interface DesktopSnapshot {
   chatFolders: import('./chat-folders').ChatFolder[] | null
   notifications: NotificationStatus
   platformIntegration: { trayAvailable: boolean; message: string }
+  // B51: translation, voice to text and background removal on this device (shared/translation.ts).
+  onDevice: import('./translation').OnDeviceFeatures
   selfProfile: ProfileSnapshot | null
   contacts: ContactsSnapshot | null
   channels: import('./channels').ChannelsSnapshot | null

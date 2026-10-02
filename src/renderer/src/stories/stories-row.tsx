@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import type { ContactSummary } from '../../../shared/contacts'
-import { maxStoryBarPeers, type StoryBarEntry } from '../../../shared/story-bar'
+import { maxStoryBarPeers, mergeStoryBar, type StoryBarEntry } from '../../../shared/story-bar'
 import { useDesktop } from '../app/store'
 import { Avatar, AvatarScope } from '../ui/avatar'
 import { ContactAvatar } from '../boxes/peer-picker'
@@ -12,6 +12,7 @@ import '../styles/stories.css'
 import { tr } from '../../../shared/i18n'
 
 const noContacts: ContactSummary[] = []
+
 
 // Dialogs::Stories: add story, my stories, then contacts with active stories (unseen first).
 export function StoriesRow({ accountUid }: { accountUid: string }) {
@@ -35,7 +36,7 @@ export function StoriesRow({ accountUid }: { accountUid: string }) {
     let alive = true
     const load = (force: boolean): void => {
       if (document.hidden) return
-      void window.morse.storyBar(accountUid, peers, force).then(result => { if (alive) setEntries(result.entries) }).catch(() => {})
+      void window.morse.storyBar(accountUid, peers, force).then(result => { if (alive) setEntries(previous => mergeStoryBar(previous, result)) }).catch(() => {})
     }
     load(reload > 0)
     const timer = setInterval(() => load(false), 60000)
@@ -43,6 +44,13 @@ export function StoriesRow({ accountUid }: { accountUid: string }) {
     document.addEventListener('visibilitychange', visibility)
     return () => { alive = false; clearInterval(timer); document.removeEventListener('visibilitychange', visibility) }
   }, [accountUid, key, reload])
+  // The connection is back: read again at once rather than at the next minute.
+  const connection = useDesktop(snapshot => snapshot?.connection ?? 'offline')
+  const wasReady = useRef(connection === 'ready')
+  useEffect(() => {
+    if (connection === 'ready' && !wasReady.current) setReload(value => value + 1)
+    wasReady.current = connection === 'ready'
+  }, [connection])
   const byUid = useMemo(() => new Map(contacts.map(contact => [contact.uid, contact])), [contacts])
   const mine = entries.find(entry => entry.uid === accountUid) ?? null
   const rows = entries.filter(entry => entry.uid !== accountUid && byUid.has(entry.uid))

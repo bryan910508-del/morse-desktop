@@ -748,6 +748,14 @@ export class FirestoreReader {
     } }, updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }] }], signal)
   }
   // users/{uid}/blocked/{peer}: the same document the iOS app writes when blocking.
+  // A11 §3: the name and note this account saved for a person, at users/{uid}/contactNames/{peer}, readable only by the
+  // account itself. Both empty takes the document away.
+  async setContactName(uid: string, peer: string, value: { name: string; note: string; operationId: string }, signal: AbortSignal): Promise<void> {
+    const name = `${documents}/users/${uid}/contactNames/${peer}`
+    if (!value.name && !value.note) { await this.commitWrites([{ delete: name }], signal); return }
+    await this.commitWrites([{ update: { name, fields: { name: { stringValue: value.name }, note: { stringValue: value.note }, clientOperationId: { stringValue: value.operationId } } },
+      updateTransforms: [{ fieldPath: 'updatedAt', setToServerValue: 'REQUEST_TIME' }] }], signal)
+  }
   async setBlockedUser(uid: string, peer: { uid: string; userId: string; displayName: string }, signal: AbortSignal): Promise<void> {
     await this.commitWrites([{ update: { name: `${documents}/users/${uid}/blocked/${peer.uid}`, fields: {
       userId: { stringValue: peer.userId }, displayName: { stringValue: peer.displayName }, photoURL: { stringValue: '' }

@@ -8,6 +8,7 @@ import { sendsOnEnter } from '../../../shared/shortcuts'
 import { outgoingText } from '../../../shared/validation'
 import { maxAlbumPhotos } from '../../../shared/uploads'
 import { useDesktop } from '../app/store'
+import { translationUnavailableNote } from '../../../shared/translation'
 import { useTypingReport } from '../app/typing'
 import { EntityPanel } from './entity-panel'
 import { controller, useUi } from '../app/ui'
@@ -46,7 +47,9 @@ export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, 
   const latest = useRef(''), dirty = useRef(false), available = useRef(false), sending = useRef(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const replyRef = useRef(reply); replyRef.current = reply
-  const autoTranslateChats = useDesktop(snapshot => snapshot?.preferences.autoTranslateChats ?? false)
+  // B51: «전체번역» only where this device can translate; elsewhere a saved «on» means nothing and the menu says why.
+  const canTranslate = useDesktop(snapshot => snapshot?.onDevice.translation ?? false)
+  const autoTranslateChats = useDesktop(snapshot => snapshot?.preferences.autoTranslateChats ?? false) && canTranslate
   const [focused, setFocused] = useState(false), [entities, setEntities] = useState(false)
   // iOS MorseEntityKeyboard insertEmoji: at the caret, replacing a selection.
   function insertEmoji(emoji: string): void {
@@ -197,6 +200,7 @@ export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, 
     { label: tr('일정 만들기'), icon: <CalendarPlus size={18} />, onSelect: () => showEventBox(accountUid, chatId) },
     !chatId.startsWith('memo_') && 'separator',
     !chatId.startsWith('memo_') && { label: autoTranslateChats ? tr('전체번역 끄기') : tr('전체번역'), icon: <Languages size={18} />, onSelect: () => {
+      if (!canTranslate) { controller.toast(translationUnavailableNote()); return }
       if (!autoTranslateChats) resetAutoTranslation()
       void window.morse.updatePreferences({ autoTranslateChats: !autoTranslateChats }).catch(reason => controller.toast(errorText(reason, tr('전체번역 설정을 바꾸지 못했습니다.')), 'error'))
     } }

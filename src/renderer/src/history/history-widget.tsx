@@ -11,13 +11,14 @@ import { defaultChatBackground } from '../../../shared/chat-background'
 import { positionMilliseconds } from '../../../shared/model'
 import { readCovers, readCursor } from '../../../shared/read-receipts'
 import { canForwardMessage } from '../../../shared/forward'
-import { maxForwardMessages } from '../../../shared/forward-batch'
 import { canReply } from '../../../shared/reply-draft'
 import { maxAlbumPhotos } from '../../../shared/uploads'
-import { dialogById, useDesktop, useDesktopEvent } from '../app/store'
+import { desktop, dialogById, useDesktop, useDesktopEvent } from '../app/store'
 import { controller, useUi } from '../app/ui'
 import { errorText, sameDay, serviceDate } from '../app/format'
 import { copyText } from '../app/clipboard'
+import { selectedMessagesText } from '../../../shared/message-copy'
+import { selectionActions, selectionMenuRows } from '../../../shared/message-selection'
 import { copyImage } from '../app/copy-image'
 import { hasFiles } from '../app/drop'
 import { trackWrite } from '../app/drafts'
@@ -43,6 +44,7 @@ import { LocalMessageView, MessageView, type MessageLayout, type MessageMenuTarg
 import { deleteMessage, overlayMessage, reconcileActions, reconcileMessages, toggleReaction, useMessageOverlay } from './message-overlay'
 import { useVisibleRead } from './visible-read'
 import { useScrollDate } from './scroll-date'
+import { keepBottomOnResize } from './keep-bottom'
 import { autoTranslate, offerTranslation, toggleTranslation, translationShown } from '../app/translations'
 import { usePresence } from '../app/presence'
 import { useTyping } from '../app/typing'
@@ -100,6 +102,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   const [background, setBackground] = useState<ChatBackgroundRecord | null>(null)
   const [editing, setEditing] = useState<ChatMessage | null>(null)
   const [selection, setSelection] = useState<string[] | null>(null)
+  const selectionRef = useRef(selection); selectionRef.current = selection
   const [highlight, setHighlight] = useState<string | null>(null)
   const [away, setAway] = useState(false)
   const [paging, setPaging] = useState(false)
@@ -208,6 +211,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     for (const item of outgoing.items) if (!ids.has(item.id)) list.push({ kind: 'local', key: item.id, item, time: item.createdAt })
     return list
   }, [history.messages, outgoing.items, overlayRevision, accountUid, forum, forumSelected])
+  const currentEntries = useRef(entries); currentEntries.current = entries
   const entryTimes = useMemo(() => entries.map(entry => entry.time), [entries])
   const group = dialog?.kind === 'group'
   // A channel's discussion room shows only what the room itself carries; see UserAvatar's roomOnly.
@@ -229,7 +233,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       const entry = entries[index], layout = layouts[index]
       let size = 46
       if (entry?.kind === 'message' && (entry.message.attachments?.length ?? 0) > 0) size += 150
-      if (entry?.kind === 'message' && entry.message.reply) size += 44
+      if ((entry?.kind === 'message' && entry.message.reply) || (entry?.kind === 'local' && entry.item.replyToId)) size += 44
       if (layout?.date) size += 44
       if (layout?.unread) size += 40
       return size
@@ -238,7 +242,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   })
   virtualRef.current = virtual
   // "전체번역" (every chat but memo and secret chats): translate received text rows as they come on screen.
-  const autoTranslateOn = useDesktop(snapshot => snapshot?.preferences.autoTranslateChats ?? false) && !chatId.startsWith('memo_') && dialog?.kind !== 'secret'
+  const autoTranslateOn = useDesktop(snapshot => (snapshot?.preferences.autoTranslateChats ?? false) && (snapshot?.onDevice.translation ?? false)) && !chatId.startsWith('memo_') && dialog?.kind !== 'secret'
   const autoTranslateRef = useRef(autoTranslateOn); autoTranslateRef.current = autoTranslateOn
   const pinnedSnapshot = useDesktop(snapshot => snapshot?.pinnedMessages?.chatId === chatId ? snapshot.pinnedMessages : null)
   const pinnedRef = useRef(pinnedSnapshot); pinnedRef.current = pinnedSnapshot
@@ -262,8 +266,9 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   useLayoutEffect(() => {
     const element = scroll.current
     if (!element) return
-    const observer = new ResizeObserver(() => setViewport(element.clientHeight))
-    observer.observe(element); setViewport(element.clientHeight)
+    let height = element.clientHeight
+    const observer = new ResizeObserver(() => { height = keepBottomOnResize(element, height, bottom.current); setViewport(height) })
+    observer.observe(element); setViewport(height)
     return () => observer.disconnect()
   }, [])
   useLayoutEffect(() => {
@@ -358,7 +363,27 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     if (choice === 'everyone') { for (const message of messages) void deleteMessage(accountUid, message); return }
     void trackWrite(window.morse.hideMessages(accountUid, chatId, messages.map(message => message.id))).catch(reason => controller.toast(errorText(reason, tr('메시지를 삭제하지 못했습니다.')), 'error'))
   }, [accountUid, chatId])
+  // B53: the chosen messages as one text — the author's name, «나»'s own for this account (shared/message-copy.ts).
+  const copyMessages = useCallback((messages: ChatMessage[]) => {
+    const self = desktop.value?.selfProfile
+    const mine = (self?.status === 'ready' ? self.profile?.displayName : '') || tr('나')
+    const text = selectedMessagesText(messages, message => message.senderId === accountUid ? mine : message.senderName || dialogRef.current?.title || '')
+    if (!text) return
+    const copied = copyText(text)
+    controller.toast(copied ? tr('복사했습니다.') : tr('복사하지 못했습니다.'), copied ? 'default' : 'error')
+  }, [accountUid])
   const openMessageMenu = useCallback((message: ChatMessage, point: { x: number; y: number }, target?: MessageMenuTarget) => {
+    // B61: while messages are chosen, the menu on one of them acts on all of them, as Telegram's does — what the
+    // selection bar offers, under its rules, and clearing the selection.
+    if (selectionRef.current !== null) {
+      const chosen = currentEntries.current.flatMap(entry => entry.kind === 'message' && selectionRef.current!.includes(entry.message.id) ? [entry.message] : [])
+      popupMenu.open(point, selectionMenuRows(selectionActions(chosen)).map(row =>
+        row === 'copy' ? { label: tr('선택한 메시지 복사'), icon: <Copy size={18} />, onSelect: () => copyMessages(chosen) }
+        : row === 'forward' ? { label: tr('선택 전달'), icon: <Forward size={18} />, onSelect: () => { showShareBox(accountUid, chosen); setSelection(null) } }
+        : row === 'delete' ? { label: tr('선택 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void removeMessages(chosen) } }
+        : { label: tr('선택 해제'), icon: <X size={18} />, onSelect: () => setSelection(null) }))
+      return
+    }
     const link = target?.link
     // Telegram «Save As…» / iOS «저장»·«파일로 저장»: the attachment under the pointer, or the first one.
     const parts = (message.attachments ?? []).filter(part => part.available && !part.blind)
@@ -400,10 +425,10 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       popupMenu.open(point, entries, { header: mutable ? <ReactionStrip accountUid={accountUid} mine={message.reactions.filter(item => item.selected).map(item => item.emoji)}
         onPick={emoji => { popupMenu.close(); void toggleReaction(accountUid, message, emoji) }} /> : undefined })
     }
-    if (!translatable) open(false)
+    if (!translatable || !desktop.value?.onDevice.translation) open(false)
     else if (shown) open(true)
     else void offerTranslation(accountUid, chatId, message.id).then(open)
-  }, [accountUid, chatId, selectReply, removeMessages])
+  }, [accountUid, chatId, selectReply, removeMessages, copyMessages])
   const openLocalMenu = useCallback((item: LocalOutgoing, point: { x: number; y: number }) => {
     const failed = item.state === 'failed' || item.state === 'upload-failed'
     popupMenu.open(point, [
@@ -434,8 +459,18 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   })
 
   const selected = selection === null ? [] : entries.flatMap(entry => entry.kind === 'message' && selection.includes(entry.message.id) ? [entry.message] : [])
-  const canForwardSelection = selected.length > 0 && selected.length <= maxForwardMessages && selected.every(canForwardMessage)
-  const canDeleteSelection = selected.length > 0 && selected.length <= 100 && selected.every(message => Boolean(message.version))
+  const { copy: canCopySelection, forward: canForwardSelection, delete: canDeleteSelection } = selectionActions(selected)
+  // Telegram: Cmd/Ctrl+C with messages chosen, and no words selected on the page, copies them.
+  useEffect(() => {
+    if (!canCopySelection) return
+    const keydown = (event: KeyboardEvent): void => {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey || (event.code !== 'KeyC' && event.key.toLowerCase() !== 'c')) return
+      if ((event.target as HTMLElement | null)?.closest?.('input, textarea, [contenteditable="true"]') || window.getSelection()?.toString()) return
+      event.preventDefault(); copyMessages(selected)
+    }
+    document.addEventListener('keydown', keydown)
+    return () => document.removeEventListener('keydown', keydown)
+  }, [canCopySelection, selected, copyMessages])
   const canAttach = Boolean(dialog) && !secret && outgoing.canCompose && !editing
 
   function dropMode(target: EventTarget): AttachmentDropMode | null {
@@ -500,6 +535,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       {selection !== null ? <>
         <button className="icon-button" aria-label={tr('선택 취소')} onClick={() => setSelection(null)}><X size={22} /></button>
         <strong className="top-bar-selection">{tr('{0}개 선택', [selected.length])}</strong>
+        <button className="button flat" disabled={!canCopySelection} onClick={() => copyMessages(selected)}><Copy size={18} />{tr('복사')}</button>
         <button className="button flat" disabled={!canForwardSelection} onClick={() => { showShareBox(accountUid, selected); setSelection(null) }}><Forward size={18} />{tr('전달')}</button>
         <button className="button flat danger" disabled={!canDeleteSelection} onClick={() => { void removeMessages(selected) }}><Trash2 size={18} />{tr('삭제')}</button>
       </> : <>
@@ -540,7 +576,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
                 ? <MessageView accountUid={accountUid} chatId={chatId} message={entry.message} own={entry.own} layout={layout} read={entry.own ? readState(entry.message) : 'sent'}
                   selecting={selection !== null} selected={selection?.includes(entry.message.id) ?? false} highlighted={highlight === entry.message.id}
                   autoTranslate={autoTranslateOn} onMenu={openMessageMenu} onReply={replyByDoubleClick} onJumpReply={jumpReply} onOpenMedia={openMedia} onToggle={toggleSelected} onReaction={react} />
-                : <LocalMessageView accountUid={accountUid} item={entry.item} layout={layout} onMenu={openLocalMenu} />}
+                : <LocalMessageView accountUid={accountUid} item={entry.item} layout={layout} onMenu={openLocalMenu}
+                  reply={entry.item.replyToId ? history.replyQuotes?.[entry.item.replyToId] ?? { state: 'loading' } : undefined} />}
             </div>
           })}
         </div>

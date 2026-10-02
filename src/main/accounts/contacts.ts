@@ -10,6 +10,7 @@ import { ProfilePhoto } from './profile-photo'
 import { ContactAvatars } from './contact-avatars'
 import { ContactPhotos } from './contact-photos'
 import { contactNames, PeerProfiles, publicProfilePath, registerPeerProfiles } from './peer-profiles'
+import { ContactNamesSync } from './contact-names-sync'
 import { userpicCacheFor } from './userpic-cache'
 import { personalChannelIdField } from './personal-channel'
 import type { ContactPhotoCommand } from '../storage/contact-photo-table'
@@ -51,6 +52,10 @@ export class ContactsSession {
   private peer: Peer | null = null
   private contactDocs = new Map<string, FirestoreDocument>()
   private labels = new Map<string, string>()
+  // People this account talks with outside its contacts — the other side of each 1:1 chat — whose public names the
+  // chat list also needs (B48).
+  private extraPeers: string[] = []
+  private names = 0
   private mutation: ContactMutationSnapshot | null = null
   private job: Promise<void> | null = null
   private jobAbort: AbortController | null = null
@@ -63,6 +68,8 @@ export class ContactsSession {
   readonly personalPhotos: ContactPhotos
   readonly listAvatars: ContactAvatars
   private readonly profileNames: PeerProfiles
+  // A11: the saved names and notes, kept the same as the server's users/{me}/contactNames.
+  private readonly nameSync: ContactNamesSync
 
   constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly changed: () => void,
     private readonly store: <T>(command: ContactDetailsCommand | ContactPhotoCommand, validate?: () => void) => Promise<T>,
@@ -71,6 +78,7 @@ export class ContactsSession {
     // The reads, over Firestore; a test gives its own.
     private readonly openReader: () => FirestoreReader = () => new FirestoreReader(auth)) {
     this.profileNames = new PeerProfiles(uid, auth, auth.signal, () => { if (!this.closed) { this.order(); this.publish() } }, seen)
+    this.nameSync = new ContactNamesSync(uid, command => store(command), () => this.namesMerged())
     registerPeerProfiles(auth, this.profileNames)
     this.personalPhotos = new ContactPhotos(store, uid => this.connected && !this.auth.signal.aborted && this.has(uid) && !this.unavailablePhotos.has(uid), () => this.publish())
     this.listAvatars = new ContactAvatars(uid, auth, peerUid => {
@@ -119,9 +127,38 @@ export class ContactsSession {
     if (!item) throw new Error(tr('최신 연락처 프로필을 다시 선택해 주세요.'))
     return { uid: peer.selection.uid, displayName: this.nameOf(item) }
   }
+  // The server's saved names are this device's copy now (A11): the labels, and an open profile's name and note.
+  private namesMerged(): void {
+    if (this.closed) return
+    const generation = this.generation
+    void this.store<{ uid: string; nickname: string }[]>({ kind: 'contact-labels' }).then(rows => {
+      if (this.closed || generation !== this.generation) return
+      this.labels = new Map(rows.map(row => [row.uid, row.nickname])); this.order(); this.publish()
+    }).catch(() => {})
+    const peer = this.peer
+    if (peer && !this.job) void this.store<ContactDetails>({ kind: 'contact-details', uid: peer.selection.uid }).then(value => {
+      if (this.peer === peer && !this.job) { peer.local = { ...value, status: 'ready' }; this.publish() }
+    }).catch(() => {})
+  }
   private publish(): void { if (!this.closed) { this.listAvatars?.prune(); this.changed() } }
   private nameOf(item: ContactSummary): string { return contactNames(item, this.labels.get(item.uid), this.profileNames.name(item.uid)).displayName }
+  // Telegram R-60 / A11 §4: one name for a person on every screen — a withdrawn account is «탈퇴한 계정»; otherwise the
+  // name this account saved, then the person's public profile. '' when neither is known: the caller keeps its copy.
+  personName(uid: string): string {
+    if (this.closed || this.locked) return ''
+    if (this.profileNames.withdrawn(uid)) return tr('탈퇴한 계정')
+    return this.labels.get(uid) || this.profileNames.name(uid)
+  }
+  // Bumped whenever a name personName gives may have changed.
+  get namesRevision(): number { return this.names }
+  followPeers(uids: Iterable<string>): void {
+    const next = [...new Set(uids)].filter(uid => uid !== this.uid).sort()
+    if (next.join('\n') === this.extraPeers.join('\n')) return
+    this.extraPeers = next
+    if (this.reader && this.status === 'ready') this.profileNames.bind(this.reader, [...this.items.keys(), ...this.extraPeers])
+  }
   private order(): void {
+    this.names++
     this.ordered = [...this.items.values()].map(item => ({ ...item, ...contactNames(item, this.labels.get(item.uid), this.profileNames.name(item.uid)) }))
       .sort((a, b) => a.displayName.localeCompare(b.displayName, locale()) || a.uid.localeCompare(b.uid))
   }
@@ -133,6 +170,7 @@ export class ContactsSession {
   private invalidate(): void {
     this.listAvatars.clear()
     this.profileNames.clear()
+    this.nameSync.bind(null, this.auth.signal)
     this.photoStorage = null
     this.personalPhotos.revoke()
     this.generation++; this.stopPeer(); this.reader?.close(); this.reader = null
@@ -192,7 +230,7 @@ export class ContactsSession {
               if (!current || documentVersion(current) !== this.deleteGrace.version) this.cancelDeleteGrace(tr('연락처가 변경되어 삭제 대기를 취소했습니다. 최신 목록에서 다시 확인해 주세요.'))
             }
             for (const uid of this.unavailablePhotos) if (!next.has(uid)) this.unavailablePhotos.delete(uid)
-            this.items = next; this.profileNames.bind(this.reader, next.keys()); this.order()
+            this.items = next; this.profileNames.bind(this.reader, [...next.keys(), ...this.extraPeers]); this.order()
             this.status = 'ready'; this.message = ''; this.syncPeer(); this.publish()
           } catch {
             this.invalidate(); this.status = 'error'; this.message = tr('연락처 데이터를 확인하지 못했습니다. 다시 불러와 주세요.'); this.publish()
@@ -208,6 +246,7 @@ export class ContactsSession {
           this.publish()
         }
       }, 10000, 8 * 1024 * 1024)
+      this.nameSync.bind(reader, this.auth.signal)
     } catch {
       this.invalidate(); this.status = 'error'; this.message = tr('연락처 연결을 준비하지 못했습니다. 다시 불러와 주세요.'); this.publish()
     }
@@ -363,9 +402,9 @@ export class ContactsSession {
       try {
         const value = await this.store<ContactDetails>({ kind: 'contact-details-save', uid: peer.selection.uid, edit })
         if (value.nickname) this.labels.set(peer.selection.uid, value.nickname); else this.labels.delete(peer.selection.uid)
-        this.order()
+        this.order(); this.nameSync.kick()
         if (this.peer === peer) peer.local = { ...value, status: 'ready' }
-        result.outcome = 'saved'; result.message = tr('이 데스크톱에 별칭과 개인 메모를 저장했습니다.')
+        result.outcome = 'saved'; result.message = tr('별칭과 개인 메모를 저장했습니다. 내 계정의 다른 기기에도 같게 보입니다.')
       } catch (error) { result.outcome = 'rejected'; result.message = tr('저장하지 못했습니다. 작성한 내용을 보관한 뒤 연락처를 다시 열어 확인해 주세요.'); throw error }
     })()
     this.job = task
@@ -449,7 +488,7 @@ export class ContactsSession {
       ? peer.photo.response(token, request) : new Response(null, { status: 403 })
   }
   async close(): Promise<void> {
-    this.closed = true; this.connected = false; this.selection = null; this.jobAbort?.abort(); this.invalidate()
+    this.closed = true; this.connected = false; this.selection = null; this.jobAbort?.abort(); this.invalidate(); this.nameSync.close()
     try { await this.job } catch { /* the saving caller receives its error */ }
     this.profileNames.close(); await this.listAvatars.close(); await this.personalPhotos.close(); this.unavailablePhotos.clear()
     this.labels.clear(); this.removedVersions.clear()

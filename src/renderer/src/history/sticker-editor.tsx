@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import { Package, Plus, Star } from 'lucide-react'
 import { maxStickerBytes, stickerKind, stickerSidePx, type StickerItem } from '../../../shared/stickers'
 import { maxStickerPackItems, maxStickerPackTitle, type StickerPack } from '../../../shared/sticker-packs'
+import { useDesktop } from '../app/store'
 import { controller } from '../app/ui'
 import { errorText } from '../app/format'
 import { Spinner } from '../ui/controls'
@@ -67,6 +68,8 @@ function chooseDestination(accountUid: string): Promise<Destination | null> {
 // Vision, «원본 복원», and «저장» / «저장 후 전송». A GIF or MP4 is cropped the same way by the Mac media helper, every
 // frame kept; where the helper is not available it is kept as it is, as iOS keeps it.
 function StickerEditor({ accountUid, close, done }: { accountUid: string; close(): void; done(sticker: StickerItem | null): void }) {
+  // B51: background removal needs Vision's subject mask (macOS 14); elsewhere the button is left out.
+  const canCutout = useDesktop(snapshot => snapshot?.onDevice.backgroundRemoval ?? false)
   const [source, setSource] = useState<Source | null>(null), [still, setStill] = useState<Source | null>(null)
   const [zoom, setZoom] = useState(1), [x, setX] = useState(50), [y, setY] = useState(50)
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
@@ -179,7 +182,7 @@ function StickerEditor({ accountUid, close, done }: { accountUid: string; close(
         <label className="crop-zoom"><span>{tr('확대')}</span><input type="range" min={1} max={3} step={0.01} value={zoom} disabled={busy} onChange={event => setZoom(Number(event.target.value))} /></label>
         <div className="sticker-editor-actions">
           {source.kind === 'still' && (source.cut ? <button type="button" className="button secondary" disabled={busy} onClick={() => { if (still) setSource(still) }}>{tr('원본 복원')}</button>
-            : <button type="button" className="button secondary" disabled={busy} onClick={() => { void cutout() }}>{tr('배경 제거')}</button>)}
+            : canCutout && <button type="button" className="button secondary" disabled={busy} onClick={() => { void cutout() }}>{tr('배경 제거')}</button>)}
           <button type="button" className="button flat" disabled={busy} onClick={() => input.current?.click()}>{tr('다른 사진')}</button>
         </div>
       </>}

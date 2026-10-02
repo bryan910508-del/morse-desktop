@@ -123,6 +123,8 @@ import { groupAnnouncementEdit } from '../shared/group-announcement'
 import { app, BrowserWindow, clipboard, ClipboardItem, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, powerMonitor, protocol, session, shell, systemPreferences } from 'electron'
 import { mkdir, readFile, rm, stat as fileStat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
+import { release } from 'node:os'
+import { onDeviceFeatures } from '../shared/translation'
 import { randomUUID } from 'node:crypto'
 import type { IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron'
 import { extname, isAbsolute, join, resolve, sep } from 'node:path'
@@ -338,6 +340,7 @@ async function snapshot(): Promise<DesktopSnapshot> {
     platform: process.platform === 'darwin' ? 'macOS' : process.platform === 'win32' ? 'Windows' : 'unsupported',
     preferences: settings.preferences, systemDark: nativeTheme.shouldUseDarkColors, notifications: notifications.status(),
     platformIntegration: desktopShell.status(),
+    onDevice: onDeviceFeatures(process.platform, release(), { translate: translator.usable, media: mediaHelper.usable }),
     accounts: profiles, activeAccountUid: active?.profile.uid ?? null, selfProfile: appLocked ? null : selfProfile, contacts: appLocked ? null : active?.contactsSnapshot() ?? null,
     channels: screenLocked ? null : active?.channels.snapshot ?? null,
     personalChannels: screenLocked ? null : active?.personalChannels.snapshot ?? null,

@@ -19,6 +19,8 @@ export const contentReportCategories: { id: string; title: string }[] = [
   { id: 'violence', title: tr('폭력/위험') }, { id: 'copyright', title: tr('저작권 침해') }, { id: 'other', title: tr('기타') }
 ]
 export const maxReportExtra = 1000
+// B50 (Telegram R-62·R-64): a report does not block. Blocking the person as well is a choice the reporter turns on.
+export const reportAlsoBlocksByDefault = false
 
 export function reportRequest(raw: unknown): ReportRequest {
   const value = object(raw), target = object(value.target)

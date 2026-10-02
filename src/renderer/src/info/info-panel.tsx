@@ -5,7 +5,7 @@ import { cropPhoto } from '../boxes/photo-crop-box'
 import type { DialogSummary } from '../../../shared/model'
 import type { ContactProfileSnapshot } from '../../../shared/contacts'
 import type { ParticipantSummary } from '../../../shared/participants'
-import { contactDetailsEdit } from '../../../shared/contact-details'
+import { contactDetailsEdit, contactNameLimit, contactNoteLimit } from '../../../shared/contact-details'
 import { groupAnnouncementLimit } from '../../../shared/group-announcement'
 import { desktop, dialogById, useDesktop } from '../app/store'
 import { controller } from '../app/ui'
@@ -62,9 +62,9 @@ function ContactDetailsBox({ accountUid, requestId, profile, close }: { accountU
     <button className="button flat" disabled={busy} onClick={close}>{tr('취소')}</button>
     <button className="button flat" disabled={busy} onClick={() => { void save() }}>{busy && <Spinner size={14} />}{tr('저장')}</button>
   </>}>
-    <TextField label={tr('이름')} value={nickname} onChange={setNickname} maxLength={100} placeholder={profile.originalName} autoFocus disabled={busy} onSubmit={() => { void save() }} />
-    <TextField label={tr('메모')} value={note} onChange={setNote} maxLength={2000} multiline rows={5} counter disabled={busy} />
-    <p className="box-note">{tr('이름과 메모는 이 기기의 현재 계정에만 저장되고 상대에게 보이지 않습니다. 이름을 비우면 상대가 설정한 이름을 표시합니다.')}</p>
+    <TextField label={tr('이름')} value={nickname} onChange={setNickname} maxLength={contactNameLimit} placeholder={profile.originalName} autoFocus disabled={busy} onSubmit={() => { void save() }} />
+    <TextField label={tr('메모')} value={note} onChange={setNote} maxLength={contactNoteLimit} multiline rows={5} counter disabled={busy} />
+    <p className="box-note">{tr('이름과 메모는 내 계정의 모든 기기에 같게 저장되고 상대에게 보이지 않습니다. 이름을 비우면 상대가 설정한 이름을 표시합니다.')}</p>
     {error && <p className="box-error" role="alert">{error}</p>}
   </Box>
 }

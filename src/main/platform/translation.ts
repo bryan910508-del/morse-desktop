@@ -20,6 +20,12 @@ export class ChatTranslator {
   private unavailable = process.platform !== 'darwin'
   private closed = false
 
+  private present: boolean | null = null
+  // The helper is here and has not been given up on (it exits at once on a macOS it cannot run on).
+  get usable(): boolean {
+    this.present ??= existsSync(this.path)
+    return this.present && !this.unavailable && !this.closed
+  }
   private get path(): string {
     return app.isPackaged ? join(process.resourcesPath, 'app.asar.unpacked/resources/native/morse-translate') : join(app.getAppPath(), 'resources/native/morse-translate')
   }

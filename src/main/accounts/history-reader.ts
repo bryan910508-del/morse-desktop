@@ -1,4 +1,4 @@
-import type { ChatMessage, HistorySnapshot, MessagePosition } from '../../shared/model'
+import type { ChatMessage, HistorySnapshot, MessagePosition, ReplyPreview } from '../../shared/model'
 import { comparePosition, positionAt } from '../../shared/model'
 import { FirestoreReader } from '../network/firestore-rpc'
 import { decodeMessage, documents, expiry, historyReadable, historyLimit, messagesQuery, pageSize, positionValue, rawPosition, ReadFailure, type FirestoreDocument, type ReadDialog, roomMediaNames } from '../network/firestore-values'
@@ -37,7 +37,9 @@ export class HistoryReader {
   constructor(readonly dialog: ReadDialog, private readonly reader: FirestoreReader, private readonly changed: (snapshot: HistorySnapshot) => void,
     private readonly nextRevision: () => number, private readonly hidden: (messageId: string) => boolean = () => false,
     // Nothing is taken from the server while the screen is locked or the account has moved on.
-    private readonly writable: () => boolean = () => true) {
+    private readonly writable: () => boolean = () => true,
+    // The ids that this device's messages still on their way answer (OutboxPump), quoted like a sent reply's.
+    private readonly localReplies: () => string[] = () => []) {
     this.replies = new ReplyContext(dialog, reader, this.abort.signal, () => this.publish())
     this.pollVotes = new PollVotes(async messageId => {
       const doc = await reader.getDocument(`${documents}/chats/${dialog.summary.id}/messages/${messageId}/pollVotes/${dialog.accountUid}`, this.abort.signal)
@@ -174,6 +176,8 @@ export class HistoryReader {
     this.rows.clear(); this.top = []; this.value.before = null; this.value.hasMore = false; this.value.newerAvailable = false
     this.publish()
   }
+  // This device's messages on their way changed: their quotes are read again with the rest.
+  localRepliesChanged(): void { if (!this.closed && !this.failed) this.publish() }
   private publish(): void {
     if (this.closed) return
     clearTimeout(this.expiryTimer)
@@ -190,15 +194,18 @@ export class HistoryReader {
       const name = (id: string): string => `${documents}/chats/${this.dialog.summary.id}/messages/${id}`
       // Loaded rows retain their existing authoritative owner. Only off-window
       // originals need separate, bounded document targets; never recurse replies.
-      this.replies.setTargets(this.value.status === 'ready' ? messages.flatMap(message =>
-        message.replyToId && message.replyToId !== message.id && !this.rows.has(name(message.replyToId)) ? [message.replyToId] : []) : [])
+      const local = this.value.status === 'ready' ? [...new Set(this.localReplies())] : []
+      this.replies.setTargets(this.value.status === 'ready' ? [...new Set([...messages.flatMap(message =>
+        message.replyToId && message.replyToId !== message.id ? [message.replyToId] : []), ...local])].filter(id => !this.rows.has(name(id))) : [])
+      const quote = (replyToId: string): ReplyPreview => {
+        const original = this.rows.get(name(replyToId))
+        return original ? originalPreview(replyOriginal(original, this.dialog), this.dialog) : this.replies.preview(replyToId)
+      }
       this.value.messages = messages.map(message => {
         if (!message.replyToId) return message
-        const original = this.rows.get(name(message.replyToId))
-        const reply = message.replyToId === message.id ? { state: 'unavailable' as const } : original
-          ? originalPreview(replyOriginal(original, this.dialog), this.dialog) : this.replies.preview(message.replyToId)
-        return { ...message, reply }
+        return { ...message, reply: message.replyToId === message.id ? { state: 'unavailable' as const } : quote(message.replyToId) }
       })
+      this.value.replyQuotes = Object.fromEntries(local.map(id => [id, quote(id)]))
       // Ask for the answers of the polls now on screen; an answer that lands publishes again.
       if (this.value.status === 'ready') this.pollVotes.follow(this.value.messages)
       const nextExpiry = [...raw.map(expiry), this.replies.nextExpiry()].filter((time): time is number => time !== null && time > Date.now()).sort((a, b) => a - b)[0]

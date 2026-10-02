@@ -204,6 +204,8 @@ export class AccountSession {
   private selected: HistoryReader | null = null
   private search: MessageSearch | null = null
   private readonly delivery: OutboxPump
+  // Per chat, the ids its messages still on their way answer (B46: quoted by the history like sent replies).
+  private readonly localReplies = new Map<string, string[]>()
   readonly voiceDraftStorage:VoiceDraftStorage
   readonly backgroundStorage: BackgroundStorage
   readonly contactPublicStoryVideo: ContactPublicStoryVideo
@@ -340,7 +342,7 @@ export class AccountSession {
     this.discussionHistory = new ChannelDiscussionHistory(profile.uid, credentials.signal, () => { if (!this.closed && this.chatsCurrent && this.pinsCurrent) this.rebuild() })
     this.selfProfile = new SelfProfileSession(profile.uid, credentials, () => { if (!this.closed) events.changed() }, (command, validate) => this.delivery.profilePhotoState(command, validate),
       (peer, raw) => this.peerPhotos.remember(peer, raw))
-    this.contacts = new ContactsSession(profile.uid, credentials, () => { if (!this.closed) { this.dialogAvatars?.prune(); this.contactPublicStories?.prune(); this.contactStoryAudience?.prune(); this.contactAudienceStories?.prune(); this.contactAudienceStoryPhoto?.prune(); this.contactAudienceStoryVideo?.prune(); this.contactStoryPhotoAudio?.prune(); this.contactStoryReaction?.prune(); this.storyReactionChange?.prune(); this.storyViewReceipt?.prune(); this.contactPublicStoryPhoto?.prune(); this.contactPublicStoryVideo?.prune(); events.changed() } }, (command, validate) => this.delivery.contactState(command, validate), (peer, raw) => this.peerPhotos.remember(peer, raw))
+    this.contacts = new ContactsSession(profile.uid, credentials, () => { if (!this.closed) { this.renameDialogs(); this.dialogAvatars?.prune(); this.contactPublicStories?.prune(); this.contactStoryAudience?.prune(); this.contactAudienceStories?.prune(); this.contactAudienceStoryPhoto?.prune(); this.contactAudienceStoryVideo?.prune(); this.contactStoryPhotoAudio?.prune(); this.contactStoryReaction?.prune(); this.storyReactionChange?.prune(); this.storyViewReceipt?.prune(); this.contactPublicStoryPhoto?.prune(); this.contactPublicStoryVideo?.prune(); events.changed() } }, (command, validate) => this.delivery.contactState(command, validate), (peer, raw) => this.peerPhotos.remember(peer, raw))
     this.channels = new ChannelsSession(profile.uid, credentials, () => { this.channelJoinDecisions?.prune(); this.channelAccess?.prune(); this.channelPhotoUpload?.prune(); this.channelHome?.listChanged(); if (!this.closed) events.changed() })
     this.ownStories = new OwnStories(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
     this.spaceNotes = new SpaceNotesReader(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
@@ -377,7 +379,16 @@ export class AccountSession {
     this.delivery = new OutboxPump(profile.uid, directory, credentials, previousClose,
       () => ({ ready: this.status === 'ready' && !this.closed, reader: this.reader,
         dialogs: new Map([...this.index].map(([id, value]) => [id, value.summary])) }),
-      (chatId, snapshot) => { if (!this.closed) events.outgoing(chatId, snapshot) }, () => { if (!this.closed) events.changed() }, newChatAutoDelete)
+      (chatId, snapshot) => {
+        if (this.closed) return
+        // The ids this chat's messages on their way answer: the open history quotes them as it quotes sent ones.
+        const replies = [...new Set(snapshot.items.flatMap(item => item.replyToId ? [item.replyToId] : []))].sort()
+        if ((this.localReplies.get(chatId) ?? []).join('\n') !== replies.join('\n')) {
+          if (replies.length) this.localReplies.set(chatId, replies); else this.localReplies.delete(chatId)
+          if (this.selected?.dialog.summary.id === chatId) this.selected.localRepliesChanged()
+        }
+        events.outgoing(chatId, snapshot)
+      }, () => { if (!this.closed) events.changed() }, newChatAutoDelete)
     void this.userpics.load().then(() => { if (!this.closed) { this.dialogAvatars.prune(); this.contacts.listAvatars.prune(); events.changed() } })
     this.draftReply = new ReplyDraft(credentials.signal, command => this.delivery.replyState(command),
       (chatId, snapshot) => { if (!this.closed) events.reply(chatId, snapshot) })
@@ -1109,6 +1120,27 @@ export class AccountSession {
       observe('chats'); observe('pins')
     } catch (error) { failed(error instanceof ReadFailure ? error : new ReadFailure('data')) }
   }
+  // Telegram R-60 / A11 §4: a person's name is the same on every screen — the chat list, the chat's header and a
+  // group's sender names use what the contacts and profiles use: the name this account saved, then the person's public
+  // profile, and only then the room's copy (participantInfo, written when the room was made and not when the person
+  // renamed: B48). A withdrawn account and a discussion room's owner (named after the channel) keep their names.
+  private applyNames(value: ReadDialog): void {
+    const summary = value.summary, deleted = tr('탈퇴한 계정')
+    if (summary.kind === 'secret') return
+    for (const uid of Object.keys(value.participantNames)) {
+      if (uid === this.profile.uid || value.participantNames[uid] === deleted || (summary.discussion && value.participantNames[uid] === summary.title)) continue
+      const name = this.contacts.personName(uid)
+      if (name) value.participantNames[uid] = name
+    }
+    if (summary.kind !== 'direct' || summary.id.startsWith('memo_') || summary.title === deleted) return
+    const peer = summary.participantUids.find(uid => uid !== this.profile.uid)
+    const name = peer ? this.contacts.personName(peer) : ''
+    if (name) summary.title = name
+  }
+  private namesApplied = -1
+  private renameDialogs(): void {
+    if (this.contacts && this.contacts.namesRevision !== this.namesApplied && this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() }
+  }
   private rebuild(): void {
     if (!this.chatsCurrent || !this.pinsCurrent) return
     // F-ST-002: a document this build cannot read is left out, and only that one. Telegram keeps the list when an
@@ -1135,6 +1167,7 @@ export class AccountSession {
       if (emptyRevokedDirect(value.summary, value.cutoff, `memo_${this.profile.uid}`) && value.cutoff && !this.hiddenChats.keepsCleared(value.summary.id, value.cutoff)) unlisted.add(value.summary.id)
       withLocalDeletion(value, this.hiddenChats.cutoff(value.summary.id))
       this.topicDeletions.apply(value.summary)
+      this.applyNames(value)
       this.chatFlags.apply(value.summary)
       const unseen = value.summary.unseenReaction
       if (unseen && this.seenReactions.get(value.summary.id) === `${unseen.messageId}:${unseen.reactionVersion}`) delete value.summary.unseenReaction
@@ -1143,6 +1176,9 @@ export class AccountSession {
       index.set(value.summary.id, value)
     }
     if (skipped) recordHistoryStep('dialog-skipped', String(skipped))
+    this.namesApplied = this.contacts.namesRevision
+    // The other side of every 1:1 chat is followed by name, contact or not (B48).
+    this.contacts.followPeers([...index.values()].flatMap(value => value.summary.kind === 'direct' ? value.summary.participantUids.filter(uid => uid !== this.profile.uid) : []))
     this.index = index
     // A discussion row shows its channel's picture, so the channel documents follow the list.
     this.discussionAvatars.setVisible([...index.values()].flatMap(value =>
@@ -1217,7 +1253,8 @@ export class AccountSession {
         this.events.history(dialog.summary.id, snapshot)
         this.delivery.shown(dialog.summary.id, new Set(snapshot.messages.map(message => message.id)))
       }
-    }, () => ++this.revision, messageId => this.hiddenMessages.has(dialog.summary.id, messageId), () => !this.closed && !this.locked && this.selected === history)
+    }, () => ++this.revision, messageId => this.hiddenMessages.has(dialog.summary.id, messageId), () => !this.closed && !this.locked && this.selected === history,
+      () => this.localReplies.get(dialog.summary.id) ?? [])
     this.selected = history
     this.syncPresence()
     if (!this.locked) this.draftReply.bind(dialog, this.reader)

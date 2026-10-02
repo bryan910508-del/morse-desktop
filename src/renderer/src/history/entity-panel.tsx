@@ -9,12 +9,16 @@ import { controller } from '../app/ui'
 import { errorText } from '../app/format'
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { showStickerEditor } from './sticker-editor'
+import { readRecentEmoji, recentEmojiShown, recordRecentEmoji } from './recent-emoji'
 import { tr } from '../../../shared/i18n'
 
 // Telegram's TabbedSelector and iOS MorseEntityKeyboard: emoji to insert, this device's stickers (★) and the
 // account's installed sticker sets to send, chosen from a pack strip, with «스티커 만들기» for a new one.
 export function EntityPanel({ accountUid, onEmoji, onSticker, onPackSticker, onClose }: { accountUid: string; onEmoji(emoji: string): void; onSticker(sticker: StickerItem): void; onPackSticker(setId: string, itemId: string): void; onClose(): void }) {
   const [tab, setTab] = useState<'emoji' | 'stickers'>('emoji')
+  // B57: read when the panel opens, so the row does not move under the pointer while emoji are being picked.
+  const [recent] = useState(() => recentEmojiShown(readRecentEmoji()))
+  const pick = (emoji: string): void => { recordRecentEmoji(emoji); onEmoji(emoji) }
   const [packId, setPackId] = useState<string | null>(null)
   const stickers = useDesktop(snapshot => snapshot?.stickers ?? null)
   const packs = useDesktop(snapshot => snapshot?.stickerPacks ?? null)
@@ -38,7 +42,12 @@ export function EntityPanel({ accountUid, onEmoji, onSticker, onPackSticker, onC
       <button type="button" role="tab" aria-selected={tab === 'emoji'} className={tab === 'emoji' ? 'active' : undefined} onClick={() => setTab('emoji')}>{tr('이모지')}</button>
       <button type="button" role="tab" aria-selected={tab === 'stickers'} className={tab === 'stickers' ? 'active' : undefined} onClick={() => setTab('stickers')}>{tr('스티커')}</button>
     </div>
-    {tab === 'emoji' ? <div className="entity-emoji">{(emojis as string[]).map(emoji => <button key={emoji} type="button" onClick={() => onEmoji(emoji)}>{emoji}</button>)}</div>
+    {tab === 'emoji' ? <div className="entity-emoji">
+      <div className="entity-emoji-label">{tr('최근 사용')}</div>
+      {recent.map(emoji => <button key={`recent-${emoji}`} type="button" onClick={() => pick(emoji)}>{emoji}</button>)}
+      <div className="entity-emoji-label">{tr('이모지')}</div>
+      {(emojis as string[]).map(emoji => <button key={emoji} type="button" onClick={() => pick(emoji)}>{emoji}</button>)}
+    </div>
       : <>
         <div className="entity-pack-strip" role="tablist" aria-label={tr('스티커팩')}>
           <button type="button" role="tab" aria-selected={packId === null} className={packId === null ? 'active' : undefined} title={tr('즐겨찾기')} onClick={() => setPackId(null)}><Star size={18} /></button>

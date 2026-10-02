@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState, type MouseEvent } from 'react'
-import { Camera, Check, CircleAlert, Clock3, Download, File as FileIcon, Image as ImageIcon, LockKeyhole, Megaphone, MessageSquareText, MessageSquareWarning, Mic, NotebookPen, Pause, Play, Reply } from 'lucide-react'
+import { Camera, Check, CircleAlert, Clock3, Download, File as FileIcon, Image as ImageIcon, LockKeyhole, Megaphone, MessageSquareText, MessageSquareWarning, Mic, NotebookPen, Pause, Play } from 'lucide-react'
 import type { ChatMessage, ReplyPreview } from '../../../shared/model'
 import type { LocalOutgoing } from '../../../shared/delivery'
 import type { MessageStorySource } from '../../../shared/message-story-source'
@@ -27,8 +27,10 @@ function rowClass(own: boolean, layout: Pick<MessageLayout, 'top' | 'bottom'>, e
   return `history-message ${own ? 'own' : 'peer'}${layout.top ? ' attached-top' : ''}${layout.bottom ? ' attached-bottom' : ''}${extra}`
 }
 
-function ReplyQuote({ preview, onOpen }: { preview: ReplyPreview; onOpen(): void }) {
+// A message still on its way quotes the same original the same way (B46); it has nowhere to jump yet, so onOpen is left out.
+function ReplyQuote({ preview, onOpen }: { preview: ReplyPreview; onOpen?(): void }) {
   if (preview.state !== 'ready') return <div className="bubble-quote"><strong>{tr('답장')}</strong><span className="ellipsis">{preview.state === 'loading' ? tr('원본을 불러오는 중…') : tr('원본 메시지를 볼 수 없습니다')}</span></div>
+  if (!onOpen) return <div className="bubble-quote"><strong className="ellipsis">{preview.senderName}</strong><span className="ellipsis">{preview.text}</span></div>
   return <button type="button" className="bubble-quote" onClick={event => { event.stopPropagation(); onOpen() }} title={tr('원본 메시지로 이동')}>
     {/* The quote is the original's own one-line preview and nothing else, as Telegram's is
         (HistoryView::Reply draws item->toPreview). ReplyContext.originalPreview already begins it with
@@ -79,6 +81,8 @@ function VoicePlayer({ accountUid, chatId, message, own }: { accountUid: string;
     } catch { if (request.current === id) setState('error') }
   }
   const transcript = useTranscript(accountUid, chatId, message)
+  // B51: voice to text is a Mac helper; where there is none the button is left out.
+  const canTranscribe = useDesktop(snapshot => snapshot?.onDevice.voiceToText ?? false)
   return <div className="voice-message-wrap" onClick={event => event.stopPropagation()}>
   <div className={`voice-message${own ? ' own' : ''}`}>
     <button type="button" className="voice-message-play" aria-label={state === 'playing' ? tr('일시 정지') : tr('재생')} disabled={!message.attachments?.[0]?.available} onClick={() => { void toggle() }}>
@@ -89,8 +93,8 @@ function VoicePlayer({ accountUid, chatId, message, own }: { accountUid: string;
       <small>{state === 'error' ? tr('재생할 수 없습니다') : seconds !== undefined ? formatDuration(seconds) : tr('음성 메시지')}</small>
     </span>
     {/* MorseChatUIKitNativeMediaBubbleRow sttButton: the voice message's words under it. */}
-    <button type="button" className={`voice-transcribe${transcript.expanded ? ' active' : ''}`} aria-label={tr('텍스트로 보기')} disabled={!message.attachments?.[0]?.available || transcript.state === 'loading'}
-      onClick={() => transcript.toggle()}>{transcript.state === 'loading' ? <Spinner size={14} /> : transcript.state === 'error' ? <MessageSquareWarning size={16} /> : <MessageSquareText size={16} />}</button>
+    {canTranscribe && <button type="button" className={`voice-transcribe${transcript.expanded ? ' active' : ''}`} aria-label={tr('텍스트로 보기')} disabled={!message.attachments?.[0]?.available || transcript.state === 'loading'}
+      onClick={() => transcript.toggle()}>{transcript.state === 'loading' ? <Spinner size={14} /> : transcript.state === 'error' ? <MessageSquareWarning size={16} /> : <MessageSquareText size={16} />}</button>}
   </div>
   {transcript.expanded && transcript.state !== 'loading' && <p className="voice-transcript selectable">{transcript.text}</p>}
   </div>
@@ -337,7 +341,8 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
   if (message.system) return <div className="history-service" data-message-id={message.id}><span className="service-pill selectable">{message.text || messageKindLabel(message.kind) || tr('시스템 메시지')}</span></div>
   const time = positionMilliseconds(message.position)
   const openMenu = (event: MouseEvent<HTMLElement>): void => {
-    if (selecting || message.encrypted) return
+    // While choosing, only a chosen message has a menu: «선택한 메시지 복사» (B53).
+    if ((selecting && !selected) || message.encrypted) return
     const selection = window.getSelection()
     if (selection && !selection.isCollapsed && event.currentTarget.contains(selection.anchorNode)) return
     event.preventDefault()
@@ -419,13 +424,14 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
   </div>
 })
 
-export const LocalMessageView = memo(function LocalMessageView({ accountUid, item, layout, onMenu }: { accountUid: string; item: LocalOutgoing; layout: MessageLayout; onMenu(item: LocalOutgoing, point: { x: number; y: number }): void }) {
+export const LocalMessageView = memo(function LocalMessageView({ accountUid, item, layout, onMenu, reply }: { accountUid: string; item: LocalOutgoing; layout: MessageLayout; onMenu(item: LocalOutgoing, point: { x: number; y: number }): void; reply?: ReplyPreview }) {
   const failed = item.state === 'failed' || item.state === 'upload-failed'
   const percent = item.progress ? Math.round(100 * item.progress.loaded / Math.max(1, item.progress.total)) : null
   return <div className={rowClass(true, layout, failed ? ' failed' : '')} onContextMenu={event => { event.preventDefault(); onMenu(item, pointFor(event, event.currentTarget)) }}>
     {failed && <button type="button" className="history-failed" aria-label={tr('보내지 못한 메시지 메뉴')} onClick={event => onMenu(item, pointFor(event, event.currentTarget))}><CircleAlert size={22} /></button>}
     <div className="bubble">
-      {(item.forwarded || item.storyReply || item.replyToId) && <div className="bubble-label">{item.forwarded ? tr('전달된 메시지') : item.storyReply ? tr('스토리 답장') : <><Reply size={12} />{' '}{tr('답장')}</>}</div>}
+      {(item.forwarded || item.storyReply) && <div className="bubble-label">{item.forwarded ? tr('전달된 메시지') : tr('스토리 답장')}</div>}
+      {item.replyToId && reply && <ReplyQuote preview={reply} />}
       {item.voicePreview ? <div className="voice-message own local"><QueuedVoicePlay accountUid={accountUid} item={item} /><span className="voice-message-body"><small>{tr('음성 메시지 · {0}', [formatDuration(item.voicePreview.duration)])}</small></span></div>
         : <div className="bubble-text selectable">{item.text || tr('첨부')}<span className="bubble-meta-space own" /></div>}
       {item.progress && <div className="bubble-progress" role="progressbar" aria-valuenow={percent ?? 0} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${percent}%` }} /></div>}

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { contentReportCategories, maxReportExtra, userReportCategories, type ReportTarget } from '../../../shared/reports'
+import { contentReportCategories, maxReportExtra, reportAlsoBlocksByDefault, userReportCategories, type ReportTarget } from '../../../shared/reports'
 import type { BlockTarget } from '../../../shared/account-tools'
 import { setBlocked } from '../app/blocked-users'
 import { controller } from '../app/ui'
@@ -9,10 +9,10 @@ import { Box } from '../ui/layers'
 import { tr } from '../../../shared/i18n'
 
 // iOS UserReportView and ChannelReportView: a reason, an optional description, and for a person the choice to
-// block them as well (on by default).
+// block them as well (off unless turned on: Telegram's report does not block, R-62·R-64).
 function ReportBox({ accountUid, target, title, block, initialExtra, close }: { accountUid: string; target: ReportTarget; title: string; block: BlockTarget | null; initialExtra: string; close(): void }) {
   const user = target.type === 'user'
-  const [category, setCategory] = useState(''), [extra, setExtra] = useState(initialExtra), [alsoBlock, setAlsoBlock] = useState(true)
+  const [category, setCategory] = useState(''), [extra, setExtra] = useState(initialExtra), [alsoBlock, setAlsoBlock] = useState(reportAlsoBlocksByDefault)
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
   async function submit(): Promise<void> {
     if (!category || busy) return
