@@ -1,7 +1,8 @@
 import { identifier, object } from './validation'
 import { tr } from './i18n'
 
-export interface ManualUnreadRequest { id: string; chatId: string; markedUnread: boolean; version: string }
+// readToEnd false: only the mark goes (opening a chat, B104); absent: «읽음으로 표시» also reads to the newest message.
+export interface ManualUnreadRequest { id: string; chatId: string; markedUnread: boolean; version: string; readToEnd?: false }
 export interface ManualUnreadSnapshot {
   id: string; chatId: string; markedUnread: boolean
   state: 'saving' | 'saved' | 'rejected' | 'uncertain' | 'observed'
@@ -14,4 +15,11 @@ export function manualUnreadRequest(raw: unknown): ManualUnreadRequest {
 }
 export function effectiveUnreadCount(dialog: { unreadCount: number; markedUnread: boolean }): number {
   return Math.max(dialog.unreadCount, dialog.markedUnread ? 1 : 0)
+}
+// B104 (tdesktop: opening a chat clears its unread mark — history_widget.cpp:3442-3447, and so does reading it,
+// history.cpp:2078-2080 → Histories::changeDialogUnreadMark, data_histories.cpp:516-527): an open chat drops
+// «안 읽음 표시», whatever else is unread — only the mark goes (readToEnd false); reading moves the read position as
+// before. A secret session and the memo space have no mark.
+export function clearsUnreadMark(dialog: { id: string; kind: string; markedUnread: boolean }, uid: string): boolean {
+  return dialog.markedUnread && dialog.kind !== 'secret' && dialog.id !== `memo_${uid}`
 }

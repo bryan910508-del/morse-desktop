@@ -616,8 +616,10 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       </div>
       <SwipeBackPlate frame={swipe} />
       <SwipeReplyIcon frame={swipe} row={swipeTarget.current?.row ?? null} host={historyBox.current} />
-      {(bodyNotice || (history.status === 'loading' && dialog && !entries.length)) && <div className="history-notice" role="status">
-        {bodyNotice ? <span className="service-pill">{bodyNotice}</span> : <Spinner size={24} />}
+      {/* B103: a chat this session has not read yet shows its background and the composer while its first messages come,
+          as tdesktop's paintEvent does with no history yet (history_widget.cpp:11398) — no spinner. */}
+      {bodyNotice && <div className="history-notice" role="status">
+        <span className="service-pill">{bodyNotice}</span>
         {history.status === 'error' && dialog && <button className="button secondary" onClick={() => { void window.morse.latestHistory(accountUid, chatId).then(applyHistory).catch(() => {}) }}>{tr('다시 불러오기')}</button>}
       </div>}
       {historyReady && (away || history.newerAvailable) && <button className="history-down" aria-label={tr('최근 메시지로 이동')} onClick={() => { void jumpLatest() }}>

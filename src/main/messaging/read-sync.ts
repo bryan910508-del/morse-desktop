@@ -65,7 +65,8 @@ export class ReadSync {
     if (!this.active(this.generation.signal) || !this.eligible(chatId, target)) return false
     // Capture authorization was checked synchronously against the displayed
     // history. A later blur does not undo an observation already made.
-    await this.store({ kind: 'read-enqueue', chatId, target })
+    // B104: the server still counting the chat unread is a reason to send the read even where it was sent already.
+    await this.store({ kind: 'read-enqueue', chatId, target, recount: (this.context().dialogs.get(chatId)?.summary.unreadCount ?? 0) > 0 })
     if (this.closed) return false
     this.kick()
     return true

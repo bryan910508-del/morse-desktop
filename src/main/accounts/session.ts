@@ -83,7 +83,7 @@ import { ParticipantContactAdd, type ChatContactTarget } from './participant-con
 import { DialogPins } from './dialog-pins'
 import type { DialogPinRequest } from '../../shared/dialog-pins'
 import { ManualUnread } from './manual-unread'
-import { effectiveUnreadCount, type ManualUnreadRequest } from '../../shared/manual-unread'
+import { clearsUnreadMark, effectiveUnreadCount, type ManualUnreadRequest } from '../../shared/manual-unread'
 import type { ContactCreateFields } from '../network/participant-contact-write'
 import { FirestoreReader } from '../network/firestore-rpc'
 import { boolField, childId, decodeDialog, readDialogs, historyReadable, documents, positionValue, timestamp, documentVersion, mapField, numberField, stringField, ReadFailure, type FirestoreDocument, type ReadDialog, type WireObject } from '../network/firestore-values'
@@ -734,7 +734,7 @@ export class AccountSession {
     // Any dialog with the peer, listed or not: one that is out of the list ("나에게만 삭제", or nothing left after a
     // delete for everyone) opens as the empty chat it is (openUnlisted). B88 §28: which one is the pair document's
     // word (findDirect); a new room is made only when it names none.
-    return this.openUnlisted(await this.delivery.findDirect(peer.uid) ?? await this.delivery.openDirect(peer, true))
+    return this.openUnlisted(await this.delivery.findDirect(peer.uid, this.isOpenChat) ?? await this.delivery.openDirect(peer, true))
   }
   // B49 (Telegram keeps a History for every peer — Data::Session::history is find-or-create, data_session.cpp:1681-1683
   // — and its chat-list search shows contacts whose chat left the list, data_session.cpp:5771-5775): the 1:1 rooms that
@@ -761,7 +761,7 @@ export class AccountSession {
     const group = this.index.get(groupChatId)
     if (!group || group.summary.kind !== 'group' || !group.summary.participantUids.includes(peerUid) || peerUid === this.profile.uid) throw new Error(tr('참여자를 다시 선택해 주세요.'))
     const displayName = this.contacts.personName(peerUid) || group.participantNames[peerUid] || tr('참여자')
-    return this.openUnlisted(await this.delivery.findDirect(peerUid) ?? await this.delivery.openDirect({ uid: peerUid, displayName }, true))
+    return this.openUnlisted(await this.delivery.findDirect(peerUid, this.isOpenChat) ?? await this.delivery.openDirect({ uid: peerUid, displayName }, true))
   }
   private openUnlisted(chatId: string): string {
     const listed = this.list.some(dialog => dialog.id === chatId)
@@ -781,7 +781,7 @@ export class AccountSession {
     if (this.closed || this.locked || this.connection !== 'ready' || this.status !== 'ready' || !this.reader) throw new Error(tr('대화 목록과 연결을 확인해 주세요.'))
     const uid = supportUidOf(await this.reader.getDocument(supportConfigPath, this.credentials.signal))
     if (!uid || uid === this.profile.uid) throw new Error(tr('지금은 채팅 문의를 쓸 수 없어요.'))
-    return this.openUnlisted(await this.delivery.findDirect(uid) ?? await this.delivery.openDirect({ uid, displayName: tr('Morse 고객센터') }, true))
+    return this.openUnlisted(await this.delivery.findDirect(uid, this.isOpenChat) ?? await this.delivery.openDirect({ uid, displayName: tr('Morse 고객센터') }, true))
   }
   discardDirectDraft(chatId: string) { return this.delivery.discardDirect(chatId) }
   private groupCreateSource(request: GroupCreateRequest): void {
@@ -1044,7 +1044,8 @@ export class AccountSession {
   private manualUnreadSource(request: ManualUnreadRequest, exact: boolean): void {
     const current = this.contextDialog(request.chatId)
     if (this.locked || !current || current.kind === 'secret' || current.id === `memo_${this.profile.uid}` || !current.participantUids.includes(this.profile.uid)) throw new Error(tr('현재 대화와 연결 상태를 확인해 주세요.'))
-    if (exact && (current.version !== request.version || !current.version || this.selected?.dialog.summary.id === request.chatId ||
+    // Marking the open chat unread would be read straight back; clearing its mark is what opening it does (B104).
+    if (exact && (current.version !== request.version || !current.version || (request.markedUnread && this.selected?.dialog.summary.id === request.chatId) ||
       request.markedUnread === (effectiveUnreadCount(current) > 0))) throw new Error(tr('최신 목록에서 읽음 표시를 다시 선택해 주세요.'))
   }
   private empty(status: HistorySnapshot['status'], message = ''): HistorySnapshot {
@@ -1296,13 +1297,16 @@ export class AccountSession {
     this.groupPhoto.prune(); this.groupPhotoEditor.prune(); this.groupPhotoUpload.prune(); this.dialogAvatars.prune()
     this.dialogPins.prune(); this.dialogPins.observe(this.pinRows)
     this.manualUnread.prune()
+    this.clearOpenUnreadMark()
     this.channelPosts.observe(this.chatRows.values(), index, this.reader, this.credentials.signal)
     this.listTyping.bind(this.locked ? [] : this.list, this.locked ? null : this.reader)
     this.notifications.resume()
     this.events.changed()
   }
+  private readonly isOpenChat = (chatId: string): boolean => this.selected?.dialog.summary.id === chatId
   private openHistory(dialog: ReadDialog): HistoryReader {
     this.clearHistory()
+    this.delivery.settleMoves(dialog.summary.id)
     this.presence.setPeers('chat', this.directPeers([dialog.summary.id]))
     if (!this.reader) throw new ReadFailure('network')
     this.pins.bind(dialog, this.reader)
@@ -1324,7 +1328,18 @@ export class AccountSession {
     this.syncPresence()
     if (!this.locked) this.draftReply.bind(dialog, this.reader)
     queueMicrotask(() => { if (this.selected === history) this.acknowledgeReaction() })
-    history.start(); this.notifications.resume(); return history
+    history.start(); this.notifications.resume(); this.clearOpenUnreadMark(); return history
+  }
+  // B104: the open chat loses «안 읽음 표시» as Telegram's does on showHistory (clearsUnreadMark), once per version of the chat.
+  private unreadMarkCleared = ''
+  private clearOpenUnreadMark(): void {
+    const chatId = this.selected?.dialog.summary.id, summary = chatId ? this.index.get(chatId)?.summary : undefined
+    if (!summary || this.closed || this.locked || !clearsUnreadMark(summary, this.profile.uid)) return
+    const key = `${summary.id}:${summary.version}`
+    if (this.unreadMarkCleared === key || !this.manualUnread.canChange(summary.id)) return
+    this.unreadMarkCleared = key
+    try { void this.manualUnread.set({ id: randomUUID(), chatId: summary.id, markedUnread: false, version: summary.version, readToEnd: false }).catch(() => {}) }
+    catch { /* a chat the list no longer agrees on is left for the next look */ }
   }
   async history(chatId: string, before?: MessagePosition): Promise<HistorySnapshot> {
     if (this.closed || this.status !== 'ready' || !this.reader) return this.empty(this.status, this.message)

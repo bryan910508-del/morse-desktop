@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import Database from 'better-sqlite3-multiple-ciphers'
 import { directChatId } from '../../src/main/messaging/direct-chat-id'
-import { directPairPath, pairCorrection, pairLookup, pairReadFailed, pairRoom } from '../../src/main/messaging/direct-chat-pair'
+import { directPairPath, pairCorrection, pairLookup, pairReadFailed, pairRoom, settledMoves } from '../../src/main/messaging/direct-chat-pair'
 import { textDigest } from '../../src/main/messaging/text-identity'
 import { committedSendAck, ServerRejection } from '../../src/main/network/contracts'
 import { documents, ReadFailure, type FirestoreDocument } from '../../src/main/network/firestore-values'
@@ -66,6 +66,13 @@ test('B97: a 1:1 the device holds opens at once; the document read afterwards mo
   assert.equal(pairCorrection('held-room', { kind: 'named', chatId: 'g1' }, 'alice', 'bob', dialogs), null, 'never a group')
   assert.equal(pairCorrection('held-room', { kind: 'none' }, 'alice', 'bob', dialogs), null, 'no document: the held room stays (a first message refused there still moves)')
   assert.equal(pairCorrection('held-room', { kind: 'unreadable' }, 'alice', 'bob', dialogs), null, 'not read: stays')
+})
+
+test('B104: a window move is spent once another chat is open, so the room it moved from opens as itself again', () => {
+  const moves = new Map([['held-room', { dialogId: 'legacy-uuid-room' }], ['pending-room', { dialogId: 'dialog-2' }]])
+  assert.deepEqual([...settledMoves(moves, 'held-room').keys()], ['held-room'], 'still on the room it was made for: kept')
+  assert.deepEqual([...settledMoves(moves, 'legacy-uuid-room').keys()], [], 'moved: spent — clicking held-room later stays there')
+  assert.deepEqual([...settledMoves(moves, 'other').keys()], [])
 })
 
 const wire = (id: string, chatId: string, extra: Partial<TextSendWire> = {}): TextSendWire =>

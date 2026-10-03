@@ -11,7 +11,8 @@ export interface StoredReadReceipt {
 export interface ReadAuthority { chatId: string; cursor: ReadCursor | null; cutoff: MessagePosition | null }
 export type ReadReceiptCommand =
   | { kind: 'read-list' }
-  | { kind: 'read-enqueue'; chatId: string; target: MessagePosition }
+  // recount (B104): the server still counts the chat unread although its read position covers the target — send anyway.
+  | { kind: 'read-enqueue'; chatId: string; target: MessagePosition; recount?: boolean }
   | { kind: 'read-confirm'; chatId: string; cursor: ReadCursor }
   | { kind: 'read-reject'; chatId: string; through: MessagePosition; reason: string }
   | { kind: 'read-sync'; authorities: ReadAuthority[] }

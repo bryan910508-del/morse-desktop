@@ -23,9 +23,11 @@ export function executeReadReceipt(db: Database.Database, command: ReadReceiptCo
       ON CONFLICT(chat_id) DO UPDATE SET observed=excluded.observed,confirmed=excluded.confirmed,pending=excluded.pending,reason=excluded.reason`)
       .run(row.chatId, JSON.stringify(row.observed), row.confirmed ? JSON.stringify(row.confirmed) : null, row.pending ? 1 : 0, row.reason)
   }
-  const confirm = (row: StoredReadReceipt, cursor: ReadCursor): void => {
+  // ack: the server's answer to this read. A recount read (B104) ends only with that answer, not with a read position
+  // the list already had, which is what it is sent despite.
+  const confirm = (row: StoredReadReceipt, cursor: ReadCursor, ack = false): void => {
     if (!row.confirmed || compareReadCursor(cursor, row.confirmed) > 0) row.confirmed = cursor
-    if (readCovers(row.confirmed, readCursor(row.observed)) || readCovers(cursor, readCursor(row.observed))) {
+    if ((ack || row.reason !== 'recount') && (readCovers(row.confirmed, readCursor(row.observed)) || readCovers(cursor, readCursor(row.observed)))) {
       row.pending = false; row.reason = ''
     }
     write(row)
@@ -36,16 +38,21 @@ export function executeReadReceipt(db: Database.Database, command: ReadReceiptCo
       case 'read-list': return rows
       case 'read-enqueue': {
         const chatId = identifier(command.chatId), target = historyPosition(command.target)!
-        const old = rows.find(row => row.chatId === chatId)
-        if (old && compareReadCursor(readCursor(target), readCursor(old.observed)) <= 0) return null
+        const old = rows.find(row => row.chatId === chatId), recount = command.recount === true
+        const behind = old ? compareReadCursor(readCursor(target), readCursor(old.observed)) <= 0 : false
+        // B104: a chat the server still counts unread is read again even where it was read already (Telegram marks it
+        // read locally once its read position reaches the last message, data_histories.cpp:258-272; Morse's count is
+        // the server's, so the read goes to the server, which counts again).
+        if (behind && !(recount && !old!.pending)) return null
         if (!old && rows.length >= 10000) throw Object.assign(new Error('Read queue full'), { deliveryCode: 'capacity' })
-        write({ chatId, observed: target, confirmed: old?.confirmed ?? null,
-          pending: !readCovers(old?.confirmed, readCursor(target)), reason: '' })
+        const observed = behind ? old!.observed : target
+        write({ chatId, observed, confirmed: old?.confirmed ?? null,
+          pending: recount || !readCovers(old?.confirmed, readCursor(observed)), reason: recount ? 'recount' : '' })
         return null
       }
       case 'read-confirm': {
         const row = rows.find(row => row.chatId === identifier(command.chatId))
-        if (row) confirm(row, cursorValue(command.cursor))
+        if (row) confirm(row, cursorValue(command.cursor), true)
         return null
       }
       case 'read-reject': {

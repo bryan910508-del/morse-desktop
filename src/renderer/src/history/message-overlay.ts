@@ -17,10 +17,15 @@ const subscribe = (listener: () => void): (() => void) => { listeners.add(listen
 export function useMessageOverlay(): number { return useSyncExternalStore(subscribe, () => revision) }
 const key = (chatId: string, messageId: string): string => `${chatId}/${messageId}`
 
+// B101 (§34): a message deleted for everyone is gone from this device at once and stays gone — whatever else changes
+// on the server copy meanwhile (a reaction, a read mark) — until the delete lands (the copy disappears) or the queue
+// says it failed (reconcileActions puts it back), as tdesktop destroys the item when the request goes and restores it
+// only on failure (data/data_histories.cpp:942, 1019-1030). An edit or a reaction still gives way to a newer copy.
 export function overlayMessage(message: ChatMessage): ChatMessage | null {
   const change = changes.get(key(message.chatId, message.id))
-  if (!change || change.version !== message.version) return message
+  if (!change) return message
   if (change.kind === 'delete') return null
+  if (change.version !== message.version) return message
   if (change.kind === 'edit') return { ...message, text: change.text, edited: true }
   if (change.kind === 'poll-vote') return { ...message, poll: change.poll }
   return { ...message, reactions: change.reactions }
@@ -32,8 +37,9 @@ export function reconcileMessages(chatId: string, messages: readonly ChatMessage
   for (const [id, change] of changes) {
     if (!id.startsWith(`${chatId}/`)) continue
     const version = current.get(id.slice(chatId.length + 1))
-    // The server copy moved to a new version (or disappeared): it is now authoritative.
-    if (version !== undefined && version !== change.version) { changes.delete(id); changed = true }
+    // The server copy moved to a new version: it is now authoritative — except for a delete, which ends only when the
+    // copy is gone (B101).
+    if (change.kind === 'delete' ? version === undefined : version !== undefined && version !== change.version) { changes.delete(id); changed = true }
   }
   if (changed) touch()
 }

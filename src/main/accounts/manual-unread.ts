@@ -44,7 +44,7 @@ export class ManualUnread {
   }
   private async write(attempt: Attempt, signal: AbortSignal): Promise<void> {
     try {
-      await this.guard(attempt.request.chatId, signal, () => setManualUnread(this.auth, attempt.request.chatId, attempt.request.markedUnread, signal, () => this.validate(attempt.request, true)))
+      await this.guard(attempt.request.chatId, signal, () => setManualUnread(this.auth, attempt.request.chatId, attempt.request.markedUnread, signal, () => this.validate(attempt.request, true), attempt.request.readToEnd !== false))
       attempt.value.state = 'saved'; attempt.value.message = attempt.request.markedUnread ? tr('읽지 않음 표시를 저장했습니다. 목록은 서버 상태로 갱신됩니다.') : tr('읽음 처리를 저장했습니다. 목록은 서버 상태로 갱신됩니다.')
     } catch (error) {
       attempt.value.state = error instanceof ManualUnreadFailure && error.uncertain ? 'uncertain' : 'rejected'

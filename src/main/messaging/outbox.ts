@@ -72,7 +72,7 @@ import { stickerContentType, stickerSidePx, type StickerKind } from '../../share
 import { definiteRejections, deliveryReason, retryableRejections, textDigest } from './text-identity'
 import { draftPreviewChars } from '../../shared/chat-list-preview'
 import { directChatId } from './direct-chat-id'
-import { directPairPath, isPairDialog, pairCorrection, pairLookup, pairReadFailed, pairRoom, type PairLookup } from './direct-chat-pair'
+import { directPairPath, isPairDialog, pairCorrection, pairLookup, pairReadFailed, pairRoom, settledMoves, type PairLookup } from './direct-chat-pair'
 import type { DirectMove } from '../storage/pending-direct-table'
 import { tr } from '../../shared/i18n'
 import { rejectionCode, rejectionUntil, sanctionOf, storedRejection } from '../../shared/sanctions'
@@ -236,16 +236,17 @@ export class OutboxPump {
   // B97 §32: a 1:1 the list already holds opens at once (Desktop waited ~0.8 s for the document, iOS 816 ms); the
   // document is read afterwards, and a room it names instead moves the window there (pairCorrection) as a pending room
   // that became a dialog does (superseded). Only a person with no 1:1 here waits for the document.
-  async findDirect(peerUid: string): Promise<string | null> {
+  // isOpen: whether a chat is still the one on screen — a correction moves only the window it was opened for (B104).
+  async findDirect(peerUid: string, isOpen?: (chatId: string) => boolean): Promise<string | null> {
     await this.opening
     const held = this.peerDialogId(peerUid)
-    if (held) { void this.confirmPair(peerUid, held); return held }
+    if (held) { void this.confirmPair(peerUid, held, isOpen); return held }
     return pairRoom(await this.readPair(peerUid), this.uid, peerUid, this.context().dialogs)
   }
-  private async confirmPair(peerUid: string, held: string): Promise<void> {
+  private async confirmPair(peerUid: string, held: string, isOpen?: (chatId: string) => boolean): Promise<void> {
     const lookup = await this.readPair(peerUid)
     const dialogId = this.closed ? null : pairCorrection(held, lookup, this.uid, peerUid, this.context().dialogs)
-    if (!dialogId) return
+    if (!dialogId || (isOpen && !isOpen(held))) return
     this.superseded.set(held, { peerUid, dialogId }); this.pendingChanged(); void this.publish()
   }
   private async readPair(peerUid: string): Promise<PairLookup> {
@@ -255,6 +256,14 @@ export class OutboxPump {
     const signal = AbortSignal.any([this.generation.signal, AbortSignal.timeout(directPairReadMs)])
     try { return pairLookup(await reader.getDocument(directPairPath(this.uid, peerUid), signal), this.uid, peerUid) }
     catch (error) { return pairReadFailed(error) }
+  }
+  // B104: a move is for the one opening it was made in. Once another chat is open — the one it moved to, or any other —
+  // it is spent: the room it moved from opens as itself again, as a row of the list (left there, its messages were
+  // never read and its badge stayed for the whole session).
+  settleMoves(openChatId: string): void {
+    const kept = settledMoves(this.superseded, openChatId)
+    if (kept.size === this.superseded.size) return
+    this.superseded = kept; this.pendingChanged(); void this.publish()
   }
   // lookedUp: the caller asked findDirect already and it found no room.
   async openDirect(peer: { uid: string; displayName: string }, lookedUp = false): Promise<string> {

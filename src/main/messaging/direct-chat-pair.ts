@@ -63,3 +63,8 @@ export function pairRoom(lookup: PairLookup, uid: string, peerUid: string, dialo
 export function pairCorrection(held: string, lookup: PairLookup, uid: string, peerUid: string, dialogs: ReadonlyMap<string, PairDialog>): string | null {
   return lookup.kind === 'named' && lookup.chatId !== held && isPairDialog(dialogs.get(lookup.chatId), uid, peerUid) ? lookup.chatId : null
 }
+
+// B104: the window moves to remember once another chat is open: only one still made for the chat on screen.
+export function settledMoves<T>(moves: ReadonlyMap<string, T>, openChatId: string): Map<string, T> {
+  return new Map([...moves].filter(([chatId]) => chatId === openChatId))
+}
