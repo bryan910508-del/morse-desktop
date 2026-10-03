@@ -396,7 +396,7 @@ async function snapshot(): Promise<DesktopSnapshot> {
     inquirySends: appLocked || !active ? [] : active.inquirySends.items(),
     channelOperations: appLocked || !active ? [] : active.channelOperations.items(),
     chatFolders: appLocked || !active ? null : active.chatFolderList(),
-    connection: active?.state ?? 'offline', socket: active?.socketState ?? 'offline', dialogs: appLocked ? [] : dialogs, openDialogs: appLocked || !active ? [] : active.openDialogs(),
+    connection: active?.state ?? 'offline', link: active?.link ?? 'ready', dialogs: appLocked ? [] : dialogs, openDialogs: appLocked || !active ? [] : active.openDialogs(),
     dialogStatus: active?.readStatus ?? 'ready', dialogMessage: active?.readMessage ?? '',
     dialogPin: screenLocked ? null : active?.dialogPins.snapshot ?? null,
     manualUnread: screenLocked ? null : active?.manualUnread.snapshot ?? null,

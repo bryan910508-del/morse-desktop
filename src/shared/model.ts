@@ -41,6 +41,10 @@ import type { GroupAnnouncementEdit, GroupAnnouncementResult } from './group-ann
 export type ThemePreference = 'system' | 'dark' | 'black' | 'light'
 export type Area = 'chats' | 'contacts' | 'channels' | 'notes' | 'settings'
 export type ConnectionState = 'offline' | 'connecting' | 'registering' | 'ready' | 'suspended' | 'rejected'
+// B100: what the list and the chat title say about the connection — the way updates arrive (the chat list's Firestore
+// listen) and the network, as Telegram's title says what its update connection is doing. The message server's socket
+// is not part of it: sends go by the callables without it (A15).
+export type LinkState = 'ready' | 'waiting-network' | 'connecting' | 'updating'
 
 export interface Preferences {
   theme: ThemePreference
@@ -287,8 +291,9 @@ export interface DesktopSnapshot {
   accounts: AccountProfile[]
   activeAccountUid: string | null
   connection: ConnectionState
-  // A15-5: the active account's message server socket, for «연결 중…» only; `connection` is whether the account is usable.
-  socket: ConnectionState
+  // B100: the active account's update path and the network, for «네트워크 대기 중» / «연결 중…» / «업데이트 중…» only;
+  // `connection` is whether the account is usable.
+  link: LinkState
   dialogs: DialogSummary[]
   // Dialogs that are open without being rows of the list (deleted here, or nothing left after a delete for everyone):
   // Telegram keeps a History per peer whether or not it is in the chat list. Look a chat up with dialogById().

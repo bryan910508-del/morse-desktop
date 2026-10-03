@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { AuthenticationFailure, type AppCheckProof, type DesktopAppProofProvider } from './contracts'
 import type { ProofTokenStore } from './proof-token-store'
 import { tr } from '../../shared/i18n'
+import { reachability } from '../network/reachability'
 
 // The App Check token's claims must name this Web App and the Morse project and stay within the TTL.
 function proofFromToken(token: string, appId: string): AppCheckProof {
@@ -19,7 +20,7 @@ function proofFromToken(token: string, appId: string): AppCheckProof {
 }
 
 interface Flight { controller: AbortController; promise: Promise<AppCheckProof>; consumers: number }
-type ProofFailureStep = 'page-error' | 'timeout' | 'load-failed' | 'renderer-gone' | 'invalid-response' | 'window-closed'
+type ProofFailureStep = 'page-error' | 'timeout' | 'load-failed' | 'renderer-gone' | 'invalid-response' | 'window-closed' | 'session-failed' | 'backoff'
 interface ProofResponse { host: string; path: string; method: string; status: number; error: string }
 interface ProofFailureEntry { step: ProofFailureStep; detail: string; blockedHosts: string[]; responses: ProofResponse[]; elapsedMs: number; platform: 'macOS' | 'Windows' }
 
@@ -36,6 +37,16 @@ const offlineWait = 15000
 // Firebase refreshes an App Check token before it runs out. Acquiring only when a caller already needs
 // it makes that caller wait for the whole exchange — 12 seconds when it times out — so it starts early.
 const renewBefore = 10 * 60000
+// A16: a token in hand is used until it is about to run out — a renewal that fails behind it costs nothing while it
+// lasts. This much is kept for the request to reach Google.
+const usableUntilBefore = 30000
+// A16: after an exchange that failed, the next one waits — 2 s, doubling to a minute — or until the network comes
+// back. Asking again at once cannot help: the reCAPTCHA key only scores, and a low score (a VPN exit, B99) stays
+// low, while every caller that needed a token opened the check again.
+export function proofRetryDelay(failures: number): number { return failures <= 0 ? 0 : Math.min(60000, 2000 * 2 ** (failures - 1)) }
+// A16: how a signed-in (or restoring) account asks the server for this app's token (getMorseDesktopAppCheckToken), its
+// sign-in token renewed first when it is running out — renewing needs no proof; null when it cannot ask now.
+export type SessionProof = (signal: AbortSignal) => Promise<string | null>
 const guardedSessions = new WeakSet<Electron.Session>()
 
 // Local diagnostics for a failed security check: the failed step, a short reason,
@@ -81,13 +92,35 @@ function wait(milliseconds: number, signal: AbortSignal): Promise<void> {
 
 // Web-origin attestation, not hardware or native binary attestation. The
 // application server remains the authority for the token signature and App ID.
+//
+// A16 (§33, user «권장대로» 10-03 21:5x; B99): an account signed in on this computer is itself the proof — the server
+// checks its session and gives the token (getMorseDesktopAppCheckToken), as Telegram Desktop needs nothing but its
+// authorized session to work. The page is for the sign-in itself, and the window in view only before any account is
+// signed in: once one is, a failed exchange waits (proofRetryDelay) and the account says «연결 중…» instead of
+// showing the check again and again.
 export class HostedWebAppProof implements DesktopAppProofProvider {
   private cached: AppCheckProof | null = null
   private stored: Promise<void> | null = null
   private renewal: Promise<unknown> | null = null
   private flight: Flight | null = null
+  private readonly sessions = new Map<string, SessionProof>()
+  private failures = 0
+  private retryAt = 0
   constructor(private readonly origin: string, private readonly appId: string,
-    private readonly platform: 'macOS' | 'Windows', private readonly store: ProofTokenStore | null = null) {}
+    private readonly platform: 'macOS' | 'Windows', private readonly store: ProofTokenStore | null = null,
+    page?: (signal: AbortSignal, visible: boolean, deadlineMs: number) => Promise<AppCheckProof>) {
+    // The page's check; a stand-in in the unit tests.
+    this.page = page ?? ((signal, visible, deadlineMs) => this.attempt(signal, visible, deadlineMs))
+    // The network coming back is worth a try at once (reconnect-now).
+    reachability.subscribe(() => { this.retryAt = 0 })
+  }
+  private readonly page: (signal: AbortSignal, visible: boolean, deadlineMs: number) => Promise<AppCheckProof>
+  // A signed-in account offers its session; the returned function takes it back (signed out, switched away, closed).
+  useSession(uid: string, proof: SessionProof): () => void {
+    this.sessions.set(uid, proof); this.retryAt = 0
+    return () => { if (this.sessions.get(uid) === proof) this.sessions.delete(uid) }
+  }
+  get signedIn(): boolean { return this.sessions.size > 0 }
 
   async getProof(signal: AbortSignal): Promise<AppCheckProof> {
     if (signal.aborted) throw new AuthenticationFailure('cancelled')
@@ -99,14 +132,15 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
     })()
     await this.stored
     if (signal.aborted) throw new AuthenticationFailure('cancelled')
-    if (this.cached && this.cached.expiresAt > Date.now() + 120000) {
+    if (this.cached && this.cached.expiresAt > Date.now() + usableUntilBefore) {
       if (this.cached.expiresAt <= Date.now() + renewBefore) this.renewAhead()
       return this.cached
     }
     let flight = this.flight
     if (!flight || flight.controller.signal.aborted) {
+      if (Date.now() < this.retryAt) throw Object.assign(new AuthenticationFailure('app-proof'), { proofStep: 'backoff' as ProofFailureStep })
       const controller = new AbortController()
-      flight = { controller, consumers: 0, promise: Promise.resolve().then(() => this.acquire(controller.signal)) }
+      flight = { controller, consumers: 0, promise: Promise.resolve().then(() => this.counted(controller.signal)) }
       this.flight = flight
     }
     const owned = flight
@@ -131,6 +165,36 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
     })
   }
 
+  // One exchange, and what it does to the wait before the next (proofRetryDelay). A cancelled one says nothing.
+  private async counted(signal: AbortSignal): Promise<AppCheckProof> {
+    try {
+      const proof = await this.acquire(signal)
+      this.failures = 0; this.retryAt = 0
+      return proof
+    } catch (error) {
+      if (!signal.aborted && (error as AuthenticationFailure).code !== 'cancelled') { this.failures++; this.retryAt = Date.now() + proofRetryDelay(this.failures) }
+      throw error
+    }
+  }
+  // A16: a signed-in account's session first. Then the page, hidden only — the window in view is for the sign-in.
+  private async bySession(signal: AbortSignal): Promise<AppCheckProof | null> {
+    for (const [, ask] of [...this.sessions]) {
+      const started = Date.now()
+      try {
+        const token = await ask(signal)
+        if (!token) continue
+        const proof = proofFromToken(token, this.appId)
+        this.cached = proof; void this.store?.save(proof)
+        void recordProofTiming('session', Date.now() - started, this.platform)
+        return proof
+      } catch (error) {
+        if (signal.aborted) throw error
+        void recordProofFailure({ step: 'session-failed', detail: (error as AuthenticationFailure).code ?? 'invalid', blockedHosts: [], responses: [], elapsedMs: Date.now() - started, platform: this.platform })
+      }
+    }
+    return null
+  }
+
   // reCAPTCHA Enterprise here is the score-based kind: nothing is asked of the person, so the page does its work
   // without being seen, as iOS's App Attest does its own. Only when that attempt is refused or runs out of time does
   // the window open — the same check, in view — so a sign-in is never worse off than before. The whole exchange stays
@@ -139,20 +203,25 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
     const started = Date.now()
     const stepOf = (error: unknown): ProofFailureStep | undefined => (error as { proofStep?: ProofFailureStep }).proofStep
     const done = (proof: AppCheckProof, how: string): AppCheckProof => { void recordProofTiming(how, Date.now() - started, this.platform); return proof }
+    await whenOnline(signal, offlineWait)
+    if (this.signedIn) {
+      const proof = await this.bySession(signal)
+      if (proof) return proof
+      return done(await this.page(signal, false, hiddenDeadline), 'hidden-signed-in')
+    }
     try {
-      await whenOnline(signal, offlineWait)
-      try { return done(await this.attempt(signal, false, hiddenDeadline), 'hidden') }
+      try { return done(await this.page(signal, false, hiddenDeadline), 'hidden') }
       catch (error) {
         const step = stepOf(error)
         if (signal.aborted || (step !== 'load-failed' && step !== 'renderer-gone')) throw error
         await whenOnline(signal, offlineWait)
         await wait(transientRetryDelay, signal)
-        return done(await this.attempt(signal, false, hiddenDeadline), 'hidden-again')
+        return done(await this.page(signal, false, hiddenDeadline), 'hidden-again')
       }
     } catch (error) {
       const step = stepOf(error)
       if (signal.aborted || !step || !['page-error', 'timeout', 'invalid-response'].includes(step)) throw error
-      return done(await this.attempt(signal, true, visibleDeadline), 'visible')
+      return done(await this.page(signal, true, visibleDeadline), 'visible')
     }
   }
 
@@ -161,7 +230,7 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
   private renewAhead(): void {
     if (this.renewal) return
     const controller = new AbortController()
-    const task = Promise.resolve().then(() => this.acquire(controller.signal)).catch(() => {})
+    const task = Promise.resolve().then(() => this.counted(controller.signal)).catch(() => {})
       .finally(() => { if (this.renewal === task) this.renewal = null })
     this.renewal = task
   }

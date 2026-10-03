@@ -3,7 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { BadgeCheck, Archive, ArchiveRestore, ArrowLeft, ArrowUpDown, Bell, BellOff, CircleAlert, Clock3, FolderPlus, Lock, LogOut, Mail, MailOpen, Megaphone, Menu, Pencil, Pin, PinOff, Search, StickyNote, Trash2, Users, X } from 'lucide-react'
 import type { ContactSummary } from '../../../shared/contacts'
 import { folderContains, folderTitle, type ChatFolder } from '../../../shared/chat-folders'
-import type { ConnectionState, DialogSummary } from '../../../shared/model'
+import type { DialogSummary } from '../../../shared/model'
 import { foldOwnedDiscussions, ownedChannelDiscussion, type DiscussionFold, type InquiryRow } from '../../../shared/channel-inquiries'
 import { useInquirySendState } from '../channels/inquiry-sends'
 import { inquiryRowState, setInquiryRowState, useInquiryRowState, useInquiryRowStates } from './inquiry-row-state'
@@ -25,7 +25,7 @@ import { loadChatFolders, receiveChatFolders, toggleChatPinnedInFolder, useChatF
 import { removeChatFolder, showFolderEditBox, showFolderPickerBox, showFoldersBox } from '../boxes/chat-folder-boxes'
 import { StoriesRow } from '../stories/stories-row'
 import { tr } from '../../../shared/i18n'
-import { useShownConnection } from '../app/connection'
+import { linkLabel, useShownConnection } from '../app/connection'
 import { useListTyping } from '../app/typing'
 import { peopleWithoutRows, type NoChatPerson, type UnlistedDirect } from '../../../shared/dialog-search'
 import { openContactChat } from '../app/contacts'
@@ -41,9 +41,6 @@ export const folders: { id: Folder; label: string }[] = [
   // discussion room.
   { id: 'all', label: tr('전체') }, { id: 'personal', label: tr('개인') }, { id: 'groups', label: tr('그룹') }, { id: 'unread', label: tr('읽지 않음') }
 ]
-const connectionLabels: Record<ConnectionState, string> = {
-  ready: '', offline: tr('연결 대기 중'), connecting: tr('연결 중…'), registering: tr('계정 확인 중…'), suspended: tr('연결 일시 중지'), rejected: tr('다시 로그인해 주세요')
-}
 
 type Row = { kind: 'dialog'; dialog: DialogSummary } | { kind: 'pending'; pending: PendingDirect } | { kind: 'person'; person: NoChatPerson }
   | { kind: 'inquiry'; inquiry: InquiryRow } | { kind: 'archive'; count: number; unread: number } | { kind: 'notes' }
@@ -418,7 +415,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
     requestAnimationFrame(() => scroll.current?.querySelector<HTMLElement>(`[data-row="${next}"]`)?.focus())
   }
 
-  const connectionLabel = connectionLabels[shownConnection]
+  const connectionLabel = linkLabel(shownConnection)
   return <div className="dialogs" aria-label={tr('대화 목록')}>
     <div className="top-bar">
       <button className="icon-button" aria-label={tr('메뉴 열기')} onClick={() => controller.setMainMenu(true)}><Menu size={22} /></button>
@@ -434,7 +431,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       </label>
       {lockEnabled && !query && <button className="icon-button" aria-label={tr('앱 잠그기')} title={tr('앱 잠그기')} onClick={() => { void window.morse.appLock.lock() }}><Lock size={20} /></button>}
     </div>
-    {connectionLabel && <div className="dialogs-connection" role="status">{shownConnection !== 'offline' && shownConnection !== 'rejected' && <Spinner size={12} />}{connectionLabel}</div>}
+    {connectionLabel && <div className="dialogs-connection" role="status">{shownConnection !== 'waiting-network' && <Spinner size={12} />}{connectionLabel}</div>}
     {!query && !archived && <StoriesRow accountUid={accountUid} />}
     {!query && !archived && <div className="dialogs-folders" role="tablist" aria-label={tr('대화 폴더')}>
       {folders.map(tab => <button key={tab.id} role="tab" type="button" className="dialogs-folder" aria-selected={folder === tab.id} onClick={() => controller.setFolder(tab.id)}

@@ -19,4 +19,7 @@ export const safeStorage = {
 export class BrowserWindow { constructor() { throw new Error('BrowserWindow is not available in unit tests') } }
 export const session = { fromPartition: () => { throw new Error('session is not available in unit tests') } }
 export const shell = { openExternal: async () => { throw new Error('shell is not available in unit tests') } }
-export default { app, nativeImage, safeStorage, BrowserWindow, session, shell }
+// The App Check provider (web-app-proof.ts) asks whether the machine is online and listens for its page's answer.
+export const net = { isOnline: () => true }
+export const ipcMain = { on: () => {}, removeListener: () => {} }
+export default { app, nativeImage, safeStorage, BrowserWindow, session, shell, net, ipcMain }

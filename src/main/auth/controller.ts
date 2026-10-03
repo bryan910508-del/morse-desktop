@@ -69,6 +69,8 @@ export interface AuthenticationSeams {
 // revocation monitoring. Account readers consume its verified lifetime.
 export class AuthenticationController {
   private readonly api: FirebaseAuthenticationAPI | null
+  // A16: where a signed-in account offers its session to prove this app.
+  private readonly proofSessions: DesktopAuthConfiguration['proof'] | null
   private readonly identity: DeviceIdentity
   private value: AuthenticationSnapshot
   private operation: AbortController | null = null
@@ -94,6 +96,7 @@ export class AuthenticationController {
     private boundUid: string | null = null, private readonly admission: AccountAdmission | null = null,
     private readonly seams: AuthenticationSeams = {}) {
     this.api = configuration ? new FirebaseAuthenticationAPI(configuration) : null
+    this.proofSessions = configuration?.proof ?? null
     this.identity = new DeviceIdentity(vault.location)
     this.value = { available: this.api !== null, phase: this.api ? 'signed-out' : 'unavailable', account: null,
       message: this.api ? tr('복구 코드로 기존 계정을 연결하세요.') : tr('Desktop 계정 연결을 준비하고 있습니다.') }
@@ -406,7 +409,12 @@ export class AuthenticationController {
         progress.stage = 'saved'
         await this.vault.save(record)
         this.assertCurrent(controller)
-        await this.establish(api, controller, record, tokens, progress)
+        // A16: the saved sign-in proves the app while it is restored — the server checks its session — so a restart on a
+        // network where reCAPTCHA scores low (B99, a VPN exit) still opens. The open account takes this over (establish);
+        // a session the server refuses leaves it to the hidden page as before.
+        const restoring = this.proofSessions?.useSession?.(record.profile.uid, signal => api.desktopAppCheckToken(tokens.idToken, signal))
+        try { await this.establish(api, controller, record, tokens, progress) }
+        finally { restoring?.() }
       } catch (error) {
         if (!controller.signal.aborted) recordRetry('restore', progress.stage, error)
         throw error
@@ -497,6 +505,12 @@ export class AuthenticationController {
       authorize
     })
     this.set('signed-in', tr('계정이 연결되었습니다.'), owner)
+    // A16: this account's session proves the app from now on (web-app-proof.ts): the server gives the token. A sign-in
+    // token about to run out is renewed first (idToken) — renewing needs no proof (firebase-rest.ts refresh) — so after a
+    // long sleep the saved sign-in alone leads back: refresh token → ID token → this app's token, with no page.
+    const stopProof = this.proofSessions?.useSession?.(record.profile.uid, async signal =>
+      owner.established && this.owner === owner ? api.desktopAppCheckToken(await this.idToken(owner, false), signal) : null)
+    if (stopProof) controller.signal.addEventListener('abort', stopProof, { once: true })
     // What the socket's registration watched for this sign-in is watched on Firestore too (sign-in-watch.ts).
     const watchReader = new FirestoreReader({ signal: controller.signal, authorize })
     controller.signal.addEventListener('abort', () => watchReader.close(), { once: true })

@@ -52,7 +52,8 @@ import { ChannelJoinDecisions } from './channel-join-decisions'
 import { ChannelAccessEditor } from './channel-access-edit'
 import { ChannelPhotoUpload } from './channel-photo-upload'
 import type { ChannelPhotoBinding } from '../../shared/channel-photo-upload'
-import type { AccountProfile, ConnectionState, DialogSummary, HistorySnapshot, MessagePosition, ReadStatus } from '../../shared/model'
+import type { AccountProfile, ConnectionState, DialogSummary, HistorySnapshot, LinkState, MessagePosition, ReadStatus } from '../../shared/model'
+import { linkState, listRetryDelay } from './link-state'
 import { comparePosition, positionMilliseconds, withinCutoff } from '../../shared/model'
 import type { ChatBackgroundEdit, ChatBackgroundRecord } from '../../shared/chat-background'
 import { BackgroundStorage } from './background-storage'
@@ -197,6 +198,11 @@ export class AccountSession {
   private chatRows = new Map<string, FirestoreDocument>()
   private pinRows = new Map<string, FirestoreDocument>()
   private chatsCurrent = false
+  // B100: the chat list has been current once since the account opened (before that it is catching up: «업데이트 중…»).
+  private listEverCurrent = false
+  // B100: a list that stopped on an error listens again by itself, a little later each time (listRetryDelay).
+  private listRetry: ReturnType<typeof setTimeout> | undefined
+  private listAttempts = 0
   private pinsCurrent = false
   private index = new Map<string, ReadDialog>()
   private list: DialogSummary[] = []
@@ -634,6 +640,7 @@ export class AccountSession {
     } : null, credentials.signal)
     this.stopReachability = reachability.subscribe(() => {
       if (this.closed) return
+      if (this.status === 'error' && !this.locked) this.refresh()
       this.actions.retryNow(); this.inquirySends.retryNow(); this.channelOperations.retryNow(); this.historyClears.retryNow(); this.postCreation.resume(); this.commentCreation.resume()
     })
     this.channelInquiries = new ChannelInquiries(profile.uid, credentials, connected, () => this.selfProfile.commentAuthor(), () => events.canRead(), () => { if (!this.closed) events.changed() },
@@ -661,6 +668,16 @@ export class AccountSession {
   }
   get state(): ConnectionState { return this.connection }
   get socketState(): ConnectionState { return this.socket }
+  // B100: what the list and the chat title say about the connection (link-state.ts).
+  get link(): LinkState { return linkState(reachability.down, this.status, this.chatsCurrent, this.listEverCurrent) }
+  // B100: Telegram never stops reconnecting its update connection; a chat list stopped by an error (a refused read, a
+  // reply it could not read) listens again after 5 s, doubling to a minute, and at once when the network is back.
+  private retryList(): void {
+    clearTimeout(this.listRetry)
+    if (this.closed) return
+    this.listRetry = setTimeout(() => { if (!this.closed && !this.locked && this.status === 'error') this.refresh() }, listRetryDelay(this.listAttempts++))
+    this.listRetry.unref?.()
+  }
   setSocket(state: ConnectionState): void {
     if (this.closed || this.socket === state) return
     this.socket = state
@@ -1123,6 +1140,7 @@ export class AccountSession {
     const failed = (error: ReadFailure): void => {
       if (!active()) return
       this.stop(); this.clearVisible('error', error.message)
+      this.retryList()
     }
     try {
       const reader = new FirestoreReader(this.credentials)
@@ -1137,7 +1155,7 @@ export class AccountSession {
         reader.watch({ query }, this.credentials.signal, {
           snapshot: rows => {
             if (!active()) return
-            if (kind === 'chats') { this.chatRows = rows; this.chatsCurrent = true }
+            if (kind === 'chats') { this.chatRows = rows; this.chatsCurrent = true; this.listEverCurrent = true; this.listAttempts = 0 }
             else { this.pinRows = rows; this.pinsCurrent = true }
             try { this.rebuild() } catch (error) { failed(error instanceof ReadFailure ? error : new ReadFailure('data')) }
           },
@@ -2473,7 +2491,7 @@ export class AccountSession {
   async close(purge: boolean): Promise<void> {
     if (this.closed) return
     this.keptHistories.clear()
-    this.roomPresence.close(); this.closed = true; this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
+    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
     this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); 
     await storyClose
     await noteClose

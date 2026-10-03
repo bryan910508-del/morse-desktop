@@ -50,7 +50,7 @@ import { usePresence } from '../app/presence'
 import { useTyping } from '../app/typing'
 import { PinnedBar, togglePin } from './pinned-bar'
 import { DeferredBar } from './deferred-send'
-import { useShownConnection } from '../app/connection'
+import { linkLabel, useShownConnection } from '../app/connection'
 import { tr } from '../../../shared/i18n'
 import { reactionStrip, readRecentReactions, recordReaction } from './recent-reactions'
 import { chatRestrictedNotice } from '../../../shared/sanctions'
@@ -551,7 +551,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   const saved = chatId === `memo_${accountUid}`
   const title = saved ? tr('저장한 메시지') : dialog?.title ?? pending?.displayName ?? tr('대화')
   const typing = useTyping(chatId)
-  const subtitle = !dialog ? pending ? tr('새 대화') : '' : shownConnection !== 'ready' ? tr('연결 중…') : secret ? tr('비밀 대화') : typing ? tr('입력 중...') : group ? tr('참여자 {0}명', [dialog.participantUids.length]) : peerPresence?.text ?? ''
+  const subtitle = !dialog ? pending ? tr('새 대화') : '' : shownConnection !== 'ready' ? linkLabel(shownConnection) : secret ? tr('비밀 대화') : typing ? tr('입력 중...') : group ? tr('참여자 {0}명', [dialog.participantUids.length]) : peerPresence?.text ?? ''
   const surface = secret ? defaultChatBackground : background?.value ?? deviceBackground
   const scope = background?.value ? { kind: 'chat' as const, accountUid, chatId } : { kind: 'device' as const }
   // A10 §4 (Telegram restriction_reason): a room the operator closed shows why instead of its messages.

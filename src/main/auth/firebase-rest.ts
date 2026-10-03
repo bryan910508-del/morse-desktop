@@ -179,9 +179,13 @@ export class FirebaseAuthenticationAPI {
     await this.confirmUser(tokens, signal)
     return tokens
   }
+  // A16 (§33): renewing the sign-in token asks for no App Check proof — securetoken.googleapis.com is not a service App
+  // Check covers (the App Check API answers it is unsupported, server session 10-03 23:4x), so the header was of no use,
+  // and waiting for a proof could hold the renewal up exactly when the proof itself needed it (a signed-in Desktop's
+  // proof comes from its session, below). The sign-in session alone carries an account on, as in Telegram Desktop.
   async refresh(refreshToken: string, uid: string, authTime: number, signal: AbortSignal): Promise<AuthTokens> {
     const result = await this.request(`https://securetoken.googleapis.com/v1/token?key=${encodeURIComponent(this.config.apiKey)}`,
-      { 'Content-Type': 'application/x-www-form-urlencoded', 'X-Firebase-AppCheck': await this.proof(signal) },
+      { 'Content-Type': 'application/x-www-form-urlencoded' },
       new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken }).toString(), signal)
     // The securetoken endpoint returns a project number in project_id.
     if (result.user_id !== uid || result.project_id !== this.config.projectNumber || result.token_type !== 'Bearer') throw new AuthenticationFailure('protocol')
@@ -217,6 +221,16 @@ export class FirebaseAuthenticationAPI {
     if (!Array.isArray(result.users) || result.users.length !== 1) throw new AuthenticationFailure('protocol')
     const user = object(result.users[0])
     if (user.localId !== tokens.uid || user.disabled === true) throw new AuthenticationFailure('invalid-credential')
+  }
+  // A16 (§33): this app's App Check token from the server, for a signed-in session — getMorseDesktopAppCheckToken checks
+  // the sign-in (the ID token, its session, the generation) instead of a proof (enforceAppCheck: false), and names the app
+  // from the session it started with. Sent without a proof: the proof is what it is asked for. Its refusals
+  // (not-desktop-session, session-unconfirmed, session-revoked, password-needed, rate-limited) are read as any
+  // callable's; the session itself is ended only by startMorseDeviceSession's word (A5 §3-1), never here.
+  async desktopAppCheckToken(idToken: string, signal: AbortSignal): Promise<string> {
+    const response = await this.request(`https://asia-northeast3-${this.config.projectId}.cloudfunctions.net/getMorseDesktopAppCheckToken`,
+      { 'Content-Type': 'application/json', Authorization: `Bearer ${string(idToken)}` }, JSON.stringify({ data: {} }), signal)
+    return string(object(response.result).token)
   }
   // A6 §3-3: the row of the account's session list shows this computer's model and system, as Telegram Desktop sends
   // them (platform/device-model.ts). deviceLabel stays for builds that read only it.
