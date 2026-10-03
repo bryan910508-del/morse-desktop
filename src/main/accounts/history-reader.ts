@@ -1,6 +1,7 @@
 import type { ChatMessage, HistorySnapshot, MessagePosition, ReplyPreview } from '../../shared/model'
 import { comparePosition, positionAt } from '../../shared/model'
-import { FirestoreReader } from '../network/firestore-rpc'
+import { FirestoreReader, type WatchResumeToken } from '../network/firestore-rpc'
+import type { KeptHistory } from './kept-histories'
 import { decodeMessage, documents, expiry, historyReadable, historyLimit, messagesQuery, pageSize, positionValue, rawPosition, ReadFailure, type FirestoreDocument, type ReadDialog, roomMediaNames } from '../network/firestore-values'
 import type { MediaRequest } from '../../shared/media'
 import { mediaResources } from '../media/media-document'
@@ -33,13 +34,18 @@ export class HistoryReader {
   // checkTTLs(): what this room has seen expire leaves the server too, since no one else takes it away.
   private readonly expired: ExpiredMessages
   private value: HistorySnapshot = { messages: [], before: null, hasMore: false, revision: 0, status: 'loading', message: '', newerAvailable: false }
+  // B87: the history query as sent, and the resume token of its last snapshot (kept-histories.ts).
+  private query = ''
+  private token: WatchResumeToken | null = null
 
   constructor(readonly dialog: ReadDialog, private readonly reader: FirestoreReader, private readonly changed: (snapshot: HistorySnapshot) => void,
     private readonly nextRevision: () => number, private readonly hidden: (messageId: string) => boolean = () => false,
     // Nothing is taken from the server while the screen is locked or the account has moved on.
     private readonly writable: () => boolean = () => true,
     // The ids that this device's messages still on their way answer (OutboxPump), quoted like a sent reply's.
-    private readonly localReplies: () => string[] = () => []) {
+    private readonly localReplies: () => string[] = () => [],
+    // B87: what this chat showed when it was last open (KeptHistories), drawn before the server answers.
+    private readonly kept: (query: string) => KeptHistory | null = () => null) {
     this.replies = new ReplyContext(dialog, reader, this.abort.signal, () => this.publish())
     this.pollVotes = new PollVotes(async messageId => {
       const doc = await reader.getDocument(`${documents}/chats/${dialog.summary.id}/messages/${messageId}/pollVotes/${dialog.accountUid}`, this.abort.signal)
@@ -100,8 +106,23 @@ export class HistoryReader {
     if (this.dialog.summary.kind === 'secret') {
       this.value.status = 'unsupported'; this.value.message = tr('이 기기에서는 아직 비밀 대화를 열 수 없습니다.'); this.publish(); return
     }
-    this.stopTail = this.reader.watch({ query: { parent: `${documents}/chats/${this.dialog.summary.id}`, structuredQuery: messagesQuery(this.dialog) } },
+    const structuredQuery = messagesQuery(this.dialog)
+    this.query = JSON.stringify(structuredQuery)
+    // B87: the messages this chat had when it was last open show at once, as Telegram draws a History it already has;
+    // the listen then asks only for what changed since (a RESET or a mismatch reads everything again).
+    const kept = this.kept(this.query)
+    if (kept) {
+      this.top = this.sorted(kept.documents)
+      this.rows = new Map(this.top.slice(0, pageSize).map(doc => [doc.name, doc]))
+      this.value.before = this.top[Math.min(pageSize, this.top.length) - 1] ? rawPosition(this.top[Math.min(pageSize, this.top.length) - 1]!, this.dialog.summary.id) : null
+      this.value.hasMore = this.top.length > pageSize
+      this.value.status = 'ready'; this.value.message = ''
+      recordHistoryStep('history-kept', String(this.top.length))
+      this.publish()
+    }
+    this.stopTail = this.reader.watch({ query: { parent: `${documents}/chats/${this.dialog.summary.id}`, structuredQuery } },
       this.abort.signal, {
+        resumeToken: token => { if (!this.closed && !this.failed) this.token = token },
         snapshot: entries => {
           if (this.closed || this.failed) return
           this.top = this.sorted(entries.values())
@@ -127,11 +148,17 @@ export class HistoryReader {
           else if (state === 'loading') {
             this.cancelPage()
             // Reconnect discards rows whose server authorization is not current.
-            this.rows.clear(); this.top = []; this.groupNames = ''; this.stopGroups()
+            this.rows.clear(); this.top = []; this.token = null; this.groupNames = ''; this.stopGroups()
             this.value.status = 'loading'; this.value.message = error?.message ?? ''; this.value.before = null; this.value.hasMore = false; this.value.newerAvailable = false; this.value.focusMessageId = undefined; this.following = true; this.publish()
           }
         },
-      }, pageSize + 1)
+      }, pageSize + 1, undefined, kept ? { token: kept.token, documents: new Map(kept.documents.map(doc => [doc.name, doc])) } : undefined)
+  }
+  // B87: what to keep when this chat closes — the latest messages as the server last confirmed them, with the token to
+  // resume from. Nothing while it is failed, still loading or has no token yet.
+  keep(): KeptHistory | null {
+    if (this.closed || this.failed || this.value.status !== 'ready' || !this.token || !this.query) return null
+    return { query: this.query, documents: [...this.top], token: this.token }
   }
   private sorted(rows: Iterable<FirestoreDocument>): FirestoreDocument[] {
     return [...rows].sort((a, b) => comparePosition(rawPosition(b, this.dialog.summary.id), rawPosition(a, this.dialog.summary.id)))

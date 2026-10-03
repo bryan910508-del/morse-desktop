@@ -1,5 +1,5 @@
 import type { ReportRequest } from '../../shared/reports'
-import { defaultSessionTtlDays, sessionTtlDayOptions, type AccountPrivacy, type BlockTarget, type BlockedUser, type DataExport, type LastSeenPrivacy, type SessionPlatform, type SignInSession, type SignInSessions } from '../../shared/account-tools'
+import { autoDeleteMonthsOf, defaultSessionTtlDays, sessionTtlDayOptions, type AccountPrivacy, type BlockTarget, type BlockedUser, type DataExport, type LastSeenPrivacy, type SessionPlatform, type SignInSession, type SignInSessions } from '../../shared/account-tools'
 import { normalizeBackupCode } from '../../shared/auth'
 import type { AccountAuthorization } from '../messaging/outbox'
 import { autoDeleteSecondsValue } from '../../shared/chat-auto-delete'
@@ -235,13 +235,13 @@ export class AccountToolsApi {
       throw new Error(code === 7 ? tr('신고 실패: 서버가 신고 저장을 허용하지 않았어요.') : tr('신고 실패: 연결을 확인한 뒤 다시 시도해 주세요.'))
     }
   }
-  // The iOS UI shows six months until a value is stored (AppStorage autoDeleteAccountMonths = 6).
+  // No stored choice reads as «끔» (privacy policy v2, D4; shared/account-tools.ts autoDeleteMonthsOf).
   accountPrivacy(): Promise<AccountPrivacy> {
     return this.read(async (reader, signal) => {
       const doc = await reader.getDocument(`${documents}/users/${this.uid}`, signal)
       const fields = (doc?.fields ?? {}) as Record<string, WireObject>
       const privacy = ((fields.privacy as { mapValue?: { fields?: Record<string, WireObject> } } | undefined)?.mapValue?.fields ?? {})
-      const stored = privacy.autoDeleteAccountMonths === undefined ? 6 : Math.trunc(numberField(privacy, 'autoDeleteAccountMonths'))
+      const stored = autoDeleteMonthsOf(privacy.autoDeleteAccountMonths === undefined ? undefined : numberField(privacy, 'autoDeleteAccountMonths'))
       return { isPrivate: doc ? boolField(fields, 'isPrivate') : false, autoDeleteMonths: stored }
     })
   }

@@ -162,6 +162,7 @@ import { reachability } from '../network/reachability'
 import { RoomPresence } from './room-presence'
 import { ChannelOperations } from './channel-operations'
 import { HistoryClears, type HistoryClearSession } from './history-clears'
+import { KeptHistories } from './kept-histories'
 
 export interface AccountEvents {
   storyStealth(): boolean
@@ -202,6 +203,8 @@ export class AccountSession {
   // message left, still opens from the contact as an empty chat and returns to the list with its next message.
   private unlistedOpen: string | null = null
   private selected: HistoryReader | null = null
+  // B87: the last messages of the chats opened last, shown again at once when one opens (kept-histories.ts).
+  private readonly keptHistories = new KeptHistories()
   private search: MessageSearch | null = null
   private readonly delivery: OutboxPump
   // Per chat, the ids its messages still on their way answer (B46: quoted by the history like sent replies).
@@ -658,6 +661,7 @@ export class AccountSession {
   setLocked(locked: boolean): void {
     if (this.locked === locked) return
     this.locked = locked
+    if (locked) this.keptHistories.clear()
     this.syncPresence()
     if (locked) this.channelPeople.clear()
     this.channels.setLocked(locked)
@@ -1038,6 +1042,9 @@ export class AccountSession {
     const old = this.selected
     this.selected = null
     this.syncPresence()
+    // A chat left in the ordinary way is kept; one that failed, went away or closed under the lock is not.
+    const kept = old && status === 'loading' && !message && !this.locked && !this.closed ? old.keep() : null
+    if (old && kept) this.keptHistories.keep(old.dialog.summary.id, kept)
     old?.close()
     if (old) this.events.history(old.dialog.summary.id, this.empty(status, message))
   }
@@ -1046,7 +1053,7 @@ export class AccountSession {
     this.voiceDraftStorage.invalidate();this.backgroundStorage.invalidate()
     this.dialogPins.pause()
     this.manualUnread.pause()
-    this.status = status; this.message = message; this.list = []; this.index.clear()
+    this.status = status; this.message = message; this.list = []; this.index.clear(); this.keptHistories.clear()
     this.delivery.pause()
     this.reads.pause()
     this.actions.pause()
@@ -1227,6 +1234,8 @@ export class AccountSession {
     const openId = this.selected?.dialog.summary.id
     if (openId && index.has(openId) && !this.list.some(dialog => dialog.id === openId)) this.unlistedOpen = openId
     if (this.unlistedOpen && (!index.has(this.unlistedOpen) || this.list.some(dialog => dialog.id === this.unlistedOpen))) this.unlistedOpen = null
+    // A chat this account is no longer in, or one deleted, keeps nothing.
+    this.keptHistories.prune(id => index.has(id))
     this.status = 'ready'; this.message = ''
     if (this.accountAutoDeleteSeconds === null) void this.refreshAutoDeleteDefault()
     this.reminders()
@@ -1275,6 +1284,7 @@ export class AccountSession {
     // The header's «입력 중...»: iOS shows it in every room but a secret one and the memo space.
     if (dialog.summary.kind !== 'secret' && !dialog.summary.id.startsWith('memo_'))
       this.typing.bind(dialog.summary.id, dialog.summary.kind === 'direct' ? this.directPeers([dialog.summary.id])[0] ?? null : null, this.reader)
+    const chatId = dialog.summary.id
     const history = new HistoryReader(dialog, this.reader, snapshot => {
       if (this.selected === history && !this.closed) {
         this.media.prune(); this.pruneForwardPreparation()
@@ -1283,7 +1293,7 @@ export class AccountSession {
         this.delivery.shown(dialog.summary.id, new Set(snapshot.messages.map(message => message.id)))
       }
     }, () => ++this.revision, messageId => this.hiddenMessages.has(dialog.summary.id, messageId), () => !this.closed && !this.locked && this.selected === history,
-      () => this.localReplies.get(dialog.summary.id) ?? [])
+      () => this.localReplies.get(dialog.summary.id) ?? [], query => this.locked ? null : this.keptHistories.take(chatId, query))
     this.selected = history
     this.syncPresence()
     if (!this.locked) this.draftReply.bind(dialog, this.reader)
@@ -1306,6 +1316,8 @@ export class AccountSession {
     if (this.selected?.dialog.summary.id !== chatId || this.selected.snapshot.status === 'error') return this.openHistory(dialog).snapshot
     return this.selected.latest()
   }
+  // B87: another account came to the window — what this one kept is not shown again later from memory.
+  forgetKeptHistories(): void { this.keptHistories.clear() }
   closeHistory(chatId: string): void { if (this.selected?.dialog.summary.id === chatId) this.clearHistory(); this.delivery.forget(chatId); this.actions.forget(chatId) }
   private backgroundSource(chatId: string): HistoryReader {
     const dialog = this.index.get(chatId)
@@ -2452,6 +2464,7 @@ export class AccountSession {
   discard(chatId: string, id: string) { return this.delivery.discard(chatId, id) }
   async close(purge: boolean): Promise<void> {
     if (this.closed) return
+    this.keptHistories.clear()
     this.roomPresence.close(); this.closed = true; this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
     this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); 
     await storyClose

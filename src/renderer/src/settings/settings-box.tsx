@@ -353,7 +353,7 @@ function AccountPrivacySection({ accountUid }: { accountUid: string }) {
 }
 
 // AccountSecurityView «자동 회원 탈퇴» (AutoDeleteAccountSheet): the account goes after this long without a visit.
-const autoDeleteLabels: Record<number, [string, string]> = { 0: [tr('끔'), tr('자동 삭제 안 함')], 1: [tr('1개월'), tr('30일 미접속 시')], 3: [tr('3개월'), tr('90일 미접속 시')], 6: [tr('6개월'), tr('180일 미접속 시 (기본)')], 12: [tr('1년'), tr('365일 미접속 시')] }
+const autoDeleteLabels: Record<number, [string, string]> = { 0: [tr('끔'), tr('자동 삭제 안 함')], 1: [tr('1개월'), tr('30일 미접속 시')], 3: [tr('3개월'), tr('90일 미접속 시')], 6: [tr('6개월'), tr('180일 미접속 시')], 12: [tr('1년'), tr('365일 미접속 시')] }
 function AutoDeleteEntry({ accountUid }: { accountUid: string }) {
   const [months, setMonths] = useState<number | null>(null)
   useEffect(() => { void window.morse.accountPrivacy(accountUid).then(value => setMonths(value.autoDeleteMonths)).catch(() => setMonths(null)) }, [accountUid])
@@ -384,7 +384,7 @@ function DataExportBox({ accountUid, close }: { accountUid: string; close(): voi
       <p className="box-note">{tr('{0} JSON 파일 준비됨 · {1}까지', [bytes(result.fileSizeBytes), new Date(result.expiresAt).toLocaleString(locale())])}</p>
       <button className="button primary block" onClick={() => { void window.morse.openDataExport(result.downloadURL).catch(reason => controller.toast(errorText(reason, tr('내려받지 못했습니다.')), 'error')) }}><Download size={16} />{tr('내려받기')}</button>
     </> : <button className="button primary block" disabled={busy} onClick={() => { void start() }}>{busy ? <><Spinner size={14} />{tr('요청 중...')}</> : tr('다운로드 요청')}</button>}
-    <p className="box-note">{tr('처리에 최대 1분이 걸려요. 메시지 본문은 E2E 암호화되어 포함되지 않아요.')}</p>
+    <p className="box-note">{tr('처리에 최대 1분이 걸려요. 메시지는 담기지 않아요.')}</p>
     {error && <p className="box-error" role="alert">{error}</p>}
   </Box>
 }

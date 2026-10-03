@@ -7,10 +7,13 @@ import { Spinner } from '../ui/controls'
 import { language, tr } from '../../../shared/i18n'
 import { legalPageURL, type LegalPage } from '../../../shared/legal-links'
 
+// Privacy policy v2: Desktop has no secret chats (history-reader.ts reads them as unsupported); where the help talks of
+// them, it says they are on the phone apps only.
+const secretOnPhones = (): string => tr('비밀 대화는 휴대폰 앱에서만 쓸 수 있어요.')
 // iOS SupportCenterView: frequently asked questions, a chat with Morse's support account, and the app's details.
 const faq = [
   { q: tr('Morse는 어떻게 익명인가요?'), a: tr('전화번호, 이메일, 실명 등 어떤 개인정보도 받지 않아요. 사용자 ID 하나만 정해주면 가입이 끝나요. 복구 코드 한 줄로 다른 기기에서도 계정을 복구할 수 있어요.') },
-  { q: tr('시크릿 채팅은 정말 안전한가요?'), a: tr('시크릿 채팅은 Curve25519 키 교환 + AES-GCM 256비트로 종단간 암호화돼요. 개인키는 본인 디바이스에만 저장되며, 운영자도 메시지를 복호화할 수 없어요. 화면 녹화도 자동으로 검은 오버레이로 가려져요.') },
+  { q: tr('시크릿 채팅은 정말 안전한가요?'), a: tr('시크릿 채팅은 Curve25519 키 교환 + AES-GCM 256비트로 종단간 암호화돼요. 개인키는 본인 디바이스에만 저장되며, 운영자도 메시지를 복호화할 수 없어요. 화면 녹화도 자동으로 검은 오버레이로 가려져요.') + ' ' + secretOnPhones() },
   { q: tr('복구 코드를 잃어버렸어요'), a: tr('현재 로그인 중인 기기에서 설정 → 복구 코드 → 새 코드 생성으로 새로 발급받을 수 있어요. 기존 코드는 자동으로 폐기돼요. 모든 기기에서 로그아웃됐다면 계정 복구가 어려울 수 있어요.') },
   { q: tr('계정 여러 개를 사용하려면?'), a: tr('설정 → 계정 → 계정 추가에서 새 계정을 만들 수 있어요. 무료 사용자는 2개, Morse+ 사용자는 4개까지 가능해요. 설정 화면을 두 번 탭하면 빠르게 전환할 수 있어요.') },
   { q: tr('메시지가 도착하지 않아요'), a: tr('1) 알림 설정이 켜져 있는지 확인 2) 인터넷 연결 확인 3) 앱을 종료 후 재시작. 그래도 안 되면 설정 → 고객 센터에서 채팅으로 문의해 주세요.') },
@@ -20,7 +23,7 @@ const faq = [
 // iOS AppGuideView (MorseFeature): the features Morse is built around, each with its details.
 const features = [
   { icon: UserRoundX, title: tr('익명 가입'), summary: tr('전화번호도, 이메일도 필요 없어요'), detailTitle: tr('진짜 익명 메신저'), detailBody: tr('Morse는 어떤 개인정보도 수집하지 않아요. 사용자 ID 하나만 정해주면 가입이 끝납니다. 복구 코드 한 줄로 다른 기기에서 계정을 복구할 수 있어요.'), bullets: [tr('전화번호 인증 없음'), tr('이메일 인증 없음'), tr('디바이스 연락처 접근 안 함'), tr('사용자 ID 임의 생성'), tr('복구 코드로 계정 복구')] },
-  { icon: Lock, title: tr('시크릿 채팅'), summary: tr('Curve25519 + AES-GCM 종단간 암호화'), detailTitle: tr('진짜 종단간 암호화'), detailBody: tr('시크릿 채팅은 Curve25519 키 교환 + AES-GCM 256비트로 보호돼요. 개인키는 본인 디바이스에만 저장되고, 운영자도 메시지를 복호화할 수 없어요.'), bullets: [tr('Curve25519 키 교환'), tr('AES-GCM 256비트 암호화'), tr('개인키는 디바이스 내에만'), tr('화면 녹화·미러링 감지 시 내용 가림 (스크린샷 차단은 보장되지 않음)'), tr('화면 녹화 시 검은 오버레이')] },
+  { icon: Lock, title: tr('시크릿 채팅'), summary: tr('Curve25519 + AES-GCM 종단간 암호화'), detailTitle: tr('진짜 종단간 암호화'), detailBody: tr('시크릿 채팅은 Curve25519 키 교환 + AES-GCM 256비트로 보호돼요. 개인키는 본인 디바이스에만 저장되고, 운영자도 메시지를 복호화할 수 없어요.') + ' ' + secretOnPhones(), bullets: [tr('Curve25519 키 교환'), tr('AES-GCM 256비트 암호화'), tr('개인키는 디바이스 내에만'), tr('화면 녹화·미러링 감지 시 내용 가림 (스크린샷 차단은 보장되지 않음)'), tr('화면 녹화 시 검은 오버레이')] },
   { icon: Megaphone, title: tr('채널'), summary: tr('관심사로 익명 연결'), detailTitle: tr('공감대로 모이는 채널'), detailBody: tr('관심사가 같은 사람들과 익명 채널로 연결돼요. 이름이나 신원 없이도 깊이 있는 대화가 가능해요.'), bullets: [tr('익명 구독 / 게시 / 댓글'), tr('공개 채널은 누구나 발견'), tr('구독자 수만 표시 (정체 X)'), tr('알림 끄기 / 음소거')] },
   { icon: Users, title: tr('멀티 계정'), summary: tr('한 디바이스에서 여러 계정 전환'), detailTitle: tr('여러 자아, 한 앱에서'), detailBody: tr('공적인 나, 사적인 나 — 상황에 맞게 분리할 수 있어요. 설정 화면을 두 번 탭하면 빠르게 전환돼요.'), bullets: [tr('무료: 계정 2개'), tr('Morse+: 계정 4개'), tr('설정 더블탭으로 즉시 전환'), tr('알림 탭 시 해당 계정으로 전환'), tr('계정 간 데이터 완전 분리')] },
   { icon: ShieldCheck, title: tr('광고 0, 트래킹 0'), summary: tr('당신의 데이터를 팔지 않아요'), detailTitle: tr('진짜 프라이버시'), detailBody: tr('다른 메신저들과 다르게, Morse는 광고 SDK도 없고, 행동 분석도 안 하고, 데이터를 팔지도 않아요. App Tracking Transparency 권한도 요청하지 않습니다.'), bullets: [tr('광고 SDK 없음'), tr('사용자 행동 분석 없음'), tr('데이터 판매 없음'), tr('제3자 트래킹 없음'), tr('Firebase Analytics 비활성화')] }
@@ -50,7 +53,7 @@ function SupportBox({ accountUid, version, close }: { accountUid: string; versio
     <div className="section-label">{tr('앱 정보')}</div>
     <div className="support-info"><span>{tr('버전')}</span><span>{version}</span></div>
     <div className="support-info"><span>{tr('디바이스')}</span><span>Mac</span></div>
-    <p className="box-note">{tr('평균 응답 시간: 영업일 기준 24시간 이내')}<br />{tr('신고는 운영자가 24시간 안에 확인합니다.')}</p>
+    <p className="box-note">{tr('신고는 운영자가 24시간 안에 확인합니다.')}</p>
   </Box>
 }
 

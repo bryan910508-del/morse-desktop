@@ -27,6 +27,8 @@ export class AccountRegistry {
   }
   setActive(uid: string): void {
     if (!this.sessions.has(uid)) throw new Error(tr('연결된 계정을 찾을 수 없습니다.'))
+    // B87: the account that leaves the window forgets the chats it kept in memory (kept-histories.ts).
+    if (this.activeUid && this.activeUid !== uid) this.sessions.get(this.activeUid)?.forgetKeptHistories()
     this.activeUid = uid
   }
   connection(uid: string, state: ConnectionState): void { this.sessions.get(uid)?.setConnection(state) }

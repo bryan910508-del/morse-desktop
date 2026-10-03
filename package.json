@@ -1,6 +1,6 @@
 {
   "name": "morse-messenger-desktop",
-  "version": "0.241.4",
+  "version": "0.241.5",
   "description": "Morse Messenger for macOS and Windows",
   "author": "Morse",
   "private": true,

@@ -122,7 +122,15 @@ export interface WatchEvents {
   // Called instead of state('loading') when a target that was already current re-listens
   // (renewal, retry, RESET); a watcher that provides it keeps its last snapshot.
   reconnecting?(error?: ReadFailure): void
+  // B87: the target's resume token at each consistent snapshot, for a later listen to start from (Firestore sends
+  // only what changed since). Given only to a watcher that asks for it.
+  resumeToken?(token: WatchResumeToken): void
 }
+export type WatchResumeToken = Buffer | Uint8Array | string
+// What a listen resumes from: the token of a snapshot and the documents that snapshot had. Firestore sends only
+// the changes since then, so the listen starts from those documents; a RESET, a count that does not match or any
+// retry listens from nothing again.
+export interface WatchResume { token: WatchResumeToken; documents: ReadonlyMap<string, FirestoreDocument> }
 function failure(error: unknown): ReadFailure {
   if (error instanceof ReadFailure) return error
   const code = error && typeof error === 'object' ? (error as { code?: number }).code : undefined
@@ -1092,13 +1100,17 @@ export class FirestoreReader {
     })
   }
 
-  watch(target: WireObject, signal: AbortSignal, events: WatchEvents, maxDocuments: number, maxBytes = 32 * 1024 * 1024): () => void {
+  watch(target: WireObject, signal: AbortSignal, events: WatchEvents, maxDocuments: number, maxBytes = 32 * 1024 * 1024, resume?: WatchResume): () => void {
     const local = new AbortController(), bounded = this.bounded(AbortSignal.any([signal, local.signal]))
     let stream: ClientDuplexStream<WireObject, WireObject> | null = null
     let retry: ReturnType<typeof setTimeout> | undefined
     let timeout: ReturnType<typeof setTimeout> | undefined
     let renewal: ReturnType<typeof setTimeout> | undefined
-    let generation = 0, attempt = 0, force = false, everCurrent = false, woken = false
+    // A resumed listen has a snapshot already on screen: while it starts, or starts again, that snapshot stays
+    // (reconnecting), as it does once a target has been current. Only the first listen resumes; whatever goes wrong
+    // after it starts again from nothing.
+    let generation = 0, attempt = 0, force = false, everCurrent = Boolean(resume), woken = false
+    let seed = resume
     const relisten = (reason?: ReadFailure): void => { if (everCurrent && events.reconnecting) events.reconnecting(reason); else events.state('loading', reason) }
     const stopCycle = (): void => {
       generation++
@@ -1122,9 +1134,10 @@ export class FirestoreReader {
       stopCycle()
       const cycle = generation
       const active = (): boolean => !bounded.aborted && cycle === generation && !this.closed
-      const received = new Map<string, FirestoreDocument>()
-      const sizes = new Map<string, number>()
-      let current = false, ended = false, dirty = true, totalBytes = 0
+      const from = seed; seed = undefined
+      const received = new Map<string, FirestoreDocument>(from?.documents ?? [])
+      const sizes = new Map<string, number>([...received].map(([name, item]) => [name, JSON.stringify(item).length]))
+      let current = false, ended = false, dirty = true, totalBytes = [...sizes.values()].reduce((sum, size) => sum + size, 0)
       const end = (error: unknown): void => {
         if (!active() || ended) return
         ended = true
@@ -1201,13 +1214,14 @@ export class FirestoreReader {
                 woken = false
                 reachability.reached('firestore')
                 attempt = 0; force = false; everCurrent = true; events.state('ready')
+                if (active() && change.resumeToken) events.resumeToken?.(change.resumeToken as WatchResumeToken)
               }
             }
           } catch (error) { end(error instanceof ReadFailure ? error : new ReadFailure('data')) }
         })
         currentStream.on('error', end)
         currentStream.on('end', () => end(new ReadFailure('network')))
-        currentStream.write({ database, addTarget: { ...target, targetId: 1 } })
+        currentStream.write({ database, addTarget: { ...target, targetId: 1, ...(from ? { resumeToken: from.token } : {}) } })
       } catch (error) { end(error) }
     }
     if (!bounded.aborted) void run()

@@ -22,6 +22,8 @@ export function sessionTtlDays(raw: unknown): number {
 export type LastSeenMode = 'everybody' | 'contacts' | 'nobody'
 // AccountSecurityView: «비공개 모드» (users.isPrivate) and «자동 회원 탈퇴» (privacy.autoDeleteAccountMonths).
 export interface AccountPrivacy { isPrivate: boolean; autoDeleteMonths: number }
+// Privacy policy v2 (D4): an account with no stored choice is not deleted for being away — «끔», not six months.
+export function autoDeleteMonthsOf(stored: number | undefined): number { return stored === undefined ? 0 : Math.trunc(stored) }
 export const autoDeleteMonthOptions = [0, 1, 3, 6, 12] as const
 export interface DataExport { downloadURL: string; expiresAt: number; fileSizeBytes: number }
 export interface LastSeenPrivacy { mode: LastSeenMode; alwaysShareWith: string[]; neverShareWith: string[] }
