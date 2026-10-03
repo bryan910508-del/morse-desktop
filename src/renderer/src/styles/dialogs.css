@@ -76,3 +76,5 @@
 /* st::dialogsUpdateButton: a full-width accent bar under the chat list. */
 .dialogs-update { flex: none; height: 48px; background: var(--accent); color: #fff; font-size: var(--t-body); font-weight: 600; text-transform: uppercase; letter-spacing: .02em }
 .dialogs-update:hover { background: var(--accent-pressed) }
+/* A13 §9-2: the server's «공식 고객센터» mark, beside the name only. */
+.dialog-row-official { flex: none; color: var(--accent) }

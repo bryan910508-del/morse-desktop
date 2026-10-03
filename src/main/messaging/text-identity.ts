@@ -53,7 +53,8 @@ export function textDigest(wire: SendWire): string {
 // A10 §4: an operator's restriction ends by itself, so its message can go again then; a ban and a closed room do not.
 export const retryableRejections = new Set(['UNAUTHORIZED', 'SUSPENDED', 'CHAT_MISSING', 'NOT_PARTICIPANT', 'PEER_GONE', 'BLOCKED', 'POSTING_RESTRICTED', 'ACCOUNT_RESTRICTED'])
 // DIRECT_CHAT_EXISTS: the pair already has a dialog under another id (morse-message-authority.js). The list
-// receives that dialog; this room's message was not stored.
+// receives that dialog; this room's message was not stored. B88 §28 moves it there and sends it again
+// (outbox.ts movedToPairDialog); it stays failed with this notice only when that room cannot be confirmed.
 export const definiteRejections = new Set([...retryableRejections, 'INVALID_PAYLOAD', 'REPLY_MESSAGE_NOT_FOUND', 'CONFLICT', 'DIRECT_CHAT_EXISTS', 'ACCOUNT_BANNED', 'CHAT_RESTRICTED'])
 export function deliveryReason(reason: string): string {
   if (rejectionCode(reason) === 'ACCOUNT_RESTRICTED') return restrictedNotice(rejectionUntil(reason))

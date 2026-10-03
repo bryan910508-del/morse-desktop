@@ -383,6 +383,8 @@ const bridge: DesktopBridge = {
   authentication: Object.freeze({
     signInWithBackupCode: (code: string) => ipcRenderer.invoke('morse:auth-sign-in', code),
     signInWithApple: () => ipcRenderer.invoke('morse:auth-sign-in-apple'),
+    startQrSignIn: () => ipcRenderer.invoke('morse:auth-qr-start'),
+    stopQrSignIn: () => ipcRenderer.invoke('morse:auth-qr-stop'),
     cancelSignIn: () => ipcRenderer.invoke('morse:auth-cancel'),
     restoreSignIn: (uid: string) => ipcRenderer.invoke('morse:auth-restore', uid),
     signOut: (uid?: string) => ipcRenderer.invoke('morse:auth-sign-out', uid),

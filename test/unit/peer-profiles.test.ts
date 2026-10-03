@@ -42,8 +42,8 @@ function peerProfiles(owners: { owner: string; raw: string }[] = []) {
 const contacts = (count: number): string[] => Array.from({ length: count }, (_, index) => `u${String(index).padStart(3, '0')}`)
 
 test('a person is read as name, picture and whether this account is still their contact', () => {
-  assert.deepEqual(decodePeerProfile(named('u1', '  민지 ', 'gs://x'), true), { name: '민지', photo: 'gs://x', mutual: true })
-  assert.deepEqual(decodePeerProfile(named('u1', '민지', 'gs://x'), false), { name: '민지', photo: '', mutual: false }, 'no longer mutual hides the picture')
+  assert.deepEqual(decodePeerProfile(named('u1', '  민지 ', 'gs://x'), true), { name: '민지', photo: 'gs://x', mutual: true, official: null })
+  assert.deepEqual(decodePeerProfile(named('u1', '민지', 'gs://x'), false), { name: '민지', photo: '', mutual: false, official: null }, 'no longer mutual hides the picture')
   assert.equal(decodePeerProfile(user('u1', { displayName: { stringValue: '탈퇴' }, accountDeleted: { booleanValue: true } }), true), null)
   assert.equal(decodePeerProfile(undefined, true), null)
   const item = { uid: 'u1', displayName: '예전 이름' }
@@ -63,8 +63,8 @@ test('every contact is read by the account, five people and ten documents a targ
   assert.deepEqual(targets[0]!.paths, [...contacts(5).map(uid => `${documents}/publicProfiles/${uid}`), ...contacts(5).map(uid => `${documents}/users/${uid}/contacts/${me}`)])
   assert.equal(profiles.hasAnswer('u000'), false)
   targets[0]!.events.snapshot(rows(named('u000', '민지', 'gs://photo1'), reciprocal('u000'), named('u001', '지훈', 'gs://photo2')))
-  assert.deepEqual(profiles.profile('u000'), { name: '민지', photo: 'gs://photo1', mutual: true })
-  assert.deepEqual(profiles.profile('u001'), { name: '지훈', photo: '', mutual: false }, 'a person who removed this account shows no picture')
+  assert.deepEqual(profiles.profile('u000'), { name: '민지', photo: 'gs://photo1', mutual: true, official: null })
+  assert.deepEqual(profiles.profile('u001'), { name: '지훈', photo: '', mutual: false, official: null }, 'a person who removed this account shows no picture')
   assert.equal(profiles.profile('u002'), null, 'a person whose document is missing is not shown')
   assert.equal(profiles.hasAnswer('u002'), true, 'the answer covers every person of the target')
   assert.equal(profiles.name('u000'), '민지')
@@ -75,7 +75,7 @@ test('every contact is read by the account, five people and ten documents a targ
   targets[0]!.events.snapshot(rows(named('u000', '민지', 'gs://photo1'), reciprocal('u000'), named('u001', '지훈')))
   assert.equal(changes(), 1, 'the same peer data is not announced again')
   targets[0]!.events.reconnecting!()
-  assert.deepEqual(profiles.profile('u000'), { name: '민지', photo: 'gs://photo1', mutual: true }, 'a re-listen keeps what is known')
+  assert.deepEqual(profiles.profile('u000'), { name: '민지', photo: 'gs://photo1', mutual: true, official: null }, 'a re-listen keeps what is known')
   targets[0]!.events.snapshot(rows(named('u000', '민지'), named('u001', '지훈')))
   assert.equal(profiles.photo('u000'), '', 'the picture goes when the contact is no longer mutual')
   assert.deepEqual(commands.at(-1), { kind: 'userpic-owner', owner: 'user:u000', raw: null })

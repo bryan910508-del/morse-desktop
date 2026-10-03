@@ -149,6 +149,8 @@ export class ContactsSession {
     if (this.profileNames.withdrawn(uid)) return tr('탈퇴한 계정')
     return this.labels.get(uid) || this.profileNames.name(uid)
   }
+  // A13 §9-2: the server's mark on the support account, read with the person's public profile.
+  personOfficial(uid: string): 'support' | null { return this.closed || this.locked ? null : this.profileNames.official(uid) }
   // Bumped whenever a name personName gives may have changed.
   get namesRevision(): number { return this.names }
   followPeers(uids: Iterable<string>): void {

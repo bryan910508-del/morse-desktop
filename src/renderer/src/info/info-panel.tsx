@@ -361,7 +361,7 @@ export function InfoPanel({ accountUid, chatId }: { accountUid: string; chatId: 
               {!dialog && pending ? <PeerAvatar id={pending.chatId} name={pending.displayName} image={pending.avatar ?? null} surface="dialogs" size={88} />
                 : <Avatar name={dialog?.title ?? pending?.displayName ?? '?'} size={88} kind={dialog?.kind === 'secret' ? 'secret' : undefined} />}
               <h2 className="selectable">{dialog?.title ?? pending?.displayName ?? ''}</h2>
-              <span>{dialog?.kind === 'secret' ? tr('비밀 대화') : tr('연락처에 없는 사용자')}</span>
+              <span>{dialog?.kind === 'secret' ? tr('비밀 대화') : dialog?.official === 'support' ? tr('공식 고객센터') : tr('연락처에 없는 사용자')}</span>
             </div>}
       {/* Telegram's profile of a non-contact offers "Add to contacts"; iOS UnknownProfileView the same. */}
       {!profile && dialog?.kind === 'direct' && peerUid && !inContacts && <div className="info-section">

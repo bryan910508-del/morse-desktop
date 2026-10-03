@@ -19,7 +19,7 @@ test('a public profile is read as the account document was: name, picture, and n
   assert.equal(publicProfilePath('u1'), `${documents}/publicProfiles/u1`)
   const full = publicProfile('u1', { userId: text('minji'), displayName: text(' 민지 '), photoURL: text('gs://p'), bio: text('안녕'), publicKey: text('k'),
     personalChannelId: text('c1'), accountDeleted: { booleanValue: false }, updatedAt: { timestampValue: '2026-10-01T00:00:00Z' } })
-  assert.deepEqual(decodePeerProfile(full, true), { name: '민지', photo: 'gs://p', mutual: true })
+  assert.deepEqual(decodePeerProfile(full, true), { name: '민지', photo: 'gs://p', mutual: true, official: null })
   assert.equal(decodePeerProfile(publicProfile('u1', { accountDeleted: { booleanValue: true }, updatedAt: { timestampValue: '2026-10-01T00:00:00Z' } }), true), null,
     'a withdrawn account keeps only accountDeleted')
   assert.equal(decodePeerProfile(undefined, true), null, 'not made yet: unknown')

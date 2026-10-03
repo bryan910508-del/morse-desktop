@@ -52,3 +52,13 @@
 .intro-account-text strong { font-size: var(--t-body) }
 .intro-account-text small { font-size: var(--t-caption); color: var(--text-weak) }
 .intro-account-text small.error { color: var(--danger) }
+
+/* A13: the QR sign-in above the recovery code (tdesktop intro_qr: a white code with the logo, three steps). */
+.intro-qr { display: flex; flex-direction: column; align-items: center; gap: 10px; margin: 4px 0 8px }
+.intro-qr-title { font-size: var(--t-body); color: var(--text) }
+.intro-qr-code { display: flex; align-items: center; justify-content: center; width: 216px; min-height: 216px; border-radius: 12px; background: #fff }
+.intro-qr-code .qr-code { display: block }
+.intro-qr-code .button { margin: 0 12px }
+.intro-qr-password { max-width: 300px; text-align: center }
+.intro-qr-steps { margin: 0; padding-left: 20px; font-size: var(--t-caption); line-height: 1.6; color: var(--text-weak); align-self: stretch }
+.intro-or { margin: 4px 0 8px; font-size: var(--t-caption); color: var(--text-weak); text-align: center }

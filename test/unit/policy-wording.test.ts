@@ -30,3 +30,10 @@ test('every new text has its English and Russian', () => {
       assert.ok(table[key], `${lang}: ${key}`)
   }
 })
+
+// §27: the server counts a month as 30 days, so twelve months are 360 days (privacy policy v2 §5.2, iOS §40).
+test('twelve months of absence read as 360 days, as the server counts them', () => {
+  const settings = source('src/renderer/src/settings/settings-box.tsx')
+  assert.ok(settings.includes("tr('360일 미접속 시')") && !settings.includes('365일 미접속'))
+  for (const lang of ['en', 'ru']) assert.ok((JSON.parse(source(`src/shared/i18n/${lang}.json`)) as Record<string, string>)['360일 미접속 시'], lang)
+})

@@ -180,9 +180,16 @@ export class AuthenticationDomain {
     this.adding ??= this.create(null)
     return this.adding
   }
-  signIn(code: unknown): Promise<void> { return this.entry().signIn(code) }
-  createAccount(userId: unknown): Promise<AccountCreationResult | null> { return this.entry().createAccount(userId) }
-  signInWithApple(): Promise<void> { return this.entry().signInWithApple() }
+  // Another way in stops a QR code on screen first (A13: the code is the first step, not a lock on the screen).
+  async signIn(code: unknown): Promise<void> { const entry = this.entry(); await entry.stopQr(); return entry.signIn(code) }
+  async createAccount(userId: unknown): Promise<AccountCreationResult | null> { const entry = this.entry(); await entry.stopQr(); return entry.createAccount(userId) }
+  async signInWithApple(): Promise<void> { const entry = this.entry(); await entry.stopQr(); return entry.signInWithApple() }
+  // A13: the QR code of the sign-in screen. The accounts connected here are left out (Telegram except_ids).
+  signInWithQr(): Promise<void> {
+    const connected = [...this.controllers.entries()].filter(([, controller]) => controller.connected).map(([uid]) => uid)
+    return this.entry().signInWithQr(connected)
+  }
+  async stopQr(): Promise<void> { await this.adding?.stopQr() }
   async cancel(): Promise<void> {
     await this.adding?.cancel()
     const pending = this.pendingUid ? this.controllers.get(this.pendingUid) : undefined

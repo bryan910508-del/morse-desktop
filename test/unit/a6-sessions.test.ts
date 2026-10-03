@@ -44,7 +44,8 @@ test('a session row shows the device, «app version» and system; one still mark
     systemVersion: { stringValue: 'macOS 26.4.1' }, platform: { stringValue: 'macOS' }, loginProvider: { stringValue: 'custom' },
     lastSeenAt: { timestampValue: '2026-09-30T06:00:00Z' }, createdAt: { timestampValue: '2026-09-01T00:00:00Z' } })
   assert.deepEqual(decodeSignInSession(now, 's1'), { id: 's1', platform: 'macOS', current: true, deviceModel: 'MacBook Air M1', appName: 'Morse macOS',
-    appVersion: '0.240.2', systemVersion: 'macOS 26.4.1', lastSeenAt: Date.parse('2026-09-30T06:00:00Z'), createdAt: Date.parse('2026-09-01T00:00:00Z') })
+    appVersion: '0.240.2', systemVersion: 'macOS 26.4.1', lastSeenAt: Date.parse('2026-09-30T06:00:00Z'), createdAt: Date.parse('2026-09-01T00:00:00Z'),
+    qr: null, ip: '', origin: null })
   // Written before A6: the model from the old label, the app from the platform the server verified.
   const old = decodeSignInSession(sessionDoc('s2', { deviceLabel: { stringValue: 'Morse · Android' }, platform: { stringValue: 'Android' }, appVersion: { stringValue: '1.0' } }), 's1')
   assert.equal(old?.deviceModel, 'Android'); assert.equal(old?.appName, 'Morse Android'); assert.equal(old?.current, false)

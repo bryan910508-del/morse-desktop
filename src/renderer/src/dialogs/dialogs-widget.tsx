@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Archive, ArchiveRestore, ArrowLeft, ArrowUpDown, Bell, BellOff, CircleAlert, Clock3, FolderPlus, Lock, LogOut, Mail, MailOpen, Megaphone, Menu, Pencil, Pin, PinOff, Search, StickyNote, Trash2, Users, X } from 'lucide-react'
+import { BadgeCheck, Archive, ArchiveRestore, ArrowLeft, ArrowUpDown, Bell, BellOff, CircleAlert, Clock3, FolderPlus, Lock, LogOut, Mail, MailOpen, Megaphone, Menu, Pencil, Pin, PinOff, Search, StickyNote, Trash2, Users, X } from 'lucide-react'
 import type { ContactSummary } from '../../../shared/contacts'
 import { folderContains, folderTitle, type ChatFolder } from '../../../shared/chat-folders'
 import type { ConnectionState, DialogSummary } from '../../../shared/model'
@@ -135,6 +135,7 @@ const DialogRow = memo(function DialogRow({ dialog, active, style, index, flags,
         {dialog.kind === 'group' && <Users size={14} className="dialog-row-kind" aria-label={tr('그룹', [], 'kind')} />}
         {secret && <Lock size={13} className="dialog-row-kind secret" aria-label={tr('비밀 대화')} />}
         <span className="dialog-row-name ellipsis">{dialog.title}</span>
+        {dialog.official === 'support' && <BadgeCheck size={14} className="dialog-row-official" role="img" aria-label={tr('공식 고객센터')} />}
         {/* iOS MorseChatListRowDisplay: a message of mine that did not go marks the row beside its name. */}
         {!secret && dialog.sends?.failed && <CircleAlert size={14} className="dialog-row-failed" aria-label={tr('보내지 못한 메시지가 있습니다')} />}
         {dialog.muted && <BellOff size={13} className="dialog-row-status" aria-label={tr('알림 꺼짐')} />}

@@ -10,6 +10,7 @@ import { Spinner } from '../ui/controls'
 import { confirmBox } from '../ui/layers'
 import { BackupCodeBox } from '../boxes/backup-code-box'
 import { tr } from '../../../shared/i18n'
+import { QrSignInPanel } from './qr-sign-in'
 
 const noStates: AccountAuthState[] = []
 
@@ -157,6 +158,8 @@ export function Intro() {
           <p className="intro-description">{tr('현재 버전에서는 계정을 연결할 수 없습니다. 연결이 준비되면 복구 코드로 로그인할 수 있어요.')}</p>
         </> : <>
           <p className="intro-description">{adding && hasActive ? tr('다른 Morse 계정을 이 데스크탑에 함께 연결합니다.') : tr('기존 Morse 계정을 이 데스크탑에 연결합니다.')}</p>
+          <QrSignInPanel auth={auth} />
+          {!auth.qrOff && <p className="intro-or">{tr('또는 복구 코드로 연결')}</p>}
           <label className="intro-code">
             <KeyRound size={18} />
             <input type="password" value={code} maxLength={256} placeholder={tr('복구 코드')} autoComplete="off" autoCapitalize="characters" spellCheck={false} autoFocus disabled={busy} onChange={event => setCode(event.target.value)} />

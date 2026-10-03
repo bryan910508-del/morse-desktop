@@ -31,7 +31,9 @@ export class AccountRegistry {
     if (this.activeUid && this.activeUid !== uid) this.sessions.get(this.activeUid)?.forgetKeptHistories()
     this.activeUid = uid
   }
-  connection(uid: string, state: ConnectionState): void { this.sessions.get(uid)?.setConnection(state) }
+  // A15-5: an open account is usable whatever its message server's socket does (setConnection('ready') above); the
+  // socket's state is only shown («연결 중…») and decides nothing else.
+  connection(uid: string, state: ConnectionState): void { this.sessions.get(uid)?.setSocket(state) }
   select(uid: string): void { this.requireActive(uid) }
   requireActive(uid: string): AccountSession {
     const session = this.active

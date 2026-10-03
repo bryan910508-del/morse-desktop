@@ -2,6 +2,8 @@ export type DeliveryState = 'queued' | 'uncertain' | 'failed' | 'uploading' | 'u
 export interface LocalOutgoing {
   id: string
   chatId: string
+  // B90: the order it was written in on this device (the outbox sequence); the history keeps it whatever the answers do.
+  sequence: number
   text: string
   replyToId?: string
   forwarded?: boolean

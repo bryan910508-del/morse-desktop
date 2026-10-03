@@ -232,7 +232,7 @@ function notesSnapshot(): unknown {
 function snapshot(): unknown {
   return {
     revision: ++revision, appVersion: 'harness', platform: 'macOS', preferences: { ...preferences }, systemDark: false,
-    accounts: [{ uid: me, userId: 'harness1', displayName: '테스트' }], activeAccountUid: me, connection: 'ready',
+    accounts: [{ uid: me, userId: 'harness1', displayName: '테스트' }], activeAccountUid: me, connection: 'ready', socket: 'ready',
     dialogs: [{ id: chatId, version: '1:0', kind: 'direct', title: '상대', participantUids: [me, peer], preview: messages.at(-1)!.text, unreadCount: 0,
       markedUnread: false, readPositions: {}, readSync: { status: 'ready' }, pinned: false, pinVersion: '', muted: false, archived: false,
       top: messages.at(-1)!.position, avatar: null, draft: localDrafts.get(chatId) ?? '', pinnedForAll: ['m-060'], unseenReaction: { messageId: 'm-147', emoji: '🔥', reactionVersion: 2 },

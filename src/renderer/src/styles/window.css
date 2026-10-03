@@ -82,3 +82,5 @@
 .main-menu-night-row { cursor: pointer }
 .main-menu-night-row > span { flex: 1 }
 .dialog-row .avatar-notes { background: var(--accent) }
+/* A13 §9-2: the official support account's mark beside the chat's name. */
+.top-bar-title .title-official { margin-left: 4px; vertical-align: -2px; color: var(--accent) }

@@ -7,8 +7,10 @@ import { useDesktop } from './store'
 // account that must sign in again, are shown at once.
 const delay = 1000
 
+// A15-5: what is shown is the message server's socket; the account works without it (sends and reads take the callables),
+// as Telegram's title says «Connecting...» without stopping the window.
 export function useShownConnection(): ConnectionState {
-  const connection = useDesktop(snapshot => snapshot?.connection ?? 'offline')
+  const connection = useDesktop(snapshot => snapshot?.socket ?? 'offline')
   const [shown, setShown] = useState<ConnectionState>(connection)
   useEffect(() => {
     if (connection === 'ready' || connection === 'rejected') { setShown(connection); return }

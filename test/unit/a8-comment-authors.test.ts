@@ -77,7 +77,7 @@ test('authors are not contacts: no contact document, the picture whoever they ar
   const authors = new PeerProfiles(uid, credentials, credentials.signal, () => {}, (person) => { seen.push(person) }, 'authors')
   authors.bind(reader, ['a1'])
   assert.deepEqual(targets, [[publicProfilePath('a1')]])
-  assert.deepEqual(authors.profile('a1'), { name: '민지', photo: 'gs://p', mutual: true })
+  assert.deepEqual(authors.profile('a1'), { name: '민지', photo: 'gs://p', mutual: true, official: null })
   assert.equal(authors.withdrawn('a1'), false)
   assert.deepEqual(seen, [], 'an author\'s picture is not kept as a contact\'s')
   authors.close()

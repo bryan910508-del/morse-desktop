@@ -284,7 +284,7 @@ function execute(command: DeliveryCommand): unknown {
       if (old && (old.forward_operation_id || old.chat_id !== wire.chatId || old.digest !== textDigest(wire))) throw Object.assign(new Error('Intent conflict'), { deliveryCode: 'conflict' })
       return Boolean(old)
     }
-    case 'direct-list': case 'direct-open': case 'direct-confirm': case 'direct-discard': case 'direct-supersede': return executePendingDirect(db, uid, command)
+    case 'direct-list': case 'direct-open': case 'direct-confirm': case 'direct-discard': case 'direct-supersede': case 'direct-move': return executePendingDirect(db, uid, command)
     case 'notification-claim': return db.prepare('INSERT OR IGNORE INTO notification_receipts(chat_id,message_id) VALUES(?,?)')
       .run(identifier(command.chatId), identifier(command.messageId)).changes === 1
     case 'attachment-known': case 'enqueue-attachment':

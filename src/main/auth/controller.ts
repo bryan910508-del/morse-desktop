@@ -1,6 +1,6 @@
 import { generateKeyPairSync, randomInt } from 'node:crypto'
-import type { AuthenticationSnapshot } from '../../shared/auth'
-import { morseUserId, morseUserIdAlphabet, normalizeBackupCode, type AccountCreationResult } from '../../shared/auth'
+import type { AuthenticationSnapshot, QrSignIn } from '../../shared/auth'
+import { morseUserId, morseUserIdAlphabet, normalizeBackupCode, qrLoginLink, type AccountCreationResult } from '../../shared/auth'
 import type { AccountProfile, ConnectionState } from '../../shared/model'
 import type { NotificationHint } from '../../shared/notifications'
 import type { AccountAuthorization } from '../messaging/outbox'
@@ -8,6 +8,9 @@ import { NotEmitted } from '../network/contracts'
 import { FirestoreReader } from '../network/firestore-rpc'
 import { documents, ReadFailure, stringField } from '../network/firestore-values'
 import { SocketMessageTransport } from '../network/socket-transport'
+import { watchSignIn } from './sign-in-watch'
+import { callMorseFunction } from '../network/morse-callable'
+import { markReadWithFallback, sendWithFallback, type CallablePath, type SocketPath } from '../messaging/send-fallback'
 import { purgesAccountData, registrationOutcome, rejectionFailure } from '../network/registration-outcome'
 import { AuthenticationFailure, asAuthFailure, tokenFailureEffect, type AuthFailureCode, type AuthTokens, type DesktopAuthConfiguration, type SavedCredential } from './contracts'
 import { CredentialVault } from './credential-vault'
@@ -15,6 +18,7 @@ import { DeviceIdentity } from './device-identity'
 import { generateBackupCode } from './backup-code'
 import { authorizeWithApple } from './apple-authorization'
 import { FirebaseAuthenticationAPI } from './firebase-rest'
+import { newQrAttempt, qrAttemptLifetimeMs, qrPollMs, type QrRedeem } from './qr-login'
 import { recordConnectionStep, recordRetry, recordSignOutBasis } from '../platform/connection-diagnostics'
 import { tr } from '../../shared/i18n'
 
@@ -35,6 +39,8 @@ interface CredentialOwner {
   // startMorseDeviceSession answered «session-revoked» when a socket refusal was checked (A5 contract §3-1).
   revokedByServer?: boolean
   rejection: string
+  // A15-5: the sign-in watch (sign-in-watch.ts) is asking the server now.
+  checking?: boolean
 }
 
 export interface AuthenticatedAccountHooks {
@@ -51,6 +57,12 @@ export interface AccountAdmission {
   admit(uid: string): void
   admitNew(): void
   creationToken(signal: AbortSignal): Promise<string | null>
+}
+
+// Stand-ins for the unit tests: how the socket is made, and how the sign-in is watched (sign-in-watch.ts).
+export interface AuthenticationSeams {
+  openSocket?: ConstructorParameters<typeof SocketMessageTransport>[2]
+  watchSignIn?: typeof watchSignIn
 }
 
 // Authentication owns the only protocol-2 connection for registration and server
@@ -71,10 +83,16 @@ export class AuthenticationController {
   // The account this operation is about, once known (the recovery code's answer, or the saved sign-in): a ban refused
   // after that point still names it in the «도움» mail. Never the code itself.
   private known: AccountProfile | null = null
+  // A13: the QR code on screen (the link and what it waits for), and the operation a quiet stop ends.
+  private qr: QrSignIn | null = null
+  private qrOperation: AbortController | null = null
+  private qrOff = false
+  private quietStop: AbortController | null = null
 
   constructor(configuration: DesktopAuthConfiguration | null, private readonly vault: CredentialVault,
     private readonly version: string, private readonly changed: () => void, private readonly accounts: AuthenticatedAccountHooks,
-    private boundUid: string | null = null, private readonly admission: AccountAdmission | null = null) {
+    private boundUid: string | null = null, private readonly admission: AccountAdmission | null = null,
+    private readonly seams: AuthenticationSeams = {}) {
     this.api = configuration ? new FirebaseAuthenticationAPI(configuration) : null
     this.identity = new DeviceIdentity(vault.location)
     this.value = { available: this.api !== null, phase: this.api ? 'signed-out' : 'unavailable', account: null,
@@ -84,7 +102,8 @@ export class AuthenticationController {
   get connected(): boolean { return Boolean(this.owner?.established) }
   // Why the last connection attempt or connection ended, for the domain's reconnect decision.
   get lastFailure(): AuthFailureCode | null { return this.failure }
-  get snapshot(): AuthenticationSnapshot { return { ...this.value, account: this.value.account ? { ...this.value.account } : null } }
+  get snapshot(): AuthenticationSnapshot { return { ...this.value, account: this.value.account ? { ...this.value.account } : null, ...(this.qr ? { qr: { ...this.qr } } : {}), ...(this.qrOff ? { qrOff: true } : {}) } }
+  private showQr(qr: QrSignIn | null): void { this.qr = qr; this.changed() }
   private set(phase: AuthenticationSnapshot['phase'], message: string, owner: CredentialOwner | null = null): void {
     const banned = phase === 'error' && this.failure === 'banned'
     const account = owner ? owner.record.profile : banned ? this.known : null
@@ -122,11 +141,15 @@ export class AuthenticationController {
             catch { this.set('error', new AuthenticationFailure('storage').message); return }
           }
           this.failure = failure.code
-          this.set(failure.code === 'cancelled' ? 'signed-out' : 'error', failure.message)
+          // A QR code stopped because the screen went away is not «cancelled» for the person: the screen is as before.
+          const quiet = failure.code === 'cancelled' && this.quietStop === controller
+          this.set(failure.code === 'cancelled' ? 'signed-out' : 'error', quiet ? tr('복구 코드로 기존 계정을 연결하세요.') : failure.message)
         }
       } finally {
         if (this.operation === controller) this.operation = null
         if (this.newlySavedOperation === controller) this.newlySavedOperation = null
+        if (this.qrOperation === controller) { this.qrOperation = null; this.showQr(null) }
+        if (this.quietStop === controller) this.quietStop = null
       }
     })()
     this.operationTask = task
@@ -159,6 +182,93 @@ export class AuthenticationController {
       this.assertCurrent(controller)
       await this.establish(api, controller, record, tokens)
     })
+  }
+  // A13 · 08 §3.1 (Telegram's first sign-in step is the QR code, tdesktop intro/intro_qr.cpp): a code for this computer,
+  // renewed every 30 s and polled every 2 s, that a phone of the account approves at once. Approved, the sign-in goes the
+  // way a recovery code's does (exchange, the session the server made, establish); a two-step password stops at its
+  // screen (§24). While it waits the sign-in screen stays usable — another way in stops it first (the domain).
+  async signInWithQr(exceptUids: string[]): Promise<void> {
+    await this.operationScope(false, async (api, controller) => {
+      this.qrOperation = controller
+      const stored = this.boundUid ? await this.vault.read(this.boundUid) : null
+      for (;;) {
+        this.assertCurrent(controller)
+        const enabled = await api.qrLoginEnabled(controller.signal)
+        this.assertCurrent(controller)
+        // Switched off: the code area goes away, quietly — not a failure the person has to read.
+        if (this.qrOff !== !enabled) { this.qrOff = !enabled; this.changed() }
+        if (!enabled) { this.quietStop = controller; throw new AuthenticationFailure('cancelled') }
+        this.set('signed-out', tr('복구 코드로 기존 계정을 연결하세요.'))
+        const outcome = await this.qrRound(api, controller, exceptUids)
+        if (!outcome) continue
+        if (outcome.state === 'password-needed') {
+          this.showQr({ state: 'password-needed', hint: outcome.hint })
+          await new Promise<void>(resolve => controller.signal.addEventListener('abort', () => resolve(), { once: true }))
+          this.assertCurrent(controller)
+          return
+        }
+        const { profile, customToken, sessionId } = outcome
+        this.showQr(null)
+        // Whose account came in is said by name (08 §3.5): a third party who scanned this screen is seen at once.
+        this.set('verifying', tr('@{0} 계정으로 연결하고 있습니다.', [profile.userId]))
+        if (stored && stored.profile.uid !== profile.uid) throw new AuthenticationFailure('unavailable')
+        this.known = profile
+        if (!this.boundUid) this.admission?.admit(profile.uid)
+        const tokens = await api.exchange(customToken, profile.uid, controller.signal)
+        this.assertCurrent(controller)
+        // The server made this session when it handed over the sign-in (08 §3.7): its id is the one used.
+        const record: SavedCredential = { version: 1, profile, sessionId, refreshToken: tokens.refreshToken, authTime: tokens.authTime, provider: 'qr' }
+        await this.vault.save(record)
+        this.boundUid = record.profile.uid
+        this.newlySavedOperation = controller
+        this.assertCurrent(controller)
+        await this.establish(api, controller, record, tokens)
+        return
+      }
+    }, tr('QR 코드를 준비하고 있습니다.'))
+  }
+  // One attempt: a secret, its codes, the polls. Over (ten minutes, or the server's «expired») → null, a new attempt.
+  private async qrRound(api: FirebaseAuthenticationAPI, controller: AbortController, exceptUids: string[]): Promise<Exclude<QrRedeem, { state: 'waiting' }> | null> {
+    const attempt = newQrAttempt(), signal = controller.signal
+    let settled = false, refreshAt = 0, poll = qrPollMs
+    const issue = async (): Promise<void> => {
+      const code = await api.issueLoginCode(attempt.binding, exceptUids, this.version, signal)
+      this.assertCurrent(controller)
+      if (code.state === 'pending') { this.showQr({ state: 'code', link: qrLoginLink(code.token) }); refreshAt = Date.now() + code.refreshAfterMs }
+      else { refreshAt = Number.POSITIVE_INFINITY; poll = code.pollAfterMs }
+    }
+    try {
+      this.showQr({ state: 'preparing' })
+      await issue()
+      for (;;) {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, poll)
+          signal.addEventListener('abort', () => { clearTimeout(timer); reject(new AuthenticationFailure('cancelled')) }, { once: true })
+        })
+        this.assertCurrent(controller)
+        const answer = await api.redeemLoginCode(attempt.secret, signal)
+        this.assertCurrent(controller)
+        if (answer.state !== 'waiting') { settled = true; return answer }
+        poll = answer.pollAfterMs
+        if (Date.now() - attempt.startedAt >= qrAttemptLifetimeMs) return null
+        if (Date.now() >= refreshAt) await issue()
+      }
+    } catch (error) {
+      if (error instanceof AuthenticationFailure && error.code === 'qr-expired') return null
+      if (error instanceof AuthenticationFailure && error.code === 'qr-disabled') { this.qrOff = true; this.quietStop = controller; throw new AuthenticationFailure('cancelled') }
+      throw error
+    } finally {
+      // An attempt left behind is ended on the server too (it would expire anyway).
+      if (!settled) void api.cancelLoginCode(attempt.secret, AbortSignal.timeout(5000)).catch(() => {})
+    }
+  }
+  // The sign-in screen went away (hidden, closed, another way chosen): the QR attempt ends without a word.
+  async stopQr(): Promise<void> {
+    const operation = this.qrOperation
+    if (!operation || this.operation !== operation) return
+    this.quietStop = operation
+    operation.abort()
+    await this.operationTask
   }
   // Onboarding sign-up (iOS AuthService.signUp): the server creates the user from an
   // eight-character ID, a new recovery code and a Curve25519 public key, then returns
@@ -308,15 +418,12 @@ export class AuthenticationController {
     progress.stage = 'session'
     await api.startSession(tokens.idToken, record.sessionId, this.version, record.provider ?? 'custom', controller.signal)
     this.assertCurrent(controller)
-    let ready!: () => void
-    let failed!: (error: Error) => void
-    const registration = new Promise<void>((resolve, reject) => { ready = resolve; failed = reject })
     let owner: CredentialOwner
     const transport = new SocketMessageTransport(this.version, {
       rejected: reason => { owner.rejection = reason },
       // A socket refusal that may mean the sign-in is gone is asked of the server; only its «session-revoked» ends it.
       confirm: () => this.confirmSession(api, owner),
-      state: state => { recordConnectionStep('state', state); this.connectionChanged(owner, state, ready, failed) },
+      state: state => { recordConnectionStep('state', state); this.connectionChanged(owner, state) },
       step: (step, detail) => recordConnectionStep(step, detail),
       reactionUpdated: body => { if (this.owner === owner && !controller.signal.aborted && owner.established) this.accounts.reactionUpdated(record.profile.uid, body) },
       message: message => {
@@ -328,76 +435,88 @@ export class AuthenticationController {
       // watch re-listens by itself and brings the account up to date (the desktop's
       // getDifference); a renewal in place keeps them running. Nothing else to request here.
       needsReconciliation: () => {}
-    })
+    }, this.seams.openSocket)
     owner = { controller, record, tokens, established: false, rejection: '', refresh: null, transport }
     this.owner = owner
-    const cancel = () => failed(new AuthenticationFailure('cancelled'))
-    const timer = setTimeout(() => failed(new AuthenticationFailure('network')), 45000)
-    controller.signal.addEventListener('abort', cancel, { once: true })
-    try {
-      progress.stage = 'socket'
-      owner.transport.connect({ uid: record.profile.uid, sessionId: record.sessionId, idToken: force => this.idToken(owner, force) })
-      await registration
-      this.assertCurrent(controller)
-      await this.vault.save(record)
-      this.assertCurrent(controller)
-      // A disconnect while saving cannot publish a current server authorization.
-      if (!owner.transport.ready) throw new AuthenticationFailure('network')
-      owner.established = true
-      const isCurrentSender = (): boolean => this.owner === owner && !controller.signal.aborted && owner.established && owner.transport.ready
-      this.accounts.activated({ ...record.profile }, {
-        signal: controller.signal,
-        storageScope: `${record.sessionId}:${record.authTime}`,
-        sender: {
-          get ready() { return isCurrentSender() },
-          send: (wire, signal) => {
-            if (!isCurrentSender() || wire.senderId !== record.profile.uid) throw new NotEmitted(tr('계정 연결이 변경되었습니다.'))
-            return owner.transport.send(wire, AbortSignal.any([signal, controller.signal]))
-          },
-          markRead: (chatId, target, signal) => {
-            if (!isCurrentSender()) throw new NotEmitted(tr('계정 연결이 변경되었습니다.'))
-            return owner.transport.markRead(chatId, record.profile.uid, target, AbortSignal.any([signal, controller.signal]))
-          },
-          get reactions() { return isCurrentSender() && owner.transport.reactionsReady },
-          react: (payload, signal) => {
-            if (!isCurrentSender() || payload.expectedUid !== record.profile.uid) throw new NotEmitted(tr('계정 연결이 변경되었습니다.'))
-            return owner.transport.setReaction(payload, AbortSignal.any([signal, controller.signal]))
-          }
-        },
-        // Reading is not sending: Telegram downloads over its own connections, so a socket that went down does not
-        // stop a watch or a picture. Only the account being gone (another one, signed out, aborted) does.
-        authorize: async (signal, force) => {
-          const bounded = AbortSignal.any([signal, controller.signal])
-          const assertOwner = (): void => {
-            if (bounded.aborted || this.owner !== owner || !owner.established) throw new AuthenticationFailure('cancelled')
-          }
-          assertOwner()
-          const idToken = await this.idToken(owner, force)
-          assertOwner()
-          const authorization = await api.readAuthorization(idToken, owner.tokens.expiresAt, bounded)
-          assertOwner()
-          return authorization
-        }
-      })
-      this.set('signed-in', tr('계정이 연결되었습니다.'), owner)
-    } finally {
-      clearTimeout(timer)
-      controller.signal.removeEventListener('abort', cancel)
+    // A15-5 (§31, user «권장대로» 10-03 18:3x): the account opens on the session the server has just confirmed
+    // (startMorseDeviceSession above, the same answer the socket's registration asks for: revoked, banned, too old) and
+    // on Firestore, not on the message server's socket — where that socket does not carry (Russia, B95) the account
+    // still opens, reads, and sends through the callables (send-fallback.ts). The socket is connected once the account
+    // is open and its refusals end the account as they always did (connectionChanged); until it is there the list and
+    // the chat say «연결 중…» and nothing waits for it, as Telegram's title says «Connecting...» without stopping the
+    // window (tdesktop window/window_connecting_widget.cpp:31, 307-345; history/view/history_view_top_bar_widget.cpp
+    // :276-296, 770-786).
+    progress.stage = 'save'
+    await this.vault.save(record)
+    this.assertCurrent(controller)
+    owner.established = true
+    // A15: sending no longer waits for the socket — a message the socket cannot carry goes through the callable
+    // (send-fallback.ts) — so the sender is this account's for as long as it is established. Reactions stay on the
+    // socket while it is there and otherwise use their own callable (message-actions.ts).
+    const isCurrent = (): boolean => this.owner === owner && !controller.signal.aborted && owner.established
+    const isCurrentSender = (): boolean => isCurrent() && owner.transport.ready
+    // Reading is not sending: Telegram downloads over its own connections, so a socket that went down does not
+    // stop a watch or a picture. Only the account being gone (another one, signed out, aborted) does.
+    const authorize = async (signal: AbortSignal, force: boolean) => {
+      const bounded = AbortSignal.any([signal, controller.signal])
+      const assertOwner = (): void => {
+        if (bounded.aborted || this.owner !== owner || !owner.established) throw new AuthenticationFailure('cancelled')
+      }
+      assertOwner()
+      const idToken = await this.idToken(owner, force)
+      assertOwner()
+      const authorization = await api.readAuthorization(idToken, owner.tokens.expiresAt, bounded)
+      assertOwner()
+      return authorization
     }
+    const socket: SocketPath = {
+      whenSendable: (ms, signal) => owner.transport.whenSendable(ms, signal),
+      send: (wire, signal) => owner.transport.send(wire, signal),
+      markRead: (chatId, target, signal) => owner.transport.markRead(chatId, record.profile.uid, target, signal)
+    }
+    const callable: CallablePath = (name, data, signal) => callMorseFunction({ signal: controller.signal, authorize }, name, data, signal, { timeout: 30000 })
+    this.accounts.activated({ ...record.profile }, {
+      signal: controller.signal,
+      storageScope: `${record.sessionId}:${record.authTime}`,
+      sender: {
+        get ready() { return isCurrent() },
+        send: (wire, signal) => {
+          if (!isCurrent() || wire.senderId !== record.profile.uid) throw new NotEmitted(tr('계정 연결이 변경되었습니다.'))
+          return sendWithFallback(wire, AbortSignal.any([signal, controller.signal]), socket, callable)
+        },
+        markRead: (chatId, target, signal) => {
+          if (!isCurrent()) throw new NotEmitted(tr('계정 연결이 변경되었습니다.'))
+          return markReadWithFallback(chatId, record.profile.uid, target, AbortSignal.any([signal, controller.signal]), socket, callable)
+        },
+        get reactions() { return isCurrentSender() && owner.transport.reactionsReady },
+        react: (payload, signal) => {
+          if (!isCurrentSender() || payload.expectedUid !== record.profile.uid) throw new NotEmitted(tr('계정 연결이 변경되었습니다.'))
+          return owner.transport.setReaction(payload, AbortSignal.any([signal, controller.signal]))
+        }
+      },
+      authorize
+    })
+    this.set('signed-in', tr('계정이 연결되었습니다.'), owner)
+    // What the socket's registration watched for this sign-in is watched on Firestore too (sign-in-watch.ts).
+    const watchReader = new FirestoreReader({ signal: controller.signal, authorize })
+    controller.signal.addEventListener('abort', () => watchReader.close(), { once: true })
+    const watch = this.seams.watchSignIn ?? watchSignIn
+    watch(watchReader, record.profile.uid, record.sessionId, record.authTime, controller.signal, reason => void this.checkSignIn(api, owner, reason))
+    progress.stage = 'socket'
+    owner.transport.connect({ uid: record.profile.uid, sessionId: record.sessionId, idToken: force => this.idToken(owner, force) })
   }
-  private connectionChanged(owner: CredentialOwner, state: ConnectionState, ready: () => void, failed: (error: Error) => void): void {
+  private connectionChanged(owner: CredentialOwner, state: ConnectionState): void {
     if (this.owner !== owner || owner.controller.signal.aborted) return
     if (owner.established && state !== 'rejected') this.accounts.connection(owner.record.profile.uid, state)
     if (state === 'ready') {
-      ready()
       if (owner.established) this.set('signed-in', tr('계정이 연결되었습니다.'), owner)
     } else if (state === 'rejected') {
       const outcome = owner.revokedByServer ? 'revoked' : registrationOutcome({ reason: owner.rejection, error: owner.rejection })
       const revoked = outcome === 'revoked'
       const error = new AuthenticationFailure(rejectionFailure(outcome))
-      // Not yet established: the sign-in or restore fails with it, and notes it there (operationScope).
-      if (!owner.established) { failed(error); return }
-      if (revoked) noteSignOut(`startMorseDeviceSession session-revoked, asked after socket ${owner.rejection}`)
+      // The socket is connected only once the account is open (establish), so its refusal always ends an open account.
+      if (!owner.established) return
+      if (revoked) noteSignOut(`startMorseDeviceSession session-revoked, asked after ${owner.rejection.startsWith('watch-') ? owner.rejection : `socket ${owner.rejection}`}`)
       // Only a sign-in the server says is gone clears what this device kept for the account: the messages not yet
       // sent, uploads, drafts, what it hid. Anything else leaves them for the next connection (Telegram logs out
       // on 401 alone).
@@ -407,13 +526,25 @@ export class AuthenticationController {
       if (revoked) void this.vault.remove(owner.record.profile.uid).catch(() => {
         if (!this.closed && !this.owner && !this.operation) this.set('error', new AuthenticationFailure('storage').message)
       })
-    } else if (owner.established) {
-      this.set('suspended', tr('계정 연결을 다시 확인하고 있습니다.'), owner)
     }
+    // A15-5: any other state of the socket leaves an open account as it is — it is shown as «연결 중…» (registry →
+    // session.setSocket) and nothing waits for it.
   }
   // A5 contract §3-1: whether the server still holds this device's session, asked with a fresh token. «session-revoked»
   // is the answer that signs out; a token the Firebase servers refuse signs out on the way (idToken, their answer too);
   // anything else — the network, a proof, a slow server — is no answer, and the socket registers again later.
+  // A15-5: the account's or the session's document says the sign-in may be gone (sign-in-watch.ts). The server is asked
+  // as for a socket refusal, one question at a time; its «session-revoked» ends the account the way the socket's does —
+  // the connection stops as rejected and connectionChanged signs out and clears what this device kept.
+  private async checkSignIn(api: FirebaseAuthenticationAPI, owner: CredentialOwner, reason: string): Promise<void> {
+    if (this.owner !== owner || !owner.established || owner.checking) return
+    owner.checking = true
+    try {
+      const answer = await this.confirmSession(api, owner)
+      recordConnectionStep('session-confirm', `watch-${reason}:${answer}`)
+      if (answer === 'revoked' && this.owner === owner) { owner.rejection = `watch-${reason}`; owner.transport.stop('rejected') }
+    } finally { owner.checking = false }
+  }
   private async confirmSession(api: FirebaseAuthenticationAPI, owner: CredentialOwner): Promise<'revoked' | 'confirmed' | 'unknown'> {
     if (this.owner !== owner || owner.controller.signal.aborted) return 'unknown'
     try {

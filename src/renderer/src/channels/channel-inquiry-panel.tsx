@@ -101,7 +101,8 @@ function EditMessageBox({ initial, close, save }: { initial: string; close(): vo
 // One that did not go stays where it was, marked, until it is sent again or deleted (HistoryMessage failed state,
 // iOS «다시 보내기»); only the message's own id goes again, so the server keeps one copy of it.
 function inquiryLocal(entry: PendingEntry, inquiryId: string): LocalOutgoing {
-  return { id: entry.id, chatId: inquiryId, text: entry.text, createdAt: entry.at, state: entry.failed !== undefined ? 'failed' : entry.sent ? 'sent' : 'queued',
+  // The room's own order is when each was written (B90 keeps that order for a chat's outbox the same way).
+  return { id: entry.id, chatId: inquiryId, sequence: entry.at, text: entry.text, createdAt: entry.at, state: entry.failed !== undefined ? 'failed' : entry.sent ? 'sent' : 'queued',
     reason: entry.failed ?? '', busy: entry.failed === undefined && !entry.sent, retryable: entry.failed !== undefined }
 }
 const attachWindowMs = 900 * 1000

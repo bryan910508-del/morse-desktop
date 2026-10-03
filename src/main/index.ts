@@ -396,7 +396,7 @@ async function snapshot(): Promise<DesktopSnapshot> {
     inquirySends: appLocked || !active ? [] : active.inquirySends.items(),
     channelOperations: appLocked || !active ? [] : active.channelOperations.items(),
     chatFolders: appLocked || !active ? null : active.chatFolderList(),
-    connection: active?.state ?? 'offline', dialogs: appLocked ? [] : dialogs, openDialogs: appLocked || !active ? [] : active.openDialogs(),
+    connection: active?.state ?? 'offline', socket: active?.socketState ?? 'offline', dialogs: appLocked ? [] : dialogs, openDialogs: appLocked || !active ? [] : active.openDialogs(),
     dialogStatus: active?.readStatus ?? 'ready', dialogMessage: active?.readMessage ?? '',
     dialogPin: screenLocked ? null : active?.dialogPins.snapshot ?? null,
     manualUnread: screenLocked ? null : active?.manualUnread.snapshot ?? null,
@@ -1028,6 +1028,8 @@ function registerIPC(): void {
   })
   handle('auth-sign-in', code => authentication.signIn(code))
   handle('auth-sign-in-apple', () => authentication.signInWithApple())
+  handle('auth-qr-start', () => authentication.signInWithQr())
+  handle('auth-qr-stop', () => authentication.stopQr())
   handle('auth-cancel', () => authentication.cancel())
   handle('auth-restore', uid => authentication.restore(identifier(uid)))
   handle('auth-sign-out', uid => authentication.signOut(uid === undefined ? accounts.active?.profile.uid ?? '' : identifier(uid)))

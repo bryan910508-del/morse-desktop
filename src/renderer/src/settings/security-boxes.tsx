@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { Hand, KeyRound, Laptop, Monitor, Smartphone, X } from 'lucide-react'
-import { lastSeenModes, sessionTtlDayOptions, type BlockedUser, type LastSeenMode, type LastSeenPrivacy, type SignInSession, type SignInSessions } from '../../../shared/account-tools'
+import { lastSeenModes, sessionPlace, sessionQrLine, sessionTtlDayOptions, type BlockedUser, type LastSeenMode, type LastSeenPrivacy, type SignInSession, type SignInSessions } from '../../../shared/account-tools'
 import { controller } from '../app/ui'
 import { errorText, fullTime, sessionActiveTime } from '../app/format'
 import { trackWrite } from '../app/drafts'
@@ -10,7 +10,7 @@ import { showTextEditBox } from '../boxes/text-edit-box'
 import { Spinner } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
 import { UserAvatar } from '../ui/user-avatar'
-import { tr } from '../../../shared/i18n'
+import { locale, tr } from '../../../shared/i18n'
 
 // PrivacyLastSeenSettingsView: who can see the last seen time. Exceptions set on iPhone are kept.
 function LastSeenBox({ accountUid, close }: { accountUid: string; close(): void }) {
@@ -85,6 +85,7 @@ function SessionRow({ session, onOpen, onTerminate }: { session: SignInSession; 
       <span className="session-icon">{platformIcon(session)}</span>
       <span className="peer-row-text"><strong className="ellipsis">{session.deviceModel}</strong>
         <small className="ellipsis">{appLine(session)}</small>
+        {session.qr && <small className="ellipsis">{sessionQrLine(session.qr)}</small>}
         {session.current ? <small className="online">{tr('온라인')}</small> : last !== null && <small>{sessionActiveTime(last)}</small>}</span>
     </button>
     {onTerminate && !session.current && <button type="button" className="icon-button small session-terminate" aria-label={tr('세션 종료')} title={tr('세션 종료')}
@@ -107,6 +108,11 @@ function SessionInfoBox({ session, close, terminate }: { session: SignInSession;
     <div className="session-info-row"><span>{tr('앱')}</span><strong>{appLine(session)}</strong></div>
     {session.systemVersion && <div className="session-info-row"><span>{tr('시스템')}</span><strong>{session.systemVersion}</strong></div>}
     {session.createdAt !== null && <div className="session-info-row"><span>{tr('로그인')}</span><strong>{fullTime(session.createdAt)}</strong></div>}
+    {session.qr && <div className="session-info-row"><span>{tr('로그인 방식')}</span><strong>{sessionQrLine(session.qr)}</strong></div>}
+    {session.ip && <div className="session-info-row"><span>{tr('IP 주소')}</span><strong className="selectable">{session.ip}</strong></div>}
+    {session.origin && <div className="session-info-row"><span>{tr('위치')}</span><strong>{sessionPlace(session.origin, locale())}</strong></div>}
+    {/* A13 §8: the place is the IP's, from DB-IP (CC BY 4.0, credited here and in the privacy policy). */}
+    {session.origin && <p className="box-note">{tr('위치는 IP 로 추정한 것이라 정확하지 않을 수 있어요.')}<br />{tr('IP 위치: DB-IP')}</p>}
   </Box>
 }
 // SelfDestructionBox (Type::Sessions): 1 week, 3, 6 or 12 months.

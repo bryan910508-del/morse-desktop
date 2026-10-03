@@ -115,6 +115,8 @@ export interface DialogSummary {
   restricted?: boolean
   // B52: in a 1:1, whether the peer withdrew.
   peerDeleted?: boolean
+  // A13 §9-2: in a 1:1, the peer is the official support account (its public profile says so, written by the server).
+  official?: 'support'
   composeAccess?: boolean
   composeMessage?: string
   historyAccess?: 'loading' | 'blocked' | 'ready'
@@ -285,6 +287,8 @@ export interface DesktopSnapshot {
   accounts: AccountProfile[]
   activeAccountUid: string | null
   connection: ConnectionState
+  // A15-5: the active account's message server socket, for «연결 중…» only; `connection` is whether the account is usable.
+  socket: ConnectionState
   dialogs: DialogSummary[]
   // Dialogs that are open without being rows of the list (deleted here, or nothing left after a delete for everyone):
   // Telegram keeps a History per peer whether or not it is in the chat list. Look a chat up with dialogById().

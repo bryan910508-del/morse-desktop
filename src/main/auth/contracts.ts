@@ -29,9 +29,9 @@ export interface SavedCredential {
   refreshToken: string
   authTime: number
   // How this device signed in, for the server's session list (iOS sends the Firebase provider ID).
-  provider?: 'apple.com'
+  provider?: 'apple.com' | 'qr'
 }
-export type AuthFailureCode = 'unavailable' | 'update-required' | 'app-proof' | 'invalid-code' | 'rate-limited' | 'invalid-credential' | 'revoked' | 'network' | 'storage' | 'protocol' | 'cancelled' | 'id-taken' | 'account-limit' | 'saved-account' | 'already-added' | 'device-limit' | 'apple' | 'stale-identity' | 'banned'
+export type AuthFailureCode = 'unavailable' | 'update-required' | 'app-proof' | 'invalid-code' | 'rate-limited' | 'invalid-credential' | 'revoked' | 'network' | 'storage' | 'protocol' | 'cancelled' | 'id-taken' | 'account-limit' | 'saved-account' | 'already-added' | 'device-limit' | 'apple' | 'stale-identity' | 'banned' | 'qr-disabled' | 'qr-expired'
 const messages: Record<AuthFailureCode, string> = {
   unavailable: tr('현재 이 버전에서는 계정을 연결할 수 없습니다.'),
   // The server needs a newer Morse. What was waiting to go is still here, and goes once it is updated.
@@ -55,7 +55,10 @@ const messages: Record<AuthFailureCode, string> = {
   'stale-identity': tr('Apple 로그인에 실패했어요. 다시 시도해 주세요.'),
   // A10 §4 (Telegram PHONE_NUMBER_BANNED): the operator banned the account. What it kept stays on this device — the
   // operator can lift a ban — and the account offers «도움», a mail to the operator.
-  banned: bannedNotice()
+  banned: bannedNotice(),
+  // A13: the QR sign-in is off on the server (the code area goes away), or this code's attempt is over (a new code).
+  'qr-disabled': tr('지금은 QR 코드로 연결할 수 없어요. 복구 코드로 연결해 주세요.'),
+  'qr-expired': tr('QR 코드가 만료됐어요. 새 코드를 띄웁니다.')
 }
 // What a failed token refresh does to the account on this device. When the sign-in itself is over — the refresh
 // token refused, or the session revoked — the account is signed out and what it kept is cleared, as Telegram does on

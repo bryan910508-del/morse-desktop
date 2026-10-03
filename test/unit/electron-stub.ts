@@ -15,4 +15,8 @@ export const safeStorage = {
   encryptStringAsync: async (text: string) => Buffer.from(`stub:${text}`, 'utf8'),
   decryptStringAsync: async (bytes: Buffer) => ({ result: bytes.toString('utf8').replace(/^stub:/, '') })
 }
-export default { app, nativeImage, safeStorage }
+// The sign-in controller imports Apple's sign-in window (apple-authorization.ts); the tests never open it.
+export class BrowserWindow { constructor() { throw new Error('BrowserWindow is not available in unit tests') } }
+export const session = { fromPartition: () => { throw new Error('session is not available in unit tests') } }
+export const shell = { openExternal: async () => { throw new Error('shell is not available in unit tests') } }
+export default { app, nativeImage, safeStorage, BrowserWindow, session, shell }

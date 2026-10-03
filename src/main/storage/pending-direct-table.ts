@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3-multiple-ciphers'
 import { identifier } from '../../shared/validation'
 import type { PendingDirect } from '../../shared/delivery'
+import { textDigest } from '../messaging/text-identity'
+import type { SendWire } from '../../shared/model'
 
 export type PendingDirectCommand =
   | { kind: 'direct-list' }
@@ -8,6 +10,10 @@ export type PendingDirectCommand =
   | { kind: 'direct-confirm'; chatId: string; peerUid: string }
   | { kind: 'direct-discard'; chatId: string }
   | { kind: 'direct-supersede'; chatId: string; peerUid: string; dialogId: string }
+  | { kind: 'direct-move'; chatId: string; peerUid: string; dialogId: string; refusedId: string }
+
+// What direct-move did: the messages now in the dialog, and whether the room went with nothing left in it.
+export interface DirectMove { moved: string[]; removed: boolean }
 
 export function executePendingDirect(db: Database.Database, uid: string, command: PendingDirectCommand): unknown {
   switch (command.kind) {
@@ -51,6 +57,32 @@ export function executePendingDirect(db: Database.Database, uid: string, command
         else db.prepare('UPDATE local_drafts SET chat_id=? WHERE chat_id=?').run(dialogId, chatId)
       }
       return removed
+    })()
+    // B88 §28: the server refused this room's first message (DIRECT_CHAT_EXISTS) and named the pair's 1:1. The refused
+    // message and those queued behind it go there as they are, with the same ids, without what only makes a new room
+    // (the peer, the kind, the new room's auto-delete), as Android's DirectChatPair.movedPayload. One on its way stays
+    // for its answer; media stays, as its upload is named by the room; so does a forward, bound to its batch. A room
+    // left with nothing goes, its draft to the dialog as direct-supersede moves it.
+    case 'direct-move': return db.transaction((): DirectMove => {
+      const chatId = identifier(command.chatId), dialogId = identifier(command.dialogId), peerUid = identifier(command.peerUid)
+      if (chatId === dialogId || !db.prepare('SELECT 1 FROM pending_directs WHERE chat_id=? AND peer_uid=?').get(chatId, peerUid)) return { moved: [], removed: false }
+      const rows = db.prepare(`SELECT id,wire FROM intents WHERE chat_id=? AND wire IS NOT NULL AND upload IS NULL AND forward_operation_id IS NULL
+        AND (id=? OR state='queued') ORDER BY sequence`).all(chatId, identifier(command.refusedId)) as { id: string; wire: string }[]
+      const moved: string[] = []
+      for (const row of rows) {
+        const wire = JSON.parse(row.wire) as SendWire & Record<string, unknown>
+        if (wire.type !== 'text' || wire.peerUid !== peerUid || wire.chatId !== chatId) continue
+        wire.chatId = dialogId
+        for (const key of ['peerUid', 'chatType', 'autoDeleteSeconds', 'autoDeleteMyOnly']) delete wire[key]
+        db.prepare("UPDATE intents SET chat_id=?,wire=?,digest=?,state='queued',reason='' WHERE id=?").run(dialogId, JSON.stringify(wire), textDigest(wire), row.id)
+        moved.push(row.id)
+      }
+      if (db.prepare("SELECT 1 FROM intents WHERE chat_id=? AND (wire IS NOT NULL OR state='done') LIMIT 1").get(chatId)) return { moved, removed: false }
+      db.prepare('DELETE FROM pending_directs WHERE chat_id=?').run(chatId)
+      if (db.prepare('SELECT 1 FROM local_drafts WHERE chat_id=? LIMIT 1').get(dialogId)) db.prepare('DELETE FROM local_drafts WHERE chat_id=?').run(chatId)
+      else db.prepare('UPDATE local_drafts SET chat_id=? WHERE chat_id=?').run(dialogId, chatId)
+      db.prepare('DELETE FROM reply_drafts WHERE chat_id=?').run(chatId)
+      return { moved, removed: true }
     })()
     case 'direct-discard': return db.transaction(() => {
       const chatId = identifier(command.chatId)

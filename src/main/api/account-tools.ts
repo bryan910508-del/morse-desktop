@@ -47,7 +47,13 @@ export function decodeSignInSession(doc: FirestoreDocument, currentSessionId: st
   const f = fieldsOf(doc), id = lastSegment(doc.name)
   if (f.revokeRequestedAt) return null
   const verified = text(f.platform, 20), platform = platforms.find(item => item === verified) ?? 'other'
+  const linked = f.linkedBy?.mapValue?.fields ?? {}, place = f.origin?.mapValue?.fields ?? {}
+  const country = text(place.country, 8).trim().toUpperCase()
+  const qr = text(f.loginProvider, 20) === 'qr' ? {
+    approvedBy: text(linked.deviceLabel, 160).replace(/^Morse\s*·\s*/, '').trim() || text(linked.platform, 20) || tr('다른 기기'),
+    approverSessionId: text(linked.sessionId, 128), approverGone: false } : null
   return {
+    qr, ip: text(f.ip, 64).trim(), origin: /^[A-Z]{2}$/.test(country) ? { country, region: text(place.region, 64).trim() } : null,
     id, platform, current: id === currentSessionId,
     deviceModel: text(f.deviceModel, 100).trim() || text(f.deviceLabel, 160).replace(/^Morse\s*·\s*/, '').trim() || tr('알 수 없는 기기'),
     appName: text(f.appName, 40).trim() || (platform === 'other' ? 'Morse' : `Morse ${platform}`),
@@ -56,6 +62,12 @@ export function decodeSignInSession(doc: FirestoreDocument, currentSessionId: st
   }
 }
 
+// A13 §2.4 (Telegram FRESH_RESET_AUTHORISATION_FORBIDDEN): a session younger than a day cannot end another one —
+// whoever just signed in with a stolen code cannot sign the owner out. The same words as Android §32.
+export function revokeRefusal(error: unknown): string {
+  return error instanceof MorseCallableFailure && error.reason === 'fresh-session' ? tr('새로 로그인한 기기는 24시간 동안 다른 기기를 로그아웃할 수 없어요.')
+    : tr('세션을 종료하지 못했습니다.')
+}
 // Account-level tools that the iOS app reaches through callables or its own user documents:
 // chat history clearing, the memo chat, blocking, sign-in sessions, recovery code, privacy and deletion.
 // reports/{auto-id} as firestore.rules isValidReport takes it: the common fields, then each kind's own (A10 §3-1).
@@ -114,6 +126,8 @@ export class AccountToolsApi {
       ])
       const sessions = docs.flatMap(doc => { const row = decodeSignInSession(doc, this.sessionId); return row ? [row] : [] })
         .sort((a, b) => a.current !== b.current ? (a.current ? -1 : 1) : lastActive(b) - lastActive(a))
+      // The phone that approved a QR session is in this list while it is signed in (Android §32, the same words).
+      for (const row of sessions) if (row.qr) row.qr.approverGone = !sessions.some(other => other.id === row.qr!.approverSessionId)
       const days = settings ? numberField(settings.fields ?? {}, 'authorizationTtlDays') : NaN
       return { sessions, ttlDays: sessionTtlDayOptions.includes(days as typeof sessionTtlDayOptions[number]) ? days : defaultSessionTtlDays }
     })
@@ -123,7 +137,7 @@ export class AccountToolsApi {
   async revokeSessions(sessionId: string | null): Promise<void> {
     if (sessionId === this.sessionId) throw new Error(tr('이 기기는 설정의 로그아웃으로 로그아웃해 주세요.'))
     try { await this.call('revokeMorseDeviceSession', sessionId ? { sessionId } : { allOthers: true, currentSessionId: this.sessionId }) }
-    catch { throw new Error(tr('세션을 종료하지 못했습니다.')) }
+    catch (error) { throw new Error(revokeRefusal(error)) }
   }
   // setMorseSessionTtl: the account's own period for ending idle sessions (Telegram account.setAuthorizationTTL).
   async setSessionTtl(days: number): Promise<void> {

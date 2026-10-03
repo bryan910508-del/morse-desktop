@@ -14,7 +14,7 @@ function decodeCredential(value: unknown): SavedCredential {
   }
   return { version: 1, profile: { uid: identifier(profile.uid), userId: profile.userId, displayName: profile.displayName },
     sessionId: identifier(record.sessionId), refreshToken: record.refreshToken, authTime: Number(record.authTime),
-    ...(record.provider === 'apple.com' ? { provider: 'apple.com' as const } : {}) }
+    ...(record.provider === 'apple.com' ? { provider: 'apple.com' as const } : record.provider === 'qr' ? { provider: 'qr' as const } : {}) }
 }
 interface AccountIndex { version: 1; order: string[]; active: string | null }
 const uidPattern = /^[A-Za-z0-9_-]{1,160}$/

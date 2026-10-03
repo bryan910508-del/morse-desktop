@@ -72,6 +72,8 @@ import { stickerContentType, stickerSidePx, type StickerKind } from '../../share
 import { definiteRejections, deliveryReason, retryableRejections, textDigest } from './text-identity'
 import { draftPreviewChars } from '../../shared/chat-list-preview'
 import { directChatId } from './direct-chat-id'
+import { directPairPath, isPairDialog, pairCorrection, pairLookup, pairReadFailed, pairRoom, type PairLookup } from './direct-chat-pair'
+import type { DirectMove } from '../storage/pending-direct-table'
 import { tr } from '../../shared/i18n'
 import { rejectionCode, rejectionUntil, sanctionOf, storedRejection } from '../../shared/sanctions'
 
@@ -91,6 +93,8 @@ export interface AccountAuthorization extends ReadCredentials {
     readonly reactions?: boolean; react?(payload: Record<string, unknown>, signal: AbortSignal): Promise<unknown> }
 }
 interface ReadContext { ready: boolean; dialogs: Map<string, DialogSummary>; reader: FirestoreReader | null }
+// B88 §28: how long opening a person's chat waits for their pair document before the device's list answers.
+const directPairReadMs = 5000
 
 // A message on its way goes again by itself: one that never left, one whose answer is not known yet, an upload the
 // connection cut off. Only a definite refusal waits for the person.
@@ -118,6 +122,16 @@ export function nextIntent(rows: StoredIntent[], now: number, retryAt: (id: stri
 // as the server's message.
 export function cancelPlan(state: { uploading: boolean }): { removeRow: true; abortUpload: boolean; recallSend: false } {
   return { removeRow: true, abortUpload: state.uploading, recallSend: false }
+}
+// B90 (Telegram adds a local message once at the bottom — History::addNewLocalMessage → addNewItem, history.cpp:884-930 —
+// and a server answer changes its id in place, HistoryItem::setRealId, history_item.cpp:3165-3195; a refusal only marks
+// it, sendFailed, :4384-4393): this chat's messages still on their way and those the server has just taken, in the
+// order they were written. Before, the waiting rows came first and the taken ones after them, so each answer moved a
+// bubble below the ones written after it and back.
+export function outgoingOrder(chatId: string, rows: readonly StoredIntent[], sent: readonly StoredIntent[]): { row: StoredIntent; sent: boolean }[] {
+  const waiting = rows.filter(row => row.chatId === chatId)
+  const taken = sent.filter(row => row.chatId === chatId && !rows.some(other => other.id === row.id))
+  return [...waiting.map(row => ({ row, sent: false })), ...taken.map(row => ({ row, sent: true }))].sort((a, b) => a.row.sequence - b.row.sequence)
 }
 export class OutboxPump {
   private repository: DeliveryRepository | null = null
@@ -197,15 +211,11 @@ export class OutboxPump {
     return rows
   }
   private peerDialogId(peerUid: string): string | null {
-    for (const dialog of this.context().dialogs.values()) if (dialog.kind === 'direct' && dialog.participantUids.length === 2 &&
-      dialog.participantUids.includes(this.uid) && dialog.participantUids.includes(peerUid)) return dialog.id
+    for (const dialog of this.context().dialogs.values()) if (this.pairDialog(dialog, peerUid)) return dialog.id
     return null
   }
-  private matchesDirect(row: Pick<PendingDirect, 'chatId' | 'peerUid'>): boolean {
-    const dialog = this.context().dialogs.get(row.chatId)
-    return Boolean(dialog?.kind === 'direct' && dialog.participantUids.length === 2 &&
-      dialog.participantUids.includes(this.uid) && dialog.participantUids.includes(row.peerUid))
-  }
+  private pairDialog(dialog: DialogSummary | undefined, peerUid: string): boolean { return isPairDialog(dialog, this.uid, peerUid) }
+  private matchesDirect(row: Pick<PendingDirect, 'chatId' | 'peerUid'>): boolean { return this.pairDialog(this.context().dialogs.get(row.chatId), row.peerUid) }
   private targetExists(chatId: string): boolean {
     const dialog = this.context().dialogs.get(chatId), pending = this.pending.get(chatId)
     if (dialog) return dialog.kind !== 'secret' && dialog.participantUids.includes(this.uid) && (!pending || this.matchesDirect(pending))
@@ -220,12 +230,39 @@ export class OutboxPump {
     // without a new frame it kept "대화와 연결을 확인한 뒤 전송할 수 있습니다." from the moment the document went.
     this.pending = new Map(rows.map(row => [row.chatId, row])); this.pendingChanged(); void this.publish()
   }
-  async openDirect(peer: { uid: string; displayName: string }): Promise<string> {
+  // B88 §28 (Telegram opens a private chat by its peer — Telegram-Android ChatActivity :2780 `dialog_id = userId`): the
+  // pair's 1:1 is the room its server document names, an old UUID room included (direct-chat-pair.ts pairRoom).
+  // null: no room yet, the first message makes it.
+  // B97 §32: a 1:1 the list already holds opens at once (Desktop waited ~0.8 s for the document, iOS 816 ms); the
+  // document is read afterwards, and a room it names instead moves the window there (pairCorrection) as a pending room
+  // that became a dialog does (superseded). Only a person with no 1:1 here waits for the document.
+  async findDirect(peerUid: string): Promise<string | null> {
+    await this.opening
+    const held = this.peerDialogId(peerUid)
+    if (held) { void this.confirmPair(peerUid, held); return held }
+    return pairRoom(await this.readPair(peerUid), this.uid, peerUid, this.context().dialogs)
+  }
+  private async confirmPair(peerUid: string, held: string): Promise<void> {
+    const lookup = await this.readPair(peerUid)
+    const dialogId = this.closed ? null : pairCorrection(held, lookup, this.uid, peerUid, this.context().dialogs)
+    if (!dialogId) return
+    this.superseded.set(held, { peerUid, dialogId }); this.pendingChanged(); void this.publish()
+  }
+  private async readPair(peerUid: string): Promise<PairLookup> {
+    const reader = this.context().reader
+    if (!reader) return { kind: 'unreadable' }
+    // A person's room opens at once: a read that takes longer than this is left to the device.
+    const signal = AbortSignal.any([this.generation.signal, AbortSignal.timeout(directPairReadMs)])
+    try { return pairLookup(await reader.getDocument(directPairPath(this.uid, peerUid), signal), this.uid, peerUid) }
+    catch (error) { return pairReadFailed(error) }
+  }
+  // lookedUp: the caller asked findDirect already and it found no room.
+  async openDirect(peer: { uid: string; displayName: string }, lookedUp = false): Promise<string> {
     await this.opening
     if (!this.active(this.generation.signal)) throw new Error(tr('대화 목록과 연결을 확인해 주세요.'))
-    const existing = [...this.context().dialogs.values()].find(chat => chat.kind === 'direct' && chat.participantUids.length === 2 &&
-      chat.participantUids.includes(this.uid) && chat.participantUids.includes(peer.uid))
-    if (existing) return existing.id
+    const existing = lookedUp ? null : await this.findDirect(peer.uid)
+    if (existing) return existing
+    if (!this.active(this.generation.signal)) throw new Error(tr('대화 목록과 연결을 확인해 주세요.'))
     let chatId: string
     try { chatId = await this.store<string>({ kind: 'direct-open', chatId: directChatId(this.uid, peer.uid), peerUid: peer.uid, displayName: peer.displayName }) }
     catch (error) {
@@ -351,10 +388,9 @@ export class OutboxPump {
     const visible = !this.closed && !this.auth.signal.aborted && this.targetExists(chatId)
     return { revision, canCompose: this.eligible(chatId), canDiscard: this.queueAvailable(chatId), policyHeld: !this.composeAllowed(chatId), writingBlocked: this.joinChat === chatId || !this.composeAllowed(chatId), message: this.storageFailed ? (this.storageReason === 'key' ? tr('키체인 접근을 허용한 뒤 앱을 다시 열어 주세요.') : tr('전송 저장소를 사용할 수 없습니다. 앱을 다시 열어 주세요.')) :
       !this.initialized ? tr('전송 기록을 불러오는 중…') : this.joinChat === chatId ? tr('토론방 참여 기록을 확인한 뒤 작성할 수 있습니다.') : !this.composeAllowed(chatId) ? this.context().dialogs.get(chatId)?.composeMessage || tr('토론방 작성 조건을 확인해 주세요.') : !this.eligible(chatId) ? tr('이 대화에는 지금 메시지를 보낼 수 없습니다.') : '',
-      items: visible ? [...rows.filter(row => row.chatId === chatId), ...[...this.sent.values()].map(entry => entry.row)
-        .filter(row => row.chatId === chatId && !rows.some(other => other.id === row.id))].map(row => this.sent.has(row.id) && !rows.some(other => other.id === row.id) ? {
-        id: row.id, chatId, text: pendingText(row), replyToId: row.wire.replyToId, createdAt: row.createdAt, state: 'sent' as const, reason: '', busy: false,
-        voicePreview: row.voicePreview, forwarded: row.forwarded, storyReply: Boolean(row.wire.replyStoryId), retryable: false } : ({ id: row.id, chatId, text: pendingText(row), replyToId: row.wire.replyToId, createdAt: row.createdAt,
+      items: visible ? outgoingOrder(chatId, rows, [...this.sent.values()].map(entry => entry.row)).map(({ row, sent }) => sent ? {
+        id: row.id, chatId, sequence: row.sequence, text: pendingText(row), replyToId: row.wire.replyToId, createdAt: row.createdAt, state: 'sent' as const, reason: '', busy: false,
+        voicePreview: row.voicePreview, forwarded: row.forwarded, storyReply: Boolean(row.wire.replyStoryId), retryable: false } : ({ id: row.id, chatId, sequence: row.sequence, text: pendingText(row), replyToId: row.wire.replyToId, createdAt: row.createdAt,
         // An upload the connection cut off is not a failure: it resumes by itself, so it shows the clock, not the red
         // mark that waits for the person (Telegram R-52: a clock until the server has it, failed only on its refusal).
         state: shownState(row),
@@ -794,6 +830,23 @@ export class OutboxPump {
     }
     await this.refreshPending()
   }
+  // B88 §28: a first message refused because the pair already has a 1:1 (DIRECT_CHAT_EXISTS) goes there with the
+  // messages queued behind it, and is sent again with the same id: what is sent to a person goes to their chat, as
+  // Telegram has one per peer. Only a room this account's list holds as the same two people's 1:1 is taken; anything
+  // else leaves the message failed with its notice (text-identity.ts DIRECT_CHAT_EXISTS), as before. The room that
+  // emptied goes, and a window on it moves to the dialog (superseded).
+  private async movedToPairDialog(intent: StoredIntent, rejection: ServerRejection): Promise<boolean> {
+    const peerUid = intent.wire.type === 'text' ? intent.wire.peerUid : undefined, dialogId = rejection.existingChatId
+    if (rejection.reason !== 'DIRECT_CHAT_EXISTS' || !peerUid || !dialogId || dialogId === intent.chatId ||
+      !this.pairDialog(this.context().dialogs.get(dialogId), peerUid)) return false
+    const result = await this.store<DirectMove>({ kind: 'direct-move', chatId: intent.chatId, peerUid, dialogId, refusedId: intent.id })
+    if (!result.moved.includes(intent.id)) return false
+    for (const id of result.moved) this.retryAt.delete(id)
+    if (result.removed) this.superseded.set(intent.chatId, { peerUid, dialogId })
+    this.known.add(dialogId)
+    await this.refreshPending()
+    return true
+  }
   private kick(): void {
     if (!this.initialized || !this.active(this.generation.signal)) return
     if (this.task) { this.rerun = true; return }
@@ -867,7 +920,8 @@ export class OutboxPump {
           }
           if (!this.active(signal)) return
           if (error instanceof ServerRejection && definiteRejections.has(error.reason)) {
-            await this.store({ kind: 'state', id: intent.id, state: 'failed', reason: storedRejection(error.reason, error.until) })
+            if (!await this.movedToPairDialog(intent, error))
+              await this.store({ kind: 'state', id: intent.id, state: 'failed', reason: storedRejection(error.reason, error.until) })
           } else {
             this.backoff(intent.id)
             await this.store({ kind: 'state', id: intent.id, state: 'uncertain', reason: 'ack-pending' })

@@ -7,12 +7,13 @@ import type { ReadAuthorization } from '../network/firestore-rpc'
 import { appleReturnURL, type AppleIdentity } from './apple-answer'
 import { reachability } from '../network/reachability'
 import { describeThisDevice } from '../platform/device-model'
+import { decodeQrIssue, decodeQrRedeem, qrSwitchOn, type QrIssue, type QrRedeem } from './qr-login'
 
 function string(value: unknown, max = 16384): string {
   if (typeof value !== 'string' || !value || value.length > max) throw new AuthenticationFailure('protocol')
   return value
 }
-type RequestKind = 'plain' | 'backup' | 'creation' | 'apple'
+type RequestKind = 'plain' | 'backup' | 'creation' | 'apple' | 'qr'
 export function failureFromBody(value: Record<string, unknown>, status: number, kind: RequestKind): AuthenticationFailure {
   const error = value.error && typeof value.error === 'object' ? value.error as Record<string, unknown> : {}
   const details = error.details && typeof error.details === 'object' ? error.details as Record<string, unknown> : {}
@@ -22,6 +23,11 @@ export function failureFromBody(value: Record<string, unknown>, status: number, 
   if (details.reason === 'ACCOUNT_BANNED' || code === 'USER_DISABLED') return new AuthenticationFailure('banned')
   // completeTalkyProfile: a withdrawn account's leftover Firebase user (iOS MorseAccountDeletion.staleAppleAuthIdentityCode).
   if (details.morseCode === 'stale_apple_auth_identity') return new AuthenticationFailure('stale-identity')
+  // A13 §2.1: the QR sign-in is switched off on the server, or this attempt is over (expired, cancelled, the approving
+  // phone signed out, the account unavailable) — a new code is shown, or none at all when switched off.
+  if (kind === 'qr' && (details.reason === 'qr-login-disabled' || error.message === 'qr-login-disabled')) return new AuthenticationFailure('qr-disabled')
+  if (kind === 'qr' && ['attempt-missing', 'attempt-closed', 'expired', 'approval-cancelled', 'approver-signed-out', 'account-unavailable', 'binding-malformed']
+    .some(reason => details.reason === reason || error.message === reason)) return new AuthenticationFailure('qr-expired')
   if (status === 429 || error.status === 'RESOURCE_EXHAUSTED' || code === 'TOO_MANY_ATTEMPTS_TRY_LATER') return new AuthenticationFailure('rate-limited')
   if (['TOKEN_EXPIRED', 'USER_NOT_FOUND', 'INVALID_REFRESH_TOKEN', 'INVALID_ID_TOKEN'].includes(String(code))) return new AuthenticationFailure('invalid-credential')
   if (kind === 'backup' && error.status === 'PERMISSION_DENIED') return new AuthenticationFailure('invalid-code')
@@ -96,13 +102,15 @@ export class FirebaseAuthenticationAPI {
       throw new AuthenticationFailure('network')
     }
   }
-  private async callable(name: 'verifyBackupCode' | 'createAccountWithCustomToken' | 'completeTalkyProfile' | 'startMorseDeviceSession' | 'revokeMorseDeviceSession', data: Record<string, unknown>, signal: AbortSignal, idToken?: string): Promise<Record<string, unknown>> {
+  private async callable(name: 'verifyBackupCode' | 'createAccountWithCustomToken' | 'completeTalkyProfile' | 'startMorseDeviceSession' | 'revokeMorseDeviceSession' | 'exportMorseLoginToken' | 'redeemMorseLoginToken', data: Record<string, unknown>, signal: AbortSignal, idToken?: string): Promise<Record<string, unknown>> {
     const proof = await this.proof(signal)
     const headers: Record<string, string> = { 'Content-Type': 'application/json', 'X-Firebase-AppCheck': proof }
-    // Bootstrap must never inherit another account's Authorization header.
-    if (name !== 'verifyBackupCode' && idToken) headers.Authorization = `Bearer ${string(idToken)}`
+    // Bootstrap must never inherit another account's Authorization header (the QR sign-in is a bootstrap too).
+    const bootstrap = name === 'verifyBackupCode' || name === 'exportMorseLoginToken' || name === 'redeemMorseLoginToken'
+    if (!bootstrap && idToken) headers.Authorization = `Bearer ${string(idToken)}`
     const response = await this.request(`https://asia-northeast3-${this.config.projectId}.cloudfunctions.net/${name}`,
-      headers, JSON.stringify({ data }), signal, name === 'verifyBackupCode' ? 'backup' : name === 'createAccountWithCustomToken' || name === 'completeTalkyProfile' ? 'creation' : 'plain')
+      headers, JSON.stringify({ data }), signal, name === 'verifyBackupCode' ? 'backup' : name === 'createAccountWithCustomToken' || name === 'completeTalkyProfile' ? 'creation'
+        : name === 'exportMorseLoginToken' || name === 'redeemMorseLoginToken' ? 'qr' : 'plain')
     return object(response.result)
   }
   async verifyBackupCode(code: string, signal: AbortSignal): Promise<{ profile: AccountProfile; customToken: string }> {
@@ -111,6 +119,34 @@ export class FirebaseAuthenticationAPI {
     return { profile: { uid: identifier(result.uid), userId,
       displayName: typeof result.displayName === 'string' && result.displayName.length <= 512 ? result.displayName : userId },
       customToken: string(result.token) }
+  }
+  // A13 §2.1 exportMorseLoginToken: a code for this attempt, bound to SHA-256 of its secret. The accounts already on
+  // this computer are left out (Telegram except_ids): such an account's phone is told it is connected already.
+  async issueLoginCode(binding: string, exceptUids: string[], version: string, signal: AbortSignal): Promise<QrIssue> {
+    const device = await describeThisDevice()
+    return decodeQrIssue(await this.callable('exportMorseLoginToken', { binding, exceptUids: exceptUids.slice(0, 4).map(uid => identifier(uid)),
+      appVersion: version, systemVersion: device.systemVersion }, signal))
+  }
+  // redeemMorseLoginToken: still waiting, approved (the sign-in with its server session), or a two-step password needed.
+  async redeemLoginCode(secret: string, signal: AbortSignal): Promise<QrRedeem> {
+    return decodeQrRedeem(await this.callable('redeemMorseLoginToken', { secret }, signal))
+  }
+  // The attempt ends here (the code closed, another way chosen): best effort, the server's TTL ends it anyway.
+  async cancelLoginCode(secret: string, signal: AbortSignal): Promise<void> {
+    await this.callable('redeemMorseLoginToken', { secret, cancel: true }, signal)
+  }
+  // app_config/qr_login — readable by anyone, so it is read before any sign-in, with this app's proof only. Off, absent
+  // or unreadable reads as off (A13 D-6: the QR sign-in appears in the three apps together).
+  async qrLoginEnabled(signal: AbortSignal): Promise<boolean> {
+    const proof = await this.proof(signal)
+    const combined = AbortSignal.any([signal, AbortSignal.timeout(15000)])
+    try {
+      const response = await fetch(`https://firestore.googleapis.com/v1/projects/${this.config.projectId}/databases/(default)/documents/app_config/qr_login?key=${encodeURIComponent(this.config.apiKey)}`,
+        { method: 'GET', headers: { 'X-Firebase-AppCheck': proof }, signal: combined, redirect: 'error', credentials: 'omit', cache: 'no-store' })
+      if (!response.ok) return false
+      const text = await response.text()
+      return text.length <= 65536 && qrSwitchOn(object(JSON.parse(text)))
+    } catch { return false }
   }
   // Same request as iOS AuthService.signUp: the display name starts as the ID.
   async createAccount(input: { userId: string; backupCode: string; publicKey: string; deviceVendorId: string }, signal: AbortSignal, creatorIdToken: string | null = null): Promise<{ uid: string; customToken: string }> {
@@ -184,7 +220,7 @@ export class FirebaseAuthenticationAPI {
   }
   // A6 §3-3: the row of the account's session list shows this computer's model and system, as Telegram Desktop sends
   // them (platform/device-model.ts). deviceLabel stays for builds that read only it.
-  async startSession(idToken: string, sessionId: string, version: string, provider: 'custom' | 'apple.com', signal: AbortSignal): Promise<void> {
+  async startSession(idToken: string, sessionId: string, version: string, provider: 'custom' | 'apple.com' | 'qr', signal: AbortSignal): Promise<void> {
     const device = await describeThisDevice()
     const result = await this.callable('startMorseDeviceSession', { sessionId,
       deviceLabel: `Morse · ${this.config.platform}`, platform: this.config.platform, appVersion: version, loginProvider: provider,

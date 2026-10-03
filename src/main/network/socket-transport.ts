@@ -60,7 +60,26 @@ export class SocketMessageTransport {
   constructor(private readonly version: string, private readonly events: TransportEvents, private readonly open: typeof io = io) {}
   get ready(): boolean { return this.currentState === 'ready' }
   get state(): ConnectionState { return this.currentState }
-  private transition(value: ConnectionState): void { this.currentState = value; this.events.state(value) }
+  private transition(value: ConnectionState): void { this.currentState = value; this.events.state(value); for (const wake of [...this.waiters]) wake() }
+  // A15: those waiting for the socket to be able to send (send-fallback.ts), woken at every state change.
+  private readonly waiters = new Set<() => void>()
+  // Whether a message can go over this socket now: what send() and markRead() ask before they emit.
+  get sendable(): boolean {
+    const socket = this.socket
+    return Boolean(socket?.connected && socket.io.engine?.transport?.writable && this.ready && !this.renewing)
+  }
+  // A15-3: true as soon as the socket can send, false when it cannot within `ms` (the message then takes the callable).
+  whenSendable(ms: number, signal: AbortSignal): Promise<boolean> {
+    if (this.sendable) return Promise.resolve(true)
+    return new Promise(resolve => {
+      const done = (value: boolean): void => { clearTimeout(timer); this.waiters.delete(wake); signal.removeEventListener('abort', abort); resolve(value) }
+      const wake = (): void => { if (this.sendable) done(true) }
+      const abort = (): void => done(false)
+      const timer = setTimeout(() => done(this.sendable), ms)
+      this.waiters.add(wake); signal.addEventListener('abort', abort, { once: true })
+      if (signal.aborted) abort()
+    })
+  }
   private invalidateRegistration(): number {
     clearTimeout(this.registrationTimer)
     this.registrationTimer = undefined

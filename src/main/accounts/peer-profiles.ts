@@ -18,12 +18,15 @@ export const peerProfileGroup = 5
 // server has not made it: the person is unknown, not gone.
 export function publicProfilePath(uid: string): string { return `${documents}/publicProfiles/${uid}` }
 
-export interface PeerProfile { name: string; photo: string; mutual: boolean }
+// A13 §9-2 (Telegram's `support` flag on the support account): `official: 'support'` is written by the server only;
+// the badge is drawn from it alone, never from a name that says «Morse».
+export type OfficialKind = 'support'
+export interface PeerProfile { name: string; photo: string; mutual: boolean; official: OfficialKind | null }
 export function decodePeerProfile(doc: FirestoreDocument | undefined, mutual: boolean): PeerProfile | null {
   if (!doc || boolField(doc.fields, 'accountDeleted')) return null
   const name = stringField(doc.fields, 'displayName', 512).trim()
   if (!name) return null
-  return { name, photo: mutual ? stringField(doc.fields, 'photoURL', 10000) : '', mutual }
+  return { name, photo: mutual ? stringField(doc.fields, 'photoURL', 10000) : '', mutual, official: stringField(doc.fields, 'official', 32) === 'support' ? 'support' : null }
 }
 // The name on this device's alias first, then the person's current name, then the copy in the contact document.
 export function contactNames(item: ContactSummary, label: string | undefined, current: string): { displayName: string; originalName: string } {
@@ -59,6 +62,7 @@ export class PeerProfiles {
   // The person's public profile says the account was deleted.
   withdrawn(uid: string): boolean { return !this.closed && this.gone.has(uid) }
   photo(uid: string): string { return this.profile(uid)?.photo ?? '' }
+  official(uid: string): OfficialKind | null { return this.profile(uid)?.official ?? null }
 
   // A contact added or removed restarts only its own target; the others keep what they know.
   bind(reader: FirestoreReader | null, uids: Iterable<string>): void {

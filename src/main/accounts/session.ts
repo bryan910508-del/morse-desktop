@@ -114,7 +114,6 @@ import { ChatTyping, DialogTyping, type ListTypingEntry, type TypingSnapshot } f
 import { ChannelPostNotices } from './channel-post-notices'
 import { callMorseFunction } from '../network/morse-callable'
 // MorseAppConfig MorseOfficialSupport.uid: the customer support account every app opens a chat with.
-const morseSupportUid = 'RAk6jfkPEXhydeuUxG9U36UQP9m1'
 import { InquiryRows } from './inquiry-rows'
 import { ChatFolderWatch } from './chat-folder-watch'
 import { DialogPreferenceWatch } from './dialog-preference-watch'
@@ -163,6 +162,7 @@ import { RoomPresence } from './room-presence'
 import { ChannelOperations } from './channel-operations'
 import { HistoryClears, type HistoryClearSession } from './history-clears'
 import { KeptHistories } from './kept-histories'
+import { supportConfigPath, supportUidOf } from './support-account'
 
 export interface AccountEvents {
   storyStealth(): boolean
@@ -190,6 +190,8 @@ export class AccountSession {
   // chats/{id}/watchers/{uid}: the room this account is in, as iOS publishes it (room-presence.ts).
   private readonly roomPresence: RoomPresence
   private connection: ConnectionState = 'offline'
+  // A15-5: the message server's socket, shown in the list and the chat title; nothing waits for it.
+  private socket: ConnectionState = 'offline'
   private status: ReadStatus = 'loading'
   private message = ''
   private chatRows = new Map<string, FirestoreDocument>()
@@ -658,6 +660,12 @@ export class AccountSession {
     this.channelPublicPreview.comments.people = people; this.channelInquiries.people = people
   }
   get state(): ConnectionState { return this.connection }
+  get socketState(): ConnectionState { return this.socket }
+  setSocket(state: ConnectionState): void {
+    if (this.closed || this.socket === state) return
+    this.socket = state
+    this.events.changed()
+  }
   setLocked(locked: boolean): void {
     if (this.locked === locked) return
     this.locked = locked
@@ -707,11 +715,9 @@ export class AccountSession {
     if (this.closed || this.locked || this.connection !== 'ready' || this.status !== 'ready') throw new Error(tr('대화 목록과 연결을 확인해 주세요.'))
     const peer = this.contacts.directPeer(requestId)
     // Any dialog with the peer, listed or not: one that is out of the list ("나에게만 삭제", or nothing left after a
-    // delete for everyone) opens as the empty chat it is. Looking only through the list sent such a peer to openDirect,
-    // which found the same dialog and returned an id the window had no dialog for ("대화를 찾을 수 없습니다.").
-    const existing = [...this.index.values()].find(({ summary }) => summary.kind === 'direct' && summary.participantUids.length === 2 &&
-      summary.participantUids.includes(this.profile.uid) && summary.participantUids.includes(peer.uid))
-    return this.openUnlisted(existing?.summary.id ?? await this.delivery.openDirect(peer))
+    // delete for everyone) opens as the empty chat it is (openUnlisted). B88 §28: which one is the pair document's
+    // word (findDirect); a new room is made only when it names none.
+    return this.openUnlisted(await this.delivery.findDirect(peer.uid) ?? await this.delivery.openDirect(peer, true))
   }
   // B49 (Telegram keeps a History for every peer — Data::Session::history is find-or-create, data_session.cpp:1681-1683
   // — and its chat-list search shows contacts whose chat left the list, data_session.cpp:5771-5775): the 1:1 rooms that
@@ -737,10 +743,8 @@ export class AccountSession {
     if (this.closed || this.locked || this.connection !== 'ready' || this.status !== 'ready') throw new Error(tr('대화 목록과 연결을 확인해 주세요.'))
     const group = this.index.get(groupChatId)
     if (!group || group.summary.kind !== 'group' || !group.summary.participantUids.includes(peerUid) || peerUid === this.profile.uid) throw new Error(tr('참여자를 다시 선택해 주세요.'))
-    const existing = [...this.index.values()].find(({ summary }) => summary.kind === 'direct' && summary.participantUids.length === 2 &&
-      summary.participantUids.includes(this.profile.uid) && summary.participantUids.includes(peerUid))
     const displayName = this.contacts.personName(peerUid) || group.participantNames[peerUid] || tr('참여자')
-    return this.openUnlisted(existing?.summary.id ?? await this.delivery.openDirect({ uid: peerUid, displayName }))
+    return this.openUnlisted(await this.delivery.findDirect(peerUid) ?? await this.delivery.openDirect({ uid: peerUid, displayName }, true))
   }
   private openUnlisted(chatId: string): string {
     const listed = this.list.some(dialog => dialog.id === chatId)
@@ -753,11 +757,14 @@ export class AccountSession {
     const dialog = this.unlistedOpen ? this.index.get(this.unlistedOpen)?.summary : undefined
     return dialog ? [{ ...dialog, readSync: this.reads.state(dialog.id), avatar: this.dialogAvatars.snapshot(dialog.id) }] : []
   }
-  // SupportCenterView.openSupportChatTapped: a 1:1 chat with MorseOfficialSupport (its uid and name as iOS has
-  // them), opened like any new chat, created by the first message.
+  // SupportCenterView.openSupportChatTapped: a 1:1 chat with the account the server names for support (B86 · §25,
+  // support-account.ts), opened like any new chat, created by the first message. The app's own name for it, «Morse
+  // 고객센터», is used for that account only. None named: chat support is not offered now (the three apps' words).
   async openSupportChat(): Promise<string> {
-    if (this.closed || this.locked || this.connection !== 'ready' || this.status !== 'ready') throw new Error(tr('대화 목록과 연결을 확인해 주세요.'))
-    return this.openUnlisted(await this.delivery.openDirect({ uid: morseSupportUid, displayName: tr('Morse 고객센터') }))
+    if (this.closed || this.locked || this.connection !== 'ready' || this.status !== 'ready' || !this.reader) throw new Error(tr('대화 목록과 연결을 확인해 주세요.'))
+    const uid = supportUidOf(await this.reader.getDocument(supportConfigPath, this.credentials.signal))
+    if (!uid || uid === this.profile.uid) throw new Error(tr('지금은 채팅 문의를 쓸 수 없어요.'))
+    return this.openUnlisted(await this.delivery.findDirect(uid) ?? await this.delivery.openDirect({ uid, displayName: tr('Morse 고객센터') }, true))
   }
   discardDirectDraft(chatId: string) { return this.delivery.discardDirect(chatId) }
   private groupCreateSource(request: GroupCreateRequest): void {
@@ -1172,6 +1179,7 @@ export class AccountSession {
     const peer = summary.participantUids.find(uid => uid !== this.profile.uid)
     const name = peer ? this.contacts.personName(peer) : ''
     if (name) summary.title = name
+    if (peer && this.contacts.personOfficial(peer) === 'support') summary.official = 'support'
   }
   private namesApplied = -1
   private renameDialogs(): void {

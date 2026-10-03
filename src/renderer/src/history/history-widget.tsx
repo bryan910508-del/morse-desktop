@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowLeft, Bookmark, Check, Copy, Download, EllipsisVertical, File as FileIcon, Flag, Forward, Images, Info, Languages, Link, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Sticker, Timer, Trash2, X } from 'lucide-react'
+import { BadgeCheck, ArrowDown, ArrowLeft, Bookmark, Check, Copy, Download, EllipsisVertical, File as FileIcon, Flag, Forward, Images, Info, Languages, Link, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Sticker, Timer, Trash2, X } from 'lucide-react'
 import type { ChatMessage, DialogSummary, HistorySnapshot } from '../../../shared/model'
 import type { LocalOutgoing, OutgoingSnapshot } from '../../../shared/delivery'
 import type { ReplyDraftSnapshot } from '../../../shared/reply-draft'
@@ -57,6 +57,7 @@ import { chatRestrictedNotice } from '../../../shared/sanctions'
 import { PeerBar } from './peer-bar'
 import { SwipeBackPlate, SwipeReplyIcon, useSwipe } from './use-swipe'
 import { swipeAllowed } from './swipe-gesture'
+import { historyEntries, type Entry } from './history-entries'
 import { messageReportAllowed } from '../../../shared/reports'
 
 const initialHistory: HistorySnapshot = { revision: -1, messages: [], before: null, hasMore: false, status: 'loading', message: '', newerAvailable: false }
@@ -65,7 +66,6 @@ const noReply: ReplyDraftSnapshot = { revision: -1, selection: null, status: 'no
 // history_view_element.cpp kAttachMessageToPreviousSecondsDelta.
 const attachWindowMs = 900 * 1000
 
-type Entry = { kind: 'message'; key: string; message: ChatMessage; own: boolean; time: number } | { kind: 'local'; key: string; item: LocalOutgoing; time: number }
 
 function canMutate(message: ChatMessage, dialog: DialogSummary | null): boolean {
   return Boolean(dialog && dialog.kind !== 'secret' && message.version && !message.encrypted && !message.system && message.serverConfirmed &&
@@ -205,17 +205,11 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
 
   // iOS MorseGroupCategorySelection.messageMatchesFilter: with a topic chosen, the history shows that topic only.
   const forum = dialog?.forum ?? null, forumSelected = dialog?.forumSelected ?? null
-  const entries = useMemo<Entry[]>(() => {
-    const list: Entry[] = [], ids = new Set<string>()
-    for (const raw of history.messages) {
-      ids.add(raw.id)
-      if (forum && !raw.system && !inCategory(raw, forum, forumSelected)) continue
-      const message = overlayMessage(raw)
-      if (message) list.push({ kind: 'message', key: message.id, message, own: message.senderId === accountUid, time: positionMilliseconds(message.position) })
-    }
-    for (const item of outgoing.items) if (!ids.has(item.id)) list.push({ kind: 'local', key: item.id, item, time: item.createdAt })
-    return list
-  }, [history.messages, outgoing.items, overlayRevision, accountUid, forum, forumSelected])
+  const entries = useMemo<Entry[]>(() => historyEntries(history.messages, outgoing.items, raw => {
+    if (forum && !raw.system && !inCategory(raw, forum, forumSelected)) return null
+    const message = overlayMessage(raw)
+    return message ? { kind: 'message', key: message.id, message, own: message.senderId === accountUid, time: positionMilliseconds(message.position) } : null
+  }), [history.messages, outgoing.items, overlayRevision, accountUid, forum, forumSelected])
   const currentEntries = useRef(entries); currentEntries.current = entries
   const entryTimes = useMemo(() => entries.map(entry => entry.time), [entries])
   const group = dialog?.kind === 'group'
@@ -580,7 +574,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
               asked for (the account has no peer here, so every such request could only fail). */}
           {saved ? <span className="avatar avatar-saved" style={{ width: 36, height: 36 }} aria-hidden="true"><Bookmark size={18} /></span>
             : dialog ? <PeerAvatar id={dialog.id} name={dialog.title} image={secret ? null : dialog.avatar} surface="dialogs" kind={secret ? 'secret' : undefined} size={36} priority /> : pending ? <PeerAvatar id={chatId} name={title} image={pending.avatar ?? null} surface="dialogs" size={36} priority /> : <Avatar name={title} size={36} />}
-          <span className="top-bar-title"><strong className="ellipsis">{title}</strong>{subtitle && <span className={`ellipsis${typing && subtitle === tr('입력 중...') ? ' typing' : peerPresence?.online && subtitle === peerPresence.text ? ' online' : ''}`}>{subtitle}</span>}</span>
+          <span className="top-bar-title"><strong className="ellipsis">{title}{dialog?.official === 'support' && <BadgeCheck size={15} className="title-official" role="img" aria-label={tr('공식 고객센터')} />}</strong>{subtitle && <span className={`ellipsis${typing && subtitle === tr('입력 중...') ? ' typing' : peerPresence?.online && subtitle === peerPresence.text ? ' online' : ''}`}>{subtitle}</span>}</span>
         </button>
         {dialog && !secret && <button className={`icon-button${right === 'search' ? ' active' : ''}`} aria-label={tr('대화 안 검색')} disabled={!historyReady} onClick={() => controller.toggleRight('search')}><Search size={20} /></button>}
         {dialog && <button className={`icon-button${right === 'info' ? ' active' : ''}`} aria-label={tr('정보')} onClick={() => controller.toggleRight('info')}><Info size={20} /></button>}

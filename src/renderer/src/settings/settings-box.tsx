@@ -353,7 +353,7 @@ function AccountPrivacySection({ accountUid }: { accountUid: string }) {
 }
 
 // AccountSecurityView «자동 회원 탈퇴» (AutoDeleteAccountSheet): the account goes after this long without a visit.
-const autoDeleteLabels: Record<number, [string, string]> = { 0: [tr('끔'), tr('자동 삭제 안 함')], 1: [tr('1개월'), tr('30일 미접속 시')], 3: [tr('3개월'), tr('90일 미접속 시')], 6: [tr('6개월'), tr('180일 미접속 시')], 12: [tr('1년'), tr('365일 미접속 시')] }
+const autoDeleteLabels: Record<number, [string, string]> = { 0: [tr('끔'), tr('자동 삭제 안 함')], 1: [tr('1개월'), tr('30일 미접속 시')], 3: [tr('3개월'), tr('90일 미접속 시')], 6: [tr('6개월'), tr('180일 미접속 시')], 12: [tr('1년'), tr('360일 미접속 시')] }
 function AutoDeleteEntry({ accountUid }: { accountUid: string }) {
   const [months, setMonths] = useState<number | null>(null)
   useEffect(() => { void window.morse.accountPrivacy(accountUid).then(value => setMonths(value.autoDeleteMonths)).catch(() => setMonths(null)) }, [accountUid])

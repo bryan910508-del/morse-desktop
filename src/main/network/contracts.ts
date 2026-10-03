@@ -20,7 +20,9 @@ export class MessageMutationFailure extends Error {
 }
 export class ServerRejection extends Error {
   // until: the end of an operator's restriction in ms (ACCOUNT_RESTRICTED, shared/sanctions.ts).
-  constructor(readonly reason: string, readonly until?: number) { super(tr('서버에서 요청을 처리하지 못했습니다.')) }
+  // existingChatId: with DIRECT_CHAT_EXISTS, the pair's 1:1 the server already holds (morse-message-authority.js,
+  // index.js `{ok:false, error, existingChatId}`); B88 §28 moves the refused message there.
+  constructor(readonly reason: string, readonly until?: number, readonly existingChatId?: string) { super(tr('서버에서 요청을 처리하지 못했습니다.')) }
 }
 
 export function committedReadAck(raw: unknown, chatId: string, readerId: string, target: MessagePosition): ReadAcknowledgement {
@@ -45,7 +47,8 @@ export function committedReadAck(raw: unknown, chatId: string, readerId: string,
 export function committedSendAck(raw: unknown, expected: SendWire): SendAcknowledgement {
   const body = object(raw)
   if (body.ok === false || typeof body.error === 'string') {
-    throw new ServerRejection(typeof body.error === 'string' ? body.error : 'REJECTED', typeof body.until === 'number' && Number.isSafeInteger(body.until) ? body.until : undefined)
+    const existing = typeof body.existingChatId === 'string' && /^[A-Za-z0-9_-]{1,160}$/.test(body.existingChatId) && body.existingChatId !== expected.chatId ? body.existingChatId : undefined
+    throw new ServerRejection(typeof body.error === 'string' ? body.error : 'REJECTED', typeof body.until === 'number' && Number.isSafeInteger(body.until) ? body.until : undefined, existing)
   }
   if (body.ok !== true || body.persistedByServer !== true || body.serverOwnedMessage !== true ||
       body.id !== expected.id || body.chatId !== expected.chatId || body.senderId !== expected.senderId ||
