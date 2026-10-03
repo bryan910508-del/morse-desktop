@@ -56,6 +56,7 @@ import { reactionStrip, readRecentReactions, recordReaction } from './recent-rea
 import { chatRestrictedNotice } from '../../../shared/sanctions'
 import { PeerBar } from './peer-bar'
 import { SwipeBackPlate, SwipeReplyIcon, useSwipe } from './use-swipe'
+import { swipeAllowed } from './swipe-gesture'
 import { messageReportAllowed } from '../../../shared/reports'
 
 const initialHistory: HistorySnapshot = { revision: -1, messages: [], before: null, hasMore: false, status: 'loading', message: '', newerAvailable: false }
@@ -373,11 +374,11 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   const historyBox = useRef<HTMLDivElement>(null)
   const swipeTarget = useRef<{ message: ChatMessage; row: HTMLElement } | null>(null)
   const swipeFrame = useSwipe(scroll, {
-    enabled: () => Boolean(dialogRef.current),
+    enabled: () => true,
     resolve: (direction, place) => {
       swipeTarget.current = null
       if (direction === 'right-to-left') return 'back'
-      if (selectionRef.current !== null) return null
+      if (!swipeAllowed('reply', Boolean(dialogRef.current)) || selectionRef.current !== null) return null
       const row = document.elementFromPoint(place.x, place.y)?.closest<HTMLElement>('.history-message[data-message-id]') ?? null
       const entry = row ? currentEntries.current.find(item => item.kind === 'message' && item.message.id === row.dataset.messageId) : undefined
       const message = entry?.kind === 'message' ? entry.message : null

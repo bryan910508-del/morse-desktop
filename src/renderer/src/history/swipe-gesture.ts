@@ -22,6 +22,9 @@ export const swipeIdleEndMs = 120
 
 export type SwipeDirection = 'right-to-left' | 'left-to-right'
 export type SwipeKind = 'back' | 'reply'
+// B76: back needs nothing but the pane — a chat that is gone, or a 1:1 not created yet, still closes with a swipe, as
+// with Escape or the back arrow. A reply needs the room (Telegram's swipe handler is the history's, which always has one).
+export function swipeAllowed(kind: SwipeKind, room: boolean): boolean { return kind === 'back' || room }
 export interface SwipeFrame { kind: SwipeKind; ratio: number; translation: number; reached: boolean }
 export interface SwipeHooks {
   // What a swipe in this direction would do where it started, or null for nothing (the sum then scrolls as usual).

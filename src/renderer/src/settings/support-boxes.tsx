@@ -4,7 +4,8 @@ import { controller } from '../app/ui'
 import { errorText } from '../app/format'
 import { Box } from '../ui/layers'
 import { Spinner } from '../ui/controls'
-import { tr } from '../../../shared/i18n'
+import { language, tr } from '../../../shared/i18n'
+import { legalPageURL, type LegalPage } from '../../../shared/legal-links'
 
 // iOS SupportCenterView: frequently asked questions, a chat with Morse's support account, and the app's details.
 const faq = [
@@ -81,7 +82,7 @@ export function showSupportBox(accountUid: string, version: string): void {
 export function showGuideBox(): void {
   controller.showLayer(close => <GuideBox close={close} />)
 }
-// SettingsView.openPolicyURL: https://talky-a38c3.web.app/{privacy|community}/{language}.
-export function openPolicy(path: 'privacy' | 'community'): void {
-  void window.morse.openMessageLink(`https://talky-a38c3.web.app/${path}/ko`).catch(reason => controller.toast(errorText(reason, tr('페이지를 열지 못했습니다.')), 'error'))
+// SettingsView.openPolicyURL: the hosted page in the app's language (shared/legal-links.ts).
+export function openPolicy(page: LegalPage): void {
+  void window.morse.openMessageLink(legalPageURL(page, language())).catch(reason => controller.toast(errorText(reason, tr('페이지를 열지 못했습니다.')), 'error'))
 }

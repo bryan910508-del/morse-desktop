@@ -404,7 +404,7 @@ export class ContactsSession {
         if (value.nickname) this.labels.set(peer.selection.uid, value.nickname); else this.labels.delete(peer.selection.uid)
         this.order(); this.nameSync.kick()
         if (this.peer === peer) peer.local = { ...value, status: 'ready' }
-        result.outcome = 'saved'; result.message = tr('별칭과 개인 메모를 저장했습니다. 내 계정의 다른 기기에도 같게 보입니다.')
+        result.outcome = 'saved'; result.message = tr('별칭과 개인 메모를 저장했습니다.')
       } catch (error) { result.outcome = 'rejected'; result.message = tr('저장하지 못했습니다. 작성한 내용을 보관한 뒤 연락처를 다시 열어 확인해 주세요.'); throw error }
     })()
     this.job = task

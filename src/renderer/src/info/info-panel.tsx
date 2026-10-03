@@ -43,7 +43,8 @@ export function ActionRow({ icon, label, onClick, danger, disabled }: { icon: Re
   </button>
 }
 
-// EditContactBox: nickname and note are stored for this account on this device only.
+// EditContactBox: the nickname and note of this account, kept on the server for all its devices (A11). The box closes
+// once this device has them; the server copy follows, and a save the server refuses gives way to its name (B63).
 function ContactDetailsBox({ accountUid, requestId, profile, close }: { accountUid: string; requestId: string; profile: ContactProfileSnapshot; close(): void }) {
   const [nickname, setNickname] = useState(profile.local.nickname), [note, setNote] = useState(profile.local.note)
   const [busy, setBusy] = useState(false), [error, setError] = useState('')

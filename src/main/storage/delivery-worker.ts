@@ -265,7 +265,7 @@ function execute(command: DeliveryCommand): unknown {
     case 'forward-texts-known': case 'enqueue-forward-texts': return executeForwardTexts(db, uid, command)
     case 'forward-known': case 'enqueue-forward': case 'enqueue-forward-media': return executeForward(db, uid, command)
     case 'contact-photo-list': case 'contact-photo-source': case 'contact-photo-save': case 'contact-photo-remove': return executeContactPhoto(db, command)
-    case 'contact-labels': case 'contact-details': case 'contact-details-save': case 'contact-name-pending': case 'contact-name-server': case 'contact-name-uploaded': return executeContactDetails(db, command)
+    case 'contact-labels': case 'contact-details': case 'contact-details-save': case 'contact-name-pending': case 'contact-name-server': case 'contact-name-uploaded': case 'contact-name-refused': return executeContactDetails(db, command)
     case 'reply-draft': case 'reply-select': case 'reply-clear': return executeReplyDraft(db, command)
     case 'bookmarks-read': case 'bookmark-set': return executeMessageBookmark(db, command)
     case 'hidden-chats-read': case 'hidden-chat-set': case 'cleared-chats-read': case 'cleared-chat-set': return executeHiddenChat(db, command)

@@ -10,6 +10,7 @@ export type ContactDetailsCommand =
   | { kind: 'contact-name-pending' }
   | { kind: 'contact-name-server'; entries: ServerContactName[] }
   | { kind: 'contact-name-uploaded'; uid: string; operationId: string }
+  | { kind: 'contact-name-refused'; uid: string; operationId: string; entries: ServerContactName[] }
 export interface ServerContactName { uid: string; name: string; note: string; version: string }
 export interface PendingContactName { uid: string; nickname: string; note: string; operationId: string }
 
@@ -60,6 +61,16 @@ export function executeContactDetails(db: Database.Database, command: ContactDet
   if (command.kind === 'contact-name-pending') return db.prepare(`SELECT s.peer_uid AS uid,COALESCE(d.nickname,'') AS nickname,COALESCE(d.note,'') AS note,s.operation_id AS operationId
     FROM contact_name_sync s LEFT JOIN contact_details d ON d.peer_uid=s.peer_uid WHERE s.state='pending' ORDER BY s.peer_uid LIMIT 200`).all() as PendingContactName[]
   if (command.kind === 'contact-name-server') { db.transaction(() => mergeServer(db, command.entries))(); return null }
+  // B63: the server refused this save for good — it is no longer waiting, and the server's list (the last one read)
+  // says again what this device shows: the server's name, or none where the server has none.
+  if (command.kind === 'contact-name-refused') {
+    db.transaction(() => {
+      const ended = db.prepare("UPDATE contact_name_sync SET state='synced',operation_id='' WHERE peer_uid=? AND state='pending' AND operation_id=?")
+        .run(identifier(command.uid), command.operationId).changes
+      if (ended) mergeServer(db, command.entries)
+    })()
+    return null
+  }
   if (command.kind === 'contact-name-uploaded') {
     db.prepare("UPDATE contact_name_sync SET state='synced',operation_id='' WHERE peer_uid=? AND state='pending' AND operation_id=?").run(identifier(command.uid), command.operationId)
     return null

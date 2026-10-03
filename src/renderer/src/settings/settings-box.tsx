@@ -438,11 +438,12 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
         <Entry icon={<Globe size={20} />} label={tr('언어')} detail={languageNames[window.morse.language]} onClick={() => setPage('language')} />
         <Entry icon={<HardDrive size={20} />} label={tr('데이터 및 저장공간')} detail={tr('사진 화질, 캐시, 절전')} onClick={() => setPage('data')} />
         <Entry icon={<Keyboard size={20} />} label={tr('키보드 단축키')} onClick={() => showShortcutsBox(desktop.value?.platform ?? 'unsupported')} />
-        {/* SettingsView: 기능 소개 · 고객 센터 · 개인정보처리방침 · 커뮤니티 가이드라인. */}
+        {/* SettingsView: 기능 소개 · 고객 센터 · 개인정보처리방침 · 이용약관(6A-3) · 커뮤니티 가이드라인. */}
         <div className="section-divider" />
         <Entry icon={<Lightbulb size={20} />} label={tr('기능 소개')} onClick={showGuideBox} />
         <Entry icon={<CircleHelp size={20} />} label={tr('고객 센터')} onClick={() => showSupportBox(accountUid, appVersion)} />
         <Entry icon={<ShieldCheck size={20} />} label={tr('개인정보처리방침')} onClick={() => openPolicy('privacy')} />
+        <Entry icon={<FileText size={20} />} label={tr('이용약관')} onClick={() => openPolicy('terms')} />
         <Entry icon={<Users size={20} />} label={tr('커뮤니티 가이드라인')} onClick={() => openPolicy('community')} />
         <Entry icon={<Info size={20} />} label={tr('Morse Desktop 정보')} onClick={() => setPage('about')} />
         <div className="section-divider" />

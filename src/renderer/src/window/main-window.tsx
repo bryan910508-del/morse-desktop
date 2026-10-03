@@ -1,5 +1,5 @@
-import { useEffect, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { useDesktop } from '../app/store'
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { dialogById, useDesktop } from '../app/store'
 import { usePowerSavingReport, useReducedMotion } from '../app/power-saving'
 import { useContentProtection } from '../app/content-protection'
 import { controller, ui, useUi } from '../app/ui'
@@ -21,6 +21,7 @@ import { useNotesSession } from '../notes/notes-state'
 import { NoteEditor } from '../notes/note-editor'
 import { MainMenu } from './main-menu'
 import { LockScreen } from './lock-screen'
+import { chatGone } from './chat-gone'
 import { tr } from '../../../shared/i18n'
 
 // window.style: columnMinimalWidthLeft/MaximalWidthLeft/MinimalWidthMain/MinimalWidthThird/MaximalWidthThird.
@@ -85,6 +86,16 @@ function SessionWindow({ accountUid }: { accountUid: string }) {
   // The open room became the pair's dialog under another id: show that dialog (a dialog is its peer).
   const movedTo = useDesktop(snapshot => chatId ? snapshot?.pendingDirects.find(item => item.chatId === chatId)?.supersededBy ?? null : null)
   useEffect(() => { if (movedTo) controller.openChat(movedTo) }, [movedTo])
+  // B76: the open chat left this account (group deleted, or this account removed) — close it and its panel (chat-gone.ts).
+  const chatPresent = useDesktop(snapshot => Boolean(chatId && dialogById(snapshot, chatId)))
+  const chatPending = useDesktop(snapshot => Boolean(chatId && snapshot?.pendingDirects.some(item => item.chatId === chatId)))
+  const listReady = useDesktop(snapshot => snapshot?.dialogStatus === 'ready' && !snapshot.appLock.locked && snapshot.activeAccountUid === accountUid)
+  const seenChat = useRef<{ chatId: string | null; present: boolean }>({ chatId: null, present: false })
+  useEffect(() => {
+    if (seenChat.current.chatId !== chatId) seenChat.current = { chatId, present: false }
+    if (chatGone(seenChat.current.present, { listReady, present: chatPresent, pending: chatPending })) { seenChat.current.present = false; controller.closeChat(); return }
+    if (chatPresent) seenChat.current.present = true
+  }, [chatId, chatPresent, chatPending, listReady])
   const oneColumn = width < leftMin + mainMin
   // A room opened from the chat list has no channel screen behind it: it is the conversation, so it takes
   // the main column, as a chat does. Beside an open channel it stays that channel's third column.

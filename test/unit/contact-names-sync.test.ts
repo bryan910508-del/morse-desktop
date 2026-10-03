@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { test } from 'node:test'
 import Database from 'better-sqlite3-multiple-ciphers'
-import { ContactNamesSync, decodeContactNames } from '../../src/main/accounts/contact-names-sync'
+import { ContactNamesSync, contactNameRefused, decodeContactNames } from '../../src/main/accounts/contact-names-sync'
 import { executeContactDetails, type ContactDetailsCommand, type PendingContactName } from '../../src/main/storage/contact-details-table'
 import { documents, type FirestoreDocument } from '../../src/main/network/firestore-values'
 import { contactDetailsEdit } from '../../src/shared/contact-details'
@@ -90,6 +90,53 @@ test('the server list is read before anything is sent, and a failed send goes ag
   assert.deepEqual(sent.map(item => [item.peer, item.name]), [['a', '에이'], ['a', '에이']], 'sent, failed, sent again')
   assert.equal(sent[0]!.operationId, sent[1]!.operationId, 'under the same id')
   assert.deepEqual(pending(db), [])
+  sync.close()
+})
+
+// B63 (Telegram EditContactBox, edit_contact_box.cpp:105-123: the name changes only once the server took it): a save
+// the server refused for good is not sent again and gives way to the server's name; the saves after it still go.
+const refusal = (code: number) => Object.assign(new Error('refused'), { uncertain: false, code })
+const unknown = () => Object.assign(new Error('no answer'), { uncertain: true, code: 0 })
+
+test('only a definite refusal ends a save; no answer, the network or a lapsed sign-in go again', () => {
+  assert.equal(contactNameRefused(refusal(7)), true, 'PERMISSION_DENIED (a banned account)')
+  assert.equal(contactNameRefused(refusal(3)), true, 'INVALID_ARGUMENT')
+  assert.equal(contactNameRefused(refusal(16)), false, 'UNAUTHENTICATED: renewed, then sent again')
+  assert.equal(contactNameRefused(unknown()), false)
+  assert.equal(contactNameRefused(Object.assign(new Error('offline'), { code: 'network' })), false)
+  assert.equal(contactNameRefused(null), false)
+})
+
+test('a refused save goes back to the server name, or to none where the server has none', () => {
+  const db = database()
+  run(db, { kind: 'contact-name-server', entries: [server('a', '에이')] })
+  const edited = save(db, 'a', '바꾼 이름'), added = save(db, 'b', '새 이름')
+  run(db, { kind: 'contact-name-refused', uid: 'a', operationId: 'another-save', entries: [server('a', '에이')] })
+  assert.equal(run<{ nickname: string }>(db, { kind: 'contact-details', uid: 'a' }).nickname, '바꾼 이름', 'a newer save is not the refused one')
+  run(db, { kind: 'contact-name-refused', uid: 'a', operationId: edited.version, entries: [server('a', '에이')] })
+  run(db, { kind: 'contact-name-refused', uid: 'b', operationId: added.version, entries: [server('a', '에이')] })
+  assert.deepEqual(names(db), [['a', '에이']], 'the server name back, and none where the server has none')
+  assert.deepEqual(pending(db), [], 'neither waits any more')
+})
+
+test('a refused save is not sent again, and the saves after it still go', async () => {
+  const db = database()
+  save(db, 'a', '거절될 이름'); save(db, 'b', '비')
+  const sent: string[] = []
+  let events: WatchEvents | null = null
+  const reader = {
+    watch: (_target: unknown, _signal: AbortSignal, value: WatchEvents) => { events = value; return () => {} },
+    setContactName: async (_uid: string, peer: string) => { sent.push(peer); if (peer === 'a') throw refusal(7) }
+  }
+  let merged = 0
+  const sync = new ContactNamesSync(me, async <T,>(command: ContactDetailsCommand) => executeContactDetails(db, command) as T, () => { merged++ })
+  sync.bind(reader as never, new AbortController().signal)
+  events!.snapshot(new Map())
+  await new Promise(resolve => setTimeout(resolve, 2300))
+  assert.deepEqual(sent, ['a', 'b'], 'refused once, never again; the next one still sent')
+  assert.deepEqual(pending(db), [])
+  assert.deepEqual(names(db), [['b', '비']], 'the refused name gave way to the server, which has none')
+  assert.equal(merged, 2, 'the read, then the refusal: labels and an open profile read again')
   sync.close()
 })
 
