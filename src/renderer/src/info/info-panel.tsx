@@ -26,6 +26,7 @@ import { showChatAutoDeleteBox } from '../boxes/auto-delete-box'
 import { autoDeleteSummary, canChangeAutoDelete } from '../../../shared/chat-auto-delete'
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { UserAvatar } from '../ui/user-avatar'
+import { OfficialMark, officialLabel } from '../ui/official-mark'
 import { usePresence } from '../app/presence'
 import { openPersonalChannel, PersonalChannelSection, usePersonalChannelCard } from './personal-channel'
 import { tr } from '../../../shared/i18n'
@@ -75,7 +76,8 @@ export function ContactProfile({ accountUid, uid, fromChat }: { accountUid: stri
   const [requestId, setRequestId] = useState(() => crypto.randomUUID())
   const snapshot = useDesktop(state => state?.contacts?.profile ?? null)
   const inContacts = useDesktop(state => Boolean(state?.contacts?.items.some(item => item.uid === uid)))
-  const presence = usePresence(uid)
+  const presence = usePresence(uid, true)
+  const official = useDesktop(state => state?.contacts?.items.find(item => item.uid === uid)?.official ?? null)
   const personalUrl = useDesktop(state => state?.contacts?.items.find(item => item.uid === uid)?.personalPhotoURL ?? null)
   // The list row's picture of this person (the same address) while the profile's own read finishes.
   const listUrl = useDesktop(state => { const avatar = state?.contacts?.items.find(item => item.uid === uid)?.avatar; return avatar?.status === 'ready' ? avatar.url : null })
@@ -152,7 +154,7 @@ export function ContactProfile({ accountUid, uid, fromChat }: { accountUid: stri
   return <>
     <div className="info-cover">
       <Avatar name={profile.displayName} url={coverUrl} size={88} onOpen={() => { if (coverUrl) showPhotoViewer(coverUrl, profile.displayName, { accountUid, peerUid: uid }) }} />
-      <h2 className="selectable">{profile.displayName}</h2>
+      <h2 className="selectable">{profile.displayName}{official && <OfficialMark kind={official} />}</h2>
       {presence && <span className={presence.online ? 'online' : undefined}>{presence.text}</span>}
       {profile.originalName && profile.originalName !== profile.displayName && <span>{tr('원래 이름 {0}', [profile.originalName])}</span>}
     </div>
@@ -360,8 +362,8 @@ export function InfoPanel({ accountUid, chatId }: { accountUid: string; chatId: 
             : <div className="info-cover">
               {!dialog && pending ? <PeerAvatar id={pending.chatId} name={pending.displayName} image={pending.avatar ?? null} surface="dialogs" size={88} />
                 : <Avatar name={dialog?.title ?? pending?.displayName ?? '?'} size={88} kind={dialog?.kind === 'secret' ? 'secret' : undefined} />}
-              <h2 className="selectable">{dialog?.title ?? pending?.displayName ?? ''}</h2>
-              <span>{dialog?.kind === 'secret' ? tr('비밀 대화') : dialog?.official === 'support' ? tr('공식 고객센터') : tr('연락처에 없는 사용자')}</span>
+              <h2 className="selectable">{dialog?.title ?? pending?.displayName ?? ''}{dialog?.official && <OfficialMark kind={dialog.official} />}</h2>
+              <span>{dialog?.kind === 'secret' ? tr('비밀 대화') : dialog?.official ? officialLabel(dialog.official) : tr('연락처에 없는 사용자')}</span>
             </div>}
       {/* Telegram's profile of a non-contact offers "Add to contacts"; iOS UnknownProfileView the same. */}
       {!profile && dialog?.kind === 'direct' && peerUid && !inContacts && <div className="info-section">

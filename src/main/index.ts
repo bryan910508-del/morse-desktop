@@ -189,6 +189,7 @@ import { autoLockValue, passcodeInput, type AppLockSnapshot } from '../shared/ap
 import { language, locale, tr } from '../shared/i18n'
 import { reachability, watchSystemOnline } from './network/reachability'
 import { recordConnectionStep } from './platform/connection-diagnostics'
+import { answerAfterPublish, answerWhenListed } from './platform/chat-opening'
 import { channelOperationId, channelOperationRequest } from '../shared/channel-operations'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'morse', privileges: {
@@ -422,6 +423,8 @@ async function publish(): Promise<void> {
   try { const batch = publisher.diff(await snapshot()); if (batch) emit({ type: 'data', batch }) }
   catch { emit({ type: 'error', message: tr('대화 목록을 읽지 못했습니다.') }) }
 }
+// B109 (chat-opening.ts): what opens a chat answers after the batch that carries it.
+const opened = answerAfterPublish(publish), created = answerWhenListed(publish)
 function backgroundPhotoOwner(scope: BackgroundPhotoScope): BackgroundPhotoOwner {
   const available = (): void => { if (screenLocked || shutdown !== 'running') throw new Error(tr('화면 잠금을 해제한 뒤 사진을 선택해 주세요.')) }
   available()
@@ -453,7 +456,8 @@ function registerIPC(): void {
   handle('install-app-update', () => { if (appUpdates.request()) app.quit() })
   handle('create-group', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).groups.create(groupCreateRequest(raw))
+    const session = accounts.requireActive(identifier(uid)), request = groupCreateRequest(raw)
+    return created(session.groups.create(request), () => session.whenListed(request.chatId))
   })
   handle('add-group-members', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
@@ -483,6 +487,11 @@ function registerIPC(): void {
   handle('leave-channel', (uid, channelId) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).channelMembershipApi.leave(identifier(channelId))
+  })
+  // B105: tdesktop's «Delete channel» in the owner's edit box (channel-deletion.ts).
+  handle('delete-channel', (uid, channelId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).channelDeletionApi.delete(identifier(channelId))
   })
   handle('story-bar', (uid, peers, force) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
@@ -2193,11 +2202,11 @@ function registerIPC(): void {
   })
   handle('open-support-chat', uid => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).openSupportChat()
+    return opened(accounts.requireActive(identifier(uid)).openSupportChat())
   })
-  handle('start-contact-chat', (uid, requestId) => accounts.requireActive(identifier(uid)).startContactChat(identifier(requestId)))
-  handle('open-unlisted-direct', (uid, chatId) => accounts.requireActive(identifier(uid)).openUnlistedDirect(identifier(chatId)))
-  handle('start-member-chat', (uid, groupChatId, peerUid) => accounts.requireActive(identifier(uid)).startMemberChat(identifier(groupChatId), identifier(peerUid)))
+  handle('start-contact-chat', (uid, requestId) => opened(accounts.requireActive(identifier(uid)).startContactChat(identifier(requestId))))
+  handle('open-unlisted-direct', (uid, chatId) => opened(accounts.requireActive(identifier(uid)).openUnlistedDirect(identifier(chatId))))
+  handle('start-member-chat', (uid, groupChatId, peerUid) => opened(accounts.requireActive(identifier(uid)).startMemberChat(identifier(groupChatId), identifier(peerUid))))
   handle('discard-direct-draft', (uid, chatId) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 다시 시도해 주세요.'))
     return accounts.requireActive(identifier(uid)).discardDirectDraft(identifier(chatId))
@@ -2547,6 +2556,10 @@ function registerIPC(): void {
   handle('mark-visible-read', (uid, chatId, revision, messageId) => {
     if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) throw new Error(tr('잘못된 표시 위치입니다.'))
     return accounts.requireActive(identifier(uid)).markVisibleRead(identifier(chatId), revision, identifier(messageId))
+  })
+  handle('mark-bottom-read', (uid, chatId, revision) => {
+    if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) throw new Error(tr('잘못된 표시 위치입니다.'))
+    return accounts.requireActive(identifier(uid)).markBottomRead(identifier(chatId), revision)
   })
   handle('draft', (uid, chatId) => accounts.requireActive(identifier(uid)).draft(identifier(chatId)))
   handle('pin-message', (uid, raw) => {

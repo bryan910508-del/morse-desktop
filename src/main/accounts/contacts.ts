@@ -101,7 +101,7 @@ export class ContactsSession {
       : this.selection ? emptyProfile(this.selection, this.status === 'ready' ? 'unavailable' : this.status,
         this.status === 'ready' ? tr('현재 연락처에서 이 사용자를 확인할 수 없습니다.') : this.message) : null
     return { status: this.status, message: this.message,
-      items: this.ordered.map(item => ({ ...item, personalPhotoURL: this.personalPhotos.url(item.uid), avatar: this.listAvatars.snapshot(item.uid) })), personalPhotosStatus: this.personalPhotos.status,
+      items: this.ordered.map(item => ({ ...item, personalPhotoURL: this.personalPhotos.url(item.uid), avatar: this.listAvatars.snapshot(item.uid), ...(this.profileNames.official(item.uid) ? { official: this.profileNames.official(item.uid)! } : {}) })), personalPhotosStatus: this.personalPhotos.status,
       profile, mutation: this.mutation ? { ...this.mutation, undo: this.deleteGrace ? {
         operationId: this.deleteGrace.id, remainingMs: Math.max(0, this.deleteGrace.deadline - performance.now())
       } : null } : null }
@@ -150,7 +150,7 @@ export class ContactsSession {
     return this.labels.get(uid) || this.profileNames.name(uid)
   }
   // A13 §9-2: the server's mark on the support account, read with the person's public profile.
-  personOfficial(uid: string): 'support' | null { return this.closed || this.locked ? null : this.profileNames.official(uid) }
+  personOfficial(uid: string): import('../../shared/model').OfficialKind | null { return this.closed || this.locked ? null : this.profileNames.official(uid) }
   // Bumped whenever a name personName gives may have changed.
   get namesRevision(): number { return this.names }
   followPeers(uids: Iterable<string>): void {

@@ -95,6 +95,19 @@ export class HistoryReader {
     return message?.readEligible && message.serverConfirmed && message.senderId !== uid &&
       this.value.messages.some(value => value.id === messageId) ? message.position : null
   }
+  // B104 (a): the chat read at its bottom is read to its newest message, whoever sent it — tdesktop reads till the last
+  // server message (Histories::readInbox, data_histories.cpp:175-203) and, on activation, till the lowest message shown,
+  // its own or not (history_inner_widget.cpp:4426-4460); the server takes any message of the room (talky d725541).
+  // Only with the newest page loaded; a message still on its way, a failed one or a service line is passed over.
+  bottomReadTarget(revision: number): MessagePosition | null {
+    if (this.closed || this.failed || this.paging || this.value.status !== 'ready' || this.value.revision !== revision || this.value.newerAvailable) return null
+    for (let index = this.value.messages.length - 1; index >= 0; index--) {
+      const doc = this.rows.get(`${documents}/chats/${this.dialog.summary.id}/messages/${this.value.messages[index]!.id}`)
+      const message = doc ? decodeMessage(doc, this.dialog) : null
+      if (message?.readEligible && message.serverConfirmed) return message.position
+    }
+    return null
+  }
   updateNames(names: Record<string, string>): void {
     if (JSON.stringify(names) === JSON.stringify(this.dialog.participantNames)) return
     this.dialog.participantNames = names; this.publish()

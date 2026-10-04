@@ -114,13 +114,17 @@ export interface MessagePosition {
   id: string
 }
 
+// B111: the server's publicProfiles.official values; both read as Telegram's verified mark.
+export type OfficialKind = 'support' | 'system'
+
 export interface DialogSummary {
   // A10 §4: the operator closed this room; its messages are not shown (shared/sanctions.ts).
   restricted?: boolean
   // B52: in a 1:1, whether the peer withdrew.
   peerDeleted?: boolean
-  // A13 §9-2: in a 1:1, the peer is the official support account (its public profile says so, written by the server).
-  official?: 'support'
+  // A13 §9-2 / B111: in a 1:1, the peer is an official account — 'support' (the support account) or 'system' (Morse's
+  // notices) — as its public profile's `official` field says (written by the server; never judged by a name).
+  official?: OfficialKind
   composeAccess?: boolean
   composeMessage?: string
   historyAccess?: 'loading' | 'blocked' | 'ready'
@@ -427,7 +431,7 @@ export interface DesktopBridge {
   setContentProtection(enabled: boolean): Promise<void>
   // The web address of the morse:// or talky:// link the app was opened with, once.
   takeOpenLink(): Promise<string | null>
-  createGroup(accountUid: string, request: GroupCreateRequest): Promise<'done' | 'unconfirmed'>
+  createGroup(accountUid: string, request: GroupCreateRequest): Promise<'listed' | 'done' | 'unconfirmed'>
   addGroupMembers(accountUid: string, request: GroupMembersRequest): Promise<'done' | 'unconfirmed'>
   leaveGroup(accountUid: string, request: GroupLeaveRequest): Promise<'done' | 'unconfirmed'>
   removeGroupMember(accountUid: string, request: GroupRemovalRequest): Promise<'done' | 'unconfirmed'>
@@ -435,6 +439,7 @@ export interface DesktopBridge {
   setCloseFriend(accountUid: string, peerUid: string, add: boolean): Promise<void>
   joinChannel(accountUid: string, channelId: string): Promise<'joined' | 'pending' | 'unconfirmed'>
   leaveChannel(accountUid: string, channelId: string): Promise<'done' | 'unconfirmed'>
+  deleteChannel(accountUid: string, channelId: string): Promise<'done' | 'unconfirmed'>
   storyBar(accountUid: string, peers: string[], force: boolean): Promise<import('./story-bar').StoryBarResult>
   clearChatHistory(accountUid: string, chatId: string): Promise<'done' | 'unconfirmed'>
   // Telegram's "Delete chat": for me only hides the room here, for everyone removes it.
@@ -847,6 +852,7 @@ export interface DesktopBridge {
   jumpDate(accountUid: string, chatId: string, at: number): Promise<HistorySnapshot>
   refreshDialogs(accountUid: string): Promise<void>
   markVisibleRead(accountUid: string, chatId: string, revision: number, messageId: string): Promise<boolean>
+  markBottomRead(accountUid: string, chatId: string, revision: number): Promise<boolean>
   openMedia(accountUid: string, chatId: string, request: MediaRequest): Promise<MediaReady>
   closeMedia(accountUid: string, requestId: string): Promise<void>
   // Telegram's automatic media download: the picture of one photo message, if it can be previewed.
@@ -929,4 +935,9 @@ export function positionAt(milliseconds: number, id: string): MessagePosition {
 }
 export function positionMilliseconds(position: MessagePosition): number {
   return position.seconds * 1000 + position.nanoseconds / 1_000_000
+}
+// A document version is its update time, «seconds:nanoseconds» (firestore-values.ts documentVersion); '' is none.
+export function versionNewer(a: string, b: string): boolean {
+  const [aSeconds = 0, aNanos = 0] = a.split(':').map(Number), [bSeconds = 0, bNanos = 0] = b.split(':').map(Number)
+  return aSeconds > bSeconds || (aSeconds === bSeconds && aNanos > bNanos)
 }

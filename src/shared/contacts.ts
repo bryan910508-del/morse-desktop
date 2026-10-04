@@ -5,7 +5,9 @@ import { tr } from './i18n'
 
 export interface ContactSummary { uid: string; displayName: string; originalName?: string; personalPhotoURL?: string | null; avatar?: import('./group-photo').GroupPhotoImage | null
   // This device's «즐겨찾기» / «보관».
-  favorite?: boolean; archived?: boolean }
+  favorite?: boolean; archived?: boolean
+  // B111: an official account (publicProfiles.official), marked after the name.
+  official?: import('./model').OfficialKind }
 export interface ContactMutationSnapshot {
   requestId: string
   uid: string

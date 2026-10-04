@@ -29,13 +29,15 @@
 .dialog-row.active { background: var(--accent); color: #fff }
 .dialog-row-body { flex: 1; min-width: 0; display: grid; gap: 4px }
 .dialog-row-line { display: flex; align-items: center; gap: 5px; min-width: 0; height: 20px }
-.dialog-row-name { flex: 1; min-width: 0; font-size: var(--t-body); font-weight: 600; color: var(--list-title) }
+/* B111: the name takes its text's width (giving way when long) and what follows it — the «공식» mark, a failed or muted
+   mark — stays beside the name; the time keeps the far end (tdesktop drawVerifyCheck, ui/unread_badge.cpp:330-340). */
+.dialog-row-name { flex: 0 1 auto; min-width: 0; font-size: var(--t-body); font-weight: 600; color: var(--list-title) }
 .dialog-row-kind { flex: none; color: var(--icon-muted) }
 .dialog-row-kind.secret { color: var(--secret) }
 /* MorseChannelBadgeView, and the megaphone beside a channel somebody else runs. */
 .dialog-row-kind.channel { color: var(--accent) }
 .dialog-row-channel { flex: none; padding: 1px 5px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); font-size: var(--t-caption2); font-weight: 600; line-height: 1.3 }
-.dialog-row-time { flex: none; font-size: 12px; color: var(--text-weak) }
+.dialog-row-time { flex: none; margin-left: auto; font-size: 12px; color: var(--text-weak) }
 .dialog-row-time.sending { display: inline-flex; color: var(--text-weak) }
 .dialog-row-preview { flex: 1; min-width: 0; font-size: var(--t-caption); color: var(--text-weak) }
 /* iOS colours a draft line with the palette's primary (MorseChatListItemRowView), and Telegram keeps
@@ -78,3 +80,5 @@
 .dialogs-update:hover { background: var(--accent-pressed) }
 /* A13 §9-2: the server's «공식 고객센터» mark, beside the name only. */
 .dialog-row-official { flex: none; color: var(--accent) }
+/* B111: the same mark after a name elsewhere (a profile's name, a contact row). */
+.official-mark { flex: none; margin-left: 4px; vertical-align: -2px; color: var(--accent) }

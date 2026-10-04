@@ -1,11 +1,9 @@
 import { useMemo, useState } from 'react'
 import { ArrowLeft } from 'lucide-react'
 import type { DialogSummary } from '../../../shared/model'
-import { desktop } from '../app/store'
 import { controller } from '../app/ui'
 import { errorText } from '../app/format'
 import { trackWrite } from '../app/drafts'
-import { waitFor } from '../app/contacts'
 import { Spinner, TextField } from '../ui/controls'
 import { Box } from '../ui/layers'
 import { PeerPicker } from './peer-picker'
@@ -28,8 +26,10 @@ function CreateGroupBox({ accountUid, close }: { accountUid: string; close(): vo
     try {
       const result = await trackWrite(window.morse.createGroup(accountUid, { chatId, name, participantUids: selected }))
       close()
-      if (result === 'unconfirmed') controller.toast(tr('그룹 생성 결과를 아직 확인하지 못했습니다. 잠시 후 대화 목록을 확인해 주세요.'))
-      void waitFor(() => desktop.value?.dialogs.some(dialog => dialog.id === chatId) ? true : null, 20000).then(() => controller.openChat(chatId)).catch(() => {})
+      // B109: main answers 'listed' once the batch carrying the new group has gone to the window — it is opened at once.
+      if (result === 'listed') controller.openChat(chatId)
+      else if (result === 'done') controller.toast(tr('그룹을 만들었습니다. 잠시 후 대화 목록을 확인해 주세요.'))
+      else controller.toast(tr('그룹 생성 결과를 아직 확인하지 못했습니다. 잠시 후 대화 목록을 확인해 주세요.'))
     } catch (reason) { setError(errorText(reason, tr('그룹을 만들지 못했습니다.'))); setBusy(false) }
   }
   if (step === 'members') return <Box title={<>{tr('새 그룹')}{' '}<small className="box-title-count">{selected.length} / 99</small></>} width={400} buttons={<>

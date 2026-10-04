@@ -41,6 +41,9 @@ button.info-row:hover { background: var(--card-pressed) }
 .peer-row:hover:not(:disabled) { background: var(--card-pressed) }
 .peer-row-text { flex: 1; min-width: 0; display: grid; gap: 2px }
 .peer-row-text strong { font-size: var(--t-body); font-weight: 500 }
+/* B111: a contact's name gives way when long; its «공식» mark stays after it. */
+.peer-row-text .peer-row-name { display: flex; align-items: center; min-width: 0 }
+.peer-row-text .peer-row-name > .ellipsis { min-width: 0 }
 .peer-row-text small { font-size: var(--t-caption); color: var(--text-weak) }
 
 /* A profile's personal channel (tdesktop DetailsFiller::makePersonalChannel; iOS ProfileView.personalChannelSection). */

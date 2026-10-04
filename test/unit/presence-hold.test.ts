@@ -58,8 +58,8 @@ test('a window that should be online writes itself back when another device sign
 // The server's Telegram buckets: beyond a month is «a long time ago», not an empty subtitle.
 test('a last seen beyond a month reads as a long time ago', () => {
   assert.deepEqual(peerPresence({ s: 'longTimeAgo' }), { s: 'longTimeAgo' })
-  assert.deepEqual(presenceText(peerPresence({ s: 'longTimeAgo' })), { text: '오래 전', online: false })
-  assert.deepEqual(presenceText(peerPresence({ s: 'lastMonth' })), { text: '한 달 이내', online: false })
+  assert.deepEqual(presenceText(peerPresence({ s: 'longTimeAgo' })), { text: '오래 전에 접속함', online: false })
+  assert.deepEqual(presenceText(peerPresence({ s: 'lastMonth' })), { text: '한 달 이내 접속', online: false })
   assert.equal(presenceText(peerPresence({ s: 'someday' })), null, 'an unknown code still shows nothing')
 })
 

@@ -15,6 +15,7 @@ import { popupMenu, pointFor } from '../ui/popup-menu'
 import { ContactAvatar, useContactList } from './peer-picker'
 import { usePresence } from '../app/presence'
 import { tr } from '../../../shared/i18n'
+import { OfficialMark } from '../ui/official-mark'
 
 // ContactListView: a contact's last seen under the name, else the name it was saved from.
 function ContactStatus({ uid, original }: { uid: string; original: string | null }) {
@@ -147,7 +148,7 @@ function ContactsBox({ accountUid, close }: { accountUid: string; close(): void 
   const row = (contact: typeof rows[number]) => <button key={contact.uid} type="button" className="peer-row" onClick={() => { close(); void openContactChat(accountUid, contact.uid) }}
     onContextMenu={event => { event.preventDefault(); openMenu(contact.uid, contact.displayName, pointFor(event, event.currentTarget)) }}>
     <ContactAvatar contact={contact} />
-    <span className="peer-row-text"><strong className="ellipsis">{contact.displayName}</strong><ContactStatus uid={contact.uid} original={contact.originalName && contact.originalName !== contact.displayName ? contact.originalName : null} /></span>
+    <span className="peer-row-text"><strong className="peer-row-name"><span className="ellipsis">{contact.displayName}</span>{contact.official && <OfficialMark kind={contact.official} />}</strong><ContactStatus uid={contact.uid} original={contact.originalName && contact.originalName !== contact.displayName ? contact.originalName : null} /></span>
     {contact.favorite && <Heart size={15} className="peer-row-star" aria-label={tr('즐겨찾기')} />}
   </button>
   return <Box title={showArchived ? tr('보관된 연락처') : tr('연락처')} width={400} className="contacts-box" onClose={close} buttons={<>

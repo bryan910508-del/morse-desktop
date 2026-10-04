@@ -29,5 +29,8 @@ test('only the server\'s official field marks the support account', async () => 
   const profile = (fields: Record<string, unknown>) => decodePeerProfile({ name: `${documents}/publicProfiles/u`, fields } as unknown as FirestoreDocument, false)
   assert.equal(profile({ displayName: { stringValue: 'Morse 고객센터' }, official: { stringValue: 'support' } })?.official, 'support')
   assert.equal(profile({ displayName: { stringValue: 'Morse 고객센터' } })?.official, null, 'a name that says Morse is not enough')
-  assert.equal(profile({ displayName: { stringValue: 'x' }, official: { stringValue: 'admin' } })?.official, null, 'only «support» is known')
+  assert.equal(profile({ displayName: { stringValue: 'x' }, official: { stringValue: 'admin' } })?.official, null, 'only «support» and «system» are known')
+  // B111 (contracts/B111 §6): Morse's notices account carries the same mark, from the same field.
+  assert.equal(profile({ displayName: { stringValue: 'Morse' }, official: { stringValue: 'system' } })?.official, 'system')
+  assert.equal(profile({ displayName: { stringValue: 'Morse' } })?.official, null, 'a test account named Morse has no field, so no mark')
 })

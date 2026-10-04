@@ -83,4 +83,7 @@
 .main-menu-night-row > span { flex: 1 }
 .dialog-row .avatar-notes { background: var(--accent) }
 /* A13 §9-2: the official support account's mark beside the chat's name. */
-.top-bar-title .title-official { margin-left: 4px; vertical-align: -2px; color: var(--accent) }
+/* B111: a long title gives way and its «공식» mark stays (tdesktop drawVerifyCheck). */
+.top-bar-title .top-bar-name { display: flex; align-items: center; min-width: 0 }
+.top-bar-title .top-bar-name > .ellipsis { min-width: 0; font-size: inherit; color: inherit }
+.top-bar-title .title-official { flex: none; margin-left: 4px; color: var(--accent) }

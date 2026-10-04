@@ -3,6 +3,7 @@ import { boolField, documents, stringField, type FirestoreDocument } from '../ne
 import type { ContactSummary } from '../../shared/contacts'
 import { recordAvatarStep } from '../platform/avatar-diagnostics'
 import { userpicCacheFor, type UserpicCache } from './userpic-cache'
+import type { OfficialKind } from '../../shared/model'
 
 // Data::Session holds one PeerData for every person, fed by one stream of peer data, and every row, box and profile
 // paints from it: no screen opens a read of its own, and scrolling opens nothing. Morse reads the same three things —
@@ -20,13 +21,15 @@ export function publicProfilePath(uid: string): string { return `${documents}/pu
 
 // A13 §9-2 (Telegram's `support` flag on the support account): `official: 'support'` is written by the server only;
 // the badge is drawn from it alone, never from a name that says «Morse».
-export type OfficialKind = 'support'
+export type { OfficialKind }
+// B111: the field's two values, nothing else (contracts/B111 §5-6).
+export const officialKind = (value: string): OfficialKind | null => value === 'support' || value === 'system' ? value : null
 export interface PeerProfile { name: string; photo: string; mutual: boolean; official: OfficialKind | null }
 export function decodePeerProfile(doc: FirestoreDocument | undefined, mutual: boolean): PeerProfile | null {
   if (!doc || boolField(doc.fields, 'accountDeleted')) return null
   const name = stringField(doc.fields, 'displayName', 512).trim()
   if (!name) return null
-  return { name, photo: mutual ? stringField(doc.fields, 'photoURL', 10000) : '', mutual, official: stringField(doc.fields, 'official', 32) === 'support' ? 'support' : null }
+  return { name, photo: mutual ? stringField(doc.fields, 'photoURL', 10000) : '', mutual, official: officialKind(stringField(doc.fields, 'official', 32)) }
 }
 // The name on this device's alias first, then the person's current name, then the copy in the contact document.
 export function contactNames(item: ContactSummary, label: string | undefined, current: string): { displayName: string; originalName: string } {

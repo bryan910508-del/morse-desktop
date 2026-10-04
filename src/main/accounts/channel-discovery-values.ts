@@ -3,6 +3,7 @@ import type { ChannelDiscoveryRow } from '../../shared/channel-discovery'
 import { readChannelTags } from '../../shared/channel-tags'
 import { childId, documents, documentVersion, mapField, numberField, stringField, timestamp, type FirestoreDocument } from '../network/firestore-values'
 import { tr } from '../../shared/i18n'
+import { versionNewer } from '../../shared/model'
 // A channel as its plain share link shows it. MorseIOS opens any channel from https://…/channel/<id>, public or not
 // (ChannelDetailView), and a closed one can then be asked to join. Every signed-in account may read the channel
 // document (firestore.rules match /channels/{channelId}); its posts are open to everyone only when it is public
@@ -39,8 +40,7 @@ export function discoveryRow(doc: FirestoreDocument, query: string, tag: string 
 }
 export function mergeDiscoveryRows(groups: ChannelDiscoveryRow[][]): ChannelDiscoveryRow[] {
   const map = new Map<string, ChannelDiscoveryRow>()
-  const newer = (a: string, b: string): boolean => { const [aSeconds, aNanos] = a.split(':').map(Number), [bSeconds, bNanos] = b.split(':').map(Number); return aSeconds! > bSeconds! || (aSeconds === bSeconds && aNanos! > bNanos!) }
-  for (const rows of groups) for (const row of rows) { const previous = map.get(row.id); if (!previous || newer(row.version, previous.version)) map.set(row.id, row) }
+  for (const rows of groups) for (const row of rows) { const previous = map.get(row.id); if (!previous || versionNewer(row.version, previous.version)) map.set(row.id, row) }
   // Each row is one document observation, never a mix of fields from the two queries.
   return [...map.values()].sort((a, b) => Number(b.matchesTag) - Number(a.matchesTag) || Number(b.matchesName) - Number(a.matchesName) || (b.subscriberCount ?? -1) - (a.subscriberCount ?? -1) || a.id.localeCompare(b.id))
 }

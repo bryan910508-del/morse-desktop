@@ -5,7 +5,7 @@ import { channelIntroductionLimit } from '../../../shared/channel-introduction'
 import { channelShareURL } from '../../../shared/channel-share'
 import { normalizeChannelTag } from '../../../shared/channel-tags'
 import { desktop, useDesktop } from '../app/store'
-import { controller } from '../app/ui'
+import { controller, ui } from '../app/ui'
 import { errorText } from '../app/format'
 import { trackWrite } from '../app/drafts'
 import { waitFor } from '../app/contacts'
@@ -35,6 +35,7 @@ function ChannelInfoPanel({ accountUid, channelId }: { accountUid: string; chann
   const [shareRequestId] = useState(() => crypto.randomUUID())
   const [photoBusy, setPhotoBusy] = useState<'avatar' | 'cover' | null>(null)
   const [leaving, setLeaving] = useState(false), [joining, setJoining] = useState(false), [departing, setDeparting] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [inquiring, setInquiring] = useState(false)
   const ready = channel?.status === 'ready' ? channel : null
   const version = ready?.version ?? null
@@ -157,6 +158,24 @@ function ChannelInfoPanel({ accountUid, channelId }: { accountUid: string; chann
     } catch (reason) { controller.toast(errorText(reason, tr('채널에서 나가지 못했습니다.')), 'error') }
     finally { setLeaving(false) }
   }
+  // B105, tdesktop's «Delete channel» (edit_peer_info_box.cpp:1834-1841, 3066-3101): the owner's edit section ends with
+  // it, behind a confirm box in the attention style; the wording is the iOS alert's (channel.delete / deleteNote).
+  const deleteChannel = async (): Promise<void> => {
+    if (!ready?.owned || deleting) return
+    if (!await confirmBox({ title: tr('채널 삭제'), text: tr('이 채널이 영구 삭제됩니다. 되돌릴 수 없어요.'), confirm: tr('삭제'), danger: true })) return
+    setDeleting(true)
+    try {
+      const result = await trackWrite(window.morse.deleteChannel(accountUid, channelId))
+      if (result === 'done') {
+        controller.toast(tr('채널을 삭제했습니다.'))
+        // tdesktop closeChatFromWindows(channel): the deleted channel, or its discussion, leaves the screen for the list.
+        const shown = ui()
+        if (shown.channelId === channelId || (discussionId && shown.chatId === discussionId)) controller.closeChat()
+      }
+      else controller.toast(tr('삭제 결과를 확인하고 있습니다. 잠시 후 채널 목록을 확인해 주세요.'))
+    } catch (reason) { controller.toast(errorText(reason, tr('채널을 삭제하지 못했습니다.')), 'error') }
+    finally { setDeleting(false) }
+  }
 
   // Its own holder of the channels photo surface, for the same reason the channel screen is one.
   return <AvatarScope accountUid={accountUid} enabled surface="channels"><section className="side-panel" aria-label={tr('채널 정보')}>
@@ -201,6 +220,9 @@ function ChannelInfoPanel({ accountUid, channelId }: { accountUid: string; chann
           <ActionRow icon={photoBusy === 'cover' ? <Spinner size={20} /> : <ImageIcon size={20} />} label={tr('커버 변경')} disabled={Boolean(photoBusy)} onClick={() => { void changePhoto('cover') }} />
           {ready.hasAvatar && <ActionRow icon={<Trash2 size={20} />} label={tr('채널 사진 삭제')} danger onClick={() => { void clearPhoto('avatar') }} />}
           {ready.hasCover && <ActionRow icon={<Trash2 size={20} />} label={tr('커버 삭제')} danger onClick={() => { void clearPhoto('cover') }} />}
+        </div>}
+        {ready.owned && <div className="info-section">
+          <ActionRow icon={deleting ? <Spinner size={20} /> : <Trash2 size={20} />} label={tr('채널 삭제')} danger disabled={deleting} onClick={() => { void deleteChannel() }} />
         </div>}
         {!ready.owned && ready.subscriptionListed && <div className="info-section">
           <ActionRow icon={inquiring ? <Spinner size={20} /> : <MessageSquare size={20} />} label={tr('운영자에게 1:1 문의')} disabled={inquiring} onClick={() => { void openInquiry() }} />

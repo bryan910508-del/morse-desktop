@@ -21,35 +21,42 @@ const timeFormat = new Intl.DateTimeFormat(locale(), { timeStyle: 'short' })
 const dateFormat = new Intl.DateTimeFormat(locale(), { dateStyle: 'short' })
 function dayStart(ms: number): number { const date = new Date(ms); date.setHours(0, 0, 0, 0); return date.getTime() }
 
-// MorsePresenceStrings wording; a hidden last seen reads like Telegram's OnlineTextCommon
-// (isHidden -> lng_status_recently, Korean "최근에 접속함"). Unknown presence shows nothing.
-export function presenceText(presence: PeerPresence, now = Date.now()): PresenceText | null {
+// B111: the three apps' words (contracts/B111 §3) on tdesktop's rules (data/data_peer_values.cpp). A list, a chat's
+// title and the contacts read OnlineText (:470-498): just now, N minutes, N hours within 12, today/yesterday at a time,
+// else the date. A profile reads OnlineTextFull (:507-527): today/yesterday at a time, else the date at a time. A
+// hidden last seen reads «recently», as OnlineTextCommon does (:85-86); «a long time ago» is the server's longTimeAgo.
+export function presenceText(presence: PeerPresence, now = Date.now(), full = false): PresenceText | null {
   switch (presence.s) {
     case 'online': return { text: tr('온라인'), online: true }
-    case 'lastWeek': return { text: tr('일주일 이내'), online: false }
-    case 'lastMonth': return { text: tr('한 달 이내'), online: false }
-    case 'longTimeAgo': return { text: tr('오래 전'), online: false }
+    case 'lastWeek': return { text: tr('일주일 이내 접속'), online: false }
+    case 'lastMonth': return { text: tr('한 달 이내 접속'), online: false }
+    case 'longTimeAgo': return { text: tr('오래 전에 접속함'), online: false }
     case 'hidden': return { text: tr('최근에 접속함'), online: false }
     case 'present': {
       if (!presence.t) return { text: tr('최근에 접속함'), online: false }
-      const at = presence.t * 1000, seconds = Math.floor((now - at) / 1000)
-      if (seconds < 60) return { text: tr('방금 전'), online: false }
-      if (seconds < 3600) return { text: tr('{0}분 전', [Math.max(1, Math.floor(seconds / 60))]), online: false }
+      const at = presence.t * 1000, seconds = Math.max(0, Math.floor((now - at) / 1000))
+      if (!full) {
+        const minutes = Math.floor(seconds / 60), hours = Math.floor(seconds / 3600)
+        if (!minutes) return { text: tr('방금 접속함'), online: false }
+        if (minutes < 60) return { text: tr('{0}분 전 접속', [minutes]), online: false }
+        if (hours < 12) return { text: tr('{0}시간 전 접속', [hours]), online: false }
+      }
       const today = dayStart(now)
-      if (at >= today) return { text: tr('오늘 {0}', [timeFormat.format(at)]), online: false }
-      if (at >= today - 86400000) return { text: tr('어제 {0}', [timeFormat.format(at)]), online: false }
-      return { text: tr('마지막 접속 {0}', [dateFormat.format(at)]), online: false }
+      if (at >= today) return { text: tr('오늘 {0} 접속', [timeFormat.format(at)]), online: false }
+      if (at >= today - 86400000) return { text: tr('어제 {0} 접속', [timeFormat.format(at)]), online: false }
+      return { text: full ? tr('{0} {1} 접속', [dateFormat.format(at), timeFormat.format(at)]) : tr('{0} 접속', [dateFormat.format(at)]), online: false }
     }
     default: return null
   }
 }
 
-// When the text changes next (Telegram OnlineChangeTimeout, 1 s .. 1 day).
+// When the text changes next (Telegram OnlineChangeTimeout, 1 s .. 1 day): each minute within the hour, each hour within
+// twelve, then at the next day.
 export function presenceChangeIn(presence: PeerPresence, now = Date.now()): number | null {
   if (presence.s !== 'present' || !presence.t) return null
-  const seconds = Math.floor((now - presence.t * 1000) / 1000)
-  if (seconds < 60) return (60 - seconds + 1) * 1000
+  const seconds = Math.max(0, Math.floor((now - presence.t * 1000) / 1000))
   if (seconds < 3600) return (60 - (seconds % 60) + 1) * 1000
+  if (seconds < 12 * 3600) return (3600 - (seconds % 3600) + 1) * 1000
   const nextDay = dayStart(now) + 86400000
   return Math.min(86400000, Math.max(1000, nextDay - now + 1000))
 }

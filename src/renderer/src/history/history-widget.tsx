@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
-import { BadgeCheck, ArrowDown, ArrowLeft, Bookmark, Check, Copy, Download, EllipsisVertical, File as FileIcon, Flag, Forward, Images, Info, Languages, Link, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Sticker, Timer, Trash2, X } from 'lucide-react'
+import { ArrowDown, ArrowLeft, Bookmark, Check, Copy, Download, EllipsisVertical, File as FileIcon, Flag, Forward, Images, Info, Languages, Link, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Sticker, Timer, Trash2, X } from 'lucide-react'
 import type { ChatMessage, DialogSummary, HistorySnapshot } from '../../../shared/model'
 import type { LocalOutgoing, OutgoingSnapshot } from '../../../shared/delivery'
 import type { ReplyDraftSnapshot } from '../../../shared/reply-draft'
@@ -27,6 +27,7 @@ import { Avatar, PeerAvatar } from '../ui/avatar'
 import { Spinner } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
 import { popupMenu, pointFor, type MenuEntry } from '../ui/popup-menu'
+import { OfficialMark } from '../ui/official-mark'
 import { showReportBox } from '../boxes/report-box'
 import { showShareBox } from '../boxes/share-box'
 import { showSendFilesBox } from '../boxes/send-files-box'
@@ -329,7 +330,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   const scrollDate = useScrollDate(scroll, virtual, entryTimes, inlineDates, settled)
   useEffect(() => { scrollDate.reset() }, [chatId])
 
-  const readError = useVisibleRead(scroll, { accountUid, chatId, history, enabled: historyReady && connection === 'ready' && layerCount === 0 && selection === null && !secret })
+  const readError = useVisibleRead(scroll, { accountUid, chatId, history, enabled: historyReady && connection === 'ready' && layerCount === 0 && selection === null && !secret, serverUnread: dialog?.unreadCount ?? 0 })
   useEffect(() => { if (readError) controller.toast(readError, 'error') }, [readError])
 
   const peers = useMemo(() => dialog ? [...new Set(dialog.participantUids)].filter(uid => uid !== accountUid) : [], [dialog?.participantUids, accountUid])
@@ -574,7 +575,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
               asked for (the account has no peer here, so every such request could only fail). */}
           {saved ? <span className="avatar avatar-saved" style={{ width: 36, height: 36 }} aria-hidden="true"><Bookmark size={18} /></span>
             : dialog ? <PeerAvatar id={dialog.id} name={dialog.title} image={secret ? null : dialog.avatar} surface="dialogs" kind={secret ? 'secret' : undefined} size={36} priority /> : pending ? <PeerAvatar id={chatId} name={title} image={pending.avatar ?? null} surface="dialogs" size={36} priority /> : <Avatar name={title} size={36} />}
-          <span className="top-bar-title"><strong className="ellipsis">{title}{dialog?.official === 'support' && <BadgeCheck size={15} className="title-official" role="img" aria-label={tr('공식 고객센터')} />}</strong>{subtitle && <span className={`ellipsis${typing && subtitle === tr('입력 중...') ? ' typing' : peerPresence?.online && subtitle === peerPresence.text ? ' online' : ''}`}>{subtitle}</span>}</span>
+          <span className="top-bar-title"><strong className="top-bar-name"><span className="ellipsis">{title}</span>{dialog?.official && <OfficialMark kind={dialog.official} size={15} className="title-official" />}</strong>{subtitle && <span className={`ellipsis${typing && subtitle === tr('입력 중...') ? ' typing' : peerPresence?.online && subtitle === peerPresence.text ? ' online' : ''}`}>{subtitle}</span>}</span>
         </button>
         {dialog && !secret && <button className={`icon-button${right === 'search' ? ' active' : ''}`} aria-label={tr('대화 안 검색')} disabled={!historyReady} onClick={() => controller.toggleRight('search')}><Search size={20} /></button>}
         {dialog && <button className={`icon-button${right === 'info' ? ' active' : ''}`} aria-label={tr('정보')} onClick={() => controller.toggleRight('info')}><Info size={20} /></button>}

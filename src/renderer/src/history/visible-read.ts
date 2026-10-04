@@ -3,10 +3,13 @@ import type { ChatMessage, HistorySnapshot } from '../../../shared/model'
 import { compareReadCursor, readCursor, type ReadCursor } from '../../../shared/read-receipts'
 import { tr } from '../../../shared/i18n'
 
-interface Display { accountUid: string; chatId: string; history: HistorySnapshot; enabled: boolean }
+interface Display { accountUid: string; chatId: string; history: HistorySnapshot; enabled: boolean; serverUnread: number }
 
 // A message is read only when its bubble bottom is actually visible in the
 // focused window. The newest such message is sent once; main merges cursors.
+// B104 (a): a chat shown at its bottom while the server still counts it unread is read once to its newest message,
+// whoever sent it (main picks it: session.ts markBottomRead) — a count the server holds is a fact about the chat, not
+// about a bubble, as tdesktop reads a history at its bottom till the last message (data_histories.cpp:175-203).
 export function useVisibleRead(scroll: RefObject<HTMLDivElement | null>, display: Display): string {
   const committed = useRef(display)
   const schedule = useRef<(() => void) | null>(null)
@@ -17,7 +20,7 @@ export function useVisibleRead(scroll: RefObject<HTMLDivElement | null>, display
     if (!element) return
     let disposed = false, busy = false, failed = false, frame = 0, second = 0
     let timer: ReturnType<typeof setTimeout> | undefined
-    let accepted: ReadCursor | null = null
+    let accepted: ReadCursor | null = null, bottomAsked = ''
     const cancel = (): void => { clearTimeout(timer); cancelAnimationFrame(frame); cancelAnimationFrame(second) }
     const allowed = (): boolean => !disposed && !failed && committed.current.enabled && committed.current.history.status === 'ready' && document.visibilityState === 'visible' && document.hasFocus()
     const observe = (): void => {
@@ -40,12 +43,22 @@ export function useVisibleRead(scroll: RefObject<HTMLDivElement | null>, display
         if (!hit || !bubble.contains(hit)) continue
         if (!candidate || compareReadCursor(readCursor(message.position), readCursor(candidate.position)) > 0) candidate = message
       }
-      if (!candidate || (accepted && compareReadCursor(readCursor(candidate.position), accepted) <= 0)) return
+      if (!candidate || (accepted && compareReadCursor(readCursor(candidate.position), accepted) <= 0)) { readBottom(view); return }
       const target = readCursor(candidate.position)
       busy = true
       void window.morse.markVisibleRead(view.accountUid, view.chatId, view.history.revision, candidate.id).then(saved => {
         if (saved && !disposed && (!accepted || compareReadCursor(target, accepted) > 0)) accepted = target
       }).catch(() => { if (!disposed) { failed = true; setError(tr('읽음 위치를 저장하지 못했습니다. 앱을 다시 열어 주세요.')) } })
+        .finally(() => { busy = false; if (!disposed && !failed) queue(800) })
+    }
+    // Once per newest message and history revision: a new message or a new page may ask again, nothing else does.
+    const readBottom = (view: Display): void => {
+      const newest = view.history.messages.at(-1)?.id, key = `${newest}:${view.history.revision}`
+      if (view.serverUnread <= 0 || view.history.newerAvailable || !newest || bottomAsked === key) return
+      if (element.scrollHeight - element.scrollTop - element.clientHeight > 80) return
+      bottomAsked = key; busy = true
+      void window.morse.markBottomRead(view.accountUid, view.chatId, view.history.revision)
+        .catch(() => { if (!disposed) { failed = true; setError(tr('읽음 위치를 저장하지 못했습니다. 앱을 다시 열어 주세요.')) } })
         .finally(() => { busy = false; if (!disposed && !failed) queue(800) })
     }
     const queue = (delay = 180): void => {

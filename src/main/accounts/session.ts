@@ -66,6 +66,7 @@ import type { GroupPhotoRequest, GroupPhotoClear, GroupPhotoResult } from '../..
 import { GroupApi } from '../api/groups'
 import { CloseFriendsApi } from '../api/close-friends'
 import { ChannelMembershipApi } from '../api/channel-membership'
+import { ChannelDeletionApi, firestoreChannelDeletion } from '../api/channel-deletion'
 import { StoryBarApi } from '../api/story-bar'
 import type { GroupCreateRequest } from '../../shared/group-create'
 import type { GroupMembersRequest } from '../../shared/group-members'
@@ -263,6 +264,7 @@ export class AccountSession {
   readonly groups: GroupApi
   readonly closeFriendsApi: CloseFriendsApi
   readonly channelMembershipApi: ChannelMembershipApi
+  readonly channelDeletionApi: ChannelDeletionApi
   readonly storyBarApi: StoryBarApi
   readonly accountTools: AccountToolsApi
   /// The account's new-chat auto-delete default, read once per session; null until that read lands.
@@ -616,6 +618,7 @@ export class AccountSession {
     this.closeFriendsApi = new CloseFriendsApi(profile.uid, credentials, connected, uid => this.contacts.closeFriendCandidate(uid),
       uid => { try { return this.contacts.has(uid) ? this.contacts.closeFriendCandidate(uid).displayName : null } catch { return null } })
     this.channelMembershipApi = new ChannelMembershipApi(profile.uid, credentials, connected)
+    this.channelDeletionApi = new ChannelDeletionApi(connected, () => firestoreChannelDeletion(credentials, connected))
     this.storyBarApi = new StoryBarApi(profile.uid, credentials, () => { if (this.closed || this.locked) throw new Error(tr('계정 연결을 확인해 주세요.')) }, uid => this.contacts.has(uid))
     this.accountTools = new AccountToolsApi(profile.uid, credentials, connected)
     this.inquirySends = new InquirySends(profile.uid, credentials, connected, command => this.delivery.inquirySendState(command), () => { if (!this.closed) events.changed() })
@@ -1198,7 +1201,8 @@ export class AccountSession {
     const peer = summary.participantUids.find(uid => uid !== this.profile.uid)
     const name = peer ? this.contacts.personName(peer) : ''
     if (name) summary.title = name
-    if (peer && this.contacts.personOfficial(peer) === 'support') summary.official = 'support'
+    const official = peer ? this.contacts.personOfficial(peer) : null
+    if (official) summary.official = official
   }
   private namesApplied = -1
   private renameDialogs(): void {
@@ -1302,6 +1306,30 @@ export class AccountSession {
     this.listTyping.bind(this.locked ? [] : this.list, this.locked ? null : this.reader)
     this.notifications.resume()
     this.events.changed()
+    this.settleListed()
+  }
+  // B109: a chat this account has just made opens once the list holds it, as tdesktop applies the creation's updates —
+  // the chat is in the session data — before showPeerHistory. Bounded: false when it did not come in time.
+  private readonly listedWaiters = new Map<string, Set<(listed: boolean) => void>>()
+  whenListed(chatId: string, timeout = 20000): Promise<boolean> {
+    if (this.list.some(dialog => dialog.id === chatId)) return Promise.resolve(true)
+    if (this.closed) return Promise.resolve(false)
+    return new Promise(resolve => {
+      const waiters = this.listedWaiters.get(chatId) ?? new Set<(listed: boolean) => void>()
+      this.listedWaiters.set(chatId, waiters)
+      const done = (listed: boolean): void => {
+        clearTimeout(timer); waiters.delete(done)
+        if (!waiters.size) this.listedWaiters.delete(chatId)
+        resolve(listed)
+      }
+      const timer = setTimeout(() => done(false), timeout)
+      waiters.add(done)
+    })
+  }
+  private settleListed(listed?: false): void {
+    for (const [chatId, waiters] of [...this.listedWaiters]) {
+      if (listed === false || this.list.some(dialog => dialog.id === chatId)) for (const done of [...waiters]) done(listed ?? true)
+    }
   }
   private readonly isOpenChat = (chatId: string): boolean => this.selected?.dialog.summary.id === chatId
   private openHistory(dialog: ReadDialog): HistoryReader {
@@ -2175,6 +2203,15 @@ export class AccountSession {
     if (target) this.notifications.observed(chatId, target)
     return target ? this.reads.observe(chatId, target) : Promise.resolve(false)
   }
+  // B104 (a): the open chat shown at its bottom while the server still counts it unread is read once to its newest
+  // message (history-reader.ts bottomReadTarget); the read goes as a recount (read-sync.ts observe).
+  markBottomRead(chatId: string, revision: number): Promise<boolean> {
+    if (this.closed || !this.events.canRead() || this.status !== 'ready' || this.selected?.dialog.summary.id !== chatId) return Promise.resolve(false)
+    if ((this.index.get(chatId)?.summary.unreadCount ?? 0) <= 0) return Promise.resolve(false)
+    const target = this.selected.bottomReadTarget(revision)
+    if (target) this.notifications.observed(chatId, target)
+    return target ? this.reads.observe(chatId, target) : Promise.resolve(false)
+  }
   readingActivityChanged(): void {
     if (this.events.canRead()) this.reads.resume(); else this.reads.pause()
     this.syncPresence()
@@ -2505,7 +2542,7 @@ export class AccountSession {
   discard(chatId: string, id: string) { return this.delivery.discard(chatId, id) }
   async close(purge: boolean): Promise<void> {
     if (this.closed) return
-    this.keptHistories.clear()
+    this.keptHistories.clear(); this.settleListed(false)
     this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
     this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); 
     await storyClose
