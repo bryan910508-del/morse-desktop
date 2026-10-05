@@ -46,6 +46,9 @@ export type ConnectionState = 'offline' | 'connecting' | 'registering' | 'ready'
 // is not part of it: sends go by the callables without it (A15).
 export type LinkState = 'ready' | 'waiting-network' | 'connecting' | 'updating'
 
+// A recovery code change (A3): the new code, whether the server confirmed it, and — made by Apple/Google — whether it
+// waits for the person to confirm again (§9).
+export interface BackupCodeChange { backupCode: string; confirmed: boolean; needsProof?: boolean }
 export interface Preferences {
   theme: ThemePreference
   messageFontSize: number
@@ -126,6 +129,9 @@ export interface DialogSummary {
   // notices) — as its public profile's `official` field says (written by the server; never judged by a name).
   official?: OfficialKind
   composeAccess?: boolean
+  // B113: Morse's official notice chat «Morse» (type 'system'), a 1:1 with the service account as Telegram's 777000 —
+  // read-only, no last seen, no person's actions (tdesktop isServiceUser).
+  service?: true
   composeMessage?: string
   historyAccess?: 'loading' | 'blocked' | 'ready'
   historyMessage?: string
@@ -206,6 +212,8 @@ export interface ChatMessage {
   senderName?: string
   kind: MessageKind
   text: string
+  // B113: a notice of the official notice chat, drawn by its kind in this window's language (system-notices.ts).
+  notice?: import('./system-notices').SystemNotice
   position: MessagePosition
   serverConfirmed: boolean
   encrypted: boolean
@@ -361,6 +369,7 @@ export interface DesktopSnapshot {
   channelHome: import('./channel-home').ChannelHomeSnapshot | null
   channelStories: import('./channel-stories').ChannelStoriesSnapshot | null
   appUpdate: import('./app-updates').AppUpdateSnapshot
+  versionGate: import('./app-updates').AppVersionGateSnapshot
   contactStoryPhotoAudio: import('./contact-story-photo-audio').ContactStoryPhotoAudioSnapshot | null
   contactAudienceStoryVideo: import('./contact-audience-story-video').ContactAudienceStoryVideoSnapshot | null
   contactAudienceStoryPhoto: import('./contact-audience-story-photo').ContactAudienceStoryPhotoSnapshot | null
@@ -460,8 +469,15 @@ export interface DesktopBridge {
   revokeSignInSessions(accountUid: string, sessionId: string | null): Promise<void>
   setSessionTtl(accountUid: string, days: number): Promise<void>
   // A null current code uses the code kept on this device for an Apple sign-up.
-  changeBackupCode(accountUid: string, currentCode: string | null): Promise<{ backupCode: string; confirmed: boolean }>
+  changeBackupCode(accountUid: string, currentCode: string | null): Promise<BackupCodeChange>
   hasStoredBackupCode(accountUid: string): Promise<boolean>
+  // A3 §9: the linked Apple/Google identities that can make a new code without the old one.
+  backupCodeIdentities(accountUid: string): Promise<{ kinds: ('apple' | 'google')[]; needsProof: boolean }>
+  // null: the person closed the Apple/Google window.
+  changeBackupCodeByProvider(accountUid: string, kind: 'apple' | 'google'): Promise<BackupCodeChange | null>
+  // A13-2 ③: the account's two-step password — its state, and setting, changing, turning off or resetting it.
+  twoStepSettings(accountUid: string): Promise<import('./two-step').TwoStepSettings>
+  updateTwoStep(accountUid: string, request: import('./two-step').TwoStepRequest): Promise<import('./two-step').TwoStepOutcome>
   lastSeenPrivacy(accountUid: string): Promise<import('./account-tools').LastSeenPrivacy>
   setLastSeenPrivacy(accountUid: string, value: import('./account-tools').LastSeenPrivacy): Promise<void>
   report(accountUid: string, request: import('./reports').ReportRequest): Promise<void>
@@ -770,6 +786,11 @@ export interface DesktopBridge {
   openChannelHome(accountUid: string): Promise<void>
   checkAppUpdate(): Promise<void>
   installAppUpdate(): Promise<void>
+  // The version gate's page (app_config/desktop storeUrl or the release page), and quitting from its screen.
+  openUpdatePage(): Promise<void>
+  quitApp(): Promise<void>
+  // The server turned this version away: update now (tdesktop Core::UpdateApplication).
+  updateApplication(): Promise<void>
   closeChannelHome(accountUid: string): Promise<void>
   refreshChannelHome(accountUid: string): Promise<void>
   setVisibleChannelStories(accountUid: string, channelIds: string[]): Promise<void>

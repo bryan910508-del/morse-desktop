@@ -8,13 +8,15 @@ import { tr } from '../../shared/i18n'
 import { recordConnectionStep } from '../platform/connection-diagnostics'
 import { reachability } from '../network/reachability'
 import { restoreRetryDelay } from './restore-retry'
+import { FirebaseAuthenticationAPI } from './firebase-rest'
+import { SessionEnders } from './session-enders'
 
-export interface DomainHooks extends Omit<AuthenticatedAccountHooks, 'activated'> {
+export interface DomainHooks extends Omit<AuthenticatedAccountHooks, 'activated' | 'endSession' | 'endSessionsNow'> {
   activated(profile: AccountProfile, credentials: AccountAuthorization, makeActive: boolean): void
   maxAccounts(): number
   activeUid(): string | null
 }
-export interface DomainAccountState { uid: string; userId: string; displayName: string; phase: AuthPhase; message: string }
+export interface DomainAccountState { uid: string; userId: string; displayName: string; phase: AuthPhase; message: string; banned?: boolean; updateRequired?: boolean }
 
 
 // Main::Domain: every saved account keeps its own authentication and connection. One more
@@ -31,11 +33,23 @@ export class AuthenticationDomain {
   private closed = false
   constructor(private readonly configuration: DesktopAuthConfiguration | null, private readonly vault: CredentialVault,
     private readonly version: string, private readonly changed: () => void, private readonly hooks: DomainHooks) {
-    this.unsubscribe = reachability.subscribe(reason => this.restoreNow(reason))
+    // tdesktop keeps one instance for keys to destroy beside the accounts' own (Main::Account::_mtpForKeysDestroy).
+    this.enders = new SessionEnders({ read: () => vault.endingSessions(), write: list => vault.saveEndingSessions(list) },
+      configuration ? new FirebaseAuthenticationAPI(configuration) : null, uid => vault.read(uid).then(record => record?.sessionId ?? null))
+    this.unsubscribe = reachability.subscribe(reason => { this.restoreNow(reason); this.enders.runNow() })
+    this.enders.runNow()
   }
+  private readonly enders: SessionEnders
   private readonly unsubscribe: () => void
 
   get available(): boolean { return this.configuration !== null }
+  // app_config read before any sign-in, with this app's proof only (the version gate, platform/app-version-gate.ts).
+  private publicApi: FirebaseAuthenticationAPI | null = null
+  publicConfig(name: 'desktop', signal: AbortSignal): Promise<Record<string, unknown> | null> {
+    if (!this.configuration) return Promise.resolve(null)
+    this.publicApi ??= new FirebaseAuthenticationAPI(this.configuration)
+    return this.publicApi.publicConfig(name, signal)
+  }
   private create(uid: string | null): AuthenticationController {
     const controller: AuthenticationController = new AuthenticationController(this.configuration, this.vault, this.version, () => this.controllerChanged(controller), {
       activated: (profile, credentials) => {
@@ -47,7 +61,9 @@ export class AuthenticationDomain {
       connection: (account, state) => this.hooks.connection(account, state),
       closed: (account, purge) => this.hooks.closed(account, purge),
       notificationHint: (account, hint) => this.hooks.notificationHint(account, hint),
-      reactionUpdated: (account, body) => this.hooks.reactionUpdated(account, body)
+      reactionUpdated: (account, body) => this.hooks.reactionUpdated(account, body),
+      endSession: entry => this.enders.add(entry),
+      endSessionsNow: () => this.enders.runNow()
     }, uid, { admit: next => this.admit(next), admitNew: () => this.admitNew(), creationToken: signal => this.creationToken(signal) })
     return controller
   }
@@ -147,7 +163,17 @@ export class AuthenticationDomain {
     for (const uid of order) if (uid !== first && !this.closed) void this.controllers.get(uid)?.restore().catch(() => {})
   }
   get addingRequested(): boolean { return this.requested }
+  // A13-2 ②: the password step belongs to the sign-in that waits for it — the one being added, or a saved account's
+  // restore that was left there (the app closed before the password passed) — and it is what the entry screen shows.
+  private waitingForPassword(): AuthenticationController | null {
+    if (this.adding?.snapshot.phase === 'password') return this.adding
+    return [...this.controllers.values()].find(controller => controller.snapshot.phase === 'password') ?? null
+  }
+  async submitPassword(password: unknown): Promise<void> { await this.waitingForPassword()?.submitPassword(password) }
+  async requestPasswordReset(): Promise<void> { await this.waitingForPassword()?.requestPasswordReset() }
   get entrySnapshot(): AuthenticationSnapshot {
+    const waiting = this.waitingForPassword()
+    if (waiting) return waiting.snapshot
     if (this.adding) return this.adding.snapshot
     const pending = this.pendingUid ? this.controllers.get(this.pendingUid) : undefined
     if (pending && !pending.connected) return pending.snapshot
@@ -157,7 +183,8 @@ export class AuthenticationDomain {
   states(): DomainAccountState[] {
     return [...this.controllers.entries()].map(([uid, controller]) => {
       const snapshot = controller.snapshot, profile = snapshot.account ?? this.profiles.get(uid)
-      return { uid, userId: profile?.userId ?? '', displayName: profile?.displayName ?? '', phase: snapshot.phase, message: snapshot.phase === 'signed-in' ? '' : snapshot.message, ...(snapshot.banned ? { banned: true } : {}) }
+      return { uid, userId: profile?.userId ?? '', displayName: profile?.displayName ?? '', phase: snapshot.phase, message: snapshot.phase === 'signed-in' ? '' : snapshot.message, ...(snapshot.banned ? { banned: true } : {}),
+        ...(snapshot.updateRequired ? { updateRequired: true } : {}) }
     })
   }
   // The account the user chose to see; it stays shown when it reconnects.
@@ -184,12 +211,14 @@ export class AuthenticationDomain {
   async signIn(code: unknown): Promise<void> { const entry = this.entry(); await entry.stopQr(); return entry.signIn(code) }
   async createAccount(userId: unknown): Promise<AccountCreationResult | null> { const entry = this.entry(); await entry.stopQr(); return entry.createAccount(userId) }
   async signInWithApple(): Promise<void> { const entry = this.entry(); await entry.stopQr(); return entry.signInWithApple() }
+  async signInWithGoogle(): Promise<void> { const entry = this.entry(); await entry.stopQr(); return entry.signInWithGoogle() }
   // A13: the QR code of the sign-in screen. The accounts connected here are left out (Telegram except_ids).
   signInWithQr(): Promise<void> {
     const connected = [...this.controllers.entries()].filter(([, controller]) => controller.connected).map(([uid]) => uid)
     return this.entry().signInWithQr(connected)
   }
   async stopQr(): Promise<void> { await this.adding?.stopQr() }
+  async retrySecurityCheck(): Promise<boolean> { return await this.adding?.retrySecurityCheck() ?? false }
   async cancel(): Promise<void> {
     await this.adding?.cancel()
     const pending = this.pendingUid ? this.controllers.get(this.pendingUid) : undefined
@@ -239,6 +268,7 @@ export class AuthenticationDomain {
   async close(): Promise<void> {
     this.closed = true
     this.unsubscribe()
+    this.enders.close()
     for (const uid of [...this.retries.keys()]) this.clearRetry(uid)
     await Promise.all(this.all().map(controller => controller.close()))
   }

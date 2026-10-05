@@ -48,6 +48,8 @@ export function AccountsList({ variant, onDone }: { variant: 'menu' | 'settings'
     </button>
     {/* A10 §4 (Telegram SendToBannedHelp): a banned account offers a mail to the operator. */}
     {state.banned && <button type="button" className="accounts-row-help" onClick={() => { void window.morse.operatorMail(state.uid, 'banned').catch(() => {}) }}>{tr('도움')}</button>}
+    {/* tdesktop's «Update» box (Core::UpdateApplication) where the server turned this version away. */}
+    {state.updateRequired && <button type="button" className="accounts-row-help" onClick={() => { void window.morse.updateApplication().catch(() => {}) }}>{tr('업데이트')}</button>}
     </Fragment>)}
     <button type="button" className="accounts-row add" onClick={add}>
       <span className="accounts-row-add"><Plus size={20} /></span>

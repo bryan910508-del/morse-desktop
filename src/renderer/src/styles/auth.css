@@ -29,6 +29,7 @@
 .intro-id.empty { font-size: var(--t-body); letter-spacing: 0; color: var(--text-weak) }
 .backup-code-card { display: flex; align-items: center; gap: 10px; margin: 6px 0; padding: 12px 14px; border-radius: var(--r-control); background: var(--card-pressed) }
 .backup-code-card code { flex: 1; min-width: 0; font: 700 18px ui-monospace, Menlo, monospace; letter-spacing: .05em; overflow-wrap: anywhere }
+.backup-code-identities { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 4px }
 
 /* Window::PasscodeLockWidget */
 .lock-screen { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 24px; background: var(--window-bg); color: var(--text) }
@@ -59,6 +60,5 @@
 .intro-qr-code { display: flex; align-items: center; justify-content: center; width: 216px; min-height: 216px; border-radius: 12px; background: #fff }
 .intro-qr-code .qr-code { display: block }
 .intro-qr-code .button { margin: 0 12px }
-.intro-qr-password { max-width: 300px; text-align: center }
 .intro-qr-steps { margin: 0; padding-left: 20px; font-size: var(--t-caption); line-height: 1.6; color: var(--text-weak); align-self: stretch }
 .intro-or { margin: 4px 0 8px; font-size: var(--t-caption); color: var(--text-weak); text-align: center }

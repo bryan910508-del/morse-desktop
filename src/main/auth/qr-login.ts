@@ -36,22 +36,27 @@ export function decodeQrIssue(result: Record<string, unknown>): QrIssue {
 export type QrRedeem =
   | { state: 'waiting'; pollAfterMs: number }
   | { state: 'approved'; profile: AccountProfile; customToken: string; sessionId: string }
-  // A13 §5: the account has a two-step password; the sign-in waits for it (checked in §24, not here).
-  | { state: 'password-needed'; hint: string }
+  // A13 §5 / A13-2 ②: the account has a two-step password. The server hands a held token (no morsePwdOk) and keeps the
+  // session back until checkMorsePassword(qrSecret) passes; the sign-in goes to the password step.
+  | { state: 'password-needed'; profile: AccountProfile; customToken: string; sessionId: string; hint: string }
 export function decodeQrRedeem(result: Record<string, unknown>): QrRedeem {
-  if (result.state === 'approved') {
+  if (result.state === 'approved' || result.state === 'password-needed') {
     if (typeof result.customToken !== 'string' || !result.customToken || result.customToken.length > 16384) throw new AuthenticationFailure('protocol')
     if (typeof result.userId !== 'string' || !result.userId || result.userId.length > 160) throw new AuthenticationFailure('protocol')
     if (typeof result.sessionId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(result.sessionId)) throw new AuthenticationFailure('protocol')
     const displayName = typeof result.displayName === 'string' && result.displayName && result.displayName.length <= 512 ? result.displayName : result.userId
-    return { state: 'approved', profile: { uid: identifier(result.uid), userId: result.userId, displayName }, customToken: result.customToken, sessionId: result.sessionId }
+    const profile = { uid: identifier(result.uid), userId: result.userId, displayName }
+    if (result.state === 'password-needed') return { state: 'password-needed', profile, customToken: result.customToken, sessionId: result.sessionId, hint: typeof result.hint === 'string' ? result.hint.slice(0, 64) : '' }
+    return { state: 'approved', profile, customToken: result.customToken, sessionId: result.sessionId }
   }
-  if (result.state === 'password-needed') return { state: 'password-needed', hint: typeof result.hint === 'string' ? result.hint.slice(0, 64) : '' }
   if (typeof result.state === 'string') return { state: 'waiting', pollAfterMs: number(result.pollAfterMs, qrPollMs, 1000, 10000) }
   throw new AuthenticationFailure('protocol')
 }
-// app_config/qr_login {enabled} (A13 §2.1, D-6): everyone may read it; off — or unreadable — shows no QR.
-export function qrSwitchOn(document: Record<string, unknown> | null): boolean {
+// app_config/qr_login {enabled} (A13 §2.1, D-6): everyone may read it; off — or unreadable — shows no QR. Before any
+// sign-in there is no account to ask (server r35 §1 (가)): a release shows it only when it is on for everyone; a
+// development run or the Phase1 test app also while `testing` lets the accounts trying it export a code
+// (morse-feature-switch.js qrExportOpen) — approving one still needs a phone whose account has QR login.
+export function qrSwitchOn(document: Record<string, unknown> | null, testingBuild = false): boolean {
   const fields = document?.fields as Record<string, { booleanValue?: unknown }> | undefined
-  return fields?.enabled?.booleanValue === true
+  return fields?.enabled?.booleanValue === true || (testingBuild && fields?.testing?.booleanValue === true)
 }

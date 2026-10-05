@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { HostedWebAppProof, proofRetryDelay } from '../../src/main/auth/web-app-proof'
-import { AuthenticationFailure, type AppCheckProof } from '../../src/main/auth/contracts'
+import { HostedWebAppProof, proofFailureCode, proofRetryDelay } from '../../src/main/auth/web-app-proof'
+import { AuthenticationFailure, ProofWaiting, type AppCheckProof } from '../../src/main/auth/contracts'
+import { setLanguage } from '../../src/shared/i18n'
 
 // A16 (§33, B99 — a VPN exit's low reCAPTCHA score refused every exchange and the security check kept opening): a
 // signed-in account proves the app through its session (getMorseDesktopAppCheckToken), the window in view is only for the
@@ -73,4 +74,31 @@ test('an account that leaves takes its session back', async () => {
   assert.equal(proof.signedIn, false)
   await proof.getProof(signal())
   assert.deepEqual(pages, [false], 'signed out: the page again')
+})
+
+// 10-04 (review: a new install behind a VPN): a refused check is told as one — «turn the VPN or proxy off» — its wait
+// says how long is left, and «지금 다시 시도» (tdesktop lng_reconnecting_try_now) skips the wait.
+test('a refusal (exchange 403 on a page error) is told apart from a lost check', () => {
+  assert.equal(proofFailureCode('page-error', 403), 'app-proof-refused')
+  assert.equal(proofFailureCode('page-error', null), 'app-proof', 'no answer seen: not called a refusal')
+  assert.equal(proofFailureCode('page-error', 429), 'app-proof')
+  assert.equal(proofFailureCode('timeout', 403), 'app-proof')
+  assert.equal(proofFailureCode('window-closed', null), 'cancelled')
+  setLanguage('ko')
+  assert.equal(new AuthenticationFailure('app-proof-refused').message, '이 네트워크에서 보안 확인이 거절됐어요. VPN 이나 프록시를 쓰고 있다면 끄고 다시 시도해 주세요.')
+})
+
+test('the wait after a refusal says how long is left, and «try now» runs the check again at once', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+  setLanguage('ko')
+  let pass = false
+  const { proof, pages } = provider(async () => { if (pass) return proofOf(); throw Object.assign(new AuthenticationFailure('app-proof-refused'), { proofStep: 'page-error' }) })
+  await assert.rejects(proof.getProof(signal()), (error: unknown) => (error as AuthenticationFailure).code === 'app-proof-refused')
+  const tried = pages.length
+  await assert.rejects(proof.getProof(signal()), (error: unknown) => error instanceof ProofWaiting && error.code === 'app-proof-refused' && error.message === '2초 뒤 다시 시도할 수 있어요.')
+  assert.equal(pages.length, tried, 'nothing was tried while waiting')
+  pass = true
+  assert.equal((await proof.retryNow(signal())).appId, appId)
+  assert.ok(pages.length > tried, '«try now» skipped the wait')
+  t.mock.timers.reset()
 })

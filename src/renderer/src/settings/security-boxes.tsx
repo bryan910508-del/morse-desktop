@@ -6,11 +6,11 @@ import { errorText, fullTime, sessionActiveTime } from '../app/format'
 import { trackWrite } from '../app/drafts'
 import { loadBlockedUsers, setBlocked, useBlockedUsers } from '../app/blocked-users'
 import { BackupCodeBox } from '../boxes/backup-code-box'
-import { showTextEditBox } from '../boxes/text-edit-box'
-import { Spinner } from '../ui/controls'
+import { Spinner, TextField } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
 import { UserAvatar } from '../ui/user-avatar'
 import { locale, tr } from '../../../shared/i18n'
+import type { BackupCodeChange } from '../../../shared/model'
 
 // PrivacyLastSeenSettingsView: who can see the last seen time. Exceptions set on iPhone are kept.
 function LastSeenBox({ accountUid, close }: { accountUid: string; close(): void }) {
@@ -193,22 +193,73 @@ export function showLastSeenBox(accountUid: string): void { controller.showLayer
 export function showBlockedUsersBox(accountUid: string): void { controller.showLayer(close => <BlockedUsersBox accountUid={accountUid} close={close} />) }
 export function showSessionsBox(accountUid: string): void { controller.showLayer(close => <SessionsBox accountUid={accountUid} close={close} />) }
 
+// iOS settings.backupCode: what the identity way says (A3 §9).
+const needsIdentityNote = (): string => tr('이 기기에 복구 코드가 없어요. 이 계정에 연결된 Apple 또는 Google로 확인하면 새 코드를 만들 수 있어요.')
+const identityAgainNote = (): string => tr('확인한 지 오래되어 아직 적용하지 못했어요. 다시 확인하면 위 코드를 마저 적용해요.')
+const refusedIdentityNote = (): string => tr('이 기기에 저장된 코드가 이 계정의 코드와 맞지 않아요. 이 계정에 연결된 Apple 또는 Google로 확인하면 새 코드를 만들 수 있어요.')
+const unconfirmedNote = (): string => tr('변경 결과를 확인하지 못했어요. 이 새 코드와 이전 코드를 모두 보관해 두세요.')
+
+function showNewCode(result: BackupCodeChange): void {
+  const notice = result.needsProof ? identityAgainNote() : result.confirmed ? null : unconfirmedNote()
+  controller.showLayer(close => <BackupCodeBox code={result.backupCode} notice={notice} close={close} />, { dismissible: false })
+}
+
+// No code on this device: the current code typed in, or — when the account is linked to Apple or Google — that identity
+// shown again in its place (iOS BackupCodeViewerSheet, contracts A3 §9). `refused`: the kept code was just refused.
+function BackupCodeChangeBox({ accountUid, refused, close }: { accountUid: string; refused: boolean; close(): void }) {
+  const [value, setValue] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState('')
+  const [identities, setIdentities] = useState<{ kinds: ('apple' | 'google')[]; needsProof: boolean } | null>(null)
+  const [confirming, setConfirming] = useState<'apple' | 'google' | null>(null)
+  useEffect(() => {
+    let alive = true
+    void window.morse.backupCodeIdentities(accountUid).catch(() => ({ kinds: [], needsProof: false })).then(next => { if (alive) setIdentities(next) })
+    return () => { alive = false }
+  }, [accountUid])
+  const kinds = identities?.kinds ?? []
+  const note = !kinds.length ? tr('새 복구 코드를 만들면 이후에는 새 코드로 로그인해요.') : identities?.needsProof ? identityAgainNote() : refused ? refusedIdentityNote() : needsIdentityNote()
+  async function run(work: () => Promise<BackupCodeChange | null>, kind: 'apple' | 'google' | null = null): Promise<void> {
+    if (busy) return
+    setBusy(true); setConfirming(kind); setError('')
+    try {
+      const result = await trackWrite(work())
+      if (!result) { setBusy(false); setConfirming(null); return }
+      close()
+      showNewCode(result)
+    } catch (reason) { setError(errorText(reason, tr('복구 코드를 바꾸지 못했습니다. 다시 시도해 주세요.'))); setBusy(false); setConfirming(null) }
+  }
+  return <Box title={tr('복구 코드 바꾸기')} width={420} buttons={<>
+    <button className="button flat" disabled={busy} onClick={close}>{tr('취소')}</button>
+    <button className="button flat" disabled={busy || !value.trim()} onClick={() => { void run(() => window.morse.changeBackupCode(accountUid, value)) }}>{tr('저장')}</button>
+  </>}>
+    <TextField label={tr('현재 복구 코드')} value={value} onChange={setValue} maxLength={64} autoFocus disabled={busy}
+      onSubmit={() => { if (value.trim()) void run(() => window.morse.changeBackupCode(accountUid, value)) }} />
+    <p className="box-note">{note}</p>
+    {kinds.length > 0 && <div className="backup-code-identities">
+      {kinds.map(kind => <button key={kind} className="button secondary block" disabled={busy} onClick={() => { void run(() => window.morse.changeBackupCodeByProvider(accountUid, kind), kind) }}>
+        {confirming === kind && <Spinner size={14} />}{kind === 'apple' ? tr('Apple로 확인하고 새 코드 만들기') : tr('Google로 확인하고 새 코드 만들기')}
+      </button>)}
+    </div>}
+    {error && <p className="box-error" role="alert">{error}</p>}
+  </Box>
+}
+
 // AuthService.updateBackupCode: the current code is required; the new one is shown once.
 export async function changeBackupCode(accountUid: string): Promise<void> {
+  // A change made by Apple/Google that waits for the person goes on only that way.
+  const identities = await window.morse.backupCodeIdentities(accountUid).catch(() => null)
   // iOS BackupCodeViewerSheet.generateNewCode: a code kept on this device (an Apple sign-up) is used without typing it.
-  if (await window.morse.hasStoredBackupCode(accountUid).catch(() => false)) {
+  if (!identities?.needsProof && await window.morse.hasStoredBackupCode(accountUid).catch(() => false)) {
     if (!await confirmBox({ title: tr('복구 코드 바꾸기'), text: tr('새 복구 코드를 만들면 이후에는 새 코드로 로그인해요.'), confirm: tr('새 코드 만들기') })) return
     try {
-      const result = await trackWrite(window.morse.changeBackupCode(accountUid, null))
-      controller.showLayer(close => <BackupCodeBox code={result.backupCode} notice={result.confirmed ? null : tr('변경 결과를 확인하지 못했어요. 이 새 코드와 이전 코드를 모두 보관해 두세요.')} close={close} />, { dismissible: false })
-    } catch (reason) { controller.toast(errorText(reason, tr('복구 코드를 바꾸지 못했습니다. 다시 시도해 주세요.')), 'error') }
+      showNewCode(await trackWrite(window.morse.changeBackupCode(accountUid, null)))
+    } catch (reason) {
+      // The server refused the kept code, which has left this device (iOS forgetRefusedBackupCode): the other ways.
+      controller.toast(errorText(reason, tr('복구 코드를 바꾸지 못했습니다. 다시 시도해 주세요.')), 'error')
+      if (!await window.morse.hasStoredBackupCode(accountUid).catch(() => true)) controller.showLayer(close => <BackupCodeChangeBox accountUid={accountUid} refused close={close} />)
+    }
     return
   }
-  showTextEditBox({ title: tr('복구 코드 바꾸기'), label: tr('현재 복구 코드'), initial: '', maxLength: 64, note: tr('새 복구 코드를 만들면 이후에는 새 코드로 로그인해요.'), save: async current => {
-    const result = await window.morse.changeBackupCode(accountUid, current)
-    controller.showLayer(close => <BackupCodeBox code={result.backupCode} notice={result.confirmed ? null : tr('변경 결과를 확인하지 못했어요. 이 새 코드와 이전 코드를 모두 보관해 두세요.')} close={close} />, { dismissible: false })
-    return { outcome: 'saved', message: '' }
-  } })
+  controller.showLayer(close => <BackupCodeChangeBox accountUid={accountUid} refused={false} close={close} />)
 }
 
 export async function deleteAccount(accountUid: string, userId: string, closeSettings: () => void): Promise<void> {

@@ -20,6 +20,9 @@ import { showStickerPackSheet } from './sticker-pack-sheet'
 import { emojiOnlyFontSize, emojiOnlyText, LinkCard, linkCardFor, LinkedText } from './linked-text'
 import { PollCard } from './attachment-cards'
 import { locale, tr } from '../../../shared/i18n'
+import { systemNoticeShortcut } from '../../../shared/system-notices'
+import { showSessionsBox } from '../settings/security-boxes'
+import { showTwoStepBox } from '../settings/two-step-box'
 
 export interface MessageLayout { date: boolean; unread: boolean; top: boolean; bottom: boolean; name: boolean; photo: boolean; gutter: boolean; roomOnly: boolean }
 
@@ -409,6 +412,11 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
         : emojiOnly ? <div className="bubble-emoji selectable" style={{ fontSize: emojiOnlyFontSize(message.text) }}>{message.text.trim()}</div>
         : (text || plainLabel || !media) && <div className="bubble-text selectable">{plainLabel ? <em className={message.kind === 'unsupported' ? 'unsupported' : undefined}>{plainLabel}</em> : message.encrypted ? text : <LinkedText accountUid={accountUid} text={shown} disabled={selecting} />}{!card?.url && !inlineMeta && <span className={`bubble-meta-space${message.edited ? ' edited' : ''}${own ? ' own' : ''}`} />}</div>}
       {card?.url && <LinkCard accountUid={accountUid} text={message.text} disabled={selecting} />}
+      {/* B113: a sign-in this person may not have made leads to where its session ends (A13-5 §3-4 «기기 관리»). */}
+      {message.notice && systemNoticeShortcut(message.notice) === 'sessions' && <button type="button" className="bubble-notice-action" disabled={selecting}
+        onClick={event => { event.stopPropagation(); showSessionsBox(accountUid) }}>{tr('기기 관리')}</button>}
+      {message.notice && systemNoticeShortcut(message.notice) === 'two-step' && <button type="button" className="bubble-notice-action" disabled={selecting}
+        onClick={event => { event.stopPropagation(); showTwoStepBox(accountUid) }}>{tr('2단계 인증')}</button>}
       {!inlineMeta && meta}
       {message.reactions.length > 0 && <div className="bubble-reactions">{message.reactions.slice(0, 20).map(reaction => {
         // Telegram and iOS MorseReactionButton: one to three people show as small photos instead of a number.

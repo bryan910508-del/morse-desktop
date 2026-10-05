@@ -67,7 +67,9 @@ export class DeviceIdentity {
         try { kept = (await safeStorage.decryptStringAsync(stored)).result } catch { /* unreadable: a new one below */ }
         finally { stored.fill(0) }
       }
-      const valid = (value: string | undefined): value is string => typeof value === 'string' && /^[0-9a-f-]{36}$/i.test(value)
+      // A UUID made here, or the id the server gave a QR sign-in (32 hex digits, morse-qr-login.js): what
+      // startMorseDeviceSession takes.
+      const valid = (value: string | undefined): value is string => typeof value === 'string' && /^[A-Za-z0-9_-]{8,128}$/.test(value)
       if (valid(current)) { if (current !== kept) await this.write(file, current).catch(() => {}); return current }
       if (valid(kept)) return kept
       const value = randomUUID()

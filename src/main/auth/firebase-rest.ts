@@ -2,9 +2,11 @@ import { object, identifier } from '../../shared/validation'
 import type { AccountProfile } from '../../shared/model'
 import { sendAgain } from '../network/resend'
 import { recordConnectionStep } from '../platform/connection-diagnostics'
-import { AuthenticationFailure, type AppCheckProof, type AuthTokens, type DesktopAuthConfiguration } from './contracts'
+import { AuthenticationFailure, type AppCheckProof, type AuthTokens, type DesktopAuthConfiguration, PasswordNeeded } from './contracts'
 import type { ReadAuthorization } from '../network/firestore-rpc'
 import { appleReturnURL, type AppleIdentity } from './apple-answer'
+import type { GoogleIdentity } from './google-answer'
+export type ProviderIdentity = ({ provider: 'apple.com' } & AppleIdentity) | ({ provider: 'google.com' } & GoogleIdentity)
 import { reachability } from '../network/reachability'
 import { describeThisDevice } from '../platform/device-model'
 import { decodeQrIssue, decodeQrRedeem, qrSwitchOn, type QrIssue, type QrRedeem } from './qr-login'
@@ -13,12 +15,16 @@ function string(value: unknown, max = 16384): string {
   if (typeof value !== 'string' || !value || value.length > max) throw new AuthenticationFailure('protocol')
   return value
 }
-type RequestKind = 'plain' | 'backup' | 'creation' | 'apple' | 'qr'
+type RequestKind = 'plain' | 'backup' | 'creation' | 'apple' | 'google' | 'qr'
 export function failureFromBody(value: Record<string, unknown>, status: number, kind: RequestKind): AuthenticationFailure {
   const error = value.error && typeof value.error === 'object' ? value.error as Record<string, unknown> : {}
   const details = error.details && typeof error.details === 'object' ? error.details as Record<string, unknown> : {}
   const code = typeof error.message === 'string' ? error.message.split(' ')[0] : error.status
   if (details.reason === 'session-revoked') return new AuthenticationFailure('revoked')
+  if (details.reason === 'password-needed') {
+    const resetAt = typeof details.resetAt === 'number' && Number.isFinite(details.resetAt) && details.resetAt > 0 ? details.resetAt : null
+    return new PasswordNeeded(typeof details.hint === 'string' ? details.hint.slice(0, 64) : '', resetAt)
+  }
   // A10 §3-3-4: an operator's ban — bannedAt refused by the callable gate, or the Firebase user disabled.
   if (details.reason === 'ACCOUNT_BANNED' || code === 'USER_DISABLED') return new AuthenticationFailure('banned')
   // completeTalkyProfile: a withdrawn account's leftover Firebase user (iOS MorseAccountDeletion.staleAppleAuthIdentityCode).
@@ -33,8 +39,8 @@ export function failureFromBody(value: Record<string, unknown>, status: number, 
   if (kind === 'backup' && error.status === 'PERMISSION_DENIED') return new AuthenticationFailure('invalid-code')
   if (kind === 'creation' && error.status === 'ALREADY_EXISTS') return new AuthenticationFailure('id-taken')
   if (kind === 'creation' && error.status === 'PERMISSION_DENIED') return new AuthenticationFailure('account-limit')
-  // signInWithIdp refused Apple's identity token, its nonce or the Apple provider.
-  if (kind === 'apple' && status === 400) return new AuthenticationFailure('apple')
+  // signInWithIdp refused the identity token, its nonce or the provider.
+  if ((kind === 'apple' || kind === 'google') && status === 400) return new AuthenticationFailure(kind)
   // Callable 401 can mean App Check failure, not a revoked user credential.
   // Only explicit credential errors or session-revoked may erase the vault.
   if (error.status === 'UNAUTHENTICATED' || status === 401) return new AuthenticationFailure('unavailable')
@@ -135,18 +141,22 @@ export class FirebaseAuthenticationAPI {
   async cancelLoginCode(secret: string, signal: AbortSignal): Promise<void> {
     await this.callable('redeemMorseLoginToken', { secret, cancel: true }, signal)
   }
-  // app_config/qr_login — readable by anyone, so it is read before any sign-in, with this app's proof only. Off, absent
-  // or unreadable reads as off (A13 D-6: the QR sign-in appears in the three apps together).
-  async qrLoginEnabled(signal: AbortSignal): Promise<boolean> {
+  // app_config/{name} — readable by anyone, so it is read before any sign-in, with this app's proof only. Absent or
+  // unreadable is null.
+  async publicConfig(name: 'qr_login' | 'desktop', signal: AbortSignal): Promise<Record<string, unknown> | null> {
     const proof = await this.proof(signal)
     const combined = AbortSignal.any([signal, AbortSignal.timeout(15000)])
     try {
-      const response = await fetch(`https://firestore.googleapis.com/v1/projects/${this.config.projectId}/databases/(default)/documents/app_config/qr_login?key=${encodeURIComponent(this.config.apiKey)}`,
+      const response = await fetch(`https://firestore.googleapis.com/v1/projects/${this.config.projectId}/databases/(default)/documents/app_config/${name}?key=${encodeURIComponent(this.config.apiKey)}`,
         { method: 'GET', headers: { 'X-Firebase-AppCheck': proof }, signal: combined, redirect: 'error', credentials: 'omit', cache: 'no-store' })
-      if (!response.ok) return false
+      if (!response.ok) return null
       const text = await response.text()
-      return text.length <= 65536 && qrSwitchOn(object(JSON.parse(text)))
-    } catch { return false }
+      return text.length <= 65536 ? object(JSON.parse(text)) : null
+    } catch { return null }
+  }
+  // app_config/qr_login: off, absent or unreadable reads as off (A13 D-6: the QR sign-in appears in the three apps together).
+  async qrLoginEnabled(signal: AbortSignal): Promise<boolean> {
+    return qrSwitchOn(await this.publicConfig('qr_login', signal), this.config.testingBuild === true)
   }
   // Same request as iOS AuthService.signUp: the display name starts as the ID.
   async createAccount(input: { userId: string; backupCode: string; publicKey: string; deviceVendorId: string }, signal: AbortSignal, creatorIdToken: string | null = null): Promise<{ uid: string; customToken: string }> {
@@ -160,13 +170,18 @@ export class FirebaseAuthenticationAPI {
       publicKey: input.publicKey, deviceVendorId: input.deviceVendorId }, signal, idToken)
     if (result.ok !== true) throw new AuthenticationFailure('protocol')
   }
-  // OAuthProvider.appleCredential(withIDToken:rawNonce:) signed in over Identity Toolkit's REST API.
-  async signInWithApple(apple: AppleIdentity, signal: AbortSignal): Promise<AuthTokens> {
+  // A provider's identity token signed in over Identity Toolkit's REST API: Apple's with the original nonce
+  // (OAuthProvider.appleCredential(withIDToken:rawNonce:)), Google's as Android's GoogleAuthProvider.getCredential(idToken).
+  // An email that already belongs to an account made another way answers needConfirmation: refused, never linked.
+  async signInWithIdp(identity: ProviderIdentity, signal: AbortSignal): Promise<AuthTokens> {
+    const kind = identity.provider === 'apple.com' ? 'apple' : 'google'
+    const postBody = new URLSearchParams({ id_token: identity.idToken, providerId: identity.provider, ...(identity.provider === 'apple.com' ? { nonce: identity.rawNonce } : {}) })
     const result = await this.request(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=${encodeURIComponent(this.config.apiKey)}`,
       { 'Content-Type': 'application/json', 'X-Firebase-AppCheck': await this.proof(signal) },
-      JSON.stringify({ postBody: new URLSearchParams({ id_token: apple.idToken, providerId: 'apple.com', nonce: apple.rawNonce }).toString(),
-        requestUri: appleReturnURL, returnSecureToken: true }), signal, 'apple')
-    if (result.providerId !== 'apple.com') throw new AuthenticationFailure('apple')
+      JSON.stringify({ postBody: postBody.toString(), requestUri: identity.provider === 'apple.com' ? appleReturnURL : 'http://127.0.0.1',
+        returnSecureToken: true }), signal, kind)
+    if (result.needConfirmation === true) throw new AuthenticationFailure('account-exists')
+    if (result.providerId !== identity.provider) throw new AuthenticationFailure(kind)
     const tokens = this.tokens(result.idToken, result.refreshToken, result.expiresIn, identifier(result.localId))
     await this.confirmUser(tokens, signal)
     return tokens
@@ -234,7 +249,7 @@ export class FirebaseAuthenticationAPI {
   }
   // A6 §3-3: the row of the account's session list shows this computer's model and system, as Telegram Desktop sends
   // them (platform/device-model.ts). deviceLabel stays for builds that read only it.
-  async startSession(idToken: string, sessionId: string, version: string, provider: 'custom' | 'apple.com' | 'qr', signal: AbortSignal): Promise<void> {
+  async startSession(idToken: string, sessionId: string, version: string, provider: 'custom' | 'apple.com' | 'google.com' | 'qr', signal: AbortSignal): Promise<void> {
     const device = await describeThisDevice()
     const result = await this.callable('startMorseDeviceSession', { sessionId,
       deviceLabel: `Morse · ${this.config.platform}`, platform: this.config.platform, appVersion: version, loginProvider: provider,

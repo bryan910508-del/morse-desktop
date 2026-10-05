@@ -19,7 +19,8 @@ import { tr } from '../../shared/i18n'
 export type CallableDelivery = 'not-sent' | 'unknown' | 'answered'
 export class MorseCallableFailure extends Error {
   // transport: why no answer came (an errno, 'auth', 'body', 'non-json'), for connection-check.log only.
-  constructor(readonly delivery: CallableDelivery, readonly status: string, readonly reason = '', readonly transport = '') {
+  // retryAfterSec: how long a refusal says to wait (details.retryAfterSec — a two-step lock, a rate limit).
+  constructor(readonly delivery: CallableDelivery, readonly status: string, readonly reason = '', readonly transport = '', readonly retryAfterSec = 0) {
     super(delivery === 'answered' ? tr('요청이 거절되었습니다.') : delivery === 'not-sent' ? tr('요청을 보내지 못했습니다. 연결을 확인해 주세요.') : tr('요청 결과를 확인하지 못했습니다.'))
   }
   // Whether the request may have been carried out: only 'unknown' leaves that open.
@@ -45,7 +46,8 @@ export function callableAnswer(ok: boolean, body: string): Record<string, unknow
     const details = error.details && typeof error.details === 'object' && !Array.isArray(error.details) ? error.details as Record<string, unknown> : {}
     const status = typeof error.status === 'string' ? error.status : '', reason = typeof details.reason === 'string' ? details.reason.slice(0, 160) : ''
     if (!statuses.has(status)) throw new MorseCallableFailure('unknown', status.slice(0, 64) || 'UNKNOWN', reason)
-    throw new MorseCallableFailure(partial.has(status) ? 'unknown' : 'answered', status, reason)
+    const retryAfterSec = typeof details.retryAfterSec === 'number' && Number.isFinite(details.retryAfterSec) && details.retryAfterSec > 0 ? Math.min(86400, Math.ceil(details.retryAfterSec)) : 0
+    throw new MorseCallableFailure(partial.has(status) ? 'unknown' : 'answered', status, reason, '', retryAfterSec)
   }
   const result = raw.result ?? raw.data
   return result && typeof result === 'object' && !Array.isArray(result) ? result as Record<string, unknown> : {}

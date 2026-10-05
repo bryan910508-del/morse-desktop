@@ -14,6 +14,7 @@ import { searchFold } from '../../../shared/search'
 import { useDesktop } from '../app/store'
 import { controller, ui, useUi, type Folder } from '../app/ui'
 import { dialogTime, errorText, positionTime } from '../app/format'
+import { setChatFlag } from '../app/chat-flags'
 import { Avatar, PeerAvatar } from '../ui/avatar'
 import { Spinner } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
@@ -317,7 +318,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       { label: tr('폴더에 추가'), icon: <FolderPlus size={18} />, onSelect: () => showFolderPickerBox(accountUid, dialog.id) },
       // Telegram's row menu keeps clearing the history and deleting the chat apart.
       status === 'ready' && !dialog.id.startsWith('memo_') ? 'separator' : null,
-      status === 'ready' && !secret && !dialog.id.startsWith('memo_')
+      status === 'ready' && !secret && !dialog.service && !dialog.id.startsWith('memo_')
         ? { label: tr('대화 기록 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void clearHistory(dialog) } } : null,
       status === 'ready' && !dialog.id.startsWith('memo_')
         ? dialog.discussion && dialog.channelId
@@ -352,6 +353,13 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
         return
       }
       await leaveGroupRoom(dialog)
+      return
+    }
+    // B113: the official notice chat is the server's alone — cleared for this account by the server (session.ts
+    // chatDeleteRoute), gone from the list until the next notice, as Telegram's 777000 (A13-5 §6).
+    if (dialog.service) {
+      if (!await confirmBox({ title: tr('대화 삭제'), confirm: tr('삭제'), danger: true, text: tr('이 대화의 알림을 모두 지웁니다. 새 알림이 오면 대화가 다시 보여요.') })) return
+      await runDelete(dialog, false)
       return
     }
     if (dialog.kind === 'direct') {
@@ -491,9 +499,3 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
   </div>
 }
 
-async function setChatFlag(accountUid: string, chatId: string, patch: { muted?: boolean; archived?: boolean }): Promise<void> {
-  try {
-    await window.morse.setChatFlags(accountUid, chatId, patch)
-    if (patch.archived !== undefined) controller.toast(patch.archived ? tr('대화를 보관했습니다.') : tr('보관을 해제했습니다.'))
-  } catch (reason) { controller.toast(errorText(reason, tr('변경하지 못했습니다.')), 'error') }
-}

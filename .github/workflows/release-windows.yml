@@ -16,6 +16,12 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      # What the public source leaves out, from this repository's secrets (scripts/put-official-values.cjs).
+      - name: Put in the official values
+        env:
+          MORSE_GOOGLE_DESKTOP_CLIENT_ID: ${{ secrets.MORSE_GOOGLE_DESKTOP_CLIENT_ID }}
+          MORSE_GOOGLE_DESKTOP_CLIENT_SECRET: ${{ secrets.MORSE_GOOGLE_DESKTOP_CLIENT_SECRET }}
+        run: node scripts/put-official-values.cjs
       - run: npm run build
       # electron-builder publishes each file on its own, and when the release of the tag does not exist yet two of
       # them create it at the same moment: GitHub accepts one and refuses the other (422 already_exists), which ends

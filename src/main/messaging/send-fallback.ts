@@ -20,16 +20,22 @@ export interface SocketPath {
   markRead(chatId: string, target: MessagePosition, signal: AbortSignal): Promise<ReadAcknowledgement>
 }
 export type CallablePath = (name: 'sendMorseMessage' | 'markMorseRead', data: Record<string, unknown>, signal: AbortSignal) => Promise<Record<string, unknown>>
+// Which way a send or a read went when it did not go over the socket, and why — for connection-check.log, which keeps
+// each line once per run: so a run says whether the callable carried anything at all (Railway shows only the socket's).
+// Never an id or a word of the message.
+export type PathNote = (detail: 'send socket-not-ready' | 'send socket-failed' | 'read socket-not-ready' | 'read socket-failed') => void
 
 // The callable answers with the socket's own acknowledgement (§3.3), read by the same committedSendAck/ReadAck: a refusal
 // is the socket's refusal (B88's DIRECT_CHAT_EXISTS with its room included). A request that never left goes again as one
 // that never left; anything else the callable says — no answer, a timeout, UNAUTHENTICATED — is «sending, try again»
 // (§3.3), which the outbox does under the same id after checking the server (uncertain).
-async function socketFirst<T>(socket: SocketPath, signal: AbortSignal, bySocket: () => Promise<T>, byCallable: () => Promise<T>): Promise<T> {
+async function socketFirst<T>(socket: SocketPath, signal: AbortSignal, bySocket: () => Promise<T>, byCallable: () => Promise<T>,
+  what: 'send' | 'read', note?: PathNote): Promise<T> {
   if (await socket.whenSendable(socketWaitMs, signal)) {
     try { return await bySocket() }
     catch (error) { if (error instanceof ServerRejection || signal.aborted) throw error }
-  }
+    note?.(`${what} socket-failed`)
+  } else note?.(`${what} socket-not-ready`)
   signal.throwIfAborted()
   try { return await byCallable() }
   catch (error) {
@@ -38,13 +44,13 @@ async function socketFirst<T>(socket: SocketPath, signal: AbortSignal, bySocket:
   }
 }
 
-export function sendWithFallback(wire: SendWire, signal: AbortSignal, socket: SocketPath, callable: CallablePath): Promise<SendAcknowledgement> {
+export function sendWithFallback(wire: SendWire, signal: AbortSignal, socket: SocketPath, callable: CallablePath, note?: PathNote): Promise<SendAcknowledgement> {
   return socketFirst(socket, signal, () => socket.send(wire, signal),
-    async () => committedSendAck(await callable('sendMorseMessage', { ...wire }, signal), wire))
+    async () => committedSendAck(await callable('sendMorseMessage', { ...wire }, signal), wire), 'send', note)
 }
 
 export function markReadWithFallback(chatId: string, readerId: string, target: MessagePosition, signal: AbortSignal, socket: SocketPath,
-  callable: CallablePath): Promise<ReadAcknowledgement> {
+  callable: CallablePath, note?: PathNote): Promise<ReadAcknowledgement> {
   return socketFirst(socket, signal, () => socket.markRead(chatId, target, signal),
-    async () => committedReadAck(await callable('markMorseRead', { chatId, messageId: target.id }, signal), chatId, readerId, target))
+    async () => committedReadAck(await callable('markMorseRead', { chatId, messageId: target.id }, signal), chatId, readerId, target), 'read', note)
 }

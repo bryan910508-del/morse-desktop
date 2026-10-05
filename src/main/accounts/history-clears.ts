@@ -12,6 +12,16 @@ import { tr } from '../../shared/i18n'
 // was lost can go again without clearing anything the person had not seen. That holds only on a server that takes a
 // fixed boundary: one that answers with `applied` (A4 §7-2). Until one has, a request whose answer was lost is held,
 // not sent again. A request that never left always goes again. The server's refusal ends the request.
+// How «대화 삭제» reaches the server for a chat (session.ts deleteChat). B113: the official notice chat is cleared for its
+// one reader by clearMorseChatHistory, which takes type 'system' (morse-release-authority.js:583-590) — its document is
+// the server's alone (firestore.rules refuses a client delete or update), so neither a pair's history delete nor a
+// document delete is sent; it leaves the list emptied and comes back with the next notice, as Telegram's 777000 does.
+export type ChatDeleteRoute = 'hide' | 'direct-delete' | 'document' | 'service-clear'
+export function chatDeleteRoute(dialog: { kind: string; service?: true }, forEveryone: boolean): ChatDeleteRoute {
+  if (dialog.service) return 'service-clear'
+  if (!forEveryone) return 'hide'
+  return dialog.kind === 'direct' ? 'direct-delete' : 'document'
+}
 export function historyClearRetryDelay(attempt: number): number { return Math.min(60000, 2000 * 2 ** Math.max(0, attempt - 1)) }
 
 export interface HistoryClearSession {

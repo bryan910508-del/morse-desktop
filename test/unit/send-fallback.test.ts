@@ -87,3 +87,21 @@ test('a socket that never connected says it cannot send when the time is up, or 
   gone.abort()
   assert.equal(await waiting, false)
 })
+
+// Railway shows only what the socket carried; whether a run used the callable at all, and why, is noted once per run
+// (connection-check.log «send-fallback»), never with an id or a word of the message.
+test('the path past the socket is noted with why — not ready, or tried and failed — and nothing when the socket carried it', async () => {
+  const notes: string[] = []
+  const note = (detail: string) => { notes.push(detail) }
+  const over = paths({ sendable: true, send: async () => ack }, async () => { throw new Error('callable used') })
+  await sendWithFallback(wire, signal(), over.path, over.callable, note)
+  assert.deepEqual(notes, [], 'the socket carried it')
+  const down = paths({ sendable: false }, async () => accepted())
+  await sendWithFallback(wire, signal(), down.path, down.callable, note)
+  const dropped = paths({ sendable: true, send: async () => { throw new ProtocolFailure('no answer') } }, async () => accepted(true))
+  await sendWithFallback(wire, signal(), dropped.path, dropped.callable, note)
+  const refused = paths({ sendable: true, send: async () => { throw new ServerRejection('BLOCKED') } }, async () => accepted())
+  await assert.rejects(sendWithFallback(wire, signal(), refused.path, refused.callable, note))
+  assert.deepEqual(notes, ['send socket-not-ready', 'send socket-failed'], 'a refusal is the server\'s answer, not a path taken')
+  assert.ok(notes.every(detail => !detail.includes('m1') && !detail.includes('chat1')))
+})

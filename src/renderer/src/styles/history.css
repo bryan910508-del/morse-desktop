@@ -226,6 +226,9 @@ button.bubble-quote:hover { background: var(--accent-border) }
 .drop-zone.disabled { grid-row: span 2 }
 
 .compose { flex: none; border-top: 1px solid var(--divider); background: var(--card) }
+/* B113: a read-only chat's bar in the composer's place (tdesktop muteUnmute). */
+.compose-readonly { display: flex; align-items: center; justify-content: center; height: var(--reply-bar) }
+.compose-readonly .button { color: var(--accent); font-weight: 600 }
 .compose-bar { display: flex; align-items: center; gap: 12px; height: var(--reply-bar); padding: 0 8px 0 16px }
 .compose-bar-icon { flex: none; color: var(--accent) }
 .compose-bar-text { flex: 1; min-width: 0; display: grid; gap: 1px; padding-left: 10px; border-left: 2px solid var(--accent) }
@@ -449,3 +452,6 @@ button.service-pill { cursor: pointer }
 .swipe-reply.reached { animation: swipe-reach 500ms ease-out }
 @keyframes swipe-reach { 0% { transform: scale(1) } 12.5% { transform: scale(1.25) } 25%, 100% { transform: scale(1) } }
 @keyframes swipe-wave { 0% { opacity: 1; inset: 0 } 100% { opacity: 0; inset: -10px } }
+/* B113: a notice's shortcut inside its bubble, as Telegram's inline button under a service message. */
+.bubble-notice-action { display: block; width: 100%; margin-top: 8px; padding: 8px 12px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); font-weight: 600; text-align: center }
+.bubble-notice-action:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 20%, transparent) }

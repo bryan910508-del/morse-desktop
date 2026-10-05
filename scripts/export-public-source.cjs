@@ -15,13 +15,32 @@ const forbidden = [/(^|\/)\.env/, /(^|\/)\.private\//, /\.(p8|p12|pem|key|mobile
 const files = git('ls-files', '-z').split('\0').filter(Boolean).filter(file => !excluded.some(rule => rule.test(file)))
 const refused = files.filter(file => forbidden.some(rule => rule.test(file)))
 if (refused.length) { console.error(`Refusing to publish: ${refused.join(', ')}`); process.exit(1) }
-const secretText = [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\bghp_[A-Za-z0-9]{30,}/, /"type":\s*"service_account"/, /\bxox[bap]-[A-Za-z0-9-]{10,}/]
+const secretText = [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, /\bghp_[A-Za-z0-9]{30,}/, /"type":\s*"service_account"/, /\bxox[bap]-[A-Za-z0-9-]{10,}/,
+  // A Google OAuth client — its secret, or a client ID of the project (GitHub push protection refuses both).
+  /\bGOCSPX-[A-Za-z0-9_-]{10,}/, /\b\d{6,}-[a-z0-9]{20,}\.apps\.googleusercontent\.com\b/]
+// Values the official build carries but the public source leaves for whoever builds it, as tdesktop keeps its own
+// api_id/api_hash out of the source and puts them in when the official app is built (Telegram/SourceFiles/config.h,
+// «#error» without them). Each line must be found, or the export stops: a renamed constant must not slip out.
+const officialOnly = {
+  'src/main/auth/google-answer.ts': [
+    [/^export const googleDesktopClientId = '[^']*'$/m, "// The official Morse Desktop puts its «Morse Desktop» Google client in when it is built (as tdesktop does with its\n// api_id, config.h). To build your own, put in your own Google «Desktop app» OAuth client. Empty, Google sign-in is\n// not offered.\nexport const googleDesktopClientId = ''"],
+    [/^export const googleDesktopClientSecret = '[^']*'$/m, "export const googleDesktopClientSecret = ''"]
+  ]
+}
 fs.mkdirSync(target, { recursive: true })
 for (const entry of fs.readdirSync(target)) if (entry !== '.git') fs.rmSync(path.join(target, entry), { recursive: true, force: true })
 let bytes = 0
 for (const file of files) {
   const source = path.join(root, file), destination = path.join(target, file)
-  const content = fs.readFileSync(source)
+  let content = fs.readFileSync(source)
+  if (officialOnly[file]) {
+    let text = content.toString('utf8')
+    for (const [line, replacement] of officialOnly[file]) {
+      if (!line.test(text)) { console.error(`Refusing to publish ${file}: ${line} was not found to leave out.`); process.exit(1) }
+      text = text.replace(line, replacement)
+    }
+    content = Buffer.from(text, 'utf8')
+  }
   if (content.length < 5 * 1024 * 1024 && secretText.some(rule => rule.test(content.toString('utf8')))) { console.error(`Refusing to publish ${file}: it looks like it holds a secret.`); process.exit(1) }
   fs.mkdirSync(path.dirname(destination), { recursive: true })
   fs.writeFileSync(destination, content, { mode: fs.statSync(source).mode })

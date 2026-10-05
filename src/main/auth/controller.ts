@@ -1,5 +1,5 @@
 import { generateKeyPairSync, randomInt } from 'node:crypto'
-import type { AuthenticationSnapshot, QrSignIn } from '../../shared/auth'
+import type { AuthenticationSnapshot, PasswordStep, QrSignIn } from '../../shared/auth'
 import { morseUserId, morseUserIdAlphabet, normalizeBackupCode, qrLoginLink, type AccountCreationResult } from '../../shared/auth'
 import type { AccountProfile, ConnectionState } from '../../shared/model'
 import type { NotificationHint } from '../../shared/notifications'
@@ -10,17 +10,22 @@ import { documents, ReadFailure, stringField } from '../network/firestore-values
 import { SocketMessageTransport } from '../network/socket-transport'
 import { watchSignIn } from './sign-in-watch'
 import { callMorseFunction } from '../network/morse-callable'
-import { markReadWithFallback, sendWithFallback, type CallablePath, type SocketPath } from '../messaging/send-fallback'
+import { markReadWithFallback, sendWithFallback, type CallablePath, type PathNote, type SocketPath } from '../messaging/send-fallback'
 import { purgesAccountData, registrationOutcome, rejectionFailure } from '../network/registration-outcome'
-import { AuthenticationFailure, asAuthFailure, tokenFailureEffect, type AuthFailureCode, type AuthTokens, type DesktopAuthConfiguration, type SavedCredential } from './contracts'
+import { AuthenticationFailure, PasswordNeeded, asAuthFailure, tokenFailureEffect, type AuthFailureCode, type AuthTokens, type DesktopAuthConfiguration, type SavedCredential } from './contracts'
 import { CredentialVault } from './credential-vault'
 import { DeviceIdentity } from './device-identity'
 import { generateBackupCode } from './backup-code'
 import { authorizeWithApple } from './apple-authorization'
-import { FirebaseAuthenticationAPI } from './firebase-rest'
+import { authorizeWithGoogle } from './google-authorization'
+import { googleConfigured } from './google-answer'
+import { FirebaseAuthenticationAPI, type ProviderIdentity } from './firebase-rest'
 import { newQrAttempt, qrAttemptLifetimeMs, qrPollMs, type QrRedeem } from './qr-login'
 import { recordConnectionStep, recordRetry, recordSignOutBasis } from '../platform/connection-diagnostics'
+import { endingOutcome, type EndingSession } from './session-enders'
 import { tr } from '../../shared/i18n'
+import { TwoStepApi } from '../api/two-step'
+import { passPassword as runPasswordStep, profileAfterPassword, type PasswordAction, type PasswordPassed } from './password-gate'
 
 // A Curve25519 key pair in the base64 form iOS CryptoService stores and the server keeps as publicKey.
 function newKeypair(): { publicKey: string; privateKey: string } {
@@ -50,6 +55,10 @@ export interface AuthenticatedAccountHooks {
   notificationHint(uid: string, hint: NotificationHint): void
   // A message's full reaction state from the socket (reactionUpdated).
   reactionUpdated(uid: string, body: unknown): void
+  // A session this device leaves behind, to be ended with its own credential (auth/session-enders.ts), and the list
+  // tried now — once the credential that replaced it is saved, or the one signed out is gone.
+  endSession?(entry: EndingSession): Promise<void>
+  endSessionsNow?(): void
 }
 // Main::Domain decides whether another account fits on this device and supplies the
 // signed-in account's token for creating one.
@@ -90,6 +99,11 @@ export class AuthenticationController {
   private qrOperation: AbortController | null = null
   private qrOff = false
   private quietStop: AbortController | null = null
+  // A13-2 ②: the password step on screen, and the person's next action it waits for.
+  private passwordStep: PasswordStep | null = null
+  private passwordAction: ((action: PasswordAction) => void) | null = null
+  // «지금 다시 시도» running.
+  private checkingProof = false
 
   constructor(configuration: DesktopAuthConfiguration | null, private readonly vault: CredentialVault,
     private readonly version: string, private readonly changed: () => void, private readonly accounts: AuthenticatedAccountHooks,
@@ -105,12 +119,21 @@ export class AuthenticationController {
   get connected(): boolean { return Boolean(this.owner?.established) }
   // Why the last connection attempt or connection ended, for the domain's reconnect decision.
   get lastFailure(): AuthFailureCode | null { return this.failure }
-  get snapshot(): AuthenticationSnapshot { return { ...this.value, account: this.value.account ? { ...this.value.account } : null, ...(this.qr ? { qr: { ...this.qr } } : {}), ...(this.qrOff ? { qrOff: true } : {}) } }
+  get snapshot(): AuthenticationSnapshot { return { ...this.value, account: this.value.account ? { ...this.value.account } : null, ...(this.qr ? { qr: { ...this.qr } } : {}), ...(this.qrOff ? { qrOff: true } : {}),
+    ...(this.value.phase === 'password' && this.passwordStep ? { password: { ...this.passwordStep } } : {}),
+    ...(this.securityCheck ? { securityCheck: this.securityCheck } : {}), ...(googleConfigured() ? { google: true } : {}) } }
+  // A failed security check before sign-in, for «지금 다시 시도»: running again, refused (a low score — VPN), or lost.
+  private get securityCheck(): AuthenticationSnapshot['securityCheck'] {
+    if (this.checkingProof) return 'checking'
+    if (this.value.phase !== 'error') return undefined
+    return this.failure === 'app-proof-refused' ? 'refused' : this.failure === 'app-proof' ? 'failed' : undefined
+  }
   private showQr(qr: QrSignIn | null): void { this.qr = qr; this.changed() }
   private set(phase: AuthenticationSnapshot['phase'], message: string, owner: CredentialOwner | null = null): void {
-    const banned = phase === 'error' && this.failure === 'banned'
+    const banned = phase === 'error' && this.failure === 'banned', updateRequired = phase === 'error' && this.failure === 'update-required'
     const account = owner ? owner.record.profile : banned ? this.known : null
-    this.value = { available: this.api !== null, phase, message, account: account ? { ...account } : null, ...(banned ? { banned: true } : {}) }
+    this.value = { available: this.api !== null, phase, message, account: account ? { ...account } : null, ...(banned ? { banned: true } : {}),
+      ...(updateRequired ? { updateRequired: true } : {}) }
     this.changed()
   }
   private requireAPI(): FirebaseAuthenticationAPI {
@@ -177,14 +200,25 @@ export class AuthenticationController {
       this.assertCurrent(controller)
       const record: SavedCredential = { version: 1, profile: verified.profile,
         sessionId: await this.identity.sessionId(verified.profile.uid, previous?.sessionId), refreshToken: tokens.refreshToken, authTime: tokens.authTime }
+      const left = await this.leaveBehind(previous, record)
       // The stable session ID must survive an unknown startSession response.
       // A stored credential is only a restore candidate, never authorization.
       await this.vault.save(record)
+      if (left) this.accounts.endSessionsNow?.()
       this.boundUid = record.profile.uid
       this.newlySavedOperation = controller
       this.assertCurrent(controller)
       await this.establish(api, controller, record, tokens)
     })
+  }
+  // A saved sign-in of the same account with another session, replaced on this device by `next`, would stay on the
+  // server: it is ended with its own credential (auth/session-enders.ts — tdesktop moves the old keys to its keys to
+  // destroy and signs in with a new one). Written down before the credential is replaced; tried once `next` is saved.
+  private async leaveBehind(previous: SavedCredential | null, next: SavedCredential): Promise<boolean> {
+    if (!previous || previous.profile.uid !== next.profile.uid || previous.sessionId === next.sessionId || !this.accounts.endSession) return false
+    await this.accounts.endSession({ uid: previous.profile.uid, sessionId: previous.sessionId, refreshToken: previous.refreshToken, authTime: previous.authTime })
+      .catch(() => {})
+    return true
   }
   // A13 · 08 §3.1 (Telegram's first sign-in step is the QR code, tdesktop intro/intro_qr.cpp): a code for this computer,
   // renewed every 30 s and polled every 2 s, that a phone of the account approves at once. Approved, the sign-in goes the
@@ -202,26 +236,38 @@ export class AuthenticationController {
         if (this.qrOff !== !enabled) { this.qrOff = !enabled; this.changed() }
         if (!enabled) { this.quietStop = controller; throw new AuthenticationFailure('cancelled') }
         this.set('signed-out', tr('복구 코드로 기존 계정을 연결하세요.'))
-        const outcome = await this.qrRound(api, controller, exceptUids)
-        if (!outcome) continue
-        if (outcome.state === 'password-needed') {
-          this.showQr({ state: 'password-needed', hint: outcome.hint })
-          await new Promise<void>(resolve => controller.signal.addEventListener('abort', () => resolve(), { once: true }))
-          this.assertCurrent(controller)
-          return
-        }
-        const { profile, customToken, sessionId } = outcome
+        const round = await this.qrRound(api, controller, exceptUids)
+        if (!round) continue
+        const { answer: outcome, secret } = round
+        const { profile, customToken } = outcome
+        let sessionId = outcome.sessionId
+        // The code's part is over (tdesktop: the QR step hands off once importLoginToken answers): what follows is a
+        // sign-in that only «Cancel» ends — the QR panel leaving the screen, as it does for the password step, does not.
+        this.qrOperation = null
         this.showQr(null)
         // Whose account came in is said by name (08 §3.5): a third party who scanned this screen is seen at once.
         this.set('verifying', tr('@{0} 계정으로 연결하고 있습니다.', [profile.userId]))
         if (stored && stored.profile.uid !== profile.uid) throw new AuthenticationFailure('unavailable')
         this.known = profile
         if (!this.boundUid) this.admission?.admit(profile.uid)
-        const tokens = await api.exchange(customToken, profile.uid, controller.signal)
+        let tokens = await api.exchange(customToken, profile.uid, controller.signal)
         this.assertCurrent(controller)
-        // The server made this session when it handed over the sign-in (08 §3.7): its id is the one used.
+        // A13-2 ②: a held sign-in (no morsePwdOk) goes on once the password passes; the server then writes the session it
+        // kept back (checkMorsePassword with this attempt's secret) and hands a token of the new generation.
+        if (outcome.state === 'password-needed') {
+          const passed = await this.passPassword(api, controller, tokens, { hint: outcome.hint, resetAt: null }, secret)
+          tokens = passed.tokens
+          sessionId = passed.sessionId ?? sessionId
+          this.set('verifying', tr('@{0} 계정으로 연결하고 있습니다.', [profile.userId]))
+        }
+        // The server made this session when it handed over the sign-in (08 §3.7): its id is the one used, and this
+        // installation's for the account from now on (A6 §4). A saved one of the same account — this row's, or a
+        // disconnected row this new one replaces — is left behind for its own credential to end.
         const record: SavedCredential = { version: 1, profile, sessionId, refreshToken: tokens.refreshToken, authTime: tokens.authTime, provider: 'qr' }
+        const left = await this.leaveBehind(stored ?? await this.vault.read(profile.uid).catch(() => null), record)
         await this.vault.save(record)
+        void this.identity.sessionId(profile.uid, sessionId).catch(() => {})
+        if (left) this.accounts.endSessionsNow?.()
         this.boundUid = record.profile.uid
         this.newlySavedOperation = controller
         this.assertCurrent(controller)
@@ -231,7 +277,7 @@ export class AuthenticationController {
     }, tr('QR 코드를 준비하고 있습니다.'))
   }
   // One attempt: a secret, its codes, the polls. Over (ten minutes, or the server's «expired») → null, a new attempt.
-  private async qrRound(api: FirebaseAuthenticationAPI, controller: AbortController, exceptUids: string[]): Promise<Exclude<QrRedeem, { state: 'waiting' }> | null> {
+  private async qrRound(api: FirebaseAuthenticationAPI, controller: AbortController, exceptUids: string[]): Promise<{ answer: Exclude<QrRedeem, { state: 'waiting' }>; secret: string } | null> {
     const attempt = newQrAttempt(), signal = controller.signal
     let settled = false, refreshAt = 0, poll = qrPollMs
     const issue = async (): Promise<void> => {
@@ -251,7 +297,7 @@ export class AuthenticationController {
         this.assertCurrent(controller)
         const answer = await api.redeemLoginCode(attempt.secret, signal)
         this.assertCurrent(controller)
-        if (answer.state !== 'waiting') { settled = true; return answer }
+        if (answer.state !== 'waiting') { settled = true; return { answer, secret: attempt.secret } }
         poll = answer.pollAfterMs
         if (Date.now() - attempt.startedAt >= qrAttemptLifetimeMs) return null
         if (Date.now() >= refreshAt) await issue()
@@ -309,24 +355,41 @@ export class AuthenticationController {
     }, tr('Morse 계정을 만들고 있습니다.'))
     return created
   }
-  // iOS OnboardingView.handleAppleSignIn: Apple's sign-in, then Firebase. A Firebase user that already has a
-  // Morse profile connects as that account; otherwise the server makes one with a new anonymous ID, key pair
-  // and recovery code, and iOS keeps that code without showing it (AuthService.completeAppleSignupProfile).
-  async signInWithApple(): Promise<void> {
+  async signInWithApple(): Promise<void> { await this.signInWithProvider('apple.com') }
+  async signInWithGoogle(): Promise<void> { await this.signInWithProvider('google.com') }
+  // iOS OnboardingView.handleAppleSignIn, and Android continueWithGoogle the same way: the provider's sign-in, then
+  // Firebase. A Firebase user that already has a Morse profile connects as that account; otherwise the server makes one
+  // with a new anonymous ID, key pair and recovery code, and iOS keeps that code without showing it
+  // (AuthService.completeAppleSignupProfile). Apple signs in in a window of its own (apple-authorization.ts); Google in
+  // the person's browser (google-authorization.ts). The rest is one path (3-1c).
+  private async signInWithProvider(provider: 'apple.com' | 'google.com'): Promise<void> {
+    const apple = provider === 'apple.com'
     await this.operationScope(false, async (api, controller) => {
       if (this.boundUid) throw new AuthenticationFailure('saved-account')
       // How long a sign-in takes, step by step, so a slow one can be told apart from a slow link.
       // Only the seconds each step took; nothing of the account is written.
       let step = Date.now()
       const took = (name: string): void => { recordConnectionStep(name, `${Date.now() - step}ms`); step = Date.now() }
-      const apple = await authorizeWithApple(controller.signal)
-      took('sign-in-apple')
+      const identity: ProviderIdentity = apple ? { provider: 'apple.com', ...await authorizeWithApple(controller.signal) }
+        : { provider: 'google.com', ...await authorizeWithGoogle(controller.signal) }
+      took(apple ? 'sign-in-apple' : 'sign-in-google')
       this.assertCurrent(controller)
-      this.set('verifying', tr('Apple 계정을 확인하고 있습니다.'))
-      let tokens = await api.signInWithApple(apple, controller.signal)
+      const verifying = apple ? tr('Apple 계정을 확인하고 있습니다.') : tr('Google 계정을 확인하고 있습니다.')
+      this.set('verifying', verifying)
+      // A two-step account's new generation is held (heldForPassword): its password first, then its profile — the
+      // rules let a held token read nothing, its own users document included. Apple and Google alike.
+      const signedIn = await api.signInWithIdp(identity, controller.signal)
       took('sign-in-firebase')
       this.assertCurrent(controller)
-      let profile = await this.morseProfile(api, tokens, controller.signal)
+      const first = await profileAfterPassword(signedIn, async held => {
+        const passed = (await this.passPassword(api, controller, held, null)).tokens
+        this.set('verifying', verifying)
+        return passed
+      }, async passed => {
+        this.assertCurrent(controller)
+        return this.morseProfile(api, passed, controller.signal)
+      })
+      let tokens = first.tokens, profile = first.profile
       took('sign-in-profile')
       this.assertCurrent(controller)
       if (profile) this.admission?.admit(profile.uid)
@@ -352,10 +415,10 @@ export class AuthenticationController {
         try { profile = await complete() }
         catch (error) {
           // completeAppleSignupProfileRetryingStaleIdentity: the server removed a withdrawn account's leftover
-          // Firebase user, so the same Apple answer signs in once more as a new one.
+          // Firebase user, so the same answer signs in once more as a new one.
           if (asAuthFailure(error).code !== 'stale-identity') throw error
           this.assertCurrent(controller)
-          tokens = await api.signInWithApple(apple, controller.signal)
+          tokens = await api.signInWithIdp(identity, controller.signal)
           this.assertCurrent(controller)
           profile = await complete()
         }
@@ -368,13 +431,15 @@ export class AuthenticationController {
       const previous = await this.vault.read(profile.uid).catch(() => null)
       this.assertCurrent(controller)
       const record: SavedCredential = { version: 1, profile, sessionId: await this.identity.sessionId(profile.uid, previous?.sessionId),
-        refreshToken: tokens.refreshToken, authTime: tokens.authTime, provider: 'apple.com' }
+        refreshToken: tokens.refreshToken, authTime: tokens.authTime, provider }
+      const left = await this.leaveBehind(previous, record)
       await this.vault.save(record)
+      if (left) this.accounts.endSessionsNow?.()
       this.boundUid = record.profile.uid
       this.newlySavedOperation = controller
       this.assertCurrent(controller)
       await this.establish(api, controller, record, tokens)
-    }, tr('Apple 로그인 창에서 계속해 주세요.'))
+    }, apple ? tr('Apple 로그인 창에서 계속해 주세요.') : tr('브라우저에서 Google 로그인을 계속해 주세요.'))
   }
   // iOS AuthService.fetchMorseUser: the users document is a Morse profile once it has an ID.
   private async morseProfile(api: FirebaseAuthenticationAPI, tokens: AuthTokens, signal: AbortSignal): Promise<AccountProfile | null> {
@@ -390,6 +455,45 @@ export class AuthenticationController {
       throw new AuthenticationFailure(error instanceof ReadFailure && error.code === 'network' ? 'network' : 'protocol')
     } finally { reader.close() }
   }
+  // A13-2 ②: the password step (./password-gate), on this sign-in — the held token's calls, its screen, its cancel.
+  private async passPassword(api: FirebaseAuthenticationAPI, controller: AbortController, held: AuthTokens, needed: { hint: string; resetAt: number | null } | null, qrSecret?: string): Promise<PasswordPassed> {
+    const twoStep = new TwoStepApi((name, data) => callMorseFunction({ signal: controller.signal, authorize: bounded => api.readAuthorization(held.idToken, held.expiresAt, bounded) },
+      name, data, controller.signal, { timeout: 30000 }))
+    try {
+      return await runPasswordStep({
+        twoStep,
+        exchange: customToken => api.exchange(customToken, held.uid, controller.signal),
+        refresh: () => api.refresh(held.refreshToken, held.uid, held.authTime, controller.signal),
+        show: step => this.showPassword(step),
+        action: () => new Promise<PasswordAction>((resolve, reject) => {
+          const cancelled = (): void => reject(new AuthenticationFailure('cancelled'))
+          if (controller.signal.aborted) return cancelled()
+          controller.signal.addEventListener('abort', cancelled, { once: true })
+          this.passwordAction = picked => { controller.signal.removeEventListener('abort', cancelled); resolve(picked) }
+        }),
+        current: () => this.assertCurrent(controller)
+      }, needed, qrSecret)
+    } finally {
+      this.passwordAction = null
+      this.passwordStep = null
+    }
+  }
+  private showPassword(step: PasswordStep): void {
+    this.passwordStep = step
+    if (this.value.phase === 'password') this.changed()
+    else this.set('password', tr('이 계정은 추가 비밀번호로 보호되고 있어요.'))
+  }
+  private takePasswordAction(action: PasswordAction): void {
+    const waiting = this.passwordAction
+    if (!waiting || this.value.phase !== 'password' || this.passwordStep?.busy) return
+    this.passwordAction = null
+    waiting(action)
+  }
+  async submitPassword(password: unknown): Promise<void> {
+    if (typeof password !== 'string' || !password || password.length > 1024) return
+    this.takePasswordAction({ kind: 'submit', password })
+  }
+  async requestPasswordReset(): Promise<void> { this.takePasswordAction({ kind: 'reset' }) }
   async restore(): Promise<void> {
     // Which step a failed restore stopped at, for connection-check.log.
     const progress = { stage: 'saved' }
@@ -424,7 +528,21 @@ export class AuthenticationController {
   private async establish(api: FirebaseAuthenticationAPI, controller: AbortController, record: SavedCredential, tokens: AuthTokens, progress = { stage: '' }): Promise<void> {
     this.set('connecting', tr('이 기기의 로그인을 확인하고 있습니다.'))
     progress.stage = 'session'
-    await api.startSession(tokens.idToken, record.sessionId, this.version, record.provider ?? 'custom', controller.signal)
+    // A13-2 ②: an account with a two-step password is held here — a recovery code's, Apple's or a restored sign-in's —
+    // until the password passes; the new generation's token is saved and the session asked for again.
+    for (;;) {
+      try { await api.startSession(tokens.idToken, record.sessionId, this.version, record.provider ?? 'custom', controller.signal); break }
+      catch (error) {
+        if (!(error instanceof PasswordNeeded)) throw error
+        this.assertCurrent(controller)
+        tokens = (await this.passPassword(api, controller, tokens, error)).tokens
+        record.refreshToken = tokens.refreshToken
+        record.authTime = tokens.authTime
+        await this.vault.save(record)
+        this.assertCurrent(controller)
+        this.set('connecting', tr('이 기기의 로그인을 확인하고 있습니다.'))
+      }
+    }
     this.assertCurrent(controller)
     let owner: CredentialOwner
     const transport = new SocketMessageTransport(this.version, {
@@ -482,6 +600,8 @@ export class AuthenticationController {
       send: (wire, signal) => owner.transport.send(wire, signal),
       markRead: (chatId, target, signal) => owner.transport.markRead(chatId, record.profile.uid, target, signal)
     }
+    // Which way a send or read went past the socket, once per run (send-fallback.ts PathNote).
+    const pathNote: PathNote = detail => recordConnectionStep('send-fallback', detail)
     const callable: CallablePath = (name, data, signal) => callMorseFunction({ signal: controller.signal, authorize }, name, data, signal, { timeout: 30000 })
     this.accounts.activated({ ...record.profile }, {
       signal: controller.signal,
@@ -490,11 +610,11 @@ export class AuthenticationController {
         get ready() { return isCurrent() },
         send: (wire, signal) => {
           if (!isCurrent() || wire.senderId !== record.profile.uid) throw new NotEmitted(tr('계정 연결이 변경되었습니다.'))
-          return sendWithFallback(wire, AbortSignal.any([signal, controller.signal]), socket, callable)
+          return sendWithFallback(wire, AbortSignal.any([signal, controller.signal]), socket, callable, pathNote)
         },
         markRead: (chatId, target, signal) => {
           if (!isCurrent()) throw new NotEmitted(tr('계정 연결이 변경되었습니다.'))
-          return markReadWithFallback(chatId, record.profile.uid, target, AbortSignal.any([signal, controller.signal]), socket, callable)
+          return markReadWithFallback(chatId, record.profile.uid, target, AbortSignal.any([signal, controller.signal]), socket, callable, pathNote)
         },
         get reactions() { return isCurrentSender() && owner.transport.reactionsReady },
         react: (payload, signal) => {
@@ -614,6 +734,31 @@ export class AuthenticationController {
     if (!owner?.established || signal.aborted) return null
     return this.idToken(owner, false)
   }
+  // «지금 다시 시도» (tdesktop window_connecting_widget.cpp:473·:640 lng_reconnecting_try_now): the security check
+  // again at once, its wait skipped. Passed, the failure line goes and the person signs in with the proof in hand; the
+  // way they tried is not repeated for them (a code typed is not sent again behind their back).
+  // Whether it passed: only then does the screen ask for the QR code again (a failed one keeps its failure line).
+  async retrySecurityCheck(): Promise<boolean> {
+    const proof = this.proofSessions
+    if (!proof?.retryNow || this.checkingProof || this.closed || this.operation || this.owner?.established) return false
+    this.checkingProof = true
+    this.changed()
+    try {
+      await proof.retryNow(AbortSignal.timeout(35000))
+      if (this.value.phase === 'error' && (this.failure === 'app-proof' || this.failure === 'app-proof-refused')) {
+        this.failure = null
+        this.set('signed-out', tr('복구 코드로 기존 계정을 연결하세요.'))
+      }
+      return true
+    } catch (error) {
+      const failure = asAuthFailure(error)
+      if (failure.code !== 'cancelled' && !this.operation) { this.failure = failure.code; this.set('error', failure.message) }
+      return false
+    } finally {
+      this.checkingProof = false
+      this.changed()
+    }
+  }
   async cancel(): Promise<void> {
     if (this.owner?.established || this.loggingOut) return
     this.operation?.abort()
@@ -632,11 +777,14 @@ export class AuthenticationController {
       this.operation?.abort()
       await this.operationTask
       const owner = this.detach()
+      // A saved account not connected now is signed out of the server too, by the list below (tdesktop's logOut waits
+      // for auth.logOut; a key it could not log out goes to the keys to destroy).
+      const saved = owner?.record ?? (this.boundUid ? await this.vault.read(this.boundUid).catch(() => null) : null)
       // Persist local sign-out before awaiting the network. Quitting offline
       // must not leave a restorable credential after an explicit sign-out.
       if (this.boundUid) await this.vault.remove(this.boundUid)
       if (!this.closed) this.set(this.api ? 'signed-out' : 'unavailable', tr('이 기기에서 로그아웃했습니다.'))
-      let remoteFailed = false
+      let remoteFailed = false, endLater = owner === null || !this.api || this.closed
       if (owner && this.api && !this.closed) {
         // Explicit sign-out attempts the existing server revoke command. The
         // local credential is removed even if that remote operation is offline.
@@ -647,7 +795,13 @@ export class AuthenticationController {
           const idToken = owner.tokens.expiresAt > Date.now() + 60000 ? owner.tokens.idToken
             : (await this.api.refresh(owner.record.refreshToken, owner.record.profile.uid, owner.record.authTime, signal)).idToken
           await this.api.signOutSession(idToken, owner.record.sessionId, signal)
-        } catch { remoteFailed = true }
+        } catch (error) { remoteFailed = true; endLater = endingOutcome(error) === 'later' }
+      }
+      // Not through: its own credential ends it once it can — written down after the credential left the vault, so the
+      // list never meets a saved sign-in of this session (and a sign-in again with this session takes it off).
+      if (saved && endLater && this.accounts.endSession) {
+        await this.accounts.endSession({ uid: saved.profile.uid, sessionId: saved.sessionId, refreshToken: saved.refreshToken, authTime: saved.authTime }).catch(() => {})
+        this.accounts.endSessionsNow?.()
       }
       if (!this.closed && remoteFailed) this.set('signed-out', tr('이 기기에서 로그아웃했습니다. 서버의 로그인 해제는 확인하지 못했습니다.'))
     } catch { if (!this.closed) this.set('error', new AuthenticationFailure('storage').message) }

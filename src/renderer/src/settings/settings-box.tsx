@@ -1,5 +1,6 @@
 import { autoDownloadChoiceLabel, autoDownloadChoices, autoDownloadSourceLabel } from '../../../shared/auto-download'
 import { changeBackupCode, deleteAccount, showBlockedUsersBox, showLastSeenBox, showSessionsBox } from './security-boxes'
+import { TwoStepEntry } from './two-step-box'
 import { useEffect, useState, type ReactNode } from 'react'
 import { ArrowLeft, AtSign, Bell, Camera, ChevronRight, FileText, FolderOpen, HardDrive, Image as ImageIcon, Info, LogOut, Megaphone, MessageSquare, Palette, Shield, Star, Trash2, User, X, Clock3, KeyRound, ShieldOff, Timer, Lock, BatteryLow, Download, Lightbulb, CircleHelp, ShieldCheck, Users, QrCode as QrCodeIcon, Crown, CircleCheck, Globe, History, ImagePlus, Keyboard } from 'lucide-react'
 import type { Preferences, ThemePreference } from '../../../shared/model'
@@ -513,6 +514,8 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
         <div className="section-divider" />
         <div className="section-label">{tr('보안')}</div>
         <Entry icon={<Lock size={20} />} label={tr('로컬 암호')} detail={lockEnabled ? tr('켜짐') : tr('꺼짐')} onClick={() => showPasscodeSettings(lockEnabled)} />
+        {/* tdesktop settings_privacy_security.cpp:583-602: Local Passcode, Two-Step Verification, then sessions. */}
+        <TwoStepEntry accountUid={accountUid} render={(detail, open) => <Entry icon={<ShieldCheck size={20} />} label={tr('2단계 인증')} detail={detail} onClick={open} />} />
         <Entry icon={<KeyRound size={20} />} label={tr('활성 세션')} detail={tr('이 계정으로 로그인한 기기')} onClick={() => showSessionsBox(accountUid)} />
         <Entry icon={<KeyRound size={20} />} label={tr('복구 코드 바꾸기')} detail={tr('새 복구 코드를 만들어요')} onClick={() => { void changeBackupCode(accountUid) }} />
         <div className="section-divider" />

@@ -54,7 +54,8 @@ export class DesktopShell {
       for (const { uid, dialogs } of accounts) for (const dialog of dialogs) {
         const unread = effectiveUnreadCount(dialog)
         // iOS «메시지 수» counts unread messages, «채팅 수» the chats that have any.
-        if (!dialog.muted && !dialog.archived && dialog.kind !== 'secret' && dialog.participantUids.includes(uid) &&
+        // B113: the official notice chat is not counted (A13-5 §3-5), as the server keeps it out of the account's badge.
+        if (!dialog.muted && !dialog.archived && dialog.kind !== 'secret' && !dialog.service && dialog.participantUids.includes(uid) &&
             Number.isSafeInteger(unread) && unread > 0) count = Math.min(1000, count + (preferences.badgeMode === 'chats' ? 1 : unread))
       }
     }

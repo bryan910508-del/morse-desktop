@@ -2,6 +2,7 @@ import type { ReportRequest } from '../../shared/reports'
 import { autoDeleteMonthsOf, defaultSessionTtlDays, sessionTtlDayOptions, type AccountPrivacy, type BlockTarget, type BlockedUser, type DataExport, type LastSeenPrivacy, type SessionPlatform, type SignInSession, type SignInSessions } from '../../shared/account-tools'
 import { normalizeBackupCode } from '../../shared/auth'
 import type { AccountAuthorization } from '../messaging/outbox'
+import type { ProviderKind, ProviderProof } from '../auth/backup-code-rotation'
 import { autoDeleteSecondsValue } from '../../shared/chat-auto-delete'
 import { maxFolderChats, maxFolders, type ChatFolder } from '../../shared/chat-folders'
 import { DocumentWriteFailure, FirestoreReader } from '../network/firestore-rpc'
@@ -82,6 +83,15 @@ export function reportFields(uid: string, request: ReportRequest, now: number): 
   if (request.extra) fields.extra = { stringValue: request.extra }
   return fields
 }
+// Firebase writes the account's linked sign-in identities into its ID token (`firebase.identities`, keyed by provider).
+export function linkedIdentities(idToken: string): ProviderKind[] {
+  try {
+    const claims = JSON.parse(Buffer.from(idToken.split('.')[1] ?? '', 'base64url').toString('utf8')) as { firebase?: { identities?: unknown } }
+    const identities = claims.firebase?.identities
+    if (!identities || typeof identities !== 'object' || Array.isArray(identities)) return []
+    return (['apple', 'google'] as const).filter(kind => `${kind}.com` in identities)
+  } catch { return [] }
+}
 export class AccountToolsApi {
   constructor(private readonly uid: string, private readonly auth: AccountAuthorization, private readonly allowed: () => unknown) {}
   private get sessionId(): string { const scope = this.auth.storageScope; return scope.slice(0, scope.lastIndexOf(':')) }
@@ -149,6 +159,18 @@ export class AccountToolsApi {
   // (A3). A failure is thrown as it came: MorseCallableFailure says whether the server answered.
   async updateBackupCode(oldCode: string, newCode: string): Promise<void> {
     await this.call('updateBackupCode', { newBackupCode: newCode, oldBackupCode: normalizeBackupCode(oldCode) })
+  }
+  // The providers this account is linked to that can be shown again for a recovery code (iOS isAppleLinked /
+  // isGoogleLinked read Firebase's providerData): the ID token's own `firebase.identities`. The server decides anyway.
+  async linkedIdentities(): Promise<ProviderKind[]> {
+    this.allowed()
+    const { idToken } = await this.auth.authorize(AbortSignal.timeout(35000), false)
+    return linkedIdentities(idToken)
+  }
+  // A3 §9: no old code — the account's Apple or Google identity shown again stands for it (morse-provider-proof.js).
+  async updateBackupCodeByProvider(newCode: string, proof: ProviderProof): Promise<void> {
+    await this.call('updateBackupCode', { newBackupCode: newCode,
+      provider: proof.kind === 'apple' ? { type: 'apple', idToken: proof.idToken, nonce: proof.nonce ?? '' } : { type: 'google', idToken: proof.idToken } })
   }
   lastSeenPrivacy(): Promise<LastSeenPrivacy> {
     return this.read(async (reader, signal) => {

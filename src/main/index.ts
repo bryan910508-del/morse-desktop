@@ -133,7 +133,11 @@ import { SettingsStore } from './platform/settings'
 import { AccountRegistry } from './accounts/registry'
 import { AuthenticationDomain } from './auth/domain'
 import { CredentialVault } from './auth/credential-vault'
-import { BackupCodeRotations } from './auth/backup-code-rotation'
+import { BackupCodeRotations, type ProviderKind, type ProviderProof } from './auth/backup-code-rotation'
+import { authorizeWithApple } from './auth/apple-authorization'
+import { authorizeWithGoogle } from './auth/google-authorization'
+import { googleConfigured } from './auth/google-answer'
+import { AuthenticationFailure } from './auth/contracts'
 import { generateBackupCode } from './auth/backup-code'
 import { productionAuthentication } from './auth/production'
 import type { DesktopEvent, DesktopSnapshot } from '../shared/model'
@@ -165,6 +169,7 @@ import { NativeContextMenus, type ContextMenuItem } from './platform/context-men
 import { WindowState } from './platform/window-state'
 import { DesktopShell } from './platform/desktop-shell'
 import { AppUpdates } from './platform/app-updates'
+import { AppVersionGate } from './platform/app-version-gate'
 import { BackgroundPhotos, type BackgroundPhotoOwner } from './platform/background-photos'
 import { DataPublisher } from './data/publisher'
 import { AppLock } from './platform/app-lock'
@@ -221,6 +226,8 @@ let settings: SettingsStore
 let authentication: AuthenticationDomain
 let credentialVault: CredentialVault
 let backupRotations: BackupCodeRotations | null = null
+// The Apple/Google window asked for a recovery code (A3 §9): one at a time.
+let identityProofOperation: AbortController | null = null
 let mainWindow: BrowserWindow | null = null
 let snapshotRevision = 0
 let shutdown: 'running' | 'closing' | 'done' = 'running'
@@ -254,6 +261,16 @@ let autoLockTimer: ReturnType<typeof setTimeout> | null = null
 let shouldLockAt = 0
 const desktopShell = new DesktopShell(showWindow, () => app.quit())
 const appUpdates = new AppUpdates(() => { void publish() })
+// app_config/desktop: below its minimum this version may not run (platform/app-version-gate.ts); a newer current version
+// only has the updater check now.
+const versionGate = new AppVersionGate(app.getVersion(), () => { void publish() }, () => appUpdates.check())
+function readVersionGate(force: boolean): void {
+  void versionGate.refresh(async () => {
+    const signal = AbortSignal.timeout(30000)
+    // Before any sign-in with the app's own proof; where that is refused (B99), as the open account.
+    return await authentication?.publicConfig('desktop', signal).catch(() => null) ?? await accounts.active?.appConfig('desktop').catch(() => null) ?? null
+  }, force)
+}
 const notifications = new NativeNotifications(() => { void publish() })
 const translator = new ChatTranslator()
 const mediaHelper = new MediaHelper()
@@ -370,6 +387,7 @@ async function snapshot(): Promise<DesktopSnapshot> {
     channelHome: screenLocked ? null : active?.channelHome.snapshot ?? null,
     channelStories: screenLocked ? null : active?.channelStories.snapshot() ?? null,
     appUpdate: appUpdates.snapshot,
+    versionGate: versionGate.snapshot(language()),
     contactStoryPhotoAudio: screenLocked ? null : active?.contactStoryPhotoAudio.snapshot ?? null,
     contactAudienceStoryVideo: screenLocked ? null : active?.contactAudienceStoryVideo.snapshot ?? null,
     contactAudienceStoryPhoto: screenLocked ? null : active?.contactAudienceStoryPhoto.snapshot ?? null,
@@ -454,6 +472,17 @@ function registerIPC(): void {
   handle('relaunch-app', () => { app.relaunch(); app.quit() })
   handle('check-app-update', () => appUpdates.check())
   handle('install-app-update', () => { if (appUpdates.request()) app.quit() })
+  // The page the version gate names (its storeUrl, an https address, or the release page) — never one the window sends.
+  handle('open-update-page', () => shell.openExternal(versionGate.snapshot(language()).storeUrl))
+  handle('quit-app', () => { app.quit() })
+  // «업데이트» where the server turned this version away — tdesktop Core::UpdateApplication: a downloaded update restarts
+  // into the new version; otherwise the updater checks now and Settings shows its progress; with no updater, the page.
+  handle('update-application', () => {
+    const update = appUpdates.snapshot
+    if (update.status === 'ready') { if (appUpdates.request()) app.quit(); return }
+    if (update.available) { appUpdates.check(); return }
+    return shell.openExternal(versionGate.snapshot(language()).storeUrl)
+  })
   handle('create-group', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     const session = accounts.requireActive(identifier(uid)), request = groupCreateRequest(raw)
@@ -586,7 +615,47 @@ function registerIPC(): void {
     if (!backupRotations) throw new Error(tr('복구 코드를 바꾸지 못했습니다. 다시 시도해 주세요.'))
     return backupRotations.change(account, code === null ? null : normalizeBackupCode(String(code)))
   })
+  // A13-2 ③: the two-step password's settings. The words typed go only into the SRP proof (api/two-step-settings).
+  handle('two-step-settings', uid => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).twoStep.state()
+  })
+  handle('update-two-step', (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    const twoStep = accounts.requireActive(identifier(uid)).twoStep
+    return twoStep.update(raw)
+  })
   handle('has-stored-backup-code', uid => credentialVault.backupCode(identifier(uid)).then(code => code !== null, () => false))
+  // A3 §9: the account's linked Apple/Google identities that can make a code here (Google once this build has its client),
+  // and whether a change made that way waits for the person to confirm again (iOS identityKinds, pendingNeedsProof).
+  handle('backup-code-identities', async uid => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    const account = identifier(uid), session = accounts.requireActive(account)
+    const kinds = await session.accountTools.linkedIdentities().catch((): ProviderKind[] => [])
+    return { kinds: kinds.filter(kind => kind === 'apple' || googleConfigured()), needsProof: await backupRotations?.needsProof(account) ?? false }
+  })
+  // «Apple/Google로 확인하고 새 코드 만들기»: the provider's window gives an identity token only — no Firebase sign-in, which
+  // would start a new generation and end this session (A3 §9) — and the token stays here in main. Cancelled → null.
+  handle('change-backup-code-by-provider', async (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    const account = identifier(uid)
+    accounts.requireActive(account)
+    const kind = raw === 'apple' || raw === 'google' ? raw : null
+    if (!kind || !backupRotations) throw new Error(tr('복구 코드를 바꾸지 못했습니다. 다시 시도해 주세요.'))
+    identityProofOperation?.abort()
+    const controller = new AbortController()
+    identityProofOperation = controller
+    let proof: ProviderProof
+    try {
+      if (kind === 'apple') { const identity = await authorizeWithApple(controller.signal); proof = { kind, idToken: identity.idToken, nonce: identity.rawNonce, obtainedAt: Date.now() } }
+      else proof = { kind, idToken: (await authorizeWithGoogle(controller.signal)).idToken, obtainedAt: Date.now() }
+    } catch (error) {
+      if (error instanceof AuthenticationFailure && error.code === 'cancelled') return null
+      throw error
+    } finally { if (identityProofOperation === controller) identityProofOperation = null }
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return backupRotations.changeByProvider(account, proof)
+  })
   handle('last-seen-privacy', uid => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).accountTools.lastSeenPrivacy()
@@ -1037,9 +1106,13 @@ function registerIPC(): void {
   })
   handle('auth-sign-in', code => authentication.signIn(code))
   handle('auth-sign-in-apple', () => authentication.signInWithApple())
+  handle('auth-sign-in-google', () => authentication.signInWithGoogle())
   handle('auth-qr-start', () => authentication.signInWithQr())
   handle('auth-qr-stop', () => authentication.stopQr())
   handle('auth-cancel', () => authentication.cancel())
+  handle('auth-password', password => authentication.submitPassword(password))
+  handle('auth-password-reset', () => authentication.requestPasswordReset())
+  handle('auth-retry-proof', () => authentication.retrySecurityCheck())
   handle('auth-restore', uid => authentication.restore(identifier(uid)))
   handle('auth-sign-out', uid => authentication.signOut(uid === undefined ? accounts.active?.profile.uid ?? '' : identifier(uid)))
   handle('auth-add-account', () => {
@@ -2687,6 +2760,8 @@ function updateScreenProtection(): void {
   emit({ type: 'background-photo-availability', available: !screenLocked })
   if (screenLocked) { contextMenus.close(); accounts.active?.cancelSearch() }
   if (screenLocked) clearProfilePhotoCache()
+  // An Apple/Google identity shown for a recovery code (A3 §9) does not outlive a lock.
+  if (screenLocked) backupRotations?.dropProofs()
   for (const session of accounts.all) {
     session.selfProfile.setLocked(screenLocked); session.contacts.setLocked(screenLocked); session.setLocked(screenLocked)
     session.notificationPreferencesChanged(); session.readingActivityChanged()
@@ -3170,8 +3245,13 @@ else {
     credentialVault = new CredentialVault(join(app.getPath('userData'), 'credentials'))
     backupRotations = new BackupCodeRotations({
       read: uid => credentialVault.pendingRotation(uid), save: (uid, rotation) => credentialVault.savePendingRotation(uid, rotation),
-      clear: uid => credentialVault.clearPendingRotation(uid), kept: uid => credentialVault.backupCode(uid), keep: (uid, code) => credentialVault.saveBackupCode(uid, code)
-    }, uid => { const session = accounts.get(uid); return session ? (old, next) => session.accountTools.updateBackupCode(old, next) : null }, generateBackupCode)
+      clear: uid => credentialVault.clearPendingRotation(uid), kept: uid => credentialVault.backupCode(uid), keep: (uid, code) => credentialVault.saveBackupCode(uid, code),
+      forget: (uid, code) => credentialVault.forgetBackupCode(uid, code)
+    }, uid => {
+      const session = accounts.get(uid)
+      return session ? request => 'proof' in request ? session.accountTools.updateBackupCodeByProvider(request.next, request.proof)
+        : session.accountTools.updateBackupCode(request.old, request.next) : null
+    }, generateBackupCode)
     authentication = new AuthenticationDomain(productionAuthentication(), credentialVault, app.getVersion(), () => { void publish() }, {
         activated: (profile, credentials, makeActive) => {
           accounts.activate(profile, credentials, join(app.getPath('userData'), 'accounts'), makeActive)
@@ -3180,6 +3260,7 @@ else {
           if (accounts.active?.profile.uid === profile.uid) void credentialVault.setActive(profile.uid)
           // A recovery code change left waiting (A3) goes on once the account is connected again.
           backupRotations?.retryNow(profile.uid)
+          readVersionGate(true)
           checkAutoLock()
           updatePresence()
         },
@@ -3202,6 +3283,8 @@ else {
     windowsReady = true
     registerIPC(); createMenu(); createWindow()
     appUpdates.start()
+    readVersionGate(true)
+    setInterval(() => readVersionGate(false), 3600 * 1000).unref()
     if (localKey.ready) startAccounts(); else void authentication.prepare()
     for (const event of ['resume', 'unlock-screen', 'user-did-become-active'] as const) powerMonitor.on(event as 'resume', () => checkAutoLock())
     checkAutoLock()
@@ -3215,7 +3298,7 @@ else {
     // base::NetworkReachability (tdesktop mtproto/mtp_instance.cpp restarts every session on availableChanges): the
     // system saying the network is there again makes every connection and queue try now (network/reachability.ts).
     watchSystemOnline(() => net.isOnline(), () => { if (shutdown === 'running') reachability.returned('system') })
-    reachability.subscribe(reason => { recordConnectionStep('network-back', reason); const uid = accounts.active?.profile.uid; if (uid) backupRotations?.retryNow(uid) })
+    reachability.subscribe(reason => { recordConnectionStep('network-back', reason); const uid = accounts.active?.profile.uid; if (uid) backupRotations?.retryNow(uid); readVersionGate(false) })
     powerMonitor.on('lock-screen', () => { screenIsLocked = true; updateScreenProtection() })
     powerMonitor.on('unlock-screen', () => { screenIsLocked = false; updateScreenProtection() })
     powerMonitor.on('user-did-resign-active', () => { userInactive = true; updateScreenProtection() })

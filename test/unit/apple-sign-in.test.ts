@@ -41,7 +41,7 @@ test('Apple sign-in sends the identity token with the original nonce, as OAuthPr
     [200, { providerId: 'apple.com', localId: 'appleUid', idToken: idToken('appleUid'), refreshToken: 'refresh', expiresIn: '3600' }],
     [200, { users: [{ localId: 'appleUid' }] }]
   ])
-  const tokens = await api().signInWithApple({ idToken: 'apple.id.token', rawNonce: 'raw' }, new AbortController().signal)
+  const tokens = await api().signInWithIdp({ provider: 'apple.com', idToken: 'apple.id.token', rawNonce: 'raw' }, new AbortController().signal)
   assert.equal(tokens.uid, 'appleUid'); assert.equal(tokens.authTime, 1700000000); assert.equal(tokens.refreshToken, 'refresh')
   assert.match(sent[0]!.url, /accounts:signInWithIdp\?key=key$/)
   assert.equal(sent[0]!.headers['X-Firebase-AppCheck'], 'proof')
@@ -52,7 +52,7 @@ test('Apple sign-in sends the identity token with the original nonce, as OAuthPr
 
 test('a refused Apple token and the server answers of completeTalkyProfile become their own failures', async () => {
   serve([[400, { error: { code: 400, message: 'INVALID_IDP_RESPONSE : nonce', status: 'INVALID_ARGUMENT' } }]])
-  await assert.rejects(api().signInWithApple({ idToken: 'a.b.c', rawNonce: 'raw' }, new AbortController().signal),
+  await assert.rejects(api().signInWithIdp({ provider: 'apple.com', idToken: 'a.b.c', rawNonce: 'raw' }, new AbortController().signal),
     (error: unknown) => error instanceof AuthenticationFailure && error.code === 'apple')
   const input = { userId: 'abcdefgh', backupCode: 'CODE-AAAA-BBBB-CCCC', publicKey: 'key', deviceVendorId: '00000000-0000-4000-8000-000000000000' }
   const sent = serve([[400, { error: { message: 'stale_apple_auth_identity', status: 'FAILED_PRECONDITION', details: { morseCode: 'stale_apple_auth_identity' } } }]])

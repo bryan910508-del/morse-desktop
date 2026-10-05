@@ -9,6 +9,7 @@ import { idleReadSync, outboxReadTill, readCursor } from '../../shared/read-rece
 import { mediaCaption, mediaResources } from '../media/media-document'
 import { messageMediaMetadata } from '../media/message-media-metadata'
 import { tr } from '../../shared/i18n'
+import { systemNoticeText, systemNoticeUid, type SystemNotice } from '../../shared/system-notices'
 
 export type WireObject = Record<string, unknown>
 export interface FirestoreDocument { name: string; fields: Record<string, WireObject>; updateTime?: WireObject }
@@ -135,12 +136,16 @@ export function roomRestricted(fields: FirestoreDocument['fields']): boolean {
 }
 export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
   const id = childId(doc.name, `${documents}/chats`), f = doc.fields
-  const kind = stringField(f, 'type', 32)
+  // B113: the official notice chat (type 'system', chats/system_{uid}) is a 1:1 with the service account, as Telegram's
+  // 777000 is a user's chat whose peer isServiceUser; it is read as one, marked `service`.
+  const type = stringField(f, 'type', 32), service = type === 'system'
+  const kind = service ? 'direct' : type
   if (!['direct', 'group', 'secret'].includes(kind)) throw new ReadFailure('data')
   const rawParticipants = object(field(f, 'participantUids').arrayValue ?? {}).values
   if (!Array.isArray(rawParticipants) || rawParticipants.length > 10000) throw new ReadFailure('data')
   const participants = rawParticipants.map(value => identifier(object(value).stringValue))
   if (!participants.includes(uid)) throw new ReadFailure('permission')
+  if (service && (participants.length !== 2 || !participants.includes(systemNoticeUid) || id !== `system_${uid}`)) throw new ReadFailure('data')
   const other = participants.find(value => value !== uid)
   const info = mapField(f, 'participantInfo')
   const participantNames = Object.fromEntries(participants.map(id => {
@@ -176,10 +181,18 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
   else if (preview === '__TALKY_SECRET__') preview = tr('비밀 메시지')
   // A media label is stored in whatever language wrote it, and shown in this window's own; the kind the
   // server writes beside it says which lines are labels at all.
+  else if (service) {
+    // B113 / A13-5 §6: the row reads the newest notice from the chat's own copy of its event (lastSystemEvent, as
+    // lastMessageType is the copy of a kind) in this window's language; without one, the server's fallback text.
+    const event = systemEventOf(mapField(f, 'lastSystemEvent'))
+    if (event) preview = systemNoticeText(event, preview)
+  }
   else preview = chatListPreviewText(preview, stringField(f, 'lastMessageType', 64))
   return { summary: { id, version: documentVersion(doc), kind: kind as DialogSummary['kind'], title, participantUids: participants, ...(roomRestricted(f) ? { restricted: true } : {}),
     // B52: whether a 1:1 peer withdrew (the «unknown person» bar is not offered then).
     ...(kind === 'direct' && boolField(peer, 'accountDeleted') ? { peerDeleted: true } : {}),
+    // B113: read-only — only the server writes there (rules, talky READ_ONLY_CHAT), so nothing is offered to send.
+    ...(service ? { service: true as const, composeAccess: false } : {}),
     preview: preview.slice(0, 300), top, unreadCount: Math.max(0, Math.trunc(numberField(mapField(f, 'unreadCounts'), uid))),
     markedUnread: boolField(mapField(f, 'manualUnread'), uid), readPositions, outboxRead: outboxReadTill(readPositions, participants.filter(participant => participant !== uid)), readSync: idleReadSync,
     // isArchived / isMuted in the shared room document are another person's choice as often as this one's;
@@ -285,10 +298,13 @@ function messagePoll(f: Record<string, WireObject>): MessagePoll | undefined {
   if (text.startsWith('__deleted__:') || boolField(f, 'isDeleted') || timeField(f, 'deletedAt', position.id)) return null
   const encrypted = messageFlag(f, 'isEncrypted') || dialog.summary.kind === 'secret' || text === '__TALKY_SECRET__'
   const declaredKind = stringField(f, 'type', 64)
-  const rawKind = messageFlag(f, 'isCircleVideo') && (!declaredKind || declaredKind === 'text') ? 'video' : declaredKind || 'unsupported'
+  // B113: in the official notice chat a notice is the chat's message, from the service account, as Telegram's service
+  // notifications are ordinary messages from 777000 — a bubble drawn from its kind, read like any other.
+  const notice = dialog.summary.service ? systemNoticeOf(f) : null
+  const rawKind = notice ? 'text' : messageFlag(f, 'isCircleVideo') && (!declaredKind || declaredKind === 'text') ? 'video' : declaredKind || 'unsupported'
   const kind = ['text', 'image', 'video', 'voice', 'file', 'sticker', 'channelPost', 'location', 'event', 'poll'].includes(rawKind) ? rawKind : 'unsupported'
   const senderId = stringField(f, 'senderId', 160)
-  const system = messageFlag(f, 'isSystem') || text.startsWith(autoDeleteWirePrefix)
+  const system = !notice && (messageFlag(f, 'isSystem') || text.startsWith(autoDeleteWirePrefix))
   if (!senderId && !system) throw new ReadFailure('data')
   const replyId = encrypted || system ? '' : stringField(f, 'replyToId', 160).trim() || stringField(f, 'reply_to', 160).trim()
   if (replyId) identifier(replyId)
@@ -300,7 +316,10 @@ function messagePoll(f: Record<string, WireObject>): MessagePoll | undefined {
   const circular = messageFlag(f, 'isCircleVideo')
   return { id: position.id, chatId: dialog.summary.id, senderId,
     senderName: dialog.summary.kind === 'group' && !system ? dialog.participantNames[senderId] || tr('참여자') : undefined,
-    kind: kind as ChatMessage['kind'], text: encrypted ? '' : system ? autoDeleteNoticeText(autoDeleteNoticeFields(f), text) || tr('시스템 메시지') : ['image', 'video', 'voice', 'file', 'sticker'].includes(kind) ? '' : text,
+    ...(notice ? { notice } : {}),
+    // B113: a notice reads in this window's language (the language changes only with a restart, so drawn here it is drawn
+    // as it is shown); its text is the server's fallback for a kind this build does not know.
+    kind: kind as ChatMessage['kind'], text: encrypted ? '' : system ? autoDeleteNoticeText(autoDeleteNoticeFields(f), text) || tr('시스템 메시지') : notice ? systemNoticeText(notice, text) : ['image', 'video', 'voice', 'file', 'sticker'].includes(kind) ? '' : text,
     ...(card?.channelId && card.postId ? { channelPost: card } : {}),
     attachments, mediaMetadata: encrypted || system ? null : messageMediaMetadata(doc, kind, attachments.length, circular),
     caption: encrypted || system ? '' : mediaCaption(doc, kind),
@@ -312,6 +331,19 @@ function messagePoll(f: Record<string, WireObject>): MessagePoll | undefined {
     ...(kind === 'poll' ? { poll: messagePoll(f) } : {}),
     readEligible: Boolean(senderId) && !encrypted && stringField(f, 'status', 32) !== 'failed' &&
       (!system || kind === 'channelPost') && (!declaredChat || roomNames(dialog).includes(declaredChat)) }
+}
+// B113: a notice's systemEvent (server morse-system-notices.js eventFields) — only from the service account, with a kind.
+export function systemNoticeOf(f: Record<string, WireObject>): SystemNotice | null {
+  return stringField(f, 'senderId', 160) === systemNoticeUid ? systemEventOf(mapField(f, 'systemEvent')) : null
+}
+// The event map itself — a message's systemEvent, or the chat's lastSystemEvent (its copy, A13-5 §6) — kind first.
+export function systemEventOf(event: Record<string, WireObject>): SystemNotice | null {
+  const kind = stringField(event, 'kind', 40)
+  if (!kind) return null
+  const text = (name: string, limit: number): Record<string, string> => { const value = stringField(event, name, limit).trim(); return value ? { [name]: value } : {} }
+  const resetAt = timeField(event, 'resetAt', '')
+  return { kind, ...text('deviceLabel', 100), ...text('platform', 20), ...text('appVersion', 64), ...text('country', 64), ...text('ip', 64),
+    ...(resetAt && positionMilliseconds(resetAt) > 0 ? { resetAt: positionMilliseconds(resetAt) } : {}) }
 }
 // The values the server writes behind an auto-delete notice, when it wrote them.
 export function autoDeleteNoticeFields(f: Record<string, WireObject>): AutoDeleteNotice | null {

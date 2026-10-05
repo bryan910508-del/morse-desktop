@@ -1,5 +1,6 @@
 import { autoDownloadLimit, autoDownloadSource, type AutoDownloadLimits } from '../../shared/auto-download'
 import { AccountToolsApi } from '../api/account-tools'
+import { TwoStepSettingsApi } from '../api/two-step-settings'
 import { VoiceDraftStorage } from './voice-draft-storage'
 import { StoryReplyDraft } from './story-reply-draft'
 import { StoryViewReceipt } from './story-view-receipt'
@@ -162,7 +163,7 @@ import { StoryMediaCache } from './story-media-cache'
 import { reachability } from '../network/reachability'
 import { RoomPresence } from './room-presence'
 import { ChannelOperations } from './channel-operations'
-import { HistoryClears, type HistoryClearSession } from './history-clears'
+import { chatDeleteRoute, HistoryClears, type HistoryClearSession } from './history-clears'
 import { KeptHistories } from './kept-histories'
 import { supportConfigPath, supportUidOf } from './support-account'
 
@@ -267,6 +268,7 @@ export class AccountSession {
   readonly channelDeletionApi: ChannelDeletionApi
   readonly storyBarApi: StoryBarApi
   readonly accountTools: AccountToolsApi
+  readonly twoStep: TwoStepSettingsApi
   /// The account's new-chat auto-delete default, read once per session; null until that read lands.
   private accountAutoDeleteSeconds: number | null = null
   // "나에게만 삭제": the moment each room was deleted on this device (hidden_chats).
@@ -621,6 +623,7 @@ export class AccountSession {
     this.channelDeletionApi = new ChannelDeletionApi(connected, () => firestoreChannelDeletion(credentials, connected))
     this.storyBarApi = new StoryBarApi(profile.uid, credentials, () => { if (this.closed || this.locked) throw new Error(tr('계정 연결을 확인해 주세요.')) }, uid => this.contacts.has(uid))
     this.accountTools = new AccountToolsApi(profile.uid, credentials, connected)
+    this.twoStep = new TwoStepSettingsApi(profile.uid, credentials, connected)
     this.inquirySends = new InquirySends(profile.uid, credentials, connected, command => this.delivery.inquirySendState(command), () => { if (!this.closed) events.changed() })
     void Promise.resolve().then(() => this.inquirySends.load()).catch(() => {})
     this.channelOperations = new ChannelOperations(profile.uid, credentials, connected, command => this.delivery.channelOperationState(command), () => { if (!this.closed) events.changed() },
@@ -785,6 +788,11 @@ export class AccountSession {
     const uid = supportUidOf(await this.reader.getDocument(supportConfigPath, this.credentials.signal))
     if (!uid || uid === this.profile.uid) throw new Error(tr('지금은 채팅 문의를 쓸 수 없어요.'))
     return this.openUnlisted(await this.delivery.findDirect(uid, this.isOpenChat) ?? await this.delivery.openDirect({ uid, displayName: tr('Morse 고객센터') }, true))
+  }
+  // app_config/{name} read as this account (the version gate, when the app's own proof is refused before sign-in).
+  async appConfig(name: string): Promise<{ fields?: unknown } | null> {
+    if (this.closed || !this.reader) return null
+    return this.reader.getDocument(`${documents}/app_config/${name}`, this.credentials.signal)
   }
   discardDirectDraft(chatId: string) { return this.delivery.discardDirect(chatId) }
   private groupCreateSource(request: GroupCreateRequest): void {
@@ -1474,7 +1482,8 @@ export class AccountSession {
     if (!this.contextDialog(chatId) || !dialog || dialog.summary.kind === 'secret' || this.selected?.dialog.summary.id !== chatId) return null
     const message = this.selected.actionMessage(messageId, version)
     if (!message || message.encrypted || !message.serverConfirmed) return null
-    return { message, forward: !this.locked && canForwardMessage(message), reply: !this.locked && dialog.summary.composeAccess !== false && canReply(message), edit: canApplyAction({ kind: 'edit' }, message, dialog),
+    // B113: a notice of the official notice chat is not forwarded (A13-5 §3-2).
+    return { message, forward: !this.locked && !dialog.summary.service && canForwardMessage(message), reply: !this.locked && dialog.summary.composeAccess !== false && canReply(message), edit: canApplyAction({ kind: 'edit' }, message, dialog),
       delete: canApplyAction({ kind: 'delete' }, message, dialog), reaction: canApplyAction({ kind: 'reaction' }, message, dialog) }
   }
   private forwardDestination(chatId: string, sourceChatId: string): ForwardTarget | null {
@@ -1766,7 +1775,10 @@ export class AccountSession {
   async deleteChat(chatId: string, forEveryone: boolean): Promise<'done' | 'unconfirmed'> {
     const dialog = this.index.get(chatId)?.summary
     if (this.closed || this.locked || !dialog) throw new Error(tr('대화를 다시 선택해 주세요.'))
-    if (!forEveryone) {
+    const route = chatDeleteRoute(dialog, forEveryone)
+    // B113: cleared on the server for this account, without the mark that keeps a cleared chat listed (history-clears.ts).
+    if (route === 'service-clear') return this.historyClears.enqueue({ id: randomUUID(), kind: 'chat-clear', targetId: chatId, seen: seenTop(dialog.top), upTo: null })
+    if (route === 'hide') {
       await this.hiddenChats.hide(chatId, dialog.top)
       if (this.chatsCurrent && this.pinsCurrent) this.rebuild()
       this.events.changed()
@@ -1778,7 +1790,7 @@ export class AccountSession {
     // same (AppState.deleteDirectChatHistory). The 1:1 document is the dialog - its id is the pair's - so it is kept:
     // deleting it threw the boundary away, and the room came back under the same id without one. The device queue
     // keeps it with its boundary and sends it when it can, connected or not (A4, history-clears.ts).
-    if (dialog.kind === 'direct') return this.historyClears.enqueue({ id: randomUUID(), kind: 'direct-delete', targetId: chatId, seen: seenTop(dialog.top), upTo: null })
+    if (route === 'direct-delete') return this.historyClears.enqueue({ id: randomUUID(), kind: 'direct-delete', targetId: chatId, seen: seenTop(dialog.top), upTo: null })
     if (this.connection !== 'ready' || !this.reader) throw new Error(tr('계정 연결을 확인해 주세요.'))
     if (dialog.kind === 'group' && dialog.createdBy !== this.profile.uid) throw new Error(tr('그룹은 만든 사람만 삭제할 수 있어요. 그룹 나가기를 사용해 주세요.'))
     try { await this.reader.deleteChatDocument(chatId, this.credentials.signal) }
@@ -2191,6 +2203,8 @@ export class AccountSession {
   }
   mutateMessage(chatId: string, request: MessageActionRequest): Promise<void> {
     if (this.closed || this.status !== 'ready' || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    // B113: the official notice chat's messages are the server's — no reaction, edit or delete from here.
+    if (this.selected.dialog.summary.service) throw new Error(tr('이 대화의 메시지는 바꿀 수 없습니다.'))
     const message = this.selected.actionMessage(request.messageId, request.version)
     if (!message) throw new Error(tr('메시지가 변경되었습니다. 최신 메시지를 다시 선택해 주세요.'))
     return this.actions.enqueue(chatId, request, message)

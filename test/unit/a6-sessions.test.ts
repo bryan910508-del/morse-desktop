@@ -81,6 +81,12 @@ test('this Mac keeps one session ID per account, and an earlier build\'s ID is k
   const earlier = '11111111-2222-4333-8444-555555555555'
   assert.equal(await identity.sessionId('carol', earlier), earlier)
   assert.equal(await identity.sessionId('carol'), earlier, 'and it is written down for later sign-ins')
+  // A QR sign-in's session is the server's (randomBytes(16) hex, morse-qr-login.js): it becomes this installation's too,
+  // so a later recovery-code sign-in goes on with it instead of leaving it behind.
+  const qr = '0123456789abcdef0123456789abcdef'
+  assert.equal(await identity.sessionId('dave', qr), qr)
+  assert.equal(await identity.sessionId('dave'), qr)
+  for (const bad of ['short', 'a/b-c-d-e-f-g-h', 'x'.repeat(129)]) assert.notEqual(await identity.sessionId('erin', bad), bad, bad)
 })
 
 // A6 §3-1 / §4 Desktop: signing out ends this device's session with `signOut: true`. An answer lost on the way is sent

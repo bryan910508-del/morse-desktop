@@ -60,6 +60,7 @@ import { SwipeBackPlate, SwipeReplyIcon, useSwipe } from './use-swipe'
 import { swipeAllowed } from './swipe-gesture'
 import { historyEntries, type Entry } from './history-entries'
 import { messageReportAllowed } from '../../../shared/reports'
+import { setChatFlag } from '../app/chat-flags'
 
 const initialHistory: HistorySnapshot = { revision: -1, messages: [], before: null, hasMore: false, status: 'loading', message: '', newerAvailable: false }
 const initialOutgoing: OutgoingSnapshot = { revision: -1, items: [], canCompose: false, message: '' }
@@ -68,8 +69,9 @@ const noReply: ReplyDraftSnapshot = { revision: -1, selection: null, status: 'no
 const attachWindowMs = 900 * 1000
 
 
+// B113: nothing in the official notice chat changes from here — no reaction, edit or delete for everyone (the server's).
 function canMutate(message: ChatMessage, dialog: DialogSummary | null): boolean {
-  return Boolean(dialog && dialog.kind !== 'secret' && message.version && !message.encrypted && !message.system && message.serverConfirmed &&
+  return Boolean(dialog && dialog.kind !== 'secret' && !dialog.service && message.version && !message.encrypted && !message.system && message.serverConfirmed &&
     (dialog.historyAccess === undefined || dialog.historyAccess === 'ready'))
 }
 // «Delete for everyone» (A1 §3-6, Telegram's supergroup rule, telegram-refs R-1/R-2): in a channel's discussion room
@@ -191,6 +193,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   }, [accountUid, chatId, dialogExists])
   const historyReady = history.status === 'ready'
   const secret = dialog?.kind === 'secret'
+  // B113: Morse's official notice chat — read-only, no person's actions (tdesktop isServiceUser).
+  const service = dialog?.service === true
   useEffect(() => {
     if (!historyReady || !dialogExists || secret) return
     let alive = true
@@ -335,7 +339,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
 
   const peers = useMemo(() => dialog ? [...new Set(dialog.participantUids)].filter(uid => uid !== accountUid) : [], [dialog?.participantUids, accountUid])
   // TopBarWidget::updateOnlineDisplay: a 1:1 chat's subtitle is the peer's last seen.
-  const peerPresence = usePresence(dialog?.kind === 'direct' && !chatId.startsWith('memo_') ? peers[0] ?? null : null)
+  // B113: a service chat's is «서비스 알림» instead (tdesktop OnlineTextSpecial → lng_status_support, data_peer_values.cpp:69-70).
+  const peerPresence = usePresence(dialog?.kind === 'direct' && !service && !chatId.startsWith('memo_') ? peers[0] ?? null : null)
   // History::isServerSideUnread: an own message is read once it is within the room's one outbox boundary.
   const outboxRead = dialog?.outboxRead ?? null
   const readState = (message: ChatMessage): 'sent' | 'read' =>
@@ -420,13 +425,17 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     const translatable = !own && message.kind === 'text' && !message.encrypted && !message.system && owner?.kind !== 'secret' && Boolean(message.text.trim())
     const shown = translationShown(accountUid, chatId, message.id, message.text, autoTranslateRef.current)
     const open = (offer: boolean): void => {
+      const copyLink: MenuEntry | null = link ? { label: link.email ? tr('이메일 복사') : tr('링크 복사'), icon: <Link size={18} />, onSelect: () => { const copied = copyText(link.email ? link.url.replace(/^mailto:/, '') : link.url); controller.toast(copied ? tr('복사했습니다.') : tr('복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null
+      const copyMessage: MenuEntry | null = text && !message.encrypted ? { label: tr('텍스트 복사'), icon: <Copy size={18} />, onSelect: () => { const copied = copyText(text); controller.toast(copied ? tr('복사했습니다.') : tr('복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null
+      // B113: a notice of the official notice chat offers copying only (A13-5 §3-2), as nothing else applies to it.
+      if (owner?.service) { popupMenu.open(point, [copyLink, copyMessage]); return }
       const entries: MenuEntry[] = [
         // Telegram puts «Copy link» / «Copy email» first when the menu opens on a link.
-        link ? { label: link.email ? tr('이메일 복사') : tr('링크 복사'), icon: <Link size={18} />, onSelect: () => { const copied = copyText(link.email ? link.url.replace(/^mailto:/, '') : link.url); controller.toast(copied ? tr('복사했습니다.') : tr('복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null,
+        copyLink,
         link ? 'separator' : null,
         canReply(message) && outgoingRef.current.canCompose ? { label: tr('답장'), icon: <Reply size={18} />, onSelect: () => { void selectReply(message) } } : null,
         mutable && own && message.kind === 'text' ? { label: tr('수정'), icon: <Pencil size={18} />, onSelect: () => { setEditing(message) } } : null,
-        text && !message.encrypted ? { label: tr('텍스트 복사'), icon: <Copy size={18} />, onSelect: () => { const copied = copyText(text); controller.toast(copied ? tr('복사했습니다.') : tr('복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null,
+        copyMessage,
         offer ? { label: shown ? tr('원문 보기') : tr('번역'), icon: <Languages size={18} />, onSelect: () => { void toggleTranslation(accountUid, chatId, message, autoTranslateRef.current) } } : null,
         message.version && message.serverConfirmed && !message.system && !message.encrypted && owner?.kind !== 'secret'
           ? (pinnedRef.current?.items.some(item => item.id === message.id)
@@ -536,10 +545,10 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     popupMenu.open(point, [
       dialog && !secret ? { label: tr('대화 안 검색'), icon: <Search size={18} />, disabled: !historyReady, onSelect: () => controller.setRight('search') } : null,
       dialog ? { label: tr('정보 보기'), icon: <Info size={18} />, onSelect: () => controller.setRight('info') } : null,
-      dialog && historyReady && !secret ? { label: tr('메시지 선택'), icon: <Check size={18} />, onSelect: () => setSelection([]) } : null,
+      dialog && historyReady && !secret && !service ? { label: tr('메시지 선택'), icon: <Check size={18} />, onSelect: () => setSelection([]) } : null,
       dialog && !secret ? { label: tr('배경 설정'), icon: <Images size={18} />, onSelect: () => showChatBackgroundBox(accountUid, chatId) } : null,
-      dialog && !secret ? { label: tr('자동 삭제'), icon: <Timer size={18} />, disabled: !canChangeAutoDelete(dialog, accountUid), onSelect: () => showChatAutoDeleteBox(accountUid, dialog) } : null,
-      dialog && !secret && !chatId.startsWith('memo_') ? { label: tr('대화 기록 모두 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void clearHistory() } } : null,
+      dialog && !secret && !service ? { label: tr('자동 삭제'), icon: <Timer size={18} />, disabled: !canChangeAutoDelete(dialog, accountUid), onSelect: () => showChatAutoDeleteBox(accountUid, dialog) } : null,
+      dialog && !secret && !service && !chatId.startsWith('memo_') ? { label: tr('대화 기록 모두 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void clearHistory() } } : null,
       !dialog && pending ? { label: tr('새 대화 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => {
         void window.morse.discardDirectDraft(accountUid, chatId).then(() => controller.closeChat()).catch(reason => controller.toast(errorText(reason, tr('새 대화를 삭제하지 못했습니다.')), 'error'))
       } } : null
@@ -552,7 +561,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   const saved = chatId === `memo_${accountUid}`
   const title = saved ? tr('저장한 메시지') : dialog?.title ?? pending?.displayName ?? tr('대화')
   const typing = useTyping(chatId)
-  const subtitle = !dialog ? pending ? tr('새 대화') : '' : shownConnection !== 'ready' ? linkLabel(shownConnection) : secret ? tr('비밀 대화') : typing ? tr('입력 중...') : group ? tr('참여자 {0}명', [dialog.participantUids.length]) : peerPresence?.text ?? ''
+  const subtitle = !dialog ? pending ? tr('새 대화') : '' : shownConnection !== 'ready' ? linkLabel(shownConnection) : secret ? tr('비밀 대화') : service ? tr('서비스 알림') : typing ? tr('입력 중...') : group ? tr('참여자 {0}명', [dialog.participantUids.length]) : peerPresence?.text ?? ''
   const surface = secret ? defaultChatBackground : background?.value ?? deviceBackground
   const scope = background?.value ? { kind: 'chat' as const, accountUid, chatId } : { kind: 'device' as const }
   // A10 §4 (Telegram restriction_reason): a room the operator closed shows why instead of its messages.
@@ -582,7 +591,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
         <button className="icon-button" aria-label={tr('더 보기')} onClick={event => openMore(pointFor(event, event.currentTarget))}><EllipsisVertical size={20} /></button>
       </>}
     </header>
-    {dialog && dialog.kind === 'direct' && selection === null && <PeerBar accountUid={accountUid} dialog={dialog} />}
+    {dialog && dialog.kind === 'direct' && !service && selection === null && <PeerBar accountUid={accountUid} dialog={dialog} />}
     {dialog && !secret && <PinnedBar accountUid={accountUid} chatId={chatId} />}
     {dialog && forum && <CategoryBar accountUid={accountUid} chatId={chatId} forum={forum} selected={forumSelected}
       owner={dialog.kind === 'group' && dialog.createdBy === accountUid && !dialog.discussion} />}
@@ -633,7 +642,11 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
         </> : <div className="drop-zone disabled"><strong>{tr('지금은 이 대화에 첨부할 수 없습니다')}</strong></div>}
       </div>}
     </div>
-    {(dialog || pending) && <Compose accountUid={accountUid} chatId={chatId} dialog={dialog} outgoing={outgoing} reply={reply} editing={editing}
+    {/* B113: a read-only chat has no composer; its place holds the mute, as tdesktop's broadcast channel bar (muteUnmute). */}
+    {service && dialog ? <div className="compose compose-readonly">
+      <button type="button" className="button flat block" onClick={() => { void setChatFlag(accountUid, dialog.id, { muted: !dialog.muted }) }}>{dialog.muted ? tr('알림 켜기') : tr('알림 끄기')}</button>
+    </div>
+    : (dialog || pending) && <Compose accountUid={accountUid} chatId={chatId} dialog={dialog} outgoing={outgoing} reply={reply} editing={editing}
       onCancelEdit={() => setEditing(null)}
       onEditLast={() => {
         const last = [...entries].reverse().find(entry => entry.kind === 'message' && entry.own && entry.message.kind === 'text' && canMutate(entry.message, dialog))

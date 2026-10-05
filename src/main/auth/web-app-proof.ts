@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, net, session, shell, type IpcMainEvent } f
 import { randomUUID } from 'node:crypto'
 import { appendFile, mkdir, rename, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { AuthenticationFailure, type AppCheckProof, type DesktopAppProofProvider } from './contracts'
+import { AuthenticationFailure, ProofWaiting, type AppCheckProof, type DesktopAppProofProvider } from './contracts'
 import type { ProofTokenStore } from './proof-token-store'
 import { tr } from '../../shared/i18n'
 import { reachability } from '../network/reachability'
@@ -20,7 +20,7 @@ function proofFromToken(token: string, appId: string): AppCheckProof {
 }
 
 interface Flight { controller: AbortController; promise: Promise<AppCheckProof>; consumers: number }
-type ProofFailureStep = 'page-error' | 'timeout' | 'load-failed' | 'renderer-gone' | 'invalid-response' | 'window-closed' | 'session-failed' | 'backoff'
+export type ProofFailureStep = 'page-error' | 'timeout' | 'load-failed' | 'renderer-gone' | 'invalid-response' | 'window-closed' | 'session-failed' | 'backoff'
 interface ProofResponse { host: string; path: string; method: string; status: number; error: string }
 interface ProofFailureEntry { step: ProofFailureStep; detail: string; blockedHosts: string[]; responses: ProofResponse[]; elapsedMs: number; platform: 'macOS' | 'Windows' }
 
@@ -43,6 +43,12 @@ const usableUntilBefore = 30000
 // A16: after an exchange that failed, the next one waits — 2 s, doubling to a minute — or until the network comes
 // back. Asking again at once cannot help: the reCAPTCHA key only scores, and a low score (a VPN exit, B99) stays
 // low, while every caller that needed a token opened the check again.
+// What a failed check is for the person: closed by them (cancelled), refused — the page's error with the exchange
+// answering 403, a low reCAPTCHA score that waiting does not raise (a VPN exit, B99) — or lost (timeout, load, other).
+export function proofFailureCode(step: ProofFailureStep, exchangeStatus: number | null): 'cancelled' | 'app-proof-refused' | 'app-proof' {
+  if (step === 'window-closed') return 'cancelled'
+  return step === 'page-error' && exchangeStatus === 403 ? 'app-proof-refused' : 'app-proof'
+}
 export function proofRetryDelay(failures: number): number { return failures <= 0 ? 0 : Math.min(60000, 2000 * 2 ** (failures - 1)) }
 // A16: how a signed-in (or restoring) account asks the server for this app's token (getMorseDesktopAppCheckToken), its
 // sign-in token renewed first when it is running out — renewing needs no proof; null when it cannot ask now.
@@ -106,6 +112,8 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
   private readonly sessions = new Map<string, SessionProof>()
   private failures = 0
   private retryAt = 0
+  // Whether the last failed exchange was refused (403) rather than lost — what its wait says.
+  private refused = false
   constructor(private readonly origin: string, private readonly appId: string,
     private readonly platform: 'macOS' | 'Windows', private readonly store: ProofTokenStore | null = null,
     page?: (signal: AbortSignal, visible: boolean, deadlineMs: number) => Promise<AppCheckProof>) {
@@ -138,7 +146,7 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
     }
     let flight = this.flight
     if (!flight || flight.controller.signal.aborted) {
-      if (Date.now() < this.retryAt) throw Object.assign(new AuthenticationFailure('app-proof'), { proofStep: 'backoff' as ProofFailureStep })
+      if (Date.now() < this.retryAt) throw Object.assign(new ProofWaiting(this.retryAt - Date.now(), this.refused), { proofStep: 'backoff' as ProofFailureStep })
       const controller = new AbortController()
       flight = { controller, consumers: 0, promise: Promise.resolve().then(() => this.counted(controller.signal)) }
       this.flight = flight
@@ -169,10 +177,13 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
   private async counted(signal: AbortSignal): Promise<AppCheckProof> {
     try {
       const proof = await this.acquire(signal)
-      this.failures = 0; this.retryAt = 0
+      this.failures = 0; this.retryAt = 0; this.refused = false
       return proof
     } catch (error) {
-      if (!signal.aborted && (error as AuthenticationFailure).code !== 'cancelled') { this.failures++; this.retryAt = Date.now() + proofRetryDelay(this.failures) }
+      if (!signal.aborted && (error as AuthenticationFailure).code !== 'cancelled') {
+        this.failures++; this.retryAt = Date.now() + proofRetryDelay(this.failures)
+        this.refused = (error as AuthenticationFailure).code === 'app-proof-refused'
+      }
       throw error
     }
   }
@@ -225,6 +236,13 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
     }
   }
 
+  // «Try now»: the wait after a failed exchange is skipped and the check runs again (the person may have turned a VPN
+  // off). A check already running is joined, not doubled.
+  retryNow(signal: AbortSignal): Promise<AppCheckProof> {
+    this.retryAt = 0
+    return this.getProof(signal)
+  }
+
   // The renewal runs on its own: whoever asked for the token gets the one in hand, and the exchange
   // that replaces it happens behind them.
   private renewAhead(): void {
@@ -238,6 +256,8 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
   private attempt(signal: AbortSignal, visible: boolean, deadlineMs: number): Promise<AppCheckProof> {
     if (signal.aborted) return Promise.reject(new AuthenticationFailure('cancelled'))
     const requestId = randomUUID(), started = Date.now(), blocked = new Set<string>(), responses: ProofResponse[] = []
+    // The App Check exchange's answer: 403 is a refusal (a low reCAPTCHA score), told apart from a lost check.
+    let exchangeStatus: number | null = null, exchangeSeen: (() => void) | null = null
     const url = `${this.origin}/verify.html#${new URLSearchParams({ platform: this.platform, requestId })}`
     // One persistent partition keeps reCAPTCHA's cookies between checks, which its risk
     // assessment uses; other page storage is cleared after each check. Each request still
@@ -271,6 +291,7 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
         const path = host.endsWith('firebaseappcheck.googleapis.com') ? target.pathname.split(':').pop() ?? ''
           : host === 'firebaseinstallations.googleapis.com' ? 'installations' : target.pathname.split('/').slice(0, 4).join('/')
         responses.push({ host, path: path.slice(0, 80), method: details.method, status: details.statusCode ?? 0, error: (details.error ?? '').slice(0, 80) })
+        if (details.method === 'POST' && path === 'exchangeRecaptchaEnterpriseToken') { exchangeStatus = details.statusCode ?? 0; exchangeSeen?.() }
       } catch { /* malformed URLs are not recorded */ }
     }
     isolated.webRequest.onCompleted(details => note(details))
@@ -315,7 +336,15 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
       const fail = (step: ProofFailureStep, detail = ''): void => {
         if (settled) return
         void recordProofFailure({ step, detail, blockedHosts: [...blocked], responses: [...responses], elapsedMs: Date.now() - started, platform: this.platform })
-        finish(undefined, Object.assign(new AuthenticationFailure(step === 'window-closed' ? 'cancelled' : 'app-proof'), { proofStep: step }))
+        finish(undefined, Object.assign(new AuthenticationFailure(proofFailureCode(step, exchangeStatus)), { proofStep: step }))
+      }
+      // The page can tell its error before the exchange's answer is noted here (10-04 13:55: the first page-error had
+      // no POST yet): it is given a moment to arrive, so a refusal is told as one.
+      const pageFailed = (): void => {
+        const detail = tr('reCAPTCHA Enterprise 또는 App Check 토큰 발급 실패')
+        if (exchangeStatus !== null) { fail('page-error', detail); return }
+        const late = setTimeout(() => { exchangeSeen = null; fail('page-error', detail) }, 800)
+        exchangeSeen = () => { clearTimeout(late); exchangeSeen = null; fail('page-error', detail) }
       }
       const cancel = (): void => finish(undefined, new AuthenticationFailure('cancelled'))
       const receive = (event: IpcMainEvent, payload: unknown): void => {
@@ -324,7 +353,7 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
             !payload || typeof payload !== 'object') return
         const data = payload as Record<string, unknown>
         if (data.requestId !== requestId) return
-        if (data.kind === 'error') { fail('page-error', tr('reCAPTCHA Enterprise 또는 App Check 토큰 발급 실패')); return }
+        if (data.kind === 'error') { pageFailed(); return }
         if (data.kind !== 'token' || data.appId !== this.appId || typeof data.token !== 'string' || data.token.length > 16384) {
           fail('invalid-response', data.kind === 'token' && data.appId !== this.appId ? 'App ID mismatch' : 'unexpected message'); return
         }

@@ -361,12 +361,14 @@ export function InfoPanel({ accountUid, chatId }: { accountUid: string; chatId: 
           : peerUid && inContacts ? <ContactProfile key={peerUid} accountUid={accountUid} uid={peerUid} fromChat />
             : <div className="info-cover">
               {!dialog && pending ? <PeerAvatar id={pending.chatId} name={pending.displayName} image={pending.avatar ?? null} surface="dialogs" size={88} />
+                : dialog?.service ? <PeerAvatar id={dialog.id} name={dialog.title} image={dialog.avatar ?? null} surface="dialogs" size={88} />
                 : <Avatar name={dialog?.title ?? pending?.displayName ?? '?'} size={88} kind={dialog?.kind === 'secret' ? 'secret' : undefined} />}
               <h2 className="selectable">{dialog?.title ?? pending?.displayName ?? ''}{dialog?.official && <OfficialMark kind={dialog.official} />}</h2>
-              <span>{dialog?.kind === 'secret' ? tr('비밀 대화') : dialog?.official ? officialLabel(dialog.official) : tr('연락처에 없는 사용자')}</span>
+              <span>{dialog?.kind === 'secret' ? tr('비밀 대화') : dialog?.service ? tr('서비스 알림') : dialog?.official ? officialLabel(dialog.official) : tr('연락처에 없는 사용자')}</span>
             </div>}
       {/* Telegram's profile of a non-contact offers "Add to contacts"; iOS UnknownProfileView the same. */}
-      {!profile && dialog?.kind === 'direct' && peerUid && !inContacts && <div className="info-section">
+      {/* B113: the official notice account is no person to add, block or report (tdesktop isServiceUser, info_profile_top_bar.cpp:1188-1196). */}
+      {!profile && dialog?.kind === 'direct' && !dialog.service && peerUid && !inContacts && <div className="info-section">
         <ActionRow icon={adding ? <Spinner size={20} /> : <UserPlus size={20} />} label={tr('연락처에 추가')} disabled={adding} onClick={() => { void addPeer() }} />
         <ActionRow icon={<ShieldOff size={20} />} label={peerBlocked ? tr('차단 해제') : tr('사용자 차단')} danger={!peerBlocked} disabled={blockedUsers === null} onClick={() => { void toggleStrangerBlock() }} />
         {/* iOS UnknownProfileView «사용자 신고» (UserReportView). */}
@@ -381,7 +383,7 @@ export function InfoPanel({ accountUid, chatId }: { accountUid: string; chatId: 
         <div className="info-row info-switch-row"><span className="info-row-icon"><Bell size={20} /></span><span className="info-row-text"><span>{tr('알림')}</span><small>{dialog.muted ? tr('꺼짐') : tr('켜짐')}</small></span>
           <Switch label={tr('알림')} checked={!dialog.muted} onChange={value => { void window.morse.setChatFlags(accountUid, dialog.id, { muted: !value }).catch(reason => controller.toast(errorText(reason, tr('변경하지 못했습니다.')), 'error')) }} /></div>
       </div>}
-      {!profile && dialog && <div className="info-section">
+      {!profile && dialog && !dialog.service && <div className="info-section">
         <InfoRow icon={<MessageCircle size={20} />} value={dialog.kind === 'group' ? tr('그룹 대화') : dialog.kind === 'secret' ? tr('비밀 대화') : tr('개인 대화')} label={tr('대화 종류')} />
         {dialog.kind !== 'secret' && <InfoRow icon={<Timer size={20} />} value={autoDeleteSummary(dialog.autoDeleteSeconds ?? 0)}
           label={canChangeAutoDelete(dialog, accountUid) ? tr('자동 삭제 · 눌러서 변경') : tr('자동 삭제')} onClick={canChangeAutoDelete(dialog, accountUid) ? () => showChatAutoDeleteBox(accountUid, dialog) : undefined} />}

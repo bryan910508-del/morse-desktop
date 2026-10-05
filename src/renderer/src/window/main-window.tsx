@@ -21,6 +21,7 @@ import { useNotesSession } from '../notes/notes-state'
 import { NoteEditor } from '../notes/note-editor'
 import { MainMenu } from './main-menu'
 import { LockScreen } from './lock-screen'
+import { UpdateRequiredScreen } from './update-required'
 import { chatGone } from './chat-gone'
 import { tr } from '../../../shared/i18n'
 
@@ -44,8 +45,10 @@ export function MainWindow() {
   usePowerSavingReport()
   useContentProtection()
   const locked = useDesktop(snapshot => snapshot?.appLock?.locked ?? false)
+  const blocked = useDesktop(snapshot => snapshot?.versionGate?.blocked ?? false)
   const accountUid = useDesktop(snapshot => snapshot?.activeAccountUid ?? null)
   const adding = useDesktop(snapshot => snapshot?.addingAccount ?? false)
+  if (blocked) return <><UpdateRequiredScreen /><ToastHost /></>
   if (locked) return <><LockScreen /><LayerHost /><ToastHost /></>
   if (!accountUid || adding) return <><Intro /><LayerHost /><MenuHost /><ToastHost /></>
   return <SessionWindow key={accountUid} accountUid={accountUid} />

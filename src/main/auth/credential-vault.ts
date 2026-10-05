@@ -3,6 +3,8 @@ import { mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/promises
 import { join } from 'node:path'
 import { identifier, object } from '../../shared/validation'
 import { AuthenticationFailure, type SavedCredential } from './contracts'
+import { rotationRecord, type Rotation } from './backup-code-rotation'
+import type { EndingSession } from './session-enders'
 
 function decodeCredential(value: unknown): SavedCredential {
   const record = object(value)
@@ -14,7 +16,22 @@ function decodeCredential(value: unknown): SavedCredential {
   }
   return { version: 1, profile: { uid: identifier(profile.uid), userId: profile.userId, displayName: profile.displayName },
     sessionId: identifier(record.sessionId), refreshToken: record.refreshToken, authTime: Number(record.authTime),
-    ...(record.provider === 'apple.com' ? { provider: 'apple.com' as const } : record.provider === 'qr' ? { provider: 'qr' as const } : {}) }
+    // How this device signed in, sent with every session start (contracts.ts SavedCredential.provider) — all three kinds.
+    ...(record.provider === 'apple.com' || record.provider === 'google.com' || record.provider === 'qr' ? { provider: record.provider } : {}) }
+}
+// The stored list of sessions to end: well-formed entries only, at most 64 (the oldest go first).
+export function endingList(value: unknown): EndingSession[] {
+  if (!Array.isArray(value)) return []
+  const list: EndingSession[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object') continue
+    const { uid, sessionId, refreshToken, authTime } = item as Record<string, unknown>
+    if (typeof uid !== 'string' || !uidPattern.test(uid) || typeof sessionId !== 'string' || !/^[A-Za-z0-9_-]{8,128}$/.test(sessionId) ||
+        typeof refreshToken !== 'string' || !refreshToken || refreshToken.length > 16384 || !Number.isSafeInteger(authTime) || Number(authTime) <= 0) continue
+    if (list.some(entry => entry.sessionId === sessionId)) continue
+    list.push({ uid, sessionId, refreshToken, authTime: Number(authTime) })
+  }
+  return list.slice(-64)
 }
 interface AccountIndex { version: 1; order: string[]; active: string | null }
 const uidPattern = /^[A-Za-z0-9_-]{1,160}$/
@@ -30,10 +47,12 @@ export class CredentialVault {
   private readonly indexFile: string
   private readonly codes: string
   private readonly rotations: string
+  private readonly ending: string
   constructor(private readonly directory: string) {
     this.legacy = join(directory, 'desktop-credential.bin'); this.accounts = join(directory, 'accounts'); this.indexFile = join(directory, 'accounts.json')
     this.codes = join(directory, 'backup-codes')
     this.rotations = join(directory, 'backup-code-rotations')
+    this.ending = join(directory, 'ending-sessions.bin')
   }
 
   private async requireEncryption(): Promise<void> {
@@ -171,16 +190,32 @@ export class CredentialVault {
       finally { encrypted.fill(0) }
     })
   }
+  // The kept code leaves while it is still `code` (iOS AuthService.forgetRefusedBackupCode): one the server refused.
+  forgetBackupCode(uid: string, code: string): Promise<void> {
+    return this.ordered(async () => {
+      const target = join(this.codes, `${identifier(uid)}.bin`)
+      let encrypted: Buffer
+      try { encrypted = await readFile(target) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw new AuthenticationFailure('storage') }
+      let kept: string
+      try { await this.requireEncryption(); kept = (await safeStorage.decryptStringAsync(encrypted)).result }
+      catch { throw new AuthenticationFailure('storage') }
+      finally { encrypted.fill(0) }
+      if (kept !== code) return
+      try { await unlink(target) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new AuthenticationFailure('storage') }
+    })
+  }
   // A3 §4: a recovery code change on its way — the code it proves ownership with and the new one — kept encrypted from
   // the moment the new code is made until the server answers, so it can be sent again after a restart and neither code
-  // is lost meanwhile. One per account.
-  savePendingRotation(uid: string, rotation: { old: string; next: string }): Promise<void> {
+  // is lost meanwhile. One per account. A change made by the account's identity has no old code (A3 §9, byProvider).
+  savePendingRotation(uid: string, rotation: Rotation): Promise<void> {
     return this.ordered(async () => {
-      if (![rotation.old, rotation.next].every(code => /^[A-Z0-9-]{1,64}$/.test(code))) throw new AuthenticationFailure('storage')
+      const record = rotationRecord(rotation)
+      if (!record) throw new AuthenticationFailure('storage')
       try {
         await this.requireEncryption()
         await mkdir(this.rotations, { recursive: true, mode: 0o700 })
-        const encrypted = await safeStorage.encryptStringAsync(JSON.stringify({ old: rotation.old, next: rotation.next }))
+        const encrypted = await safeStorage.encryptStringAsync(JSON.stringify(record))
         try {
           const target = join(this.rotations, `${identifier(uid)}.bin`), pending = `${target}.pending`
           const file = await open(pending, 'w', 0o600)
@@ -191,16 +226,14 @@ export class CredentialVault {
       } catch { throw new AuthenticationFailure('storage') }
     })
   }
-  pendingRotation(uid: string): Promise<{ old: string; next: string } | null> {
+  pendingRotation(uid: string): Promise<Rotation | null> {
     return this.ordered(async () => {
       let encrypted: Buffer
       try { encrypted = await readFile(join(this.rotations, `${identifier(uid)}.bin`)) }
       catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw new AuthenticationFailure('storage') }
       try {
         await this.requireEncryption()
-        const value = JSON.parse((await safeStorage.decryptStringAsync(encrypted)).result) as { old?: unknown; next?: unknown }
-        const valid = (code: unknown): code is string => typeof code === 'string' && /^[A-Z0-9-]{1,64}$/.test(code)
-        return valid(value.old) && valid(value.next) ? { old: value.old, next: value.next } : null
+        return rotationRecord(JSON.parse((await safeStorage.decryptStringAsync(encrypted)).result))
       } catch { throw new AuthenticationFailure('storage') }
       finally { encrypted.fill(0) }
     })
@@ -211,6 +244,42 @@ export class CredentialVault {
       for (const file of [target, `${target}.pending`]) {
         try { await unlink(file) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new AuthenticationFailure('storage') }
       }
+    })
+  }
+  // auth/session-enders.ts: sessions this device still has to end, each with its own credential (tdesktop writes its
+  // keys to destroy with the others). Not an account: nothing here is ever restored. Unreadable reads as none.
+  endingSessions(): Promise<EndingSession[]> {
+    return this.ordered(async () => {
+      let encrypted: Buffer
+      try { encrypted = await readFile(this.ending) }
+      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw new AuthenticationFailure('storage') }
+      try {
+        await this.requireEncryption()
+        return endingList(JSON.parse((await safeStorage.decryptStringAsync(encrypted)).result))
+      } catch { return [] }
+      finally { encrypted.fill(0) }
+    })
+  }
+  saveEndingSessions(list: EndingSession[]): Promise<void> {
+    return this.ordered(async () => {
+      const value = endingList(list)
+      try {
+        if (!value.length) {
+          for (const file of [this.ending, `${this.ending}.pending`]) {
+            try { await unlink(file) } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+          }
+          return
+        }
+        await this.requireEncryption()
+        await mkdir(this.directory, { recursive: true, mode: 0o700 })
+        const encrypted = await safeStorage.encryptStringAsync(JSON.stringify(value))
+        try {
+          const pending = `${this.ending}.pending`, file = await open(pending, 'w', 0o600)
+          try { await file.writeFile(encrypted); await file.sync() }
+          finally { await file.close() }
+          await rename(pending, this.ending)
+        } finally { encrypted.fill(0) }
+      } catch { throw new AuthenticationFailure('storage') }
     })
   }
   remove(uid: string): Promise<void> {

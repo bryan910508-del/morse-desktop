@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { test } from 'node:test'
-import { AuthenticationFailure, type DesktopAuthConfiguration } from '../../src/main/auth/contracts'
+import { AuthenticationFailure, PasswordNeeded, type DesktopAuthConfiguration } from '../../src/main/auth/contracts'
 import { FirebaseAuthenticationAPI, failureFromBody } from '../../src/main/auth/firebase-rest'
 import { decodeQrIssue, decodeQrRedeem, newQrAttempt, qrSwitchOn } from '../../src/main/auth/qr-login'
 import { qrLoginLink } from '../../src/shared/auth'
@@ -25,7 +25,10 @@ test('the issue and redeem answers are read strictly', () => {
   assert.deepEqual(decodeQrRedeem({ state: 'approved', customToken: 'ct', uid: 'u1', userId: 'minji', displayName: '민지', sessionId: 'session-0001' }),
     { state: 'approved', profile: { uid: 'u1', userId: 'minji', displayName: '민지' }, customToken: 'ct', sessionId: 'session-0001' })
   assert.throws(() => decodeQrRedeem({ state: 'approved', customToken: 'ct', uid: 'u1', userId: 'minji', sessionId: 'x' }), AuthenticationFailure, 'a server session id is required')
-  assert.deepEqual(decodeQrRedeem({ state: 'password-needed', hint: '고양이', passwordCheck: {} }), { state: 'password-needed', hint: '고양이' })
+  // A13-2 ②: a two-step account's answer is the held token, its session and the hint — the sign-in goes to the password step.
+  assert.deepEqual(decodeQrRedeem({ state: 'password-needed', customToken: 'held', uid: 'u1', userId: 'minji', sessionId: 'session-0001', hint: '고양이' }),
+    { state: 'password-needed', profile: { uid: 'u1', userId: 'minji', displayName: 'minji' }, customToken: 'held', sessionId: 'session-0001', hint: '고양이' })
+  assert.throws(() => decodeQrRedeem({ state: 'password-needed', hint: '고양이' }), AuthenticationFailure, 'no held token, no step')
 })
 
 test('the server switch is on only when it says so', () => {
@@ -42,6 +45,20 @@ test('a switched-off or finished attempt has its own failure; other kinds read a
     assert.equal(failureFromBody(body(reason), 400, 'qr').code, 'qr-expired', reason)
   assert.equal(failureFromBody(body('poll-too-fast', 'RESOURCE_EXHAUSTED'), 429, 'qr').code, 'rate-limited')
   assert.equal(failureFromBody(body('qr-login-disabled'), 400, 'plain').code, 'protocol', 'only the QR callables read these reasons')
+})
+
+test('A13-2 ②: «password-needed» from any call is the password step, with its hint and a waiting reset', () => {
+  const needed = (status: string, details: Record<string, unknown>) => failureFromBody({ error: { status, message: 'held', details: { reason: 'password-needed', ...details } } }, 400, 'plain')
+  const session = needed('FAILED_PRECONDITION', { hint: '고양이', resetAt: 1_800_000_000_000 })
+  assert.ok(session instanceof PasswordNeeded)
+  assert.equal(session.code, 'password-needed')
+  assert.equal((session as PasswordNeeded).hint, '고양이')
+  assert.equal((session as PasswordNeeded).resetAt, 1_800_000_000_000)
+  const wrapper = needed('PERMISSION_DENIED', { hint: 'x'.repeat(100), resetAt: -1 })
+  assert.ok(wrapper instanceof PasswordNeeded)
+  assert.equal((wrapper as PasswordNeeded).hint.length, 64)
+  assert.equal((wrapper as PasswordNeeded).resetAt, null)
+  assert.ok(failureFromBody({ error: { status: 'FAILED_PRECONDITION', message: 'held', details: { reason: 'password-needed' } } }, 400, 'qr') instanceof PasswordNeeded, 'on the QR calls as well')
 })
 
 const appId = '1:123713400904:web:test'
