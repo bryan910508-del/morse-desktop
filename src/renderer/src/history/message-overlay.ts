@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { useSyncExternalStore } from 'react'
 import type { ChatMessage, MessagePoll } from '../../../shared/model'
 import type { MessageActionsSnapshot, ReactionSummary } from '../../../shared/message-actions'
@@ -6,7 +8,8 @@ import { errorText } from '../app/format'
 import { tr } from '../../../shared/i18n'
 
 // HistoryItem local state: an edit, delete or reaction is shown immediately.
-// The durable action queue in main applies it; a failure restores the item.
+// The durable action queue in main applies it; a failed edit, reaction or vote restores the item, a failed delete does
+// not (B165, below).
 type Change = { id: string; kind: 'edit'; text: string; version: string } | { id: string; kind: 'delete'; version: string } | { id: string; kind: 'reaction'; reactions: ReactionSummary[]; version: string }
   | { id: string; kind: 'poll-vote'; poll: MessagePoll; version: string }
 const changes = new Map<string, Change>()
@@ -18,9 +21,12 @@ export function useMessageOverlay(): number { return useSyncExternalStore(subscr
 const key = (chatId: string, messageId: string): string => `${chatId}/${messageId}`
 
 // B101 (§34): a message deleted for everyone is gone from this device at once and stays gone — whatever else changes
-// on the server copy meanwhile (a reaction, a read mark) — until the delete lands (the copy disappears) or the queue
-// says it failed (reconcileActions puts it back), as tdesktop destroys the item when the request goes and restores it
-// only on failure (data/data_histories.cpp:942, 1019-1030). An edit or a reaction still gives way to a newer copy.
+// on the server copy meanwhile (a reaction, a read mark) — until the delete lands (the copy disappears). tdesktop
+// destroys the item in the same pass as the request (data/data_histories.cpp:1019-1030) and its request's fail is
+// only `finish` (:797-801, nothing put back), so a delete the queue reports as failed is said in a toast and stays
+// gone from this window too (B165) until the app is opened again, as tdesktop's destroyed item stays gone until its
+// history is read from the server again. Only a delete the queue never took
+// (mutate below) comes back, since nothing was asked. An edit or a reaction still gives way to a newer copy.
 export function overlayMessage(message: ChatMessage): ChatMessage | null {
   const change = changes.get(key(message.chatId, message.id))
   if (!change) return message
@@ -61,35 +67,37 @@ export function reconcileActions(accountUid: string, chatId: string, snapshot: M
     }
     if (item.state !== 'failed') continue
     const id = key(chatId, item.messageId), change = changes.get(id)
-    if (change?.id === item.id) { changes.delete(id); touch() }
+    if (change?.id === item.id && change.kind !== 'delete') { changes.delete(id); touch() }
     controller.toast(item.reason || tr('메시지 변경을 적용하지 못했습니다.'), 'error')
     void window.morse.dismissMessageAction(accountUid, chatId, item.id).catch(() => {})
   }
 }
 
-async function mutate(accountUid: string, message: ChatMessage, change: Change, request: { kind: 'edit'; text: string } | { kind: 'delete' } | { kind: 'reaction'; reactions: string[] } | { kind: 'poll-vote'; options: number[] }): Promise<void> {
+// `quiet`: the caller says a failure itself (several at once, said once); the change is put back all the same.
+async function mutate(accountUid: string, message: ChatMessage, change: Change, request: { kind: 'edit'; text: string } | { kind: 'delete' } | { kind: 'reaction'; reactions: string[] } | { kind: 'poll-vote'; options: number[] }, quiet = false): Promise<boolean> {
   const id = key(message.chatId, message.id)
   changes.set(id, change); touch()
-  try { await window.morse.mutateMessage(accountUid, message.chatId, { id: change.id, messageId: message.id, version: message.version, ...request }) }
+  try { await window.morse.mutateMessage(accountUid, message.chatId, { id: change.id, messageId: message.id, version: message.version, ...request }); return true }
   catch (error) {
     if (changes.get(id)?.id === change.id) { changes.delete(id); touch() }
-    controller.toast(errorText(error, tr('메시지 변경을 저장하지 못했습니다.')), 'error')
+    if (!quiet) controller.toast(errorText(error, tr('메시지 변경을 저장하지 못했습니다.')), 'error')
+    return false
   }
 }
 
-export function editMessage(accountUid: string, message: ChatMessage, text: string): Promise<void> {
+export function editMessage(accountUid: string, message: ChatMessage, text: string): Promise<boolean> {
   const change: Change = { id: crypto.randomUUID(), kind: 'edit', text, version: message.version }
   return mutate(accountUid, message, change, { kind: 'edit', text })
 }
-export function deleteMessage(accountUid: string, message: ChatMessage): Promise<void> {
-  return mutate(accountUid, message, { id: crypto.randomUUID(), kind: 'delete', version: message.version }, { kind: 'delete' })
+export function deleteMessage(accountUid: string, message: ChatMessage, quiet = false): Promise<boolean> {
+  return mutate(accountUid, message, { id: crypto.randomUUID(), kind: 'delete', version: message.version }, { kind: 'delete' }, quiet)
 }
 // A vote shows at once, with this account's own choice and its own tally moved, and gives way to the
 // room's copy when that copy changes. Telegram does the same (TelegramMediaPoll is replaced when the
 // server's results arrive), and the counts shown meanwhile are only ever this account's own change.
-export function votePoll(accountUid: string, message: ChatMessage, options: number[]): Promise<void> {
+export function votePoll(accountUid: string, message: ChatMessage, options: number[]): Promise<boolean> {
   const poll = message.poll
-  if (!poll || poll.closed) return Promise.resolve()
+  if (!poll || poll.closed) return Promise.resolve(false)
   const chosen = [...new Set(options)].sort((a, b) => a - b)
   const mine = poll.mine ?? []
   const voteCounts = poll.voteCounts.map((count, index) => {
@@ -102,11 +110,11 @@ export function votePoll(accountUid: string, message: ChatMessage, options: numb
     poll: { ...poll, mine: chosen, voteCounts, totalVoters } }
   return mutate(accountUid, message, change, { kind: 'poll-vote', options: chosen })
 }
-export function toggleReaction(accountUid: string, message: ChatMessage, emoji: string): Promise<void> {
+export function toggleReaction(accountUid: string, message: ChatMessage, emoji: string): Promise<boolean> {
   const selected = new Set(message.reactions.filter(reaction => reaction.selected).map(reaction => reaction.emoji))
   const adding = !selected.has(emoji)
   if (adding) selected.add(emoji); else selected.delete(emoji)
-  if (selected.size > 20) { controller.toast(tr('반응은 20개까지 선택할 수 있습니다.'), 'error'); return Promise.resolve() }
+  if (selected.size > 20) { controller.toast(tr('반응은 20개까지 선택할 수 있습니다.'), 'error'); return Promise.resolve(false) }
   const me = { uid: accountUid, name: tr('나') }
   const reactions = message.reactions.map(reaction => reaction.emoji === emoji ? { ...reaction, selected: adding, count: Math.max(0, reaction.count + (adding ? 1 : -1)),
     users: adding ? [me, ...(reaction.users ?? []).filter(user => user.uid !== accountUid)] : reaction.users?.filter(user => user.uid !== accountUid) } : reaction).filter(reaction => reaction.count > 0)

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { PeerRowName } from '../ui/official-mark'
 import { Bookmark, Search } from 'lucide-react'
 import type { ChatMessage } from '../../../shared/model'
 import type { ForwardProgress, ForwardTarget } from '../../../shared/forward'
@@ -119,7 +120,7 @@ function ShareBox({ accountUid, messages, origin, close }: { accountUid: string;
           const checked = selected.includes(target.chatId)
           return <button key={target.chatId} type="button" className="peer-row" aria-pressed={checked} disabled={busy || (!checked && chosen >= maxForwardTargets)} onClick={() => toggle(target.chatId)}>
             <DialogAvatar chatId={target.chatId} name={target.title} size={42} />
-            <span className="peer-row-text"><strong className="ellipsis">{target.title}</strong><small>{target.kind === 'group' ? tr('그룹', [], 'kind') : tr('개인 대화')}</small></span>
+            <span className="peer-row-text"><PeerRowName name={target.title} official={target.official} /><small>{target.kind === 'group' ? tr('그룹', [], 'kind') : tr('개인 대화')}</small></span>
             <RoundCheck checked={checked} />
           </button>
         })}</>}

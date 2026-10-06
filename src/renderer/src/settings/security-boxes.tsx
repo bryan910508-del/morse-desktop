@@ -1,4 +1,8 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { useEffect, useState, type ReactNode } from 'react'
+import { PeerRowName } from '../ui/official-mark'
+import { useOfficialMarks } from '../app/official-marks'
 import { Hand, KeyRound, Laptop, Monitor, Smartphone, X } from 'lucide-react'
 import { lastSeenModes, sessionPlace, sessionQrLine, sessionTtlDayOptions, type BlockedUser, type LastSeenMode, type LastSeenPrivacy, type SignInSession, type SignInSessions } from '../../../shared/account-tools'
 import { controller } from '../app/ui'
@@ -45,6 +49,7 @@ function LastSeenBox({ accountUid, close }: { accountUid: string; close(): void 
 
 function BlockedUsersBox({ accountUid, close }: { accountUid: string; close(): void }) {
   const users = useBlockedUsers(accountUid)
+  const marks = useOfficialMarks(accountUid, 'blocked', users?.map(user => user.uid) ?? [])
   const [error, setError] = useState(''), [busy, setBusy] = useState<string | null>(null)
   useEffect(() => { void loadBlockedUsers(accountUid).catch(reason => setError(errorText(reason, tr('차단 목록을 불러오지 못했습니다.')))) }, [accountUid])
   async function unblock(user: BlockedUser): Promise<void> {
@@ -58,7 +63,7 @@ function BlockedUsersBox({ accountUid, close }: { accountUid: string; close(): v
       : !users.length ? <div className="empty-state">{tr('차단한 사용자가 없습니다.')}</div>
         : <div className="peer-list tall">{users.map(user => <div key={user.uid} className="peer-row">
           <UserAvatar uid={user.uid} name={user.displayName} size={42} />
-          <span className="peer-row-text"><strong className="ellipsis">{user.displayName}</strong><small>{user.userId ? `@${user.userId}` : ''}</small></span>
+          <span className="peer-row-text"><PeerRowName name={user.displayName} official={marks[user.uid]} /><small>{marks[user.uid] ? '' : user.userId ? `@${user.userId}` : ''}</small></span>
           <button className="button flat" disabled={busy !== null} onClick={() => { void unblock(user) }}>{busy === user.uid ? <Spinner size={14} /> : tr('해제', [], 'unblock')}</button>
         </div>)}</div>}
   </Box>
@@ -155,7 +160,9 @@ function SessionsBox({ accountUid, close }: { accountUid: string; close(): void 
       : { text: tr('다른 모든 세션을 종료할까요?'), confirm: tr('종료'), danger: true })) return
     setBusy(true)
     try {
-      await trackWrite(window.morse.revokeSignInSessions(accountUid, target?.id ?? null))
+      const { gone } = await trackWrite(window.morse.revokeSignInSessions(accountUid, target?.id ?? null))
+      // B175: the server no longer had it — another device ended it first; the list is read again below.
+      if (gone) controller.toast(tr('이미 끝난 세션이에요.'))
       setValue(state => state && { ...state, sessions: state.sessions.filter(session => session.current || (target !== null && session.id !== target.id)) })
       setReload(count => count + 1)
     } catch (reason) { controller.toast(errorText(reason, tr('세션을 종료하지 못했습니다.')), 'error') }

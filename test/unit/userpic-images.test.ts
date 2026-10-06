@@ -66,7 +66,7 @@ function peerAvatar(known: { owner: string; raw: string }[]) {
   registerUserpicCache(auth, cache)
   let events: WatchEvents | null = null
   const reader = { watch: (_t: unknown, _s: AbortSignal, value: WatchEvents) => { events = value; return () => {} } } as unknown as FirestoreReader
-  const binding = { uid: 'peer1', reader, personalURL: null }
+  const binding = { uid: 'peer1', reader, personalURL: null, contact: true }
   registerPeerProfiles(auth, new PeerProfiles('me1', auth, auth.signal, () => {}))
   const create = (): DirectAvatar => new DirectAvatar(binding, auth, () => binding, async () => new Response(null, { status: 403 }), () => {}, '__direct-avatar')
   return { cache, create, commands, events: () => events! }

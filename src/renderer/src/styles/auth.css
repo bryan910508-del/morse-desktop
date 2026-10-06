@@ -1,3 +1,5 @@
+/* Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+   Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL. */
 .intro { position: fixed; inset: 0; display: grid; place-items: center; overflow: auto; background: var(--window-bg) }
 .intro-drag { position: fixed; top: 0; left: 0; right: 0; height: 40px; -webkit-app-region: drag }
 .intro-step { width: min(360px, calc(100vw - 48px)); display: grid; justify-items: center; gap: 12px; padding: 32px 0; text-align: center }
@@ -60,5 +62,9 @@
 .intro-qr-code { display: flex; align-items: center; justify-content: center; width: 216px; min-height: 216px; border-radius: 12px; background: #fff }
 .intro-qr-code .qr-code { display: block }
 .intro-qr-code .button { margin: 0 12px }
-.intro-qr-steps { margin: 0; padding-left: 20px; font-size: var(--t-caption); line-height: 1.6; color: var(--text-weak); align-self: stretch }
+/* B166: tdesktop intro_qr.cpp:322-357 — a 292px block in the middle, each step left-aligned 20px in, its «N.» in
+   semibold just left of the text (introQrLabelsWidth, introQrStepMargins). The screen's centred text is not inherited. */
+.intro-qr-steps { box-sizing: border-box; width: min(292px, 100%); margin: 0; padding: 0 0 0 20px; font-size: var(--t-caption); line-height: 1.5; color: var(--text-weak); text-align: left; word-break: keep-all; overflow-wrap: anywhere }
+.intro-qr-steps li + li { margin-top: 6px }
+.intro-qr-steps li::marker { font-weight: 600; color: var(--text) }
 .intro-or { margin: 4px 0 8px; font-size: var(--t-caption); color: var(--text-weak); text-align: center }

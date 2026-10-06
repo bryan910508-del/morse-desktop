@@ -40,7 +40,7 @@ import { mkdirSync, chmodSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { parentPort, workerData } from 'node:worker_threads'
 import { isPlainDatabase, openEncryptedDatabase, rawKey } from './encrypted-database'
-import { identifier, draftText, outgoingText } from '../../shared/validation'
+import { identifier, draftText, sendableText } from '../../shared/validation'
 import { maxQueuedMessages } from '../../shared/delivery'
 import { textDigest } from '../messaging/text-identity'
 import type { DeliveryCommand, StoredIntent } from './delivery-protocol'
@@ -323,7 +323,7 @@ function execute(command: DeliveryCommand): unknown {
       db.transaction(() => {
         const wire = command.wire, digest = textDigest(wire)
         identifier(wire.id); identifier(wire.chatId)
-        if (wire.senderId !== uid || wire.type !== 'text' || wire.isEncrypted !== false || wire.protocolVersion !== 3 || outgoingText(wire.text) !== wire.text) throw new Error('Invalid text intent')
+        if (wire.senderId !== uid || wire.type !== 'text' || wire.isEncrypted !== false || wire.protocolVersion !== 3 || !sendableText(wire.text)) throw new Error('Invalid text intent')
         const peer = db.prepare('SELECT peer_uid FROM pending_directs WHERE chat_id=?').get(wire.chatId) as { peer_uid: string } | undefined
         if (peer && (wire.peerUid !== peer.peer_uid || wire.chatType !== 'direct')) throw Object.assign(new Error('Direct identity conflict'), { deliveryCode: 'conflict' })
         const old = db.prepare('SELECT chat_id,digest,forward_operation_id FROM intents WHERE id=?').get(wire.id) as { chat_id: string; digest: string; forward_operation_id: string | null } | undefined

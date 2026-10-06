@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 // «The connection is back: try now.» Telegram Desktop restarts every MTP session the moment the system says the
 // network is available again (mtproto/mtp_instance.cpp: _networkReachability->availableChanges() → restart()), and a
 // restart forgets the wait it was in (session_private.cpp SessionPrivate::restartNow: _retryTimeout = 1, the retry

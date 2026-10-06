@@ -3,13 +3,13 @@
 // with no row in it — a 1:1 that left the list (nothing left after a delete for everyone, or hidden here), contact or
 // not, and a contact with no 1:1 at all. Each person once; a row of the list or a new chat already shown wins.
 export interface UnlistedDirect { chatId: string; peerUid: string; title: string }
-export interface NoChatPerson { uid: string; title: string; chatId: string | null }
+export interface NoChatPerson { uid: string; title: string; chatId: string | null; official?: import('./model').OfficialKind }
 export function peopleWithoutRows(input: {
   matches(title: string): boolean
   listedPeers: ReadonlySet<string>
   pendingPeers: ReadonlySet<string>
   unlisted: readonly UnlistedDirect[]
-  contacts: readonly { uid: string; name: string }[]
+  contacts: readonly { uid: string; name: string; official?: import('./model').OfficialKind }[]
   self: string
 }, limit = 50): NoChatPerson[] {
   const out: NoChatPerson[] = [], seen = new Set<string>([...input.listedPeers, ...input.pendingPeers, input.self])
@@ -19,7 +19,7 @@ export function peopleWithoutRows(input: {
   }
   for (const contact of input.contacts) {
     if (seen.has(contact.uid) || !contact.name || !input.matches(contact.name)) continue
-    seen.add(contact.uid); out.push({ uid: contact.uid, title: contact.name, chatId: null })
+    seen.add(contact.uid); out.push({ uid: contact.uid, title: contact.name, chatId: null, ...(contact.official ? { official: contact.official } : {}) })
   }
   return out.slice(0, limit)
 }

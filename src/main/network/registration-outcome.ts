@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 // What a refused socket registration means for this device, from the server's `registrationFailed`
 // ({ error, reason }, talky-server index.js registrationFailure and the post-registration watches).
 //

@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { loadBlockedUsers, setBlocked, useBlockedUsers } from '../app/blocked-users'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowLeft, AtSign, Bell, Flag, Images, LayoutGrid, Camera, FileText, ImageOff, LogOut, MessageCircle, Pencil, Radio, Star, Trash2, UserMinus, UserPlus, Users, X, ShieldOff, Timer } from 'lucide-react'
@@ -25,8 +27,9 @@ import { Box, confirmBox } from '../ui/layers'
 import { showChatAutoDeleteBox } from '../boxes/auto-delete-box'
 import { autoDeleteSummary, canChangeAutoDelete } from '../../../shared/chat-auto-delete'
 import { popupMenu, pointFor } from '../ui/popup-menu'
-import { UserAvatar } from '../ui/user-avatar'
-import { OfficialMark, officialLabel } from '../ui/official-mark'
+import { DialogAvatar, UserAvatar } from '../ui/user-avatar'
+import { OfficialMark, PeerRowName, officialLabel } from '../ui/official-mark'
+import { useOfficialMarks } from '../app/official-marks'
 import { usePresence } from '../app/presence'
 import { openPersonalChannel, PersonalChannelSection, usePersonalChannelCard } from './personal-channel'
 import { tr } from '../../../shared/i18n'
@@ -150,7 +153,7 @@ export function ContactProfile({ accountUid, uid, fromChat }: { accountUid: stri
   }
   const personal = live?.personalPhoto.status === 'ready' ? live.personalPhoto : null
   // The picture this profile shows, and the one its cover opens.
-  const coverUrl = personalUrl ?? (profile.photo.status === 'ready' ? profile.photo.url : profile.visibility === 'visible' && profile.photo.status !== 'none' ? listUrl : null)
+  const coverUrl = personalUrl ?? (profile.photo.status === 'ready' ? profile.photo.url : profile.photoShown && profile.photo.status !== 'none' ? listUrl : null)
   return <>
     <div className="info-cover">
       <Avatar name={profile.displayName} url={coverUrl} size={88} onOpen={() => { if (coverUrl) showPhotoViewer(coverUrl, profile.displayName, { accountUid, peerUid: uid }) }} />
@@ -167,7 +170,8 @@ export function ContactProfile({ accountUid, uid, fromChat }: { accountUid: stri
       {profile.visibility === 'visible' && profile.userId && <InfoRow icon={<AtSign size={20} />} value={`@${profile.userId}`} label={tr('Morse ID · 눌러서 복사')} onClick={() => { void copyId() }} />}
       {profile.visibility === 'visible' && profile.bio && <InfoRow icon={<FileText size={20} />} value={profile.bio} label={tr('소개')} />}
       {profile.local.status === 'ready' && profile.local.note && <InfoRow icon={<Pencil size={20} />} value={profile.local.note} label={tr('이 기기의 메모')} />}
-      {profile.visibility === 'hidden' && <p className="info-note">{tr('서로 연락처에 추가하면 Morse ID, 소개와 사진이 표시됩니다.')}</p>}
+      {/* B153: an official account offers nothing more to a contact — no note (Telegram has none). */}
+      {profile.visibility === 'hidden' && !official && <p className="info-note">{tr('서로 연락처에 추가하면 Morse ID, 소개와 사진이 표시됩니다.')}</p>}
     </div>
     {inContacts && <div className="info-section">
       <ActionRow icon={<Pencil size={20} />} label={tr('연락처 편집')} disabled={!live || live.local.status !== 'ready'} onClick={() => {
@@ -200,6 +204,22 @@ function GroupInfo({ accountUid, dialog, onProfile }: { accountUid: string; dial
     if (!ready || !photo?.hasPhoto || photo.status !== 'idle') return
     void window.morse.loadGroupPhoto(accountUid, { requestId, chatId: dialog.id, version: current.version }).catch(() => {})
   }, [ready, photo?.hasPhoto, photo?.status, current?.version])
+  // B178 §2-5: the members' official marks, read only for the rows on screen (a group may hold thousands).
+  const memberList = useRef<HTMLDivElement>(null)
+  const [onScreen, setOnScreen] = useState<string[]>([])
+  const marks = useOfficialMarks(accountUid, 'members', onScreen)
+  const memberRows = current?.status === 'ready' ? current.members : null
+  useEffect(() => {
+    const root = memberList.current
+    if (!root || typeof IntersectionObserver === 'undefined') return
+    const seen = new Set<string>()
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) { const uid = (entry.target as HTMLElement).dataset.uid; if (uid) { if (entry.isIntersecting) seen.add(uid); else seen.delete(uid) } }
+      setOnScreen([...seen])
+    })
+    for (const row of root.querySelectorAll<HTMLElement>('[data-uid]')) observer.observe(row)
+    return () => observer.disconnect()
+  }, [memberRows])
   if (!current || current.status === 'loading') return <div className="empty-state"><Spinner size={22} /></div>
   if (current.status !== 'ready') return <div className="empty-state">{current.message || tr('그룹 정보를 확인할 수 없습니다.')}</div>
   const members = current.members, version = current.version
@@ -293,11 +313,11 @@ function GroupInfo({ accountUid, dialog, onProfile }: { accountUid: string; dial
     </div>
     <div className="section-label">{tr('참여자 {0}명', [members.length])}</div>
     {plain && self && capacity > 0 && <ActionRow icon={<UserPlus size={20} />} label={tr('참여자 추가')} onClick={() => showAddMembersBox(accountUid, dialog)} />}
-    <div className="info-members">{members.map(member => <button key={member.uid} type="button" className="member-row"
+    <div className="info-members" ref={memberList}>{members.map(member => <button key={member.uid} type="button" data-uid={member.uid} className="member-row"
       disabled={member.self || (!removable(member) && (member.withdrawn || (!member.canOpenContact && !member.canAddContact)))}
       onClick={event => openMember(member, pointFor(event, event.currentTarget))}>
       <UserAvatar uid={member.uid} name={member.displayName} size={40} kind={member.withdrawn ? 'deleted' : undefined} roomOnly={current.discussion} />
-      <span className="member-row-text"><strong className="ellipsis">{member.displayName}</strong><small>{member.withdrawn ? tr('탈퇴한 계정') : member.self ? tr('나') : ''}</small></span>
+      <span className="member-row-text"><PeerRowName name={member.displayName} official={member.withdrawn ? null : marks[member.uid]} /><small>{member.withdrawn ? tr('탈퇴한 계정') : member.self ? tr('나') : ''}</small></span>
       {member.owner && <span className="member-badge">{tr('방장')}</span>}
     </button>)}</div>
     {plain && self && <div className="info-section">
@@ -317,6 +337,8 @@ export function InfoPanel({ accountUid, chatId }: { accountUid: string; chatId: 
   const blockedUsers = useBlockedUsers(accountUid)
   const peerUid = dialog?.kind === 'direct' ? dialog.participantUids.find(uid => uid !== accountUid) ?? null : !dialog ? pending?.peerUid ?? null : null
   const inContacts = useDesktop(state => peerUid ? Boolean(state?.contacts?.items.some(item => item.uid === peerUid)) : false)
+  // B178 §2-2: the chat's mark, or — before its first message — its peer's.
+  const peerOfficial = dialog ? dialog.official : pending?.official
   const heading = media ? tr('공유된 미디어') : profile ? tr('연락처 정보') : dialog?.kind === 'group' ? tr('그룹 정보') : tr('정보')
   // B58 (Telegram info_content_widget.cpp:596-614): fingers right over the panel go back a step, or close it.
   const panel = useRef<HTMLElement>(null)
@@ -362,9 +384,11 @@ export function InfoPanel({ accountUid, chatId }: { accountUid: string; chatId: 
             : <div className="info-cover">
               {!dialog && pending ? <PeerAvatar id={pending.chatId} name={pending.displayName} image={pending.avatar ?? null} surface="dialogs" size={88} />
                 : dialog?.service ? <PeerAvatar id={dialog.id} name={dialog.title} image={dialog.avatar ?? null} surface="dialogs" size={88} />
-                : <Avatar name={dialog?.title ?? pending?.displayName ?? '?'} size={88} kind={dialog?.kind === 'secret' ? 'secret' : undefined} />}
-              <h2 className="selectable">{dialog?.title ?? pending?.displayName ?? ''}{dialog?.official && <OfficialMark kind={dialog.official} />}</h2>
-              <span>{dialog?.kind === 'secret' ? tr('비밀 대화') : dialog?.service ? tr('서비스 알림') : dialog?.official ? officialLabel(dialog.official) : tr('연락처에 없는 사용자')}</span>
+                // B153: the picture the chat list shows for this chat (its rule — an official account's to anyone).
+                : dialog?.kind === 'direct' ? <DialogAvatar chatId={dialog.id} name={dialog.title} size={88} />
+                  : <Avatar name={dialog?.title ?? pending?.displayName ?? '?'} size={88} kind={dialog?.kind === 'secret' ? 'secret' : undefined} />}
+              <h2 className="selectable">{dialog?.title ?? pending?.displayName ?? ''}{peerOfficial && <OfficialMark kind={peerOfficial} />}</h2>
+              <span>{dialog?.kind === 'secret' ? tr('비밀 대화') : dialog?.service ? tr('서비스 알림') : peerOfficial ? officialLabel(peerOfficial) : tr('연락처에 없는 사용자')}</span>
             </div>}
       {/* Telegram's profile of a non-contact offers "Add to contacts"; iOS UnknownProfileView the same. */}
       {/* B113: the official notice account is no person to add, block or report (tdesktop isServiceUser, info_profile_top_bar.cpp:1188-1196). */}

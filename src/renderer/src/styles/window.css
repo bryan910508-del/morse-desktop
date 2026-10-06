@@ -1,3 +1,5 @@
+/* Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+   Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL. */
 .boot { position: fixed; inset: 0; display: grid; place-content: center; justify-items: center; gap: 14px; background: var(--window-bg); color: var(--text-weak); text-align: center }
 .boot img { width: 72px; height: 72px; border-radius: 18px }
 .boot h1 { margin: 0; font-size: var(--t-headline); color: var(--text) }

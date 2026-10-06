@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { autoDownloadLimit, autoDownloadSource, type AutoDownloadLimits } from '../../shared/auto-download'
 import { AccountToolsApi } from '../api/account-tools'
 import { TwoStepSettingsApi } from '../api/two-step-settings'
@@ -135,6 +137,8 @@ import { maxStickerBytes, stickerContentType, type StickerItem, type StickerKind
 import type { ContactFlagCommand } from '../storage/contact-flag-table'
 import { generalCategoryId, type ForumCategory } from '../../shared/forum'
 import { deleteTopicMessages, TopicDeletions, TopicDeletionStop } from './forum-topic-deletion'
+import { ChatListTops, expiredTop } from './chat-list-tops'
+import { messageListPreview } from '../../shared/chat-list-preview'
 import { ChannelReadMarks } from './channel-read-marks'
 import type { ChatFlagCommand } from '../storage/chat-flag-table'
 import { maxHiddenMessagesPerCall, type HiddenMessageCommand } from '../storage/hidden-message-table'
@@ -151,7 +155,7 @@ import { canReply, type ReplyBinding, type ReplyDraftSnapshot } from '../../shar
 import { canForwardMessage, canForwardMedia, canForwardText, savedMessagesFirst, type ForwardProgress, type ForwardRequest, type ForwardSource, type ForwardTarget } from '../../shared/forward'
 import { prepareForwardMedia, type ForwardMediaSource } from '../media/forward-media'
 import { inquiryIdentifier, inquiryOfQueueChatId, inquiryQueueChatId, type InquiryContactRequest, type InquiryForwardRequest, type InquiryForwardRoom } from '../../shared/channel-inquiries'
-import { outgoingText } from '../../shared/validation'
+import { outgoingText, trimChatInput } from '../../shared/validation'
 import { tr } from '../../shared/i18n'
 import type { VideoEdit } from '../media/attachment-staging'
 import { registerUserpicCache, UserpicCache } from './userpic-cache'
@@ -283,6 +287,9 @@ export class AccountSession {
   // markMorseReactionSeen acknowledgements sent (chatId -> messageId:reactionVersion), hidden from the list at once.
   private readonly seenReactions = new Map<string, string>()
   private readonly topicDeletions: TopicDeletions
+  private readonly chatListTops = new ChatListTops()
+  private readonly unarchivedNotices = new Set<string>()
+  private rowExpiryTimer: ReturnType<typeof setTimeout> | null = null
   private readonly channelReadMarks: ChannelReadMarks
   readonly channelInquiries: ChannelInquiries
   // The chat list's 1:1 inquiry rooms, watched for the whole session.
@@ -403,7 +410,7 @@ export class AccountSession {
           if (this.selected?.dialog.summary.id === chatId) this.selected.localRepliesChanged()
         }
         events.outgoing(chatId, snapshot)
-      }, () => { if (!this.closed) events.changed() }, newChatAutoDelete)
+      }, () => { if (!this.closed) { this.followPeople(); events.changed() } }, newChatAutoDelete)
     void this.userpics.load().then(() => { if (!this.closed) { this.dialogAvatars.prune(); this.contacts.listAvatars.prune(); events.changed() } })
     this.draftReply = new ReplyDraft(credentials.signal, command => this.delivery.replyState(command),
       (chatId, snapshot) => { if (!this.closed) events.reply(chatId, snapshot) })
@@ -634,7 +641,8 @@ export class AccountSession {
       (request, cutoff, done) => {
         if (this.closed || request.kind !== 'chat-clear') return
         this.hiddenChats.endClear(request.targetId)
-        if (done && cutoff !== null) void this.hiddenChats.noteCleared(request.targetId, cutoff)
+        // B154: an emptied official notice chat leaves the list (no mark that keeps a cleared chat listed).
+        if (done && cutoff !== null && !this.index.get(request.targetId)?.summary.service) void this.hiddenChats.noteCleared(request.targetId, cutoff)
         if (this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() }
       })
     void Promise.resolve().then(() => this.historyClears.load()).catch(() => {})
@@ -892,17 +900,27 @@ export class AccountSession {
       // A new 1:1 chat has no chat document until its first message; its row, header and info
       // follow the peer's live profile like Telegram's UserData instead of the name saved when it was opened.
       const pending = this.delivery.pendingDirects().find(item => item.chatId === chatId)
-      if (this.closed || this.locked || !reader || !pending || pending.peerUid === this.profile.uid || !this.contacts.has(pending.peerUid)) throw new Error(tr('현재 새 대화를 확인해 주세요.'))
-      return { uid: pending.peerUid, reader, personalURL: this.contacts.personalPhotos.url(pending.peerUid) }
+      // B180: anyone, contact or not (a «채팅으로 문의하기» chat with the support account) — the picture follows B153's rule.
+      if (this.closed || this.locked || !reader || !pending || pending.peerUid === this.profile.uid) throw new Error(tr('현재 새 대화를 확인해 주세요.'))
+      return { uid: pending.peerUid, reader, personalURL: this.contacts.personalPhotos.url(pending.peerUid), contact: this.contacts.has(pending.peerUid) }
     }
     if (this.closed || this.locked || this.status !== 'ready' || !doc?.updateTime || !dialog || !reader ||
       dialog.summary.kind !== 'direct' || chatId === `memo_${this.profile.uid}` || dialog.summary.participantUids.length !== 2 ||
       !dialog.summary.participantUids.includes(this.profile.uid)) throw new Error(tr('현재 개인 대화를 확인해 주세요.'))
     const uid = dialog.summary.participantUids.find(uid => uid !== this.profile.uid)
-    if (!uid || !this.contacts.has(uid)) throw new Error(tr('현재 연락처를 확인해 주세요.'))
+    // B180: a 1:1 with someone not on the contact list (the official notice account, the support account) has its picture
+    // too, by B153's rule: only what they show to everyone (PeerProfiles.photoFor).
+    if (!uid) throw new Error(tr('현재 연락처를 확인해 주세요.'))
     const info = participantSnapshot('direct-avatar', doc, dialog, () => false)
     if (info.discussion || !info.members.some(member => member.self && !member.withdrawn) || !info.members.some(member => member.uid === uid && !member.withdrawn)) throw new Error(tr('현재 참여자를 확인해 주세요.'))
-    return { uid, reader, personalURL: this.contacts.personalPhotos.url(uid) }
+    return { uid, reader, personalURL: this.contacts.personalPhotos.url(uid), contact: this.contacts.has(uid) }
+  }
+  // The people whose public profile this account follows besides its contacts: the other side of every 1:1 (B48), and
+  // of a new chat before its first message (B180 — its name, picture and official mark, contact or not).
+  private followPeople(): void {
+    if (this.closed) return
+    this.contacts.followPeers([...[...this.index.values()].flatMap(value => value.summary.kind === 'direct' ? value.summary.participantUids.filter(uid => uid !== this.profile.uid) : []),
+      ...this.delivery.pendingDirects().map(item => item.peerUid)])
   }
   private dialogAvatarSource(chatId: string): FirestoreDocument {
     const doc = this.chatRows.get(`${documents}/chats/${chatId}`), dialog = this.index.get(chatId)
@@ -1236,14 +1254,24 @@ export class AccountSession {
     const index = new Map<string, ReadDialog>(), unlisted = new Set<string>()
     const read = readDialogs(this.chatRows.values(), this.profile.uid)
     skipped += read.skipped
+    const now = Date.now()
+    let nextExpiry = Infinity
     for (const { doc, value } of read.dialogs) {
+      // B163 ④: the row's message expired — the next one this device holds, or no line (chat-list-tops.ts expiredTop).
+      if (!this.chatListTops.apply(value.summary) && !expiredTop(value.summary, value.topExpiresAt, now, this.openRowSource(value.summary.id)) &&
+        value.topExpiresAt !== undefined) nextExpiry = Math.min(nextExpiry, value.topExpiresAt)
       this.discussionHistory.apply(doc, value)
       // The server's boundary, before this device's own deletion moment replaces it.
       if (emptyRevokedDirect(value.summary, value.cutoff, `memo_${this.profile.uid}`) && value.cutoff && !this.hiddenChats.keepsCleared(value.summary.id, value.cutoff)) unlisted.add(value.summary.id)
+      // B154 §2-3: Telegram's 777000 leaves the list with its last message and comes back with the next one.
+      if (value.noticeless) unlisted.add(value.summary.id)
       withLocalDeletion(value, this.hiddenChats.cutoff(value.summary.id))
       this.topicDeletions.apply(value.summary)
       this.applyNames(value)
       this.chatFlags.apply(value.summary)
+      // B154 §2-4: the official notice chat is never archived (Telegram: DialogsActivity:9786, MessagesController:12393).
+      // One an earlier build or another device archived is shown in the list, and set back once in this run.
+      if (value.summary.service && value.summary.archived) { value.summary.archived = false; this.unarchiveNotices(value.summary.id) }
       const unseen = value.summary.unseenReaction
       if (unseen && this.seenReactions.get(value.summary.id) === `${unseen.messageId}:${unseen.reactionVersion}`) delete value.summary.unseenReaction
       value.summary.pinned = pins.get(value.summary.id)?.pinned ?? false
@@ -1251,10 +1279,12 @@ export class AccountSession {
       index.set(value.summary.id, value)
     }
     if (skipped) recordHistoryStep('dialog-skipped', String(skipped))
+    this.chatListTops.prune(id => index.has(id))
+    this.scheduleRowExpiry(nextExpiry)
     this.namesApplied = this.contacts.namesRevision
     // The other side of every 1:1 chat is followed by name, contact or not (B48).
-    this.contacts.followPeers([...index.values()].flatMap(value => value.summary.kind === 'direct' ? value.summary.participantUids.filter(uid => uid !== this.profile.uid) : []))
     this.index = index
+    this.followPeople()
     // A discussion row shows its channel's picture, so the channel documents follow the list.
     this.discussionAvatars.setVisible([...index.values()].flatMap(value =>
       value.summary.discussion && value.summary.channelId ? [value.summary.channelId] : []))
@@ -1499,7 +1529,7 @@ export class AccountSession {
       const peers = [...new Set(dialog.participantUids)].filter(uid => uid !== this.profile.uid)
       if (dialog.participantUids.length !== 2 || peers.length !== 1 || boolField(mapField(mapField(row.fields, 'participantInfo'), peers[0]!), 'accountDeleted')) return null
     }
-    return { chatId, title: dialog.title, kind: dialog.kind, preview: dialog.preview }
+    return { chatId, title: dialog.title, kind: dialog.kind, preview: dialog.preview, ...(dialog.official ? { official: dialog.official } : {}) }
   }
   forwardTargets(source: ForwardSource): ForwardTarget[] {
     if (!this.contextMessage(source.chatId, source.messageId, source.version)?.forward) throw new Error(tr('전달할 최신 메시지를 다시 선택해 주세요.'))
@@ -1808,6 +1838,9 @@ export class AccountSession {
   async clearChatHistory(chatId: string): Promise<'done' | 'unconfirmed'> {
     const dialog = this.index.get(chatId)?.summary
     if (this.closed || this.locked || !dialog) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    // B154 §2-2: the official notice chat's clear is its «대화 삭제» — clearMorseChatHistory for this account, and the row
+    // goes until the next notice.
+    if (dialog.service) return this.deleteChat(chatId, false)
     this.hiddenChats.beginClear(chatId)
     return this.historyClears.enqueue({ id: randomUUID(), kind: 'chat-clear', targetId: chatId, seen: seenTop(dialog.top), upTo: null })
   }
@@ -2007,11 +2040,35 @@ export class AccountSession {
   }
   async setChatFlags(chatId: string, patch: { muted?: boolean; archived?: boolean; category?: string | null }): Promise<'done'> {
     if (this.closed || this.locked || !this.index.has(chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    if (patch.archived && this.index.get(chatId)!.summary.service) throw new Error(tr('공식 알림 대화는 보관할 수 없어요.'))
     const forum = this.index.get(chatId)!.summary.forum
     if (patch.category && !forum?.categories.some(category => category.id === patch.category)) throw new Error(tr('카테고리를 다시 선택해 주세요.'))
     await this.chatFlags.set(chatId, patch)
     if (patch.muted !== undefined || patch.archived !== undefined) this.syncDialogPreference(chatId)
     return 'done'
+  }
+  // The open history's copy, for a row whose message expired (B163 ④): only with its newest page read.
+  private openRowSource(chatId: string): Parameters<typeof expiredTop>[3] {
+    const history = this.selected
+    if (!history || history.dialog.summary.id !== chatId) return null
+    const snapshot = history.snapshot
+    return { messages: snapshot.messages, newerAvailable: snapshot.newerAvailable, ready: snapshot.status === 'ready', preview: index => messageListPreview(snapshot.messages[index]!) }
+  }
+  // One timer for the account: the list is drawn again just after the soonest row's message expires — a second after,
+  // so the open history has dropped it from its own copy first (history-reader.ts publish).
+  private scheduleRowExpiry(at: number): void {
+    if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer)
+    this.rowExpiryTimer = null
+    if (this.closed || !Number.isFinite(at)) return
+    this.rowExpiryTimer = setTimeout(() => {
+      this.rowExpiryTimer = null
+      if (!this.closed && this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() }
+    }, Math.min(2147483647, Math.max(1000, at - Date.now() + 1000)))
+  }
+  private unarchiveNotices(chatId: string): void {
+    if (this.closed || this.locked || this.unarchivedNotices.has(chatId)) return
+    this.unarchivedNotices.add(chatId)
+    void this.chatFlags.set(chatId, { archived: false }).then(() => this.syncDialogPreference(chatId)).catch(() => {})
   }
   // Only the channel's owner posts or removes its stories (firestore.rules isChannelOwner).
   ownsChannel(channelId: string): boolean {
@@ -2195,19 +2252,35 @@ export class AccountSession {
   }
   async sendAttachment(chatId: string, id: string, caption: string, itemIds: string[], reply: ReplyBinding | null, video: import('../../shared/uploads').VideoFacts | null = null): Promise<void> {
     if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId || caption.length > 3000) throw new Error(tr('대화와 첨부 내용을 확인해 주세요.'))
-    await this.delivery.enqueueAttachment(chatId, id, caption.trim(), itemIds, reply, () => {
+    await this.delivery.enqueueAttachment(chatId, id, trimChatInput(caption), itemIds, reply, () => {
       if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
       if (reply) this.draftReply.validate(chatId, reply)
     }, video)
     await this.draftReply.refresh(chatId)
   }
-  mutateMessage(chatId: string, request: MessageActionRequest): Promise<void> {
+  async mutateMessage(chatId: string, request: MessageActionRequest): Promise<void> {
     if (this.closed || this.status !== 'ready' || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
-    // B113: the official notice chat's messages are the server's — no reaction, edit or delete from here.
-    if (this.selected.dialog.summary.service) throw new Error(tr('이 대화의 메시지는 바꿀 수 없습니다.'))
+    // B113: the official notice chat's messages are the server's — no reaction or edit from here. B154 §2-1: one notice
+    // is deleted as a 1:1 message for everyone (delete + revokedForAll); this account is the room's only person.
+    if (this.selected.dialog.summary.service && request.kind !== 'delete') throw new Error(tr('이 대화의 메시지는 바꿀 수 없습니다.'))
     const message = this.selected.actionMessage(request.messageId, request.version)
     if (!message) throw new Error(tr('메시지가 변경되었습니다. 최신 메시지를 다시 선택해 주세요.'))
-    return this.actions.enqueue(chatId, request, message)
+    const history = this.selected
+    await this.actions.enqueue(chatId, request, message)
+    if (request.kind === 'delete' && !this.closed && this.selected === history) this.deletedChatListMessage(chatId, history.snapshot, request.messageId)
+  }
+  // B165, tdesktop Histories::deleteMessages (data_histories.cpp:1019-1030): the message is gone from this window as
+  // the request goes (message-overlay.ts), and when it was the row's newest the row takes the newest one left —
+  // History::requestChatListMessage. Only with the newest page loaded is «the newest left» known; otherwise, or with
+  // older messages not yet read, the row waits for the room document as before.
+  private deletedChatListMessage(chatId: string, snapshot: HistorySnapshot, messageId: string): void {
+    if (snapshot.status !== 'ready' || snapshot.newerAvailable) return
+    const messages = snapshot.messages, last = messages[messages.length - 1]
+    if (last?.id !== messageId) return
+    const next = messages[messages.length - 2]
+    if (!next && snapshot.hasMore) return
+    if (!this.chatListTops.replace(chatId, next ? { preview: messageListPreview(next), position: next.position } : null)) return
+    if (this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() }
   }
   checkMessageAction(chatId: string, id: string) { return this.actions.inspect(chatId, id) }
   dismissMessageAction(chatId: string, id: string) { return this.actions.dismiss(chatId, id) }
@@ -2557,7 +2630,7 @@ export class AccountSession {
   async close(purge: boolean): Promise<void> {
     if (this.closed) return
     this.keptHistories.clear(); this.settleListed(false)
-    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
+    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
     this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); 
     await storyClose
     await noteClose

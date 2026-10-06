@@ -15,7 +15,8 @@ import { popupMenu, pointFor } from '../ui/popup-menu'
 import { ContactAvatar, useContactList } from './peer-picker'
 import { usePresence } from '../app/presence'
 import { tr } from '../../../shared/i18n'
-import { OfficialMark } from '../ui/official-mark'
+import { OfficialMark, PeerRowName } from '../ui/official-mark'
+import { useOfficialMarks } from '../app/official-marks'
 
 // ContactListView: a contact's last seen under the name, else the name it was saved from.
 function ContactStatus({ uid, original }: { uid: string; original: string | null }) {
@@ -30,6 +31,7 @@ function AddContactBox({ accountUid, initial, close }: { accountUid: string; ini
   const [error, setError] = useState('')
   const snapshot = useDesktop(state => state?.contactSearch ?? null)
   const search = requestId && snapshot?.requestId === requestId ? snapshot : null
+  const marks = useOfficialMarks(accountUid, 'lookup', search?.status === 'ready' && search.result ? [search.result.uid] : [])
   useEffect(() => () => { if (requestId) void window.morse.closeContactSearch(accountUid, requestId).catch(() => {}) }, [accountUid, requestId])
   async function find(): Promise<void> {
     let id: string
@@ -61,7 +63,7 @@ function AddContactBox({ accountUid, initial, close }: { accountUid: string; ini
     <TextField label="Morse ID" value={value} onChange={next => { setValue(next); setRequestId(null); setError('') }} maxLength={9} placeholder="@abcd2345" autoFocus onSubmit={() => { void find() }} />
     {search?.status === 'loading' && <div className="empty-state"><Spinner size={20} /></div>}
     {search?.status === 'ready' && search.result && <div className="contact-found">
-      <strong>{search.result.displayName}</strong>
+      <strong>{search.result.displayName}{marks[search.result.uid] && <OfficialMark kind={marks[search.result.uid]!} />}</strong>
       <span>{search.outcome === 'added' ? tr('연락처에 추가했습니다.') : search.outcome === 'exists' ? tr('이미 연락처에 있습니다.') : search.outcome === 'none' ? tr('연락처에 추가할 수 있습니다.') : search.message}</span>
     </div>}
     {(search?.status === 'empty' || search?.status === 'error') && <p className="box-note">{search.message}</p>}
@@ -81,6 +83,7 @@ function ExternalContact({ accountUid, query, close }: { accountUid: string; que
   const [requestId, setRequestId] = useState<string | null>(null)
   const snapshot = useDesktop(state => state?.contactSearch ?? null)
   const search = requestId && snapshot?.requestId === requestId ? snapshot : null
+  const marks = useOfficialMarks(accountUid, 'lookup', search?.status === 'ready' && search.result ? [search.result.uid] : [])
   const known = useDesktop(state => state?.contacts?.items ?? null)
   const self = useDesktop(state => state?.activeAccountUid ?? null)
   let id = ''
@@ -114,7 +117,7 @@ function ExternalContact({ accountUid, query, close }: { accountUid: string; que
         : found.uid === self ? <p className="box-note">{tr('내 Morse ID입니다.')}</p>
           : <div className="peer-row external-contact">
             <ContactAvatar contact={found} />
-            <span className="peer-row-text"><strong className="ellipsis">{found.displayName}</strong><small className="ellipsis">@{id}</small></span>
+            <span className="peer-row-text"><PeerRowName name={found.displayName} official={marks[found.uid]} /><small className="ellipsis">@{id}</small></span>
             {added ? <button type="button" className="button flat" onClick={() => { void message(found.uid) }}>{tr('메시지 보내기')}</button>
               : <button type="button" className="button flat" disabled={search.adding} onClick={() => { void add() }}>{search.adding && <Spinner size={14} />}{tr('추가')}</button>}
           </div>}

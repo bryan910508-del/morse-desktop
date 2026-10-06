@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { generateKeyPairSync, randomInt } from 'node:crypto'
 import type { AuthenticationSnapshot, PasswordStep, QrSignIn } from '../../shared/auth'
 import { morseUserId, morseUserIdAlphabet, normalizeBackupCode, qrLoginLink, type AccountCreationResult } from '../../shared/auth'
@@ -59,6 +61,9 @@ export interface AuthenticatedAccountHooks {
   // tried now — once the credential that replaced it is saved, or the one signed out is gone.
   endSession?(entry: EndingSession): Promise<void>
   endSessionsNow?(): void
+  // B182: the QR switch as this device last read it (null: not read yet, or unreadable), and each new reading. A sign-in
+  // screen draws the QR only once it is known to be on, so a release where it is off never shows it for a moment.
+  qrSwitch?: { known(): boolean | null; changed(on: boolean): void }
 }
 // Main::Domain decides whether another account fits on this device and supplies the
 // signed-in account's token for creating one.
@@ -97,7 +102,8 @@ export class AuthenticationController {
   // A13: the QR code on screen (the link and what it waits for), and the operation a quiet stop ends.
   private qr: QrSignIn | null = null
   private qrOperation: AbortController | null = null
-  private qrOff = false
+  // B182: not drawn until the switch is known to be on (tdesktop decides its first step before drawing it).
+  private qrOff = true
   private quietStop: AbortController | null = null
   // A13-2 ②: the password step on screen, and the person's next action it waits for.
   private passwordStep: PasswordStep | null = null
@@ -111,6 +117,7 @@ export class AuthenticationController {
     private readonly seams: AuthenticationSeams = {}) {
     this.api = configuration ? new FirebaseAuthenticationAPI(configuration) : null
     this.proofSessions = configuration?.proof ?? null
+    this.qrOff = accounts.qrSwitch?.known() !== true
     this.identity = new DeviceIdentity(vault.location)
     this.value = { available: this.api !== null, phase: this.api ? 'signed-out' : 'unavailable', account: null,
       message: this.api ? tr('복구 코드로 기존 계정을 연결하세요.') : tr('Desktop 계정 연결을 준비하고 있습니다.') }
@@ -233,6 +240,7 @@ export class AuthenticationController {
         const enabled = await api.qrLoginEnabled(controller.signal)
         this.assertCurrent(controller)
         // Switched off: the code area goes away, quietly — not a failure the person has to read.
+        this.accounts.qrSwitch?.changed(enabled)
         if (this.qrOff !== !enabled) { this.qrOff = !enabled; this.changed() }
         if (!enabled) { this.quietStop = controller; throw new AuthenticationFailure('cancelled') }
         this.set('signed-out', tr('복구 코드로 기존 계정을 연결하세요.'))
@@ -304,7 +312,7 @@ export class AuthenticationController {
       }
     } catch (error) {
       if (error instanceof AuthenticationFailure && error.code === 'qr-expired') return null
-      if (error instanceof AuthenticationFailure && error.code === 'qr-disabled') { this.qrOff = true; this.quietStop = controller; throw new AuthenticationFailure('cancelled') }
+      if (error instanceof AuthenticationFailure && error.code === 'qr-disabled') { this.accounts.qrSwitch?.changed(false); this.qrOff = true; this.quietStop = controller; throw new AuthenticationFailure('cancelled') }
       throw error
     } finally {
       // An attempt left behind is ended on the server too (it would expire anyway).

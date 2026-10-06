@@ -14,7 +14,8 @@ export function autoDeleteNoticeText(notice: AutoDeleteNotice | null, stored: st
   const actorName = notice?.actorName.trim() ?? ''
   if (notice && actorName) {
     if (notice.seconds <= 0) return tr('{0}님이 이 대화의 자동 삭제를 껐어요.', [actorName])
-    const period = autoDeleteOptions.find(option => option.seconds === notice.seconds)?.short
+    // The period's word is put in the language of the moment it is drawn (the options are built once, at load).
+    const short = autoDeleteOptions.find(option => option.seconds === notice.seconds)?.short, period = short ? tr(short) : short
     if (period) return notice.myOnly
       ? tr('{0}님이 본인이 보낸 메시지만 {1} 후 자동 삭제로 설정했어요.', [actorName, period])
       : tr('{0}님이 모든 메시지를 {1} 후 자동 삭제로 설정했어요.', [actorName, period])

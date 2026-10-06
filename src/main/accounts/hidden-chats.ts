@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { comparePosition, positionAt, positionMilliseconds, withinCutoff, type DialogSummary, type MessagePosition } from '../../shared/model'
 import type { HiddenChatCommand } from '../storage/hidden-chat-table'
 import type { ReadDialog } from '../network/firestore-values'

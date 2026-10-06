@@ -14,7 +14,7 @@ import { positionMilliseconds, type ReplyPreview } from '../../shared/model'
 import { mediaResources, type MediaResource } from '../media/media-document'
 import { messageMediaMetadata } from '../media/message-media-metadata'
 import { DocumentWriteFailure, FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
-import { autoDeleteNoticeFields, boolField, documents, documentVersion, mapField, messageReactions, numberField, pinnedMessageIds, ReadFailure, stringField, timestamp, type FirestoreDocument, type WireObject } from '../network/firestore-values'
+import { autoDeleteLineText, autoDeleteNoticeFields, boolField, documents, documentVersion, mapField, messageReactions, numberField, pinnedMessageIds, ReadFailure, stringField, timestamp, type FirestoreDocument, type WireObject } from '../network/firestore-values'
 import { autoDeleteNoticeText, autoDeleteWirePrefix } from '../../shared/auto-delete-notice'
 import { setMessageReaction } from '../network/message-reaction-api'
 import { autoDeleteSecondsValue } from '../../shared/chat-auto-delete'
@@ -70,7 +70,7 @@ function inquiryPeerRecord(doc: FirestoreDocument, uid: string): { photo: string
   const deleted = boolField(f, 'subscriberAccountDeleted')
   return { photo: deleted ? '' : stringField(f, 'subscriberPhotoURL', 10000), deleted }
 }
-function decodeInquiry(doc: FirestoreDocument, uid: string): Inquiry {
+export function decodeInquiry(doc: FirestoreDocument, uid: string): Inquiry {
   const prefix = `${documents}/channelInquiries/`, id = doc.name.slice(prefix.length), f = doc.fields
   if (!doc.name.startsWith(prefix) || id.includes('/')) throw new ReadFailure('data')
   const ownerId = stringField(f, 'channelOwnerId', 160), subscriberId = stringField(f, 'subscriberId', 160)
@@ -79,7 +79,8 @@ function decodeInquiry(doc: FirestoreDocument, uid: string): Inquiry {
   const channelName = boolField(f, 'channelDeleted') ? tr('알 수 없는 채널') : stringField(f, 'channelName', 512) || tr('채널')
   const subscriberName = boolField(f, 'subscriberAccountDeleted') ? tr('탈퇴한 계정') : stringField(f, 'subscriberName', 512) || tr('구독자')
   return { id, role, peerUid: role === 'owner' ? subscriberId : '', channelId: stringField(f, 'channelId', 160), channelName, peerName: role === 'owner' ? subscriberName : channelName,
-    lastMessage: inquiryPreviewText(stringField(f, 'lastMessage', 100000).slice(0, 300)), lastMessageAt: time(f, 'lastMessageAt'),
+    // B163 ①: a room whose newest line is its auto-delete notice reads as that line.
+    lastMessage: autoDeleteLineText(f) ?? inquiryPreviewText(stringField(f, 'lastMessage', 100000).slice(0, 300)), lastMessageAt: time(f, 'lastMessageAt'),
     unread: Math.max(0, Math.trunc(numberField(f, role === 'owner' ? 'unreadForOwner' : 'unreadForSubscriber'))), cutoff: time(f, 'historyRevokedAt'),
     // The room's own auto-delete policy; the server stamps every accepted message with its deleteAt.
     autoDeleteSeconds: autoDeleteSecondsValue(Math.trunc(numberField(f, 'autoDeleteSeconds'))), autoDeleteMyOnly: boolField(f, 'autoDeleteMyOnly'),

@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { safeStorage } from 'electron'
 import { createCipheriv, createDecipheriv, createHash, pbkdf2, randomBytes } from 'node:crypto'
 import { mkdir, open, readFile, rename } from 'node:fs/promises'

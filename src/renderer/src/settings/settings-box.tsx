@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { autoDownloadChoiceLabel, autoDownloadChoices, autoDownloadSourceLabel } from '../../../shared/auto-download'
 import { changeBackupCode, deleteAccount, showBlockedUsersBox, showLastSeenBox, showSessionsBox } from './security-boxes'
 import { TwoStepEntry } from './two-step-box'
@@ -10,7 +12,8 @@ import type { VoiceDraftStorageSnapshot } from '../../../shared/voice-draft-stor
 import { maxProfileNameLength } from '../../../shared/profile-name'
 import { desktop, useDesktop } from '../app/store'
 import { showShortcutsBox } from '../boxes/shortcuts-box'
-import { releaseSourceURL } from '../../../shared/app-release'
+import { gplURL, releaseSourceURL } from '../../../shared/app-release'
+import { linkedParts } from '../ui/linked-text'
 import { showStoryComposer } from '../stories/story-composer'
 import { showOwnStoryViewer } from '../stories/own-story-viewer'
 import { controller } from '../app/ui'
@@ -400,14 +403,9 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
   const notifications = useDesktop(state => state?.notifications ?? null)
   const integration = useDesktop(state => state?.platformIntegration ?? null)
   const appVersion = useDesktop(state => state?.appVersion ?? '')
-  const [notices, setNotices] = useState<string | null>(null)
   // The account's new-chat auto-delete default lives with the account, not this device, so the row reads it.
   const autoDeleteDefault = useAutoDeleteDefault(accountUid)
   useEffect(() => { if (page === 'privacy') void loadAutoDeleteDefault(accountUid).catch(() => {}) }, [page, accountUid])
-  useEffect(() => {
-    if (page !== 'about' || notices !== null) return
-    void window.morse.thirdPartyNotices().then(setNotices).catch(() => setNotices(''))
-  }, [page, notices])
   const lockEnabled = useDesktop(value => value?.appLock?.enabled ?? false)
   const otherAccounts = useDesktop(value => (value?.accountStates.length ?? 0) > 1)
   if (!preferences) return null
@@ -532,12 +530,33 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
       {page === 'about' && <div className="settings-about">
         <img src="/morse.png" alt="" /><strong>Morse Desktop</strong><span>{tr('버전 {0}', [appVersion])}</span>
         <UpdateStatus />
-        <p className="settings-note">{tr('GNU GPL v3 이상으로 배포합니다. 일부 구조와 코드는 Telegram Desktop에서 가져왔습니다.')}</p>
-        <button type="button" className="button flat" onClick={() => { void window.morse.openMessageLink(releaseSourceURL).catch(() => controller.toast(tr('페이지를 열지 못했습니다.'), 'error')) }}>{tr('소스 코드')}</button>
-        {notices === null ? <Spinner size={18} /> : notices && <pre className="settings-notices selectable">{notices}</pre>}
+        <LicenseLine />
+        <button type="button" className="intro-link" onClick={showNoticesBox}>{tr('오픈소스 라이선스')}</button>
       </div>}
     </div>
   </section>
+}
+
+// B179, tdesktop about_box.cpp:127-129 / lng_about_text2: one line — the licence and where the source is, each a link.
+// Where the code came from is kept where the licence asks for it, in LEGAL and the notices (THIRD_PARTY_NOTICES.txt).
+function LicenseLine() {
+  const open = (url: string) => () => { void window.morse.openMessageLink(url).catch(() => controller.toast(tr('페이지를 열지 못했습니다.'), 'error')) }
+  return <p className="settings-note">{linkedParts(tr('이 프로그램은 {0} 3판 이상으로 배포됩니다. 소스 코드는 {1}에 있습니다.'), [
+    <button key="gpl" type="button" className="intro-legal-link" onClick={open(gplURL)}>GNU GPL</button>,
+    <button key="source" type="button" className="intro-legal-link" onClick={open(releaseSourceURL)}>GitHub</button>])}</p>
+}
+// The notices of the open-source parts, shown only when asked for: the files sit inside the app's archive where no one
+// can open them, and tdesktop does not spread them on its about box either.
+function showNoticesBox(): void {
+  controller.showLayer(close => <NoticesBox close={close} />)
+}
+function NoticesBox({ close }: { close(): void }) {
+  const [text, setText] = useState<string | null>(null)
+  useEffect(() => { void window.morse.thirdPartyNotices().then(setText).catch(() => setText('')) }, [])
+  return <Box title={tr('오픈소스 라이선스')} width={560} onClose={close}>
+    {text === null ? <div className="empty-state"><Spinner size={22} /></div>
+      : text ? <pre className="settings-notices selectable">{text}</pre> : <p className="box-note">{tr('라이선스 고지를 불러오지 못했습니다.')}</p>}
+  </Box>
 }
 
 // The main menu's «내 프로필» opens straight at the profile (tdesktop MainMenu My Profile).

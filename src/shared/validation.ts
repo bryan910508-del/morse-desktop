@@ -16,12 +16,24 @@ export function draftText(value: unknown): string {
   if (typeof value !== 'string' || value.length > 30000) throw new Error(tr('메시지는 30,000자까지 입력할 수 있습니다.'))
   return value
 }
+// B177: what goes out loses the blank at both ends — Telegram's trimChatInputText takes " ", "\t", "\n" and U+200C
+// (ZERO WIDTH NON-JOINER); String.prototype.trim takes every white space and line end but not U+200C, which is not a
+// space. A U+200C inside the text stays: it shapes the letters around it.
+const edgeBlank = /^[\s\u200C]+|[\s\u200C]+$/g
+export function trimChatInput(value: string): string { return value.replace(edgeBlank, '') }
 export function outgoingText(value: unknown): string {
-  const text = draftText(value).trim()
+  const text = trimChatInput(draftText(value))
   if (!text || text.startsWith('__TALKY_AUTODEL__:') || text.startsWith('__deleted__:')) {
     throw new Error(tr('보낼 수 없는 메시지입니다.'))
   }
   return text
+}
+// The worker's check of a text intent: sendable, and with no white space at either end. An intent an earlier build
+// queued may still carry a U+200C at an end (that build trimmed only white space); it goes as it was written rather
+// than being refused after the update.
+export function sendableText(value: unknown): boolean {
+  try { outgoingText(value) } catch { return false }
+  return (value as string).trim() === value
 }
 export function historyPosition(value: unknown): MessagePosition | undefined {
   if (value === undefined) return undefined

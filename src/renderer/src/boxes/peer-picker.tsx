@@ -1,4 +1,5 @@
 import { useMemo, useState, type ReactNode } from 'react'
+import { PeerRowName } from '../ui/official-mark'
 import { Search, X } from 'lucide-react'
 import type { ContactSummary } from '../../../shared/contacts'
 import { searchFold } from '../../../shared/search'
@@ -42,7 +43,7 @@ export function PeerPicker({ accountUid, selected, onToggle, exclude, max, disab
               const checked = selected.includes(contact.uid)
               return <button key={contact.uid} type="button" className="peer-row" aria-pressed={checked} disabled={disabled || (!checked && full)} onClick={() => onToggle(contact.uid)}>
                 <ContactAvatar contact={contact} />
-                <span className="peer-row-text"><strong className="ellipsis">{contact.displayName}</strong>{contact.originalName && contact.originalName !== contact.displayName && <small className="ellipsis">{contact.originalName}</small>}</span>
+                <span className="peer-row-text"><PeerRowName name={contact.displayName} official={contact.official} />{contact.originalName && contact.originalName !== contact.displayName && <small className="ellipsis">{contact.originalName}</small>}</span>
                 {trailing?.(contact)}
                 <RoundCheck checked={checked} />
               </button>

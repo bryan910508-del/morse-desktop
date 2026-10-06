@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { channelOperationTarget, type ChannelOperationItem, type ChannelOperationRequest } from '../../shared/channel-operations'
 import { channelPostLikeRequest, type ChannelPostLikeRequest } from '../../shared/channel-post-like'
 import { channelPostTextEdit, type ChannelPostTextEdit } from '../../shared/channel-post-text-edit'

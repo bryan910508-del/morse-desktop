@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 // B109: a call that opens a chat answers only once the batch that carries that chat has gone to the window. The
 // renderer opens the chat on the answer, and an answer never overtakes a batch sent before it (one IPC channel), so
 // the chat is there when it is shown — as tdesktop's showPeerHistory finds the History in the session data it shows

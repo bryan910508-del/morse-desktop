@@ -1,3 +1,5 @@
+/* Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+   Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL. */
 .side-panel { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--card) }
 .side-panel .top-bar { gap: 4px; padding: 0 8px 0 12px }
 .side-title { flex: 1; min-width: 0; padding-left: 6px; font-size: var(--t-body); font-weight: 600 }
@@ -42,8 +44,8 @@ button.info-row:hover { background: var(--card-pressed) }
 .peer-row-text { flex: 1; min-width: 0; display: grid; gap: 2px }
 .peer-row-text strong { font-size: var(--t-body); font-weight: 500 }
 /* B111: a contact's name gives way when long; its «공식» mark stays after it. */
-.peer-row-text .peer-row-name { display: flex; align-items: center; min-width: 0 }
-.peer-row-text .peer-row-name > .ellipsis { min-width: 0 }
+.peer-row-name { display: flex; align-items: center; min-width: 0 }
+.peer-row-name > .ellipsis { min-width: 0 }
 .peer-row-text small { font-size: var(--t-caption); color: var(--text-weak) }
 
 /* A profile's personal channel (tdesktop DetailsFiller::makePersonalChannel; iOS ProfileView.personalChannelSection). */
@@ -171,10 +173,12 @@ button.info-row:hover { background: var(--card-pressed) }
 .settings-slider span.large { font-size: 20px }
 .settings-note { margin: 0; padding: 8px 22px; font-size: var(--t-caption); line-height: 1.5; color: var(--text-weak) }
 .settings-about { display: grid; justify-items: center; gap: 6px; padding: 16px 22px; text-align: center }
+/* B179: the licence line keeps its words whole, as the QR steps do (B166) — Korean breaks between any two syllables. */
+.settings-about .settings-note { word-break: keep-all; overflow-wrap: anywhere }
 .settings-about img { width: 72px; height: 72px; border-radius: 18px }
 .settings-about strong { font-size: var(--t-headline) }
 .settings-about span { font-size: var(--t-caption); color: var(--text-weak) }
-.settings-notices { width: 100%; max-height: 240px; margin: 8px 0 0; padding: 10px 12px; overflow: auto; border-radius: var(--r-control); background: var(--sheet); color: var(--text-medium); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; white-space: pre-wrap }
+.settings-notices { width: 100%; max-height: min(60vh, 520px); margin: 0; padding: 10px 12px; overflow: auto; border-radius: var(--r-control); background: var(--sheet); color: var(--text-medium); font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: left; white-space: pre-wrap }
 
 .peer-picker { display: grid; gap: 8px }
 .peer-picker .peer-list { margin-top: 0 }

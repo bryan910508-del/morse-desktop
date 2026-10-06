@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 // B58 (Telegram R-66): a two-finger horizontal swipe, as tdesktop's Ui::Controls::SetupSwipeHandler reads one
 // (ui/controls/swipe_handler.cpp at 64ca5475). Wheel deltas are summed at a fifth (kSwipeSlow, :29, :387); the first
 // one fixes the direction and what it would do (:191-211); the sum then locks horizontal or vertical once one leads

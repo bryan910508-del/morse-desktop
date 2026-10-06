@@ -9,7 +9,8 @@ import { boolField, childId, documents, documentVersion, stringField, type Fires
 import { ProfilePhoto } from './profile-photo'
 import { ContactAvatars } from './contact-avatars'
 import { ContactPhotos } from './contact-photos'
-import { contactNames, PeerProfiles, publicProfilePath, registerPeerProfiles } from './peer-profiles'
+import { contactNames, officialKind, PeerProfiles, photoPrivacyOf, publicProfilePath, registerPeerProfiles } from './peer-profiles'
+import { photoVisible } from '../../shared/profile-photo'
 import { ContactNamesSync } from './contact-names-sync'
 import { userpicCacheFor } from './userpic-cache'
 import { personalChannelIdField } from './personal-channel'
@@ -32,12 +33,17 @@ interface Peer {
 const noPhoto = (): ContactProfileSnapshot['photo'] => ({ url: null, status: 'none', message: '' })
 const noLocal = (): ContactDetailsSnapshot => ({ status: 'loading', nickname: '', note: '', version: '' })
 function emptyProfile(selection: Selection, status: ContactProfileSnapshot['status'], message = ''): ContactProfileSnapshot {
-  return { ...selection, status, displayName: '', originalName: '', contactVersion: '', local: noLocal(), personalPhoto: { status: 'loading', version: '', photoId: null }, visibility: 'unknown', userId: '', bio: '', personalChannelId: '', message, photo: noPhoto() }
+  return { ...selection, status, displayName: '', originalName: '', contactVersion: '', local: noLocal(), personalPhoto: { status: 'loading', version: '', photoId: null }, visibility: 'unknown', photoShown: false, userId: '', bio: '', personalChannelId: '', message, photo: noPhoto() }
 }
 
 // Contact membership comes from the owner's collection. Only an explicitly
 // selected, current member gets profile and reciprocal-membership subscriptions.
 let watchSteps = 0
+export type PeopleSurface = 'members' | 'blocked' | 'lookup'
+export const peopleSurfaces: readonly PeopleSurface[] = ['members', 'blocked', 'lookup']
+const maxShownPeople = 200
+type OfficialKind = import('../../shared/model').OfficialKind
+
 export class ContactsSession {
   private reader: FirestoreReader | null = null
   private generation = 0
@@ -55,6 +61,9 @@ export class ContactsSession {
   // People this account talks with outside its contacts — the other side of each 1:1 chat — whose public names the
   // chat list also needs (B48).
   private extraPeers: string[] = []
+  // B178 §2-5: people a screen shows on rows of its own (group members on screen, the blocked list, a Morse ID lookup),
+  // read with the same public-profile reader for their official mark only while they are shown.
+  private shown = new Map<PeopleSurface, string[]>()
   private names = 0
   private mutation: ContactMutationSnapshot | null = null
   private job: Promise<void> | null = null
@@ -83,7 +92,7 @@ export class ContactsSession {
     this.personalPhotos = new ContactPhotos(store, uid => this.connected && !this.auth.signal.aborted && this.has(uid) && !this.unavailablePhotos.has(uid), () => this.publish())
     this.listAvatars = new ContactAvatars(uid, auth, peerUid => {
       if (!this.connected || !this.reader || !this.has(peerUid)) throw new Error(tr('현재 연락처를 확인해 주세요.'))
-      return { uid: peerUid, reader: this.reader, personalURL: this.personalPhotos.url(peerUid) }
+      return { uid: peerUid, reader: this.reader, personalURL: this.personalPhotos.url(peerUid), contact: true }
     }, async (raw, request) => {
       const url = new URL(raw), prefix = '/__contact-personal/'
       if (url.protocol !== 'morse:' || url.hostname !== 'app' || !url.pathname.startsWith(prefix) || url.search || url.hash || url.port || url.username || url.password) return new Response(null, { status: 403 })
@@ -97,14 +106,21 @@ export class ContactsSession {
       displayName: peer.value.status === 'ready' ? peer.local.nickname || peer.value.displayName : '', originalName: peer.value.displayName,
       contactVersion: doc ? documentVersion(doc) : '', local: peer.value.status === 'ready' ? { ...peer.local } : noLocal(),
       personalPhoto: peer.value.status === 'ready' ? this.personalPhotos.snapshot(peer.selection.uid) : { status: 'loading' as const, version: '', photoId: null },
-      photo: personalURL ? { url: personalURL, status: 'ready' as const, message: '' } : peer.value.status === 'ready' && peer.value.visibility === 'visible' ? peer.photo.snapshot : noPhoto() }
+      photo: personalURL ? { url: personalURL, status: 'ready' as const, message: '' } : peer.value.status === 'ready' && peer.value.photoShown ? peer.photo.snapshot : noPhoto() }
       : this.selection ? emptyProfile(this.selection, this.status === 'ready' ? 'unavailable' : this.status,
         this.status === 'ready' ? tr('현재 연락처에서 이 사용자를 확인할 수 없습니다.') : this.message) : null
     return { status: this.status, message: this.message,
       items: this.ordered.map(item => ({ ...item, personalPhotoURL: this.personalPhotos.url(item.uid), avatar: this.listAvatars.snapshot(item.uid), ...(this.profileNames.official(item.uid) ? { official: this.profileNames.official(item.uid)! } : {}) })), personalPhotosStatus: this.personalPhotos.status,
+      marks: this.shownMarks(),
       profile, mutation: this.mutation ? { ...this.mutation, undo: this.deleteGrace ? {
         operationId: this.deleteGrace.id, remainingMs: Math.max(0, this.deleteGrace.deadline - performance.now())
       } : null } : null }
+  }
+  private shownMarks(): Record<string, OfficialKind> {
+    const marks: Record<string, OfficialKind> = {}
+    if (this.closed || this.locked) return marks
+    for (const uid of new Set([...this.shown.values()].flat())) { const kind = this.profileNames.official(uid); if (kind) marks[uid] = kind }
+    return marks
   }
   has(uid: string): boolean { return !this.closed && !this.locked && this.status === 'ready' && this.items.has(uid) }
   get ready(): boolean { return !this.closed && !this.locked && this.status === 'ready' }
@@ -157,7 +173,17 @@ export class ContactsSession {
     const next = [...new Set(uids)].filter(uid => uid !== this.uid).sort()
     if (next.join('\n') === this.extraPeers.join('\n')) return
     this.extraPeers = next
-    if (this.reader && this.status === 'ready') this.profileNames.bind(this.reader, [...this.items.keys(), ...this.extraPeers])
+    this.bindPeople()
+  }
+  showPeople(surface: PeopleSurface, uids: Iterable<string>): void {
+    const next = [...new Set(uids)].filter(uid => uid !== this.uid).sort().slice(0, maxShownPeople)
+    if (next.join('\n') === (this.shown.get(surface) ?? []).join('\n')) return
+    if (next.length) this.shown.set(surface, next); else this.shown.delete(surface)
+    this.bindPeople()
+  }
+  // `loading`: the list's own answer, which binds before the list is marked ready (as it always did).
+  private bindPeople(loading = false): void {
+    if (this.reader && (loading || this.status === 'ready')) this.profileNames.bind(this.reader, [...this.items.keys(), ...this.extraPeers, ...[...this.shown.values()].flat()])
   }
   private order(): void {
     this.names++
@@ -232,7 +258,7 @@ export class ContactsSession {
               if (!current || documentVersion(current) !== this.deleteGrace.version) this.cancelDeleteGrace(tr('연락처가 변경되어 삭제 대기를 취소했습니다. 최신 목록에서 다시 확인해 주세요.'))
             }
             for (const uid of this.unavailablePhotos) if (!next.has(uid)) this.unavailablePhotos.delete(uid)
-            this.items = next; this.profileNames.bind(this.reader, [...next.keys(), ...this.extraPeers]); this.order()
+            this.items = next; this.bindPeople(true); this.order()
             this.status = 'ready'; this.message = ''; this.syncPeer(); this.publish()
           } catch {
             this.invalidate(); this.status = 'error'; this.message = tr('연락처 데이터를 확인하지 못했습니다. 다시 불러와 주세요.'); this.publish()
@@ -302,13 +328,17 @@ export class ContactsSession {
           } else if (!doc || !displayName) fallback()
           else {
             this.unavailablePhotos.delete(selection.uid)
-            const visible = rows.has(reciprocal)
-            peer.value = { ...emptyProfile(selection, 'ready'), displayName, visibility: visible ? 'visible' : 'hidden',
-              userId: visible ? stringField(doc.fields, 'userId', 160) : '', bio: visible ? stringField(doc.fields, 'bio', 500) : '',
+            // Mutual contacts open the @id, the bio and the linked channel (A7); the picture follows its own rule (B153).
+            // An official account has no @id line — Telegram draws a username only where there is one to show, and its
+            // service account none (contracts/B153 §4).
+            const visible = rows.has(reciprocal), official = officialKind(stringField(doc.fields, 'official', 32)) !== null
+            const photoShown = photoVisible({ deleted: false, privacy: photoPrivacyOf(doc.fields), mutual: visible })
+            peer.value = { ...emptyProfile(selection, 'ready'), displayName, visibility: visible ? 'visible' : 'hidden', photoShown,
+              userId: visible && !official ? stringField(doc.fields, 'userId', 160) : '', bio: visible ? stringField(doc.fields, 'bio', 500) : '',
               personalChannelId: visible ? personalChannelIdField(doc.fields) : '' }
-            const raw = visible ? stringField(doc.fields, 'photoURL', 10000) : ''
+            const raw = photoShown ? stringField(doc.fields, 'photoURL', 10000) : ''
             cache?.confirm(`user:${selection.uid}`, raw || null)
-            if (visible) void peer.photo.select(raw); else peer.photo.clear()
+            if (photoShown) void peer.photo.select(raw); else peer.photo.clear()
           }
         } catch { peer.photo.clear(); fallback() }
         this.publish()
@@ -486,7 +516,7 @@ export class ContactsSession {
   }
   photoResponse(token: string, request: Request): Response {
     const peer = this.peer
-    return peer && this.has(peer.selection.uid) && peer.value.status === 'ready' && peer.value.visibility === 'visible'
+    return peer && this.has(peer.selection.uid) && peer.value.status === 'ready' && peer.value.photoShown
       ? peer.photo.response(token, request) : new Response(null, { status: 403 })
   }
   async close(): Promise<void> {

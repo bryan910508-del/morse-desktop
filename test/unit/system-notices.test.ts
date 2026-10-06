@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { decodeDialog, decodeMessage, documents, readDialogs, type FirestoreDocument } from '../../src/main/network/firestore-values'
 import { chatDeleteRoute } from '../../src/main/accounts/history-clears'
+import { canApplyAction } from '../../src/main/messaging/message-actions'
 import { setLanguage } from '../../src/shared/i18n'
 import { systemNoticeShortcut, systemNoticeText } from '../../src/shared/system-notices'
 
@@ -109,4 +110,32 @@ test('B113: «대화 삭제» clears the official notice chat on the server, nev
   assert.equal(chatDeleteRoute({ kind: 'direct' }, false), 'hide')
   assert.equal(chatDeleteRoute({ kind: 'direct' }, true), 'direct-delete')
   assert.equal(chatDeleteRoute({ kind: 'group' }, true), 'document')
+})
+
+// B154 §2-3: the server's delete and clear leave lastMessage '' and take lastSystemEvent away
+// (morse-message-projections.js:49, morse-history-clear.js:102-104); such a notice chat is not a row until the next notice.
+test('B154: an official notice chat with no notice left is marked so, and the list leaves it out', () => {
+  const emptied = systemChat()
+  emptied.fields.lastMessage = s('')
+  delete (emptied.fields as Record<string, unknown>).lastMessageType
+  assert.equal(decodeDialog(emptied, 'me').noticeless, true)
+  delete (emptied.fields as Record<string, unknown>).lastMessage
+  assert.equal(decodeDialog(emptied, 'me').noticeless, true, 'no lastMessage at all reads the same')
+  const withEvent = systemChat()
+  withEvent.fields.lastMessage = s('')
+  ;(withEvent.fields as Record<string, unknown>).lastSystemEvent = { mapValue: { fields: { kind: s('newLogin') } } }
+  assert.equal(decodeDialog(withEvent, 'me').noticeless, undefined, 'a notice the server describes is still a row')
+  assert.equal(decodeDialog(systemChat(), 'me').noticeless, undefined, 'a notice with its text is a row')
+  const person = systemChat()
+  person.fields.type = s('direct'); person.fields.lastMessage = s('')
+  person.fields.participantUids = { arrayValue: { values: [s('me'), s('you')] } } as never
+  ;(person as { name: string }).name = `${documents}/chats/direct_me_you`
+  assert.equal(decodeDialog(person, 'me').noticeless, undefined, 'a person\'s empty 1:1 keeps its own rules')
+})
+
+test('B154 §2-1: one notice can be deleted as a 1:1 message for everyone', () => {
+  const read = decodeDialog(systemChat(), 'me')
+  const message = decodeMessage(notice('n1', { kind: s('newLogin') }), read)!
+  assert.equal(message.system, false, 'a notice is a message, not a service line')
+  assert.equal(canApplyAction({ kind: 'delete' }, message, read), true)
 })

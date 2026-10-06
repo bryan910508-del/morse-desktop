@@ -42,6 +42,8 @@ export interface ContactProfileSnapshot {
   local: ContactDetailsSnapshot
   personalPhoto: ContactPhotoSnapshot
   visibility: 'unknown' | 'hidden' | 'visible'
+  // B153: whether this person's picture may be shown — their rule (privacy.photo) and, under «contacts», mutual contacts.
+  photoShown: boolean
   userId: string
   bio: string
   // The channel this person linked to their profile, read under the same condition as the bio; '' when none.
@@ -56,4 +58,6 @@ export interface ContactsSnapshot {
   personalPhotosStatus: ContactPhotoSnapshot['status']
   profile: ContactProfileSnapshot | null
   mutation: ContactMutationSnapshot | null
+  // B178: the official marks of the people a screen shows on rows of its own (members, blocked, a Morse ID lookup).
+  marks?: Record<string, import('./model').OfficialKind>
 }

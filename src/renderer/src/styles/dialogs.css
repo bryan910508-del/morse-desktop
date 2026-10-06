@@ -1,3 +1,5 @@
+/* Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+   Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL. */
 .dialogs { position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0 }
 .dialogs .top-bar { gap: 8px; padding: 0 12px 0 8px; border-bottom: 0 }
 .dialogs .search-field { flex: 1; min-width: 0 }
@@ -55,6 +57,9 @@
 .dialog-row.active :is(.dialog-row-name, .dialog-row-time, .dialog-row-preview, .dialog-row-kind, .dialog-row-status, .dialog-row-sending) { color: #fff }
 .dialog-row.active .dialog-row-preview.draft b { color: #fff }
 .dialog-row.active .dialog-row-badge { background: #fff; color: var(--accent) }
+/* B178 §2-4: on the selected row's accent the official mark turns over — a white badge with an accent check, as the
+   unread badge does above. */
+.dialog-row.active .dialog-row-official { color: #fff; --official-check: var(--accent) }
 .dialog-row.active .dialog-row-channel { background: rgba(255, 255, 255, .22); color: #fff }
 .dialog-row.active .dialog-row-badge.muted { color: var(--swipe-mute) }
 .dialog-row .avatar-archive { background: var(--swipe-mute) }

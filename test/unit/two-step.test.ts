@@ -117,6 +117,13 @@ test('A13-2 / A13-4: a new password is at least 6 characters and confirmed; a hi
   assert.equal(hintProblem('abcdef', 'abcdef'), '힌트는 비밀번호와 달라야 해요.')
   assert.equal(hintProblem('x'.repeat(65), 'abcdef'), '힌트는 64자까지 쓸 수 있어요.')
   assert.equal(hintProblem('', 'abcdef'), null, 'no hint is fine')
+  // B173: the three apps refuse a hint that is the password but for letter case or surrounding spaces.
+  assert.equal(hintProblem('ABCdef', 'abcDEF'), '힌트는 비밀번호와 달라야 해요.', 'letter case alone does not make it another hint')
+  assert.equal(hintProblem('  abcdef ', 'abcdef'), '힌트는 비밀번호와 달라야 해요.', 'spaces around the hint do not either')
+  assert.equal(hintProblem('abcdef', ' abcdef  '), '힌트는 비밀번호와 달라야 해요.', 'nor spaces around the password')
+  assert.equal(hintProblem('Привет', 'пРИВЕТ'), '힌트는 비밀번호와 달라야 해요.', 'letters other than Latin too')
+  assert.equal(hintProblem('my cat', 'abcdef'), null, 'another hint passes')
+  assert.equal(hintProblem('abc def', 'abcdef'), null, 'a space inside makes it another word')
 })
 
 test('A13-2 ②: a reset request carries a QR attempt\'s secret, and «done» names the session kept back for it', async () => {

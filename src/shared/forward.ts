@@ -5,7 +5,8 @@ import { tr } from './i18n'
 
 export const maxForwardTargets = 10
 export interface ForwardSource { chatId: string; messageId: string; version: string }
-export interface ForwardTarget { chatId: string; title: string; kind: 'direct' | 'group'; preview: string }
+// official: a 1:1 whose other person is an official account (B178 §2-2).
+export interface ForwardTarget { chatId: string; title: string; kind: 'direct' | 'group'; preview: string; official?: import('./model').OfficialKind }
 export interface ForwardRequest { id: string; source: ForwardSource; targets: { chatId: string; messageId: string }[] }
 export interface ForwardProgress { operationId: string; phase: 'preparing' | 'saving'; current: number; count: number; loaded: number; total: number | null }
 export function forwardSource(raw: unknown): ForwardSource {

@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { object, identifier } from '../../shared/validation'
 import type { AccountProfile } from '../../shared/model'
 import { sendAgain } from '../network/resend'
@@ -260,14 +262,17 @@ export class FirebaseAuthenticationAPI {
   // at once and its generation is refused everywhere, as Telegram sends auth.logOut (telegram-refs R-13). The answer to
   // a request that reached the server can be lost; sent once more, the server then refuses the generation it has just
   // ended («session-revoked», morse-callable-auth.js) — which is the sign-out done, as is a session already ended.
+  // Which of these it was goes to connection-check.log (B176: a sign-out the server took as «already ended» read the same
+  // as one it carried out) — the kind, and no more of the session than its first four characters.
   async signOutSession(idToken: string, sessionId: string, signal: AbortSignal): Promise<void> {
     for (let attempt = 0; ; attempt++) {
       try {
         const result = await this.callable('revokeMorseDeviceSession', { sessionId, signOut: true }, signal, idToken)
         if (result.ok !== true) throw new AuthenticationFailure('protocol')
+        recordConnectionStep('sign-out', `${result.gone === true ? 'gone' : 'ok'} ${sessionId.slice(0, 4)}`)
         return
       } catch (error) {
-        if (error instanceof AuthenticationFailure && error.code === 'revoked') return
+        if (error instanceof AuthenticationFailure && error.code === 'revoked') { recordConnectionStep('sign-out', `revoked ${sessionId.slice(0, 4)}`); return }
         if (attempt >= 1 || signal.aborted || !(error instanceof AuthenticationFailure && error.code === 'network')) throw error
       }
     }

@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import type { AccountProfile } from '../../shared/model'
 import type { AuthPhase, AuthenticationSnapshot, AccountCreationResult } from '../../shared/auth'
 import type { AccountAuthorization } from '../messaging/outbox'
@@ -31,6 +33,8 @@ export class AuthenticationDomain {
   private preferred: string | null = null
   private suspended: string[] | null = null
   private closed = false
+  // B182: the QR switch as last read, for the next sign-in screen (null until read; unreadable stays unknown = not drawn).
+  private qrKnown: boolean | null = null
   constructor(private readonly configuration: DesktopAuthConfiguration | null, private readonly vault: CredentialVault,
     private readonly version: string, private readonly changed: () => void, private readonly hooks: DomainHooks) {
     // tdesktop keeps one instance for keys to destroy beside the accounts' own (Main::Account::_mtpForKeysDestroy).
@@ -38,6 +42,11 @@ export class AuthenticationDomain {
       configuration ? new FirebaseAuthenticationAPI(configuration) : null, uid => vault.read(uid).then(record => record?.sessionId ?? null))
     this.unsubscribe = reachability.subscribe(reason => { this.restoreNow(reason); this.enders.runNow() })
     this.enders.runNow()
+    // Read once at start, so «계정 추가» opened later already knows whether its QR is drawn.
+    if (configuration) {
+      this.publicApi = new FirebaseAuthenticationAPI(configuration)
+      void this.publicApi.qrLoginEnabled(AbortSignal.timeout(15000)).then(on => { if (!this.closed && this.qrKnown === null) this.qrKnown = on }).catch(() => {})
+    }
   }
   private readonly enders: SessionEnders
   private readonly unsubscribe: () => void
@@ -63,7 +72,8 @@ export class AuthenticationDomain {
       notificationHint: (account, hint) => this.hooks.notificationHint(account, hint),
       reactionUpdated: (account, body) => this.hooks.reactionUpdated(account, body),
       endSession: entry => this.enders.add(entry),
-      endSessionsNow: () => this.enders.runNow()
+      endSessionsNow: () => this.enders.runNow(),
+      qrSwitch: { known: () => this.qrKnown, changed: on => { this.qrKnown = on } }
     }, uid, { admit: next => this.admit(next), admitNew: () => this.admitNew(), creationToken: signal => this.creationToken(signal) })
     return controller
   }

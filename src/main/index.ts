@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { autoDeleteMonthOptions, blockTarget, inviteToken, lastSeenPrivacy, sessionTtlDays, signInSessionId } from '../shared/account-tools'
 import { roundVideoFacts, roundVideoSendRequest, roundVideoSide } from '../shared/round-video'
 import type { CaptureMedia } from './platform/voice-captures'
@@ -161,6 +163,7 @@ import { profileNameEdit } from '../shared/profile-name'
 import { profilePhotoClear } from '../shared/profile-photo-clear'
 import { profilePhotoBytes, profilePhotoHistoryAction, profilePhotoUploadAction } from '../shared/profile-photo-upload'
 import { publicMorseId } from '../shared/contacts'
+import { peopleSurfaces, type PeopleSurface } from './accounts/contacts'
 import { contactDetailsEdit } from '../shared/contact-details'
 import { contactPhotoBinding, contactPhotoEdit, contactPhotoRemoval } from '../shared/contact-photo'
 import { replyBinding } from '../shared/reply-draft'
@@ -374,7 +377,7 @@ async function snapshot(): Promise<DesktopSnapshot> {
     accounts: profiles, activeAccountUid: active?.profile.uid ?? null, selfProfile: appLocked ? null : selfProfile, contacts: appLocked ? null : active?.contactsSnapshot() ?? null,
     channels: screenLocked ? null : active?.channels.snapshot ?? null,
     personalChannels: screenLocked ? null : active?.personalChannels.snapshot ?? null,
-    contactSearch: appLocked ? null : active?.contactDiscovery.snapshot ?? null, pendingDirects: appLocked || !active ? [] : active.pendingDirects().map(item => ({ ...item, displayName: active.dialogAvatars.peerName(item.chatId) || item.displayName, avatar: active.dialogAvatars.snapshot(item.chatId) })), participants: appLocked ? null : active?.participants ?? null,
+    contactSearch: appLocked ? null : active?.contactDiscovery.snapshot ?? null, pendingDirects: appLocked || !active ? [] : active.pendingDirects().map(item => ({ ...item, displayName: active.dialogAvatars.peerName(item.chatId) || item.displayName, avatar: active.dialogAvatars.snapshot(item.chatId), official: active.dialogAvatars.peerOfficial(item.chatId) ?? undefined })), participants: appLocked ? null : active?.participants ?? null,
     unlistedDirects: appLocked || !active ? [] : active.unlistedDirects(),
     channelJoinDecisions: screenLocked ? null : active?.channelJoinDecisions.snapshot ?? null,
     channelAccess: screenLocked ? null : active?.channelAccess.snapshot ?? null,
@@ -590,6 +593,11 @@ function registerIPC(): void {
   handle('set-blocked-user', (uid, raw, blocked) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).accountTools.setBlocked(blockTarget(raw), blocked === true)
+  })
+  // B178: people shown on rows of their own, read for their official mark while shown.
+  handle('show-people', (uid, surface, uids) => {
+    if (!peopleSurfaces.includes(surface as PeopleSurface) || !Array.isArray(uids) || uids.length > 200) throw new Error(tr('잘못된 요청입니다.'))
+    accounts.requireActive(identifier(uid)).contacts.showPeople(surface as PeopleSurface, uids.map(identifier))
   })
   handle('sign-in-sessions', uid => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))

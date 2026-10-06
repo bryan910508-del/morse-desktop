@@ -28,7 +28,7 @@ https://github.com/telegramdesktop/tdesktop (version 7.2.8, commit 272f6f5c).
   In addition, as a special exception, the copyright holders give permission
   to link the code of portions of this program with the OpenSSL library.
 
-Files derived from Telegram Desktop keep the original copyright notice.
+Files that follow Telegram Desktop carry a notice naming it and its authors.
 
 Source distribution note: secret material is not part of the corresponding
 source. Never publish infrastructure/.private/ or any .env files.

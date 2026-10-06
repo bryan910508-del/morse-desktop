@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import type { StoryReplyWireFields } from './story-reply-send'
 import type { DiscussionJoinRequest, DiscussionJoinAction, DiscussionJoinSnapshot } from './channel-discussion-join'
 import type { ChannelJoinDecisionRequest, ChannelJoinDecisionAction, ChannelJoinDecisionSnapshot } from './channel-join-decisions'
@@ -466,7 +468,8 @@ export interface DesktopBridge {
   blockedUsers(accountUid: string): Promise<import('./account-tools').BlockedUser[]>
   setBlockedUser(accountUid: string, target: import('./account-tools').BlockTarget, blocked: boolean): Promise<void>
   signInSessions(accountUid: string): Promise<import('./account-tools').SignInSessions>
-  revokeSignInSessions(accountUid: string, sessionId: string | null): Promise<void>
+  showPeople(accountUid: string, surface: 'members' | 'blocked' | 'lookup', uids: string[]): Promise<void>
+  revokeSignInSessions(accountUid: string, sessionId: string | null): Promise<{ gone: boolean }>
   setSessionTtl(accountUid: string, days: number): Promise<void>
   // A null current code uses the code kept on this device for an Apple sign-up.
   changeBackupCode(accountUid: string, currentCode: string | null): Promise<BackupCodeChange>

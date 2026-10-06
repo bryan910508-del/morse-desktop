@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { locale, tr } from './i18n'
 
 // Two-step verification's rules and words (contracts A13-2 §3, §5), the same in the three apps.
@@ -13,10 +15,15 @@ export function newPasswordProblem(password: string, confirm: string): string | 
   if (password !== confirm) return tr('비밀번호가 서로 달라요. 다시 입력해 주세요.')
   return null
 }
+// B173 (review 10-06 20:4x, the three apps alike): a hint that is the password but for letter case or surrounding
+// spaces gives it away all the same, so the two are compared with both set aside. Telegram itself differs here —
+// tdesktop compares exactly (settings_cloud_password_hint.cpp:134), Telegram Android ignores case
+// (TwoStepVerificationSetupActivity.java:1458-1464) — and Morse takes the side that refuses more.
+const hintKey = (value: string): string => value.trim().toLowerCase()
 export function hintProblem(hint: string, password: string): string | null {
   const value = hint.trim()
   if ([...value].length > hintMaximum) return tr('힌트는 {0}자까지 쓸 수 있어요.', [hintMaximum])
-  if (value && value === password) return tr('힌트는 비밀번호와 달라야 해요.')
+  if (value && hintKey(value) === hintKey(password)) return tr('힌트는 비밀번호와 달라야 해요.')
   return null
 }
 

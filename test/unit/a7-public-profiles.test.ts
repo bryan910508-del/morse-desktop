@@ -19,7 +19,7 @@ test('a public profile is read as the account document was: name, picture, and n
   assert.equal(publicProfilePath('u1'), `${documents}/publicProfiles/u1`)
   const full = publicProfile('u1', { userId: text('minji'), displayName: text(' 민지 '), photoURL: text('gs://p'), bio: text('안녕'), publicKey: text('k'),
     personalChannelId: text('c1'), accountDeleted: { booleanValue: false }, updatedAt: { timestampValue: '2026-10-01T00:00:00Z' } })
-  assert.deepEqual(decodePeerProfile(full, true), { name: '민지', photo: 'gs://p', mutual: true, official: null })
+  assert.deepEqual(decodePeerProfile(full, true), { name: '민지', photo: 'gs://p', mutual: true, official: null, photoEveryone: '' })
   assert.equal(decodePeerProfile(publicProfile('u1', { accountDeleted: { booleanValue: true }, updatedAt: { timestampValue: '2026-10-01T00:00:00Z' } }), true), null,
     'a withdrawn account keeps only accountDeleted')
   assert.equal(decodePeerProfile(undefined, true), null, 'not made yet: unknown')
@@ -86,4 +86,48 @@ test('a refused profile read leaves the contact usable under its saved name', ()
   assert.equal(value.visibility, 'unknown')
   assert.deepEqual(contacts.directPeer('r2'), { uid: 'u1', displayName: '민지(저장한 이름)' })
   assert.throws(() => contacts.copyId('r2'), 'no @id to copy that was never read')
+})
+
+// B153 (contracts/B153-official-profile-photo.md §4): the picture follows the person's own rule (privacy.photo); an
+// official account shows its picture to anyone and has no @id line; everyone else keeps the mutual-contacts rule.
+test('B153: an official account opens with its picture and no @id, mutual or not; an ordinary one is unchanged', () => {
+  const { contacts, profile } = session()
+  const pane = profile('r1')
+  const everyone = { privacy: { mapValue: { fields: { photo: text('everyone') } } } }
+  const official = { userId: text('morse'), displayName: text('Morse'), photoURL: text('gs://morse'), bio: text('공식'), official: text('support'), ...everyone }
+  pane.events.snapshot(rows(publicProfile('u1', official)))
+  let value = contacts.snapshot.profile!
+  assert.deepEqual([value.visibility, value.photoShown, value.userId, value.bio], ['hidden', true, '', ''], 'not mutual: picture only')
+  assert.throws(() => contacts.copyId('r1'), /복사/)
+  pane.events.snapshot(rows(publicProfile('u1', official), reciprocal('u1')))
+  value = contacts.snapshot.profile!
+  assert.deepEqual([value.visibility, value.photoShown, value.userId, value.bio], ['visible', true, '', '공식'], 'mutual: the bio as before, still no @id')
+  assert.throws(() => contacts.copyId('r1'), /복사/)
+  // An ordinary account, no rule written: the mutual-contacts rule as before.
+  const ordinary = { userId: text('minji'), displayName: text('민지'), photoURL: text('gs://p') }
+  pane.events.snapshot(rows(publicProfile('u1', ordinary)))
+  assert.deepEqual([contacts.snapshot.profile!.photoShown, contacts.snapshot.profile!.userId], [false, ''])
+  pane.events.snapshot(rows(publicProfile('u1', ordinary), reciprocal('u1')))
+  assert.deepEqual([contacts.snapshot.profile!.photoShown, contacts.snapshot.profile!.userId], [true, 'minji'])
+  assert.equal(contacts.copyId('r1'), '@minji')
+  // «nobody»: hidden even from a mutual contact; the @id still follows the mutual-contacts rule.
+  pane.events.snapshot(rows(publicProfile('u1', { ...ordinary, privacy: { mapValue: { fields: { photo: text('nobody') } } } }), reciprocal('u1')))
+  assert.deepEqual([contacts.snapshot.profile!.photoShown, contacts.snapshot.profile!.userId], [false, 'minji'])
+})
+
+// B178 §2-5: people a screen shows on rows of its own are read with the same public-profile reader while shown, and the
+// snapshot carries the marks of the ones that have one; let go, they are not read any more.
+test('B178: members, blocked people and a lookup are read for their mark while shown, and let go after', () => {
+  const { contacts, targets } = session()
+  const reads = (uid: string) => targets.filter(target => !target.stopped && target.paths.includes(publicProfilePath(uid)))
+  contacts.showPeople('members', ['m1', me])
+  const member = reads('m1')
+  assert.equal(member.length, 1, 'a member on screen is read')
+  assert.ok(!targets.some(target => !target.stopped && target.paths.includes(publicProfilePath(me))), 'never this account itself')
+  member[0]!.events.snapshot(rows(publicProfile('m1', { displayName: text('Morse'), official: text('support') })))
+  assert.deepEqual(contacts.snapshot.marks, { m1: 'support' })
+  contacts.showPeople('members', [])
+  assert.equal(reads('m1').length, 0, 'gone from the screen, no longer read')
+  assert.deepEqual(contacts.snapshot.marks, {})
+  assert.ok(reads('u1').length > 0, 'the contacts are still read')
 })

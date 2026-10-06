@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 // Geometry of tdesktop's Editor::PhotoModifications: the crop rectangle and the paint strokes live in the
 // picture's own pixels, and the picture is flipped and rotated by a quarter turn for display and export
 // (ImageModified: paint → crop → transform). Here a flip always mirrors what is on screen, so a flip after a

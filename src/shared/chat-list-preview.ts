@@ -1,5 +1,7 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { tr } from './i18n'
-import type { DialogSummary } from './model'
+import type { ChatMessage, DialogSummary } from './model'
 import { memoNoteListLine } from './memo-note'
 
 // A chat list line for a message that is not a text. Neither server keeps the kind of the newest
@@ -58,6 +60,17 @@ export function chatListPreviewText(raw: string, kind = ''): string {
   if (kind === 'text' || kind === 'channelPost' || kind === 'poll') return raw
   for (const [mark, label] of labels) if (raw.startsWith(mark)) return label()
   return legacyVideo.test(raw) ? tr('동영상') : raw
+}
+
+// B165: the line for a message this device already holds, when the row's newest message is decided here before the
+// room document is rewritten (tdesktop History::setLastMessage takes the item itself; dialogs_message_view.cpp names
+// a kind in the window's own words). The same words as chatListPreviewText gives the server's line for that kind.
+export function messageListPreview(message: Pick<ChatMessage, 'kind' | 'text' | 'encrypted' | 'system' | 'poll' | 'attachments'>): string {
+  if (message.encrypted) return tr('비밀 메시지')
+  if (message.system || message.kind === 'text' || message.kind === 'channelPost') return message.text
+  if (message.kind === 'poll') return message.poll?.question ?? message.text
+  if (message.kind === 'file') return chatListPreviewText(message.attachments?.[0]?.name ?? '', 'file')
+  return chatListPreviewText(message.text, message.kind)
 }
 
 // Telegram's chat list keeps an unsent draft in view, in place of the last message: dialogs_layout.cpp

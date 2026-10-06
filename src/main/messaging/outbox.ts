@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { createHash } from 'node:crypto'
 import { voiceSendRequest, type VoiceSendRequest } from '../../shared/voice-send'
 import type { MediaSendWire } from '../../shared/model'

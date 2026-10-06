@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 // Links inside message text, found the way Telegram Desktop finds them (lib_ui text_entity.cpp ParseEntities,
 // url and email entities only: Morse has no mentions, hashtags or bot commands) and classified the way the iOS
 // app routes them (MorseDeepLinkParsing, InviteLinkService.parseToken).

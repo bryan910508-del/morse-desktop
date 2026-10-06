@@ -39,6 +39,8 @@ export interface PendingDirect {
   avatar?: import('./group-photo').GroupPhotoImage | null
   createdAt: number
   canDiscard: boolean
+  // B178 §2-2: the peer's official mark (a «채팅으로 문의하기» chat with the support account before its first message).
+  official?: import('./model').OfficialKind
   // The pair's dialog exists under another id (a chat made before ids were derived from the two accounts,
   // or by a released client): this row is not listed, and a window showing it moves to that dialog.
   supersededBy?: string

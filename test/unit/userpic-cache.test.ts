@@ -121,7 +121,7 @@ function watchedAvatar(owners: { owner: string; raw: string }[]) {
   registerUserpicCache(auth, cache)
   let events: WatchEvents | null = null, changes = 0
   const reader = { watch: (_target: unknown, _signal: AbortSignal, value: WatchEvents) => { events = value; return () => {} } } as unknown as FirestoreReader
-  const binding = { uid: 'peer1', reader, personalURL: null }
+  const binding = { uid: 'peer1', reader, personalURL: null, contact: true }
   const profiles = new PeerProfiles('me1', auth, auth.signal, () => { changes++ })
   registerPeerProfiles(auth, profiles)
   const bind = (): void => profiles.bind(reader, ['peer1'])

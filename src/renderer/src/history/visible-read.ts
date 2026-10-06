@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react'
 import type { ChatMessage, HistorySnapshot } from '../../../shared/model'
 import { compareReadCursor, readCursor, type ReadCursor } from '../../../shared/read-receipts'

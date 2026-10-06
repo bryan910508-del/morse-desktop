@@ -42,8 +42,8 @@ function peerProfiles(owners: { owner: string; raw: string }[] = []) {
 const contacts = (count: number): string[] => Array.from({ length: count }, (_, index) => `u${String(index).padStart(3, '0')}`)
 
 test('a person is read as name, picture and whether this account is still their contact', () => {
-  assert.deepEqual(decodePeerProfile(named('u1', '  민지 ', 'gs://x'), true), { name: '민지', photo: 'gs://x', mutual: true, official: null })
-  assert.deepEqual(decodePeerProfile(named('u1', '민지', 'gs://x'), false), { name: '민지', photo: '', mutual: false, official: null }, 'no longer mutual hides the picture')
+  assert.deepEqual(decodePeerProfile(named('u1', '  민지 ', 'gs://x'), true), { name: '민지', photo: 'gs://x', mutual: true, official: null, photoEveryone: '' })
+  assert.deepEqual(decodePeerProfile(named('u1', '민지', 'gs://x'), false), { name: '민지', photo: '', mutual: false, official: null, photoEveryone: '' }, 'no longer mutual hides the picture')
   assert.equal(decodePeerProfile(user('u1', { displayName: { stringValue: '탈퇴' }, accountDeleted: { booleanValue: true } }), true), null)
   assert.equal(decodePeerProfile(undefined, true), null)
   const item = { uid: 'u1', displayName: '예전 이름' }
@@ -63,8 +63,8 @@ test('every contact is read by the account, five people and ten documents a targ
   assert.deepEqual(targets[0]!.paths, [...contacts(5).map(uid => `${documents}/publicProfiles/${uid}`), ...contacts(5).map(uid => `${documents}/users/${uid}/contacts/${me}`)])
   assert.equal(profiles.hasAnswer('u000'), false)
   targets[0]!.events.snapshot(rows(named('u000', '민지', 'gs://photo1'), reciprocal('u000'), named('u001', '지훈', 'gs://photo2')))
-  assert.deepEqual(profiles.profile('u000'), { name: '민지', photo: 'gs://photo1', mutual: true, official: null })
-  assert.deepEqual(profiles.profile('u001'), { name: '지훈', photo: '', mutual: false, official: null }, 'a person who removed this account shows no picture')
+  assert.deepEqual(profiles.profile('u000'), { name: '민지', photo: 'gs://photo1', mutual: true, official: null, photoEveryone: '' })
+  assert.deepEqual(profiles.profile('u001'), { name: '지훈', photo: '', mutual: false, official: null, photoEveryone: '' }, 'a person who removed this account shows no picture')
   assert.equal(profiles.profile('u002'), null, 'a person whose document is missing is not shown')
   assert.equal(profiles.hasAnswer('u002'), true, 'the answer covers every person of the target')
   assert.equal(profiles.name('u000'), '민지')
@@ -75,7 +75,7 @@ test('every contact is read by the account, five people and ten documents a targ
   targets[0]!.events.snapshot(rows(named('u000', '민지', 'gs://photo1'), reciprocal('u000'), named('u001', '지훈')))
   assert.equal(changes(), 1, 'the same peer data is not announced again')
   targets[0]!.events.reconnecting!()
-  assert.deepEqual(profiles.profile('u000'), { name: '민지', photo: 'gs://photo1', mutual: true, official: null }, 'a re-listen keeps what is known')
+  assert.deepEqual(profiles.profile('u000'), { name: '민지', photo: 'gs://photo1', mutual: true, official: null, photoEveryone: '' }, 'a re-listen keeps what is known')
   targets[0]!.events.snapshot(rows(named('u000', '민지'), named('u001', '지훈')))
   assert.equal(profiles.photo('u000'), '', 'the picture goes when the contact is no longer mutual')
   assert.deepEqual(commands.at(-1), { kind: 'userpic-owner', owner: 'user:u000', raw: null })
@@ -114,4 +114,30 @@ test('adding or removing a contact restarts only that target, and a refused read
   assert.equal(targets.length, before, 'a refused person is not asked again with every change of the list')
   profiles.close()
   assert.equal(live().length, 0)
+})
+
+// B178 §2-1: one judgement — publicProfiles.official ∈ {support, system} and the account not withdrawn.
+test('B178: the official mark is the profile\'s own field, its two values only, and none once withdrawn', () => {
+  const marked = (official: string, deleted = false) => decodePeerProfile(user('u1', { displayName: { stringValue: 'Morse' },
+    official: { stringValue: official }, ...(deleted ? { accountDeleted: { booleanValue: true } } : {}) }), false)?.official ?? null
+  assert.equal(marked('support'), 'support')
+  assert.equal(marked('system'), 'system')
+  assert.equal(marked(''), null)
+  assert.equal(marked('admin'), null, 'nothing outside the two values')
+  assert.equal(marked('support', true), null, 'a withdrawn account has no mark')
+  assert.equal(marked('system', true), null)
+})
+
+test('B178 §2-5: a mark that comes or goes alone is drawn again', async () => {
+  const { reader, targets } = fakeReader()
+  const { profiles, cache, changes } = peerProfiles()
+  await cache.load()
+  profiles.bind(reader, ['u001'])
+  targets[0]!.events.snapshot(rows(named('u001', 'Morse')))
+  const before = changes()
+  assert.equal(profiles.official('u001'), null)
+  targets[0]!.events.snapshot(rows(user('u001', { displayName: { stringValue: 'Morse' }, official: { stringValue: 'support' } })))
+  assert.equal(profiles.official('u001'), 'support')
+  assert.ok(changes() > before, 'the rows are told')
+  profiles.close()
 })

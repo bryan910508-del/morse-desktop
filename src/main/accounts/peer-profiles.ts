@@ -1,9 +1,10 @@
 import type { FirestoreReader } from '../network/firestore-rpc'
-import { boolField, documents, stringField, type FirestoreDocument } from '../network/firestore-values'
+import { boolField, documents, mapField, stringField, type FirestoreDocument, type WireObject } from '../network/firestore-values'
 import type { ContactSummary } from '../../shared/contacts'
 import { recordAvatarStep } from '../platform/avatar-diagnostics'
 import { userpicCacheFor, type UserpicCache } from './userpic-cache'
 import type { OfficialKind } from '../../shared/model'
+import { photoVisible } from '../../shared/profile-photo'
 
 // Data::Session holds one PeerData for every person, fed by one stream of peer data, and every row, box and profile
 // paints from it: no screen opens a read of its own, and scrolling opens nothing. Morse reads the same three things —
@@ -24,12 +25,20 @@ export function publicProfilePath(uid: string): string { return `${documents}/pu
 export type { OfficialKind }
 // B111: the field's two values, nothing else (contracts/B111 §5-6).
 export const officialKind = (value: string): OfficialKind | null => value === 'support' || value === 'system' ? value : null
-export interface PeerProfile { name: string; photo: string; mutual: boolean; official: OfficialKind | null }
+// photo: the picture for a person on this account's contact list (`mutual` says whether they put this account on
+// theirs). photoEveryone (B180): the picture for a person who is not on it — only what they show to everyone, since
+// «they put me on their list» alone is not mutual.
+export interface PeerProfile { name: string; photo: string; mutual: boolean; official: OfficialKind | null; photoEveryone: string }
+// B153: the person's rule for their picture, written by the server into the public profile (privacy.photo).
+export function photoPrivacyOf(fields: Record<string, WireObject>): string { return stringField(mapField(fields, 'privacy'), 'photo', 32) }
 export function decodePeerProfile(doc: FirestoreDocument | undefined, mutual: boolean): PeerProfile | null {
   if (!doc || boolField(doc.fields, 'accountDeleted')) return null
   const name = stringField(doc.fields, 'displayName', 512).trim()
   if (!name) return null
-  return { name, photo: mutual ? stringField(doc.fields, 'photoURL', 10000) : '', mutual, official: officialKind(stringField(doc.fields, 'official', 32)) }
+  const privacy = photoPrivacyOf(doc.fields), photoURL = stringField(doc.fields, 'photoURL', 10000)
+  const shown = photoVisible({ deleted: false, privacy, mutual })
+  return { name, photo: shown ? photoURL : '', mutual, official: officialKind(stringField(doc.fields, 'official', 32)),
+    photoEveryone: photoVisible({ deleted: false, privacy, mutual: false }) ? photoURL : '' }
 }
 // The name on this device's alias first, then the person's current name, then the copy in the contact document.
 export function contactNames(item: ContactSummary, label: string | undefined, current: string): { displayName: string; originalName: string } {
@@ -65,6 +74,8 @@ export class PeerProfiles {
   // The person's public profile says the account was deleted.
   withdrawn(uid: string): boolean { return !this.closed && this.gone.has(uid) }
   photo(uid: string): string { return this.profile(uid)?.photo ?? '' }
+  // B180: the picture by B153's rule for this person — one on the contact list by their rule, anyone else only by «everyone».
+  photoFor(uid: string, contact: boolean): string { const profile = this.profile(uid); return (contact ? profile?.photo : profile?.photoEveryone) ?? '' }
   official(uid: string): OfficialKind | null { return this.profile(uid)?.official ?? null }
 
   // A contact added or removed restarts only its own target; the others keep what they know.
@@ -106,9 +117,10 @@ export class PeerProfiles {
           if (next?.photo && this.kind === 'contacts') this.seen?.(entry.uid, next.photo)
           if (!this.answered.has(entry.uid)) { this.answered.add(entry.uid); changed = true }
           if (wasGone !== this.gone.has(entry.uid)) changed = true
-          if (previous?.name === next?.name && previous?.photo === next?.photo && previous?.mutual === next?.mutual) continue
+          // B178 §2-5: a mark that comes or goes alone is drawn again too.
+          if (previous?.name === next?.name && previous?.photo === next?.photo && previous?.mutual === next?.mutual && previous?.official === next?.official && previous?.photoEveryone === next?.photoEveryone) continue
           this.profiles.set(entry.uid, next); changed = true
-          recordAvatarStep(this.kind, entry.uid, !next ? 'profile-not-usable' : !next.mutual ? 'not-mutual-contact' : !next.photo ? 'no-photo-address' : 'photo-address-found')
+          recordAvatarStep(this.kind, entry.uid, !next ? 'profile-not-usable' : next.photo ? 'photo-address-found' : !next.mutual ? 'not-mutual-contact' : 'no-photo-address')
         }
         if (changed) this.changed()
       },

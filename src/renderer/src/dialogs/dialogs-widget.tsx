@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { memo, useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { Archive, ArchiveRestore, ArrowLeft, ArrowUpDown, Bell, BellOff, CircleAlert, Clock3, FolderPlus, Lock, LogOut, Mail, MailOpen, Megaphone, Menu, Pencil, Pin, PinOff, Search, StickyNote, Trash2, Users, X } from 'lucide-react'
@@ -257,7 +259,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
     if (needle && !archived && !inCustom) {
       for (const dialog of listed) if (dialog.kind === 'direct') for (const uid of dialog.participantUids) if (uid !== accountUid) listedPeers.add(uid)
       const people = peopleWithoutRows({ matches, listedPeers, pendingPeers: new Set(pending.map(item => item.peerUid)), unlisted: unlistedDirects,
-        contacts: contactItems.map(item => ({ uid: item.uid, name: item.displayName })), self: accountUid })
+        contacts: contactItems.map(item => ({ uid: item.uid, name: item.displayName, official: item.official })), self: accountUid })
       for (const person of people) result.push({ kind: 'person', person })
     }
     // Chats pinned inside the folder come first, in their pinned order.
@@ -313,12 +315,13 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       { label: unread ? tr('읽음으로 표시') : tr('읽지 않음으로 표시'), icon: unread ? <MailOpen size={18} /> : <Mail size={18} />, disabled: secret || status !== 'ready', onSelect: () => { void setUnread(accountUid, dialog, !unread) } },
       // Telegram's «Mute» / «Archive», kept on this device only.
       { label: dialog.muted ? tr('알림 켜기') : tr('알림 끄기'), icon: dialog.muted ? <Bell size={18} /> : <BellOff size={18} />, disabled: status !== 'ready', onSelect: () => { void setChatFlag(accountUid, dialog.id, { muted: !dialog.muted }) } },
-      { label: dialog.archived ? tr('보관 해제') : tr('보관'), icon: dialog.archived ? <ArchiveRestore size={18} /> : <Archive size={18} />, disabled: status !== 'ready', onSelect: () => { void setChatFlag(accountUid, dialog.id, { archived: !dialog.archived }) } },
+      // B154 §2-4: the official notice chat is never archived (Telegram DialogsActivity:9786).
+      dialog.service ? null : { label: dialog.archived ? tr('보관 해제') : tr('보관'), icon: dialog.archived ? <ArchiveRestore size={18} /> : <Archive size={18} />, disabled: status !== 'ready', onSelect: () => { void setChatFlag(accountUid, dialog.id, { archived: !dialog.archived }) } },
       'separator',
       { label: tr('폴더에 추가'), icon: <FolderPlus size={18} />, onSelect: () => showFolderPickerBox(accountUid, dialog.id) },
       // Telegram's row menu keeps clearing the history and deleting the chat apart.
       status === 'ready' && !dialog.id.startsWith('memo_') ? 'separator' : null,
-      status === 'ready' && !secret && !dialog.service && !dialog.id.startsWith('memo_')
+      status === 'ready' && !secret && !dialog.id.startsWith('memo_')
         ? { label: tr('대화 기록 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void clearHistory(dialog) } } : null,
       status === 'ready' && !dialog.id.startsWith('memo_')
         ? dialog.discussion && dialog.channelId
@@ -395,7 +398,9 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
     } catch (reason) { controller.toast(errorText(reason, tr('대화를 삭제하지 못했습니다.')), 'error') }
   }
   async function clearHistory(dialog: DialogSummary): Promise<void> {
-    if (!await confirmBox({ title: tr('대화 기록 삭제'), text: tr('이 대화의 모든 메시지를 참여자 모두에게서 삭제합니다. 대화는 목록에 남아요. 되돌릴 수 없어요.'), confirm: tr('모두 삭제'), danger: true })) return
+    // B154 §2-2: the official notice chat's clear is for this account only, and its row goes until the next notice.
+    if (!await confirmBox({ title: tr('대화 기록 삭제'), text: dialog.service ? tr('이 대화의 알림을 모두 지웁니다. 새 알림이 오면 대화가 다시 보여요.')
+      : tr('이 대화의 모든 메시지를 참여자 모두에게서 삭제합니다. 대화는 목록에 남아요. 되돌릴 수 없어요.'), confirm: tr('모두 삭제'), danger: true })) return
     try {
       const result = await trackWrite(window.morse.clearChatHistory(accountUid, dialog.id))
       controller.toast(result === 'done' ? tr('대화 기록을 삭제했습니다.') : tr('삭제 결과를 확인하고 있습니다. 잠시 후 대화를 확인해 주세요.'))
@@ -466,14 +471,14 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
             if (row.kind === 'pending') return <button key={item.key} type="button" className={`dialog-row${row.pending.chatId === selected ? ' active' : ''}`} style={style} data-row={item.index} onClick={() => controller.openChat(row.pending.chatId)}>
               <PeerAvatar id={row.pending.chatId} name={row.pending.displayName} image={row.pending.avatar ?? null} surface="dialogs" />
               <span className="dialog-row-body">
-                <span className="dialog-row-line"><span className="dialog-row-name ellipsis">{row.pending.displayName}</span></span>
+                <span className="dialog-row-line"><span className="dialog-row-name ellipsis">{row.pending.displayName}</span>{row.pending.official && <OfficialMark kind={row.pending.official} className="dialog-row-official" />}</span>
                 <span className="dialog-row-line"><span className="dialog-row-preview ellipsis">{tr('새 대화 · 첫 메시지를 보내면 시작됩니다')}</span></span>
               </span>
             </button>
             if (row.kind === 'person') return <button key={item.key} type="button" className="dialog-row" style={style} data-row={item.index} onClick={() => { void openPerson(row.person) }}>
               <Avatar name={row.person.title || '?'} size={46} />
               <span className="dialog-row-body">
-                <span className="dialog-row-line"><span className="dialog-row-name ellipsis">{row.person.title}</span></span>
+                <span className="dialog-row-line"><span className="dialog-row-name ellipsis">{row.person.title}</span>{row.person.official && <OfficialMark kind={row.person.official} className="dialog-row-official" />}</span>
                 <span className="dialog-row-line"><span className="dialog-row-preview ellipsis">{row.person.chatId ? tr('지난 대화 · 다시 열기') : tr('연락처 · 대화 없음')}</span></span>
               </span>
             </button>

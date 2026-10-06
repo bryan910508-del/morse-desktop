@@ -3,8 +3,10 @@ import type { FirestoreReader, ReadCredentials } from '../network/firestore-rpc'
 import { avatarDisplayLimits, ProfilePhoto } from './profile-photo'
 import { photoToken, userpicCacheFor, userpicURL, type UserpicCache } from './userpic-cache'
 import { peerProfilesFor, type PeerProfiles } from './peer-profiles'
+import type { OfficialKind } from '../../shared/model'
 
-export interface DirectAvatarSource { uid: string; reader: FirestoreReader; personalURL: string | null }
+// contact (B180): whether the person is on this account's contact list — the picture rule differs (PeerProfiles.photoFor).
+export interface DirectAvatarSource { uid: string; reader: FirestoreReader; personalURL: string | null; contact: boolean }
 const idle = (): GroupPhotoImage => ({ status: 'idle', url: null, message: '' })
 
 // One row of a person. Like Dialogs::Row it opens no read of its own: the account's peer data (PeerProfiles) says
@@ -28,10 +30,14 @@ export class DirectAvatar {
     this.peers = peerProfilesFor(auth)
     this.refresh()
   }
-  matches(binding: DirectAvatarSource): boolean { return binding.uid === this.binding.uid && binding.reader === this.binding.reader }
+  matches(binding: DirectAvatarSource): boolean { return binding.uid === this.binding.uid && binding.reader === this.binding.reader && binding.contact === this.binding.contact }
   // The peer's current profile name (UserData::name), empty until the account's peer data carries it.
   get profileName(): string {
     try { this.current(); return this.peers?.name(this.binding.uid) ?? '' } catch { return '' }
+  }
+  // B178 §2-2: the peer's official mark, by the same profile (publicProfiles.official, null once withdrawn).
+  get profileOfficial(): OfficialKind | null {
+    try { this.current(); return this.peers?.official(this.binding.uid) ?? null } catch { return null }
   }
   private current(): DirectAvatarSource {
     this.auth.signal.throwIfAborted()
@@ -43,7 +49,11 @@ export class DirectAvatar {
   // Whether anything of this person may be drawn: after the answer only a person this account may still see.
   private get allowed(): boolean { return this.answered ? Boolean(this.peers?.profile(this.binding.uid)) : true }
   // The picture this row draws now: the person's own after the answer, the last confirmed one before it.
-  private get shownRaw(): string { return this.answered ? this.peers?.photo(this.binding.uid) ?? '' : this.cache?.known(`user:${this.binding.uid}`) ?? '' }
+  // Someone not on the contact list waits for the answer: a picture remembered from when they were may no longer be theirs to see.
+  private get shownRaw(): string {
+    if (this.answered) return this.peers?.photoFor(this.binding.uid, this.binding.contact) ?? ''
+    return this.binding.contact ? this.cache?.known(`user:${this.binding.uid}`) ?? '' : ''
+  }
 
   refresh(): void {
     let local: string | null = null, raw = ''

@@ -13,7 +13,7 @@ const limit = 10 * 1024 * 1024
 export const avatarDisplayLimits = { maxBytes: 10 * 1024 * 1024, maxPixels: 16 * 1024 * 1024 }
 interface Photo { raw: string; token: string; abort: AbortController; bytes: Buffer | null; mime: string }
 export function clearProfilePhotoCache(): void { forgetImages() }
-function pathFor(raw: string, uid: string): string | null {
+export function pathFor(raw: string, uid: string): string | null {
   try {
     let path: string
     if (raw.startsWith(`gs://${storageBucket}/`)) path = raw.slice(storageBucket.length + 6)

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { finalizeDeviceModel, macModelFromIdentifier, macModelFromProfiler, macSystemVersion, windowsModel, windowsSystemVersion } from '../../src/main/platform/device-model'
-import { decodeSignInSession } from '../../src/main/api/account-tools'
+import { decodeSignInSession, revokeOutcome } from '../../src/main/api/account-tools'
 import { sessionTtlDays } from '../../src/shared/account-tools'
 import { DeviceIdentity } from '../../src/main/auth/device-identity'
 import { AuthenticationFailure, type DesktopAuthConfiguration } from '../../src/main/auth/contracts'
@@ -123,4 +123,19 @@ test('signing out ends this session on the server, and a lost answer sent again 
   sent = serve([lost(), lost()])
   await assert.rejects(api().signOutSession('a.b.c', 'sess-1', signal), (error: unknown) => error instanceof AuthenticationFailure && error.code === 'network')
   assert.equal(sent.length, 2, 'not more than twice')
+})
+
+// B175: the server answers a session it no longer has with `{ ok: true, gone: true }`; one before B175 with `{ ok: true }`.
+test('B175: ending a session the server no longer had says so; an older server\'s plain answer is an ended session', () => {
+  assert.deepEqual(revokeOutcome({ ok: true, gone: true }, 'sess-2'), { gone: true })
+  assert.deepEqual(revokeOutcome({ ok: true }, 'sess-2'), { gone: false })
+  assert.deepEqual(revokeOutcome({ ok: true, gone: 'yes' }, 'sess-2'), { gone: false }, 'only a true is taken')
+  assert.deepEqual(revokeOutcome({ ok: true, gone: true }, null), { gone: false }, '«every other session» names none')
+})
+
+test('B175: this device\'s own sign-out answered «gone» is a sign-out done', async () => {
+  const signal = new AbortController().signal
+  const sent = serve([[200, { result: { ok: true, gone: true } }]])
+  await api().signOutSession('a.b.c', 'sess-1', signal)
+  assert.equal(sent.length, 1)
 })

@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
 import { ArrowDown, ArrowLeft, Bookmark, Check, Copy, Download, EllipsisVertical, File as FileIcon, Flag, Forward, Images, Info, Languages, Link, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Sticker, Timer, Trash2, X } from 'lucide-react'
@@ -359,6 +361,17 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     // Telegram's box there offers a plain Delete, and it takes the note off the server. Deleting it
     // only in this window left it on the phone and brought it back on the next install.
     const saved = chatId === `memo_${accountUid}`
+    // B154 §2-1: a notice of the official notice chat is deleted with one question — this account is the room's only
+    // person, so «for me» and «for everyone» are the same — and goes as a 1:1 delete for everyone.
+    if (dialogRef.current?.service) {
+      if (!await confirmBox({ text: messages.length > 1 ? tr('알림 {0}개를 삭제할까요?', [messages.length]) : tr('이 알림을 삭제할까요?'), confirm: tr('삭제'), danger: true })) return
+      setSelection(null)
+      // A notice the device could not hand over comes back; several are said once.
+      void Promise.all(messages.map(message => deleteMessage(accountUid, message, true))).then(done => {
+        if (done.includes(false)) controller.toast(done.length > 1 ? tr('알림 일부를 삭제하지 못했습니다.') : tr('알림을 삭제하지 못했습니다.'), 'error')
+      })
+      return
+    }
     const forEveryone = messages.every(message => canDeleteForEveryone(message, dialogRef.current, accountUid))
     const choice = saved ? (forEveryone && await confirmBox({ title: messages.length > 1 ? tr('메모 {0}개 삭제', [messages.length]) : tr('메모 삭제'),
       text: tr('저장한 메시지에서 지웁니다. 다른 기기에서도 사라져요. 되돌릴 수 없어요.'), confirm: tr('삭제'), danger: true }) ? 'everyone' : null)
@@ -427,8 +440,14 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     const open = (offer: boolean): void => {
       const copyLink: MenuEntry | null = link ? { label: link.email ? tr('이메일 복사') : tr('링크 복사'), icon: <Link size={18} />, onSelect: () => { const copied = copyText(link.email ? link.url.replace(/^mailto:/, '') : link.url); controller.toast(copied ? tr('복사했습니다.') : tr('복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null
       const copyMessage: MenuEntry | null = text && !message.encrypted ? { label: tr('텍스트 복사'), icon: <Copy size={18} />, onSelect: () => { const copied = copyText(text); controller.toast(copied ? tr('복사했습니다.') : tr('복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null
-      // B113: a notice of the official notice chat offers copying only (A13-5 §3-2), as nothing else applies to it.
-      if (owner?.service) { popupMenu.open(point, [copyLink, copyMessage]); return }
+      // B113: a notice of the official notice chat offers copying (A13-5 §3-2), and B154 §2-1 one «삭제» (Telegram lets
+      // a 777000 message be deleted — MessageObject.canDeleteMessage).
+      if (owner?.service) {
+        const removable = deletable && message.serverConfirmed && !message.encrypted
+        popupMenu.open(point, [copyLink, copyMessage, removable && (copyLink || copyMessage) ? 'separator' : null,
+          removable ? { label: tr('삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void removeMessages([message]) } } : null])
+        return
+      }
       const entries: MenuEntry[] = [
         // Telegram puts «Copy link» / «Copy email» first when the menu opens on a link.
         copyLink,
@@ -535,7 +554,9 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
 
   // Deletes every message of the chat for all participants (clearMorseChatHistory).
   async function clearHistory(): Promise<void> {
-    if (!await confirmBox({ title: tr('대화 기록 모두 삭제'), text: tr('이 대화의 모든 메시지를 참여자 모두에게서 삭제합니다. 되돌릴 수 없어요.'), confirm: tr('모두 삭제'), danger: true })) return
+    // B154 §2-2: the official notice chat's clear is for this account only, and its row goes until the next notice.
+    if (!await confirmBox({ title: tr('대화 기록 모두 삭제'), text: service ? tr('이 대화의 알림을 모두 지웁니다. 새 알림이 오면 대화가 다시 보여요.')
+      : tr('이 대화의 모든 메시지를 참여자 모두에게서 삭제합니다. 되돌릴 수 없어요.'), confirm: tr('모두 삭제'), danger: true })) return
     try {
       const result = await trackWrite(window.morse.clearChatHistory(accountUid, chatId))
       controller.toast(result === 'done' ? tr('대화 기록을 삭제했습니다.') : tr('삭제 결과를 확인하고 있습니다. 잠시 후 대화를 확인해 주세요.'))
@@ -548,7 +569,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       dialog && historyReady && !secret && !service ? { label: tr('메시지 선택'), icon: <Check size={18} />, onSelect: () => setSelection([]) } : null,
       dialog && !secret ? { label: tr('배경 설정'), icon: <Images size={18} />, onSelect: () => showChatBackgroundBox(accountUid, chatId) } : null,
       dialog && !secret && !service ? { label: tr('자동 삭제'), icon: <Timer size={18} />, disabled: !canChangeAutoDelete(dialog, accountUid), onSelect: () => showChatAutoDeleteBox(accountUid, dialog) } : null,
-      dialog && !secret && !service && !chatId.startsWith('memo_') ? { label: tr('대화 기록 모두 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void clearHistory() } } : null,
+      dialog && !secret && !chatId.startsWith('memo_') ? { label: tr('대화 기록 모두 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void clearHistory() } } : null,
       !dialog && pending ? { label: tr('새 대화 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => {
         void window.morse.discardDirectDraft(accountUid, chatId).then(() => controller.closeChat()).catch(reason => controller.toast(errorText(reason, tr('새 대화를 삭제하지 못했습니다.')), 'error'))
       } } : null
@@ -566,6 +587,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   const scope = background?.value ? { kind: 'chat' as const, accountUid, chatId } : { kind: 'device' as const }
   // A10 §4 (Telegram restriction_reason): a room the operator closed shows why instead of its messages.
   const closed = dialog?.restricted === true
+  // B178 §2-2: a chat before its first message (pending) is marked by its peer's profile too.
+  const titleOfficial = dialog ? dialog.official : pending?.official
   const bodyNotice = closed ? chatRestrictedNotice() : !dialog ? pending ? tr('첫 메시지를 보내면 대화가 시작됩니다.') : tr('대화를 찾을 수 없습니다.')
     : history.status === 'loading' && !entries.length ? null : history.status !== 'ready' && !entries.length ? history.message || tr('대화를 불러오지 못했습니다.') : historyReady && !entries.length ? tr('아직 메시지가 없습니다.') : ''
 
@@ -584,7 +607,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
               asked for (the account has no peer here, so every such request could only fail). */}
           {saved ? <span className="avatar avatar-saved" style={{ width: 36, height: 36 }} aria-hidden="true"><Bookmark size={18} /></span>
             : dialog ? <PeerAvatar id={dialog.id} name={dialog.title} image={secret ? null : dialog.avatar} surface="dialogs" kind={secret ? 'secret' : undefined} size={36} priority /> : pending ? <PeerAvatar id={chatId} name={title} image={pending.avatar ?? null} surface="dialogs" size={36} priority /> : <Avatar name={title} size={36} />}
-          <span className="top-bar-title"><strong className="top-bar-name"><span className="ellipsis">{title}</span>{dialog?.official && <OfficialMark kind={dialog.official} size={15} className="title-official" />}</strong>{subtitle && <span className={`ellipsis${typing && subtitle === tr('입력 중...') ? ' typing' : peerPresence?.online && subtitle === peerPresence.text ? ' online' : ''}`}>{subtitle}</span>}</span>
+          <span className="top-bar-title"><strong className="top-bar-name"><span className="ellipsis">{title}</span>{titleOfficial && <OfficialMark kind={titleOfficial} size={15} className="title-official" />}</strong>{subtitle && <span className={`ellipsis${typing && subtitle === tr('입력 중...') ? ' typing' : peerPresence?.online && subtitle === peerPresence.text ? ' online' : ''}`}>{subtitle}</span>}</span>
         </button>
         {dialog && !secret && <button className={`icon-button${right === 'search' ? ' active' : ''}`} aria-label={tr('대화 안 검색')} disabled={!historyReady} onClick={() => controller.toggleRight('search')}><Search size={20} /></button>}
         {dialog && <button className={`icon-button${right === 'info' ? ' active' : ''}`} aria-label={tr('정보')} onClick={() => controller.toggleRight('info')}><Info size={20} /></button>}

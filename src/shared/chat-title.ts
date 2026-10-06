@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 // A group's or a channel's title, as Telegram has it: 1 to 128 characters, counted the way the limit is enforced
 // everywhere — UTF-16 code units (tdesktop boxes/peers/edit_peer_common.h kMaxGroupChannelTitle = 128 on a Qt
 // QString; TDLib createNewBasicGroupChat and setChatTitle «1-128 characters») — and never only spaces

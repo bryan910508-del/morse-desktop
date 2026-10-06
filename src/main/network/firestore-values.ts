@@ -13,7 +13,12 @@ import { systemNoticeText, systemNoticeUid, type SystemNotice } from '../../shar
 
 export type WireObject = Record<string, unknown>
 export interface FirestoreDocument { name: string; fields: Record<string, WireObject>; updateTime?: WireObject }
-export interface ReadDialog { summary: DialogSummary; cutoff: MessagePosition | null; participantNames: Record<string, string>; accountUid: string }
+// noticeless: an official notice chat with no notice left (B154 §2-3) — the server's refreshMorseChatAfterDelete and
+// clearRoomHistory leave lastMessage '' and take lastSystemEvent away (morse-message-projections.js:49,
+// morse-history-clear.js:102-104); the next notice writes both again.
+// topExpiresAt (B163 ④): when the message the row shows is to be deleted (lastMessageDeleteAt, ms) — the row stops
+// showing it then, before the server's line follows.
+export interface ReadDialog { summary: DialogSummary; cutoff: MessagePosition | null; participantNames: Record<string, string>; accountUid: string; noticeless?: boolean; topExpiresAt?: number }
 export const database = 'projects/talky-a38c3/databases/(default)'
 export const documents = `${database}/documents`
 export const pageSize = 80
@@ -175,8 +180,12 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
     return at && positionMilliseconds(at) > 0 ? [[participant, readCursor(at)]] : []
   }))
   let preview = displayField(f, 'lastMessage', 100000)
+  const noticeless = service && !preview && f.lastSystemEvent === undefined
+  const autoDeleteLine = service ? null : autoDeleteLineText(f)
+  const expires = kind === 'secret' ? null : timeField(f, 'lastMessageDeleteAt', id), topExpiresAt = expires ? positionMilliseconds(expires) : null
   if (kind === 'secret') preview = tr('비밀 대화')
   else if (preview.startsWith('__deleted__:') || (cutoff && top && withinCutoff(top, cutoff))) preview = ''
+  else if (autoDeleteLine !== null) preview = autoDeleteLine
   else if (preview.startsWith(autoDeleteWirePrefix)) preview = ''
   else if (preview === '__TALKY_SECRET__') preview = tr('비밀 메시지')
   // A media label is stored in whatever language wrote it, and shown in this window's own; the kind the
@@ -198,7 +207,8 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
     // isArchived / isMuted in the shared room document are another person's choice as often as this one's;
     // this device's own flags are applied by the session (ChatFlags).
     pinned: false, pinVersion: '', archived: false, muted: false,
-    discussion: boolField(f, 'isChannelDiscussion'), channelId: stringField(f, 'channelId', 160) || undefined, autoDeleteSeconds: autoDeleteSecondsValue(numberField(f, 'autoDeleteSeconds')), autoDeleteMyOnly: boolField(f, 'autoDeleteMyOnly'), createdBy: stringField(f, 'createdBy', 160), pinnedForAll: pinnedMessageIds(f), unseenReaction: unseenReaction(f, uid), forum: kind === 'group' ? forumState(f) : undefined }, cutoff, participantNames, accountUid: uid }
+    discussion: boolField(f, 'isChannelDiscussion'), channelId: stringField(f, 'channelId', 160) || undefined, autoDeleteSeconds: autoDeleteSecondsValue(numberField(f, 'autoDeleteSeconds')), autoDeleteMyOnly: boolField(f, 'autoDeleteMyOnly'), createdBy: stringField(f, 'createdBy', 160), pinnedForAll: pinnedMessageIds(f), unseenReaction: unseenReaction(f, uid), forum: kind === 'group' ? forumState(f) : undefined }, cutoff, participantNames, accountUid: uid, ...(noticeless ? { noticeless: true } : {}),
+    ...(topExpiresAt !== null ? { topExpiresAt } : {}) }
 }
 // MorseChatForumFirestore.applyForumFields / parseCategories.
 function forumState(fields: Record<string, WireObject>): DialogSummary['forum'] {
@@ -346,6 +356,18 @@ export function systemEventOf(event: Record<string, WireObject>): SystemNotice |
     ...(resetAt && positionMilliseconds(resetAt) > 0 ? { resetAt: positionMilliseconds(resetAt) } : {}) }
 }
 // The values the server writes behind an auto-delete notice, when it wrote them.
+// B163 ①: the row whose newest line is an auto-delete notice reads as that line does in the room — tdesktop draws a
+// service message's own text in the chat list (HistoryItem::toPreview → notificationText, history_item.cpp:4797-4812).
+// The server writes lastMessage '' with lastMessageType 'autoDeletePolicy' and the notice's values in lastSystemEvent;
+// those are read only for that kind. Without them — an older server — this says nothing and the row is as before.
+export function autoDeleteLineText(f: Record<string, WireObject>): string | null {
+  if (stringField(f, 'lastMessageType', 64) !== 'autoDeletePolicy') return null
+  const event = mapField(f, 'lastSystemEvent')
+  if (stringField(event, 'kind', 40) !== 'autoDeletePolicy') return null
+  // The period as written: one this app does not offer reads as the plain sentence below, never as «turned off».
+  const notice = { actorName: stringField(event, 'actorName', 512).trim(), seconds: Math.trunc(numberField(event, 'seconds')), myOnly: boolField(event, 'myOnly') }
+  return autoDeleteNoticeText(notice, '') || tr('자동 삭제 설정이 바뀌었어요.')
+}
 export function autoDeleteNoticeFields(f: Record<string, WireObject>): AutoDeleteNotice | null {
   if (stringField(f, 'systemKind', 64) !== 'autoDeletePolicy') return null
   const actorName = stringField(f, 'autoDeleteActorName', 512).trim()

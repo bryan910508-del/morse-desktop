@@ -75,7 +75,6 @@
  "Enter로 보내기": "Send with Enter",
  "Esc를 누르면 취소됩니다": "Press Esc to cancel",
  "Firebase Analytics 비활성화": "Firebase Analytics disabled",
- "GNU GPL v3 이상으로 배포합니다. 일부 구조와 코드는 Telegram Desktop에서 가져왔습니다.": "Distributed under GNU GPL v3 or later. Some of the structure and code come from Telegram Desktop.",
  "ID 검색을 완료하지 못했습니다. 연결을 확인하고 잠시 후 다시 검색해 주세요.": "ID search didn't finish. Check your connection and search again shortly.",
  "ID 검색을 완료하지 못했습니다. 잠시 후 다시 검색해 주세요.": "ID search didn't finish. Please search again shortly.",
  "IT": "IT",
@@ -4168,5 +4167,15 @@
  "업데이트 필요": "Update required",
  "내려받기 페이지 열기": "Open the download page",
  "업데이트": "Update",
- "복구 코드를 새로 만들었습니다: {0}. 본인이 아니면 설정 › 기기에서 세션을 확인하세요.": "A new recovery code was made: {0}. If this wasn't you, check your sessions in Settings › Devices."
+ "복구 코드를 새로 만들었습니다: {0}. 본인이 아니면 설정 › 기기에서 세션을 확인하세요.": "A new recovery code was made: {0}. If this wasn't you, check your sessions in Settings › Devices.",
+ "이미 끝난 세션이에요.": "That session had already ended.",
+ "공식 알림 대화는 보관할 수 없어요.": "The official notifications chat can't be archived.",
+ "이 알림을 삭제할까요?": "Delete this notification?",
+ "알림 {0}개를 삭제할까요?": "Delete {0} notifications?",
+ "이 프로그램은 {0} 3판 이상으로 배포됩니다. 소스 코드는 {1}에 있습니다.": "This software is licensed under {0} version 3 or later. Source code is available on {1}.",
+ "오픈소스 라이선스": "Open-source licenses",
+ "라이선스 고지를 불러오지 못했습니다.": "Couldn't load the license notices.",
+ "알림을 삭제하지 못했습니다.": "Couldn't delete the notification.",
+ "알림 일부를 삭제하지 못했습니다.": "Some notifications couldn't be deleted.",
+ "자동 삭제 설정이 바뀌었어요.": "Auto-delete settings were changed."
 }

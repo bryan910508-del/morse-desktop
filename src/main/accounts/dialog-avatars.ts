@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { maxDialogAvatars } from '../../shared/dialog-avatars'
 import type { GroupPhotoImage } from '../../shared/group-photo'
+import type { OfficialKind } from '../../shared/model'
 import type { ReadCredentials } from '../network/firestore-rpc'
 import { documentVersion, type FirestoreDocument } from '../network/firestore-values'
 import { GroupPhoto, groupPhotoFields } from './group-photo'
@@ -34,6 +35,7 @@ export class DialogAvatars {
     }
   }
   peerName(chatId: string): string { return this.direct.get(chatId)?.profileName ?? '' }
+  peerOfficial(chatId: string): OfficialKind | null { return this.direct.get(chatId)?.profileOfficial ?? null }
   setVisible(ids: string[]): void {
     if (this.closed) return
     this.wanted = [...new Set(ids)].slice(0, maxDialogAvatars)

@@ -37,6 +37,7 @@ const bridge: DesktopBridge = {
   blockedUsers: uid => ipcRenderer.invoke('morse:blocked-users', uid),
   setBlockedUser: (uid, target, blocked) => ipcRenderer.invoke('morse:set-blocked-user', uid, target, blocked),
   signInSessions: uid => ipcRenderer.invoke('morse:sign-in-sessions', uid),
+  showPeople: (uid, surface, uids) => ipcRenderer.invoke('morse:show-people', uid, surface, uids),
   revokeSignInSessions: (uid, sessionId) => ipcRenderer.invoke('morse:revoke-sign-in-sessions', uid, sessionId),
   setSessionTtl: (uid, days) => ipcRenderer.invoke('morse:set-session-ttl', uid, days),
   changeBackupCode: (uid, code) => ipcRenderer.invoke('morse:change-backup-code', uid, code),

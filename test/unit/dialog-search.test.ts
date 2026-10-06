@@ -23,3 +23,9 @@ test('each person once; a row of the list, a new chat already shown, or this acc
     contacts: [{ uid: 'c', name: 'C' }, { uid: 'b', name: 'B' }, { uid: 'me', name: '나' }, { uid: 'd', name: 'D' }] })
   assert.deepEqual(found.map(item => [item.uid, item.chatId]), [['c', 'c'], ['d', null]])
 })
+
+// B178 §2-2: a person row of the search carries the official mark of the contact it came from.
+test('B178: a contact found by the search keeps their official mark', () => {
+  const found = peopleWithoutRows({ ...base, matches: matches('Morse'), contacts: [{ uid: 'cs', name: 'Morse 고객센터', official: 'support' }, { uid: 'u3', name: 'Morse 팬' }] })
+  assert.deepEqual(found, [{ uid: 'cs', title: 'Morse 고객센터', chatId: null, official: 'support' }, { uid: 'u3', title: 'Morse 팬', chatId: null }])
+})

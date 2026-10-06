@@ -1,3 +1,5 @@
+// Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
+// Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import type { ChannelSummary } from '../../shared/channels'
 import { channelCategoryId, type ChannelCategoryId, type ChannelHomeChannel, type ChannelHomeImage, type ChannelHomePost, type ChannelHomeSnapshot } from '../../shared/channel-home'
 import type { ChannelPostText } from '../../shared/channel-posts'

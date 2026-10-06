@@ -65,6 +65,10 @@ export function decodeSignInSession(doc: FirestoreDocument, currentSessionId: st
 
 // A13 §2.4 (Telegram FRESH_RESET_AUTHORISATION_FORBIDDEN): a session younger than a day cannot end another one —
 // whoever just signed in with a stolen code cannot sign the owner out. The same words as Android §32.
+// B175: only the server of B175 says `gone`, and only of the one session named; «every other session» has nothing gone.
+export function revokeOutcome(result: Record<string, unknown>, sessionId: string | null): { gone: boolean } {
+  return { gone: sessionId !== null && result.gone === true }
+}
 export function revokeRefusal(error: unknown): string {
   return error instanceof MorseCallableFailure && error.reason === 'fresh-session' ? tr('새로 로그인한 기기는 24시간 동안 다른 기기를 로그아웃할 수 없어요.')
     : tr('세션을 종료하지 못했습니다.')
@@ -144,10 +148,14 @@ export class AccountToolsApi {
   }
   // revokeMorseDeviceSession: one other session, or every session except this device's. The server deletes them at
   // once and refuses their sign-ins everywhere (A6 §3-1); this device signs itself out from settings.
-  async revokeSessions(sessionId: string | null): Promise<void> {
+  // B175: a session the server no longer has comes back `{ ok: true, gone: true }` — the list here was older than the
+  // server's, and is read again with that said; a server before B175 answers `{ ok: true }` alone, which is ended.
+  async revokeSessions(sessionId: string | null): Promise<{ gone: boolean }> {
     if (sessionId === this.sessionId) throw new Error(tr('이 기기는 설정의 로그아웃으로 로그아웃해 주세요.'))
-    try { await this.call('revokeMorseDeviceSession', sessionId ? { sessionId } : { allOthers: true, currentSessionId: this.sessionId }) }
+    let result: Record<string, unknown>
+    try { result = await this.call('revokeMorseDeviceSession', sessionId ? { sessionId } : { allOthers: true, currentSessionId: this.sessionId }) }
     catch (error) { throw new Error(revokeRefusal(error)) }
+    return revokeOutcome(result, sessionId)
   }
   // setMorseSessionTtl: the account's own period for ending idle sessions (Telegram account.setAuthorizationTTL).
   async setSessionTtl(days: number): Promise<void> {
