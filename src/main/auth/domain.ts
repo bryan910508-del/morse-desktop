@@ -43,10 +43,7 @@ export class AuthenticationDomain {
     this.unsubscribe = reachability.subscribe(reason => { this.restoreNow(reason); this.enders.runNow() })
     this.enders.runNow()
     // Read once at start, so «계정 추가» opened later already knows whether its QR is drawn.
-    if (configuration) {
-      this.publicApi = new FirebaseAuthenticationAPI(configuration)
-      void this.publicApi.qrLoginEnabled(AbortSignal.timeout(15000)).then(on => { if (!this.closed && this.qrKnown === null) this.qrKnown = on }).catch(() => {})
-    }
+    this.readQrSwitch()
   }
   private readonly enders: SessionEnders
   private readonly unsubscribe: () => void
@@ -187,8 +184,11 @@ export class AuthenticationDomain {
     if (this.adding) return this.adding.snapshot
     const pending = this.pendingUid ? this.controllers.get(this.pendingUid) : undefined
     if (pending && !pending.connected) return pending.snapshot
+    // B182: before the screen's QR start makes its controller, the screen still says whether its QR is drawn — by the
+    // switch as last read, unknown being «not drawn» — so the QR area does not appear for the moment until it is made.
     return { available: this.available, phase: this.available ? 'signed-out' : 'unavailable', account: null,
-      message: this.available ? tr('복구 코드로 기존 계정을 연결하세요.') : tr('Desktop 계정 연결을 준비하고 있습니다.') }
+      message: this.available ? tr('복구 코드로 기존 계정을 연결하세요.') : tr('Desktop 계정 연결을 준비하고 있습니다.'),
+      qrOff: this.qrKnown !== true }
   }
   states(): DomainAccountState[] {
     return [...this.controllers.entries()].map(([uid, controller]) => {
@@ -203,7 +203,23 @@ export class AuthenticationDomain {
     if (this.closed) return
     if (this.controllers.size >= this.hooks.maxAccounts()) throw new AuthenticationFailure('device-limit')
     this.requested = true; this.pendingUid = null
+    // Not known on (unread, unreadable, or off when last read): read again — the screen draws the QR once it is on.
+    if (this.qrKnown !== true) this.readQrSwitch()
     this.changed()
+  }
+  // B182: the QR switch read for the sign-in screens (A13 D-6: off or unreadable draws nothing). The screen starts its QR
+  // only once this — or its own controller — says on.
+  private qrReading = false
+  private readQrSwitch(): void {
+    if (!this.configuration || this.qrReading || this.closed) return
+    this.qrReading = true
+    this.publicApi ??= new FirebaseAuthenticationAPI(this.configuration)
+    void this.publicApi.qrLoginEnabled(AbortSignal.timeout(15000)).then(on => {
+      if (this.closed || this.qrKnown === on) return
+      this.qrKnown = on
+      this.adding?.qrSwitchKnown(on)
+      this.changed()
+    }).catch(() => {}).finally(() => { this.qrReading = false })
   }
   async cancelAdd(): Promise<void> {
     const adding = this.adding

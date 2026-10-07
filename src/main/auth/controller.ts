@@ -126,7 +126,7 @@ export class AuthenticationController {
   get connected(): boolean { return Boolean(this.owner?.established) }
   // Why the last connection attempt or connection ended, for the domain's reconnect decision.
   get lastFailure(): AuthFailureCode | null { return this.failure }
-  get snapshot(): AuthenticationSnapshot { return { ...this.value, account: this.value.account ? { ...this.value.account } : null, ...(this.qr ? { qr: { ...this.qr } } : {}), ...(this.qrOff ? { qrOff: true } : {}),
+  get snapshot(): AuthenticationSnapshot { return { ...this.value, account: this.value.account ? { ...this.value.account } : null, ...(this.qr ? { qr: { ...this.qr } } : {}), qrOff: this.qrOff,
     ...(this.value.phase === 'password' && this.passwordStep ? { password: { ...this.passwordStep } } : {}),
     ...(this.securityCheck ? { securityCheck: this.securityCheck } : {}), ...(googleConfigured() ? { google: true } : {}) } }
   // A failed security check before sign-in, for «지금 다시 시도»: running again, refused (a low score — VPN), or lost.
@@ -231,6 +231,12 @@ export class AuthenticationController {
   // renewed every 30 s and polled every 2 s, that a phone of the account approves at once. Approved, the sign-in goes the
   // way a recovery code's does (exchange, the session the server made, establish); a two-step password stops at its
   // screen (§24). While it waits the sign-in screen stays usable — another way in stops it first (the domain).
+  // B182: the device learned the switch (its reading at start, or again on «계정 추가») before this screen started its
+  // own QR — it draws or hides the area by it. Once the QR runs, its own readings decide.
+  qrSwitchKnown(on: boolean): void {
+    if (this.qrOperation || this.qrOff === !on) return
+    this.qrOff = !on; this.changed()
+  }
   async signInWithQr(exceptUids: string[]): Promise<void> {
     await this.operationScope(false, async (api, controller) => {
       this.qrOperation = controller

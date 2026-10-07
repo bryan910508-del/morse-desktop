@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { ArrowLeft, KeyRound, RotateCw, Trash2, UserPlus } from 'lucide-react'
 import type { AccountAuthState } from '../../../shared/auth'
-import { morseUserIdAlphabet } from '../../../shared/auth'
+import { morseUserIdAlphabet, qrShown } from '../../../shared/auth'
 import { useDesktop } from '../app/store'
 import { controller } from '../app/ui'
 import { errorText } from '../app/format'
@@ -196,7 +196,7 @@ export function Intro() {
         </> : <>
           <p className="intro-description">{adding && hasActive ? tr('다른 Morse 계정을 이 데스크탑에 함께 연결합니다.') : tr('기존 Morse 계정을 이 데스크탑에 연결합니다.')}</p>
           <QrSignInPanel auth={auth} />
-          {!auth.qrOff && <p className="intro-or">{tr('또는 복구 코드로 연결')}</p>}
+          {qrShown(auth) && <p className="intro-or">{tr('또는 복구 코드로 연결')}</p>}
           <label className="intro-code">
             <KeyRound size={18} />
             <input type="password" value={code} maxLength={256} placeholder={tr('복구 코드')} autoComplete="off" autoCapitalize="characters" spellCheck={false} autoFocus disabled={busy} onChange={event => setCode(event.target.value)} />

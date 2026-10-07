@@ -80,3 +80,7 @@ export function normalizeBackupCode(raw: unknown): string {
   if (!result) throw new Error(tr('복구 코드를 입력해 주세요.'))
   return result
 }
+
+// B182: the QR area is drawn only when the snapshot says the switch is on — a snapshot that says nothing (or «off») draws
+// nothing, so no screen shows it for the moment before it knows.
+export function qrShown(auth: Pick<AuthenticationSnapshot, 'qrOff'>): boolean { return auth.qrOff === false }

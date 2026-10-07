@@ -3,14 +3,17 @@
 import { useEffect } from 'react'
 import { QrCode } from '../boxes/profile-share-box'
 import { Spinner } from '../ui/controls'
-import type { AuthenticationSnapshot } from '../../../shared/auth'
+import { qrShown, type AuthenticationSnapshot } from '../../../shared/auth'
 import { tr } from '../../../shared/i18n'
 
 // A13 · 08 §3.5 (Telegram's first sign-in step, tdesktop intro/intro_qr.cpp): «scan with your phone» above the
 // recovery code. The code runs while this screen is in front and stops when it is hidden or left (intro_qr.cpp:537-559);
 // back in front, a new one is asked for. The server switch off shows nothing at all (D-6).
 export function QrSignInPanel({ auth }: { auth: AuthenticationSnapshot }) {
+  // B182: drawn — and its code asked for — only once the switch is known to be on; hidden, nothing starts.
+  const shown = qrShown(auth)
   useEffect(() => {
+    if (!shown) return
     const start = (): void => { if (document.visibilityState === 'visible') void window.morse.authentication.startQrSignIn().catch(() => {}) }
     const changed = (): void => {
       if (document.visibilityState === 'visible') start()
@@ -19,8 +22,8 @@ export function QrSignInPanel({ auth }: { auth: AuthenticationSnapshot }) {
     start()
     document.addEventListener('visibilitychange', changed)
     return () => { document.removeEventListener('visibilitychange', changed); void window.morse.authentication.stopQrSignIn().catch(() => {}) }
-  }, [])
-  if (auth.qrOff) return null
+  }, [shown])
+  if (!shown) return null
   const qr = auth.qr
   return <section className="intro-qr" aria-label={tr('휴대폰으로 스캔해 로그인')}>
     <strong className="intro-qr-title">{tr('휴대폰으로 스캔해 로그인')}</strong>
