@@ -163,10 +163,20 @@ export class AuthenticationDomain {
     this.changed()
     return order
   }
+  // B193: from the start until the first saved account's restore has settled, the entry screen is «connecting», not the
+  // sign-in form — the saved list is still being read, then each account sits at its first «signed-out» until its restore
+  // begins. tdesktop reads the accounts before it decides between the main window and the intro
+  // (Window::Controller::showAccount → sessionValue, window_controller.cpp:170-216).
+  private starting = false
   async start(): Promise<void> {
-    const order = await this.prepare()
+    this.starting = true; this.changed()
+    let order: string[] = []
+    try {
+      order = await this.prepare()
+      const first = this.preferred && this.controllers.has(this.preferred) ? this.preferred : order[0]
+      if (first) await this.controllers.get(first)?.restore().catch(() => {})
+    } finally { this.starting = false; this.changed() }
     const first = this.preferred && this.controllers.has(this.preferred) ? this.preferred : order[0]
-    if (first) await this.controllers.get(first)?.restore().catch(() => {})
     for (const uid of order) if (uid !== first && !this.closed) void this.controllers.get(uid)?.restore().catch(() => {})
   }
   get addingRequested(): boolean { return this.requested }
@@ -179,6 +189,10 @@ export class AuthenticationDomain {
   async submitPassword(password: unknown): Promise<void> { await this.waitingForPassword()?.submitPassword(password) }
   async requestPasswordReset(): Promise<void> { await this.waitingForPassword()?.requestPasswordReset() }
   get entrySnapshot(): AuthenticationSnapshot {
+    const snapshot = this.entryShown()
+    return this.starting ? { ...snapshot, starting: true } : snapshot
+  }
+  private entryShown(): AuthenticationSnapshot {
     const waiting = this.waitingForPassword()
     if (waiting) return waiting.snapshot
     if (this.adding) return this.adding.snapshot

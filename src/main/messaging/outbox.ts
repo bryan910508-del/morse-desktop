@@ -117,7 +117,14 @@ export const shownState = (row: Pick<StoredIntent, 'state' | 'reason'>): StoredI
 // file only once it is up (apiwrap.cpp sendUploadedPhoto → sendMedia), so a later text does not wait for it. Files keep
 // their own order among themselves (Uploader::maybeFinishFront, storage/file_upload.cpp:1094-1106).
 const goingUp = (row: Pick<StoredIntent, 'state' | 'reason'>): boolean => row.state === 'uploading' || waitingUpload(row)
-const carriesFile = (row: Pick<StoredIntent, 'parts' | 'wire'>): boolean => Boolean(row.parts?.length) || row.wire.type !== 'text'
+// Only a message with bytes of its own to put up waits behind a file going up. One with nothing to upload — a text, a
+// shared channel post, a location, a poll — goes into the send order at once, as tdesktop sends media already on the
+// server without the uploader (Api::SendExistingMedia → histories.sendPreparedMessage, api_sending.cpp:182-322;
+// SendExistingDocument :701-716); a poll (Polls::create → histories.sendPreparedMessage, api_polls.cpp:220-285) and a
+// location (SendLocation → SendSimpleMedia, api_sending.cpp:950 → :71-153) go the same way. Each app follows its own
+// Telegram app here (TI waits for those, TA does not); Desktop follows tdesktop. A sticker is put up again by Desktop
+// as chat media, so it has bytes and waits.
+const carriesFile = (row: Pick<StoredIntent, 'parts'>): boolean => Boolean(row.parts?.length)
 export function holdsBack(earlier: StoredIntent, row: StoredIntent): boolean {
   if (!resumableIntent(earlier)) return false
   return goingUp(earlier) ? carriesFile(row) : true

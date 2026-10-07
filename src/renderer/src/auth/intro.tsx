@@ -4,6 +4,7 @@ import { useCallback, useState } from 'react'
 import { ArrowLeft, KeyRound, RotateCw, Trash2, UserPlus } from 'lucide-react'
 import type { AccountAuthState } from '../../../shared/auth'
 import { morseUserIdAlphabet, qrShown } from '../../../shared/auth'
+import { reconnectingAtStart } from './entry-screen'
 import { useDesktop } from '../app/store'
 import { controller } from '../app/ui'
 import { errorText } from '../app/format'
@@ -150,7 +151,7 @@ export function Intro() {
   </div>
   const back = adding && hasActive && !busy && <button className="intro-back" type="button" onClick={() => { void window.morse.authentication.cancelAddAccount().catch(() => {}) }}><ArrowLeft size={18} />{tr('돌아가기')}</button>
   // At start every saved account reconnects by itself; the code form stays one click away.
-  if (!hasActive && !adding && !busy && !manual && saved.some(state => state.phase === 'restoring' || state.phase === 'connecting')) return <div className="intro">
+  if (reconnectingAtStart({ starting: auth.starting === true, hasActive, adding, busy, manual, saved })) return <div className="intro">
     <div className="intro-drag" />
     <div className="intro-step">
       <img className="intro-logo" src="/morse.png" alt="" />

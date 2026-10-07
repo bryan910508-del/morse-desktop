@@ -4177,5 +4177,6 @@
  "라이선스 고지를 불러오지 못했습니다.": "Couldn't load the license notices.",
  "알림을 삭제하지 못했습니다.": "Couldn't delete the notification.",
  "알림 일부를 삭제하지 못했습니다.": "Some notifications couldn't be deleted.",
- "자동 삭제 설정이 바뀌었어요.": "Auto-delete settings were changed."
+ "자동 삭제 설정이 바뀌었어요.": "Auto-delete settings were changed.",
+ "다음 메시지를 불러오지 못했습니다.": "Couldn't load the next messages."
 }

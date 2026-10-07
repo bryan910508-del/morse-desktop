@@ -1417,6 +1417,12 @@ export class AccountSession {
     // already has a newer revision and must never be overwritten by this reply.
     return result
   }
+  // B184: the page after the window's newest message, for the chat on screen (HistoryReader.newer).
+  async newerHistory(chatId: string, after: MessagePosition): Promise<HistorySnapshot> {
+    if (this.closed || this.status !== 'ready' || !this.reader) return this.empty(this.status, this.message)
+    if (this.selected?.dialog.summary.id !== chatId) return this.history(chatId)
+    return this.selected.newer(after)
+  }
   latestHistory(chatId: string): HistorySnapshot {
     const dialog = this.index.get(chatId)
     if (this.closed || this.status !== 'ready' || !dialog || !this.reader) return this.empty(this.status === 'ready' ? 'error' : this.status, this.message || new ReadFailure('permission').message)

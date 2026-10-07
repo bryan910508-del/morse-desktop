@@ -79,3 +79,21 @@ test('B185 A1·A2: a picture going up holds no text — of its own room or anoth
   assert.equal(pick(cut, null).intent?.id, 'm1', 'it resumes first')
   assert.equal(pick(cut, 'm1').intent?.id, 'm2')
 })
+
+// B196 (review 10-07, the three apps' one rule): a later message waits behind a file going up only when it has bytes of
+// its own to put up. A shared channel post, a location or a poll has none and goes at once, as tdesktop sends media
+// already on the server without the uploader (Api::SendExistingMedia) and TI splits by whether an upload is needed. A
+// Desktop sticker is put up again as chat media, so it has bytes and keeps the files' order.
+const typed = (sequence: number, chatId: string, type: string): StoredIntent =>
+  ({ ...row(sequence, chatId, 'queued'), wire: { type } } as unknown as StoredIntent)
+test('only a message with its own bytes to put up waits behind a picture going up', () => {
+  const now = 1000
+  const pick = (from: StoredIntent[], uploadingId: string | null) => nextIntent(from, now, () => 0, item => sendableBesideUpload(item, uploadingId))
+  assert.equal(pick([file(1, 'a', 'uploading'), typed(2, 'a', 'channelPost')], 'm1').intent?.id, 'm2', 'a shared channel post overtakes the picture')
+  assert.equal(pick([file(1, 'a', 'uploading'), typed(2, 'a', 'location')], 'm1').intent?.id, 'm2', 'so does a location')
+  assert.equal(pick([file(1, 'a', 'uploading'), typed(2, 'a', 'poll')], 'm1').intent?.id, 'm2', 'and a poll')
+  const sticker = { ...typed(2, 'a', 'sticker'), parts: [{ index: 0 }] } as unknown as StoredIntent
+  assert.equal(pick([file(1, 'a', 'uploading'), sticker], 'm1').intent, null, 'a Desktop sticker is put up again: it waits')
+  assert.equal(pick([file(1, 'a', 'uploading'), file(2, 'a', 'uploading')], 'm1').intent, null, 'two pictures keep their order')
+  assert.equal(pick([row(1, 'a', 'uncertain', 'ack-pending'), typed(2, 'a', 'channelPost')], null).intent?.id, 'm1', 'an earlier message being sent still holds everything')
+})

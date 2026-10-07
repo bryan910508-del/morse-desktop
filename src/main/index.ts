@@ -1146,7 +1146,8 @@ function registerIPC(): void {
       }
       // A passcode set before the data was encrypted wraps the key the first time it is entered (Domain::setPasscode).
       if (!key.protectedByPasscode) await key.protect(passcode).catch(() => {})
-      updateScreenProtection(); checkAutoLock(); startAccounts()
+      // B193: the accounts start before the unlocked screen is drawn, so its first frame already says «connecting».
+      startAccounts(); updateScreenProtection(); checkAutoLock()
     }
     return result
   })
@@ -1202,7 +1203,7 @@ function registerIPC(): void {
     const key = requireLocalKey()
     if (key.ready) await key.protect(null)
     else { await accounts.flush().catch(() => {}); await replaceLocalData() }
-    await lock.remove(); cancelAutoLock(); updateScreenProtection(); startAccounts()
+    await lock.remove(); cancelAutoLock(); startAccounts(); updateScreenProtection()
   })
   handle('auth-create-account', userId => authentication.createAccount(userId))
   handle('refresh-profile', uid => accounts.requireActive(identifier(uid)).selfProfile.refresh())
@@ -2492,6 +2493,11 @@ function registerIPC(): void {
     return rendererSnapshot()
   })
   handle('history', (uid, chatId, before) => accounts.requireActive(identifier(uid)).history(identifier(chatId), historyPosition(before)))
+  handle('newer-history', (uid, chatId, after) => {
+    const position = historyPosition(after)
+    if (!position) throw new Error(tr('잘못된 요청입니다.'))
+    return accounts.requireActive(identifier(uid)).newerHistory(identifier(chatId), position)
+  })
   handle('latest-history', (uid, chatId) => accounts.requireActive(identifier(uid)).latestHistory(identifier(chatId)))
   handle('search-messages', (uid, chatId, id, query) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 검색해 주세요.'))

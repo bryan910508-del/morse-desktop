@@ -378,6 +378,18 @@ export function expiry(doc: FirestoreDocument): number | null {
   const value = timeField(doc.fields, 'deleteAt', '')
   return value ? positionMilliseconds(value) : null
 }
+// B184: the messages after a position, oldest first — the mirror of messagesQuery's «before» page, on the same
+// (createdAt, document id) cursor, so two messages of the same moment on a page's edge are neither repeated nor lost.
+// tdesktop loadMessagesDown reads after the newest loaded id (history_widget.cpp:4990-5001).
+export function newerMessagesQuery(dialog: ReadDialog, after: MessagePosition, limit = pageSize + 1): WireObject {
+  if (!historyReadable(dialog)) throw new ReadFailure('permission')
+  const query: WireObject = { from: [{ collectionId: 'messages' }],
+    orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'ASCENDING' }, { field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
+    limit: { value: limit },
+    startAt: { before: false, values: [positionValue(after), { referenceValue: `${documents}/chats/${dialog.summary.id}/messages/${identifier(after.id)}` }] } }
+  if (dialog.cutoff) query.where = { fieldFilter: { field: { fieldPath: 'createdAt' }, op: 'GREATER_THAN', value: positionValue(dialog.cutoff) } }
+  return query
+}
 export function messagesQuery(dialog: ReadDialog, before?: MessagePosition): WireObject {
   if (!historyReadable(dialog)) throw new ReadFailure('permission')
   const query: WireObject = { from: [{ collectionId: 'messages' }],

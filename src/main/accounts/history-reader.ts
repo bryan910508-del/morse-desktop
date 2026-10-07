@@ -4,7 +4,7 @@ import type { ChatMessage, HistorySnapshot, MessagePosition, ReplyPreview } from
 import { comparePosition, positionAt } from '../../shared/model'
 import { FirestoreReader, type WatchResumeToken } from '../network/firestore-rpc'
 import type { KeptHistory } from './kept-histories'
-import { decodeMessage, documents, expiry, historyReadable, historyLimit, messagesQuery, pageSize, positionValue, rawPosition, ReadFailure, type FirestoreDocument, type ReadDialog, roomMediaNames } from '../network/firestore-values'
+import { decodeMessage, documents, expiry, historyReadable, historyLimit, messagesQuery, newerMessagesQuery, pageSize, positionValue, rawPosition, ReadFailure, type FirestoreDocument, type ReadDialog, roomMediaNames } from '../network/firestore-values'
 import type { MediaRequest } from '../../shared/media'
 import { mediaResources } from '../media/media-document'
 import { originalPreview, replyOriginal, ReplyContext } from './reply-context'
@@ -24,6 +24,10 @@ export class HistoryReader {
   private groupNames = ''
   private closed = false
   private following = true
+  // B184: the window reaches the newest message but holds older ones too (read further up, or down to the end): the
+  // live page's stream owns its newest rows and adds new ones, the older rows keep their own document watches —
+  // tdesktop's loadedAtBottom, where new messages go on being added below.
+  private attached = false
   private paging: Promise<HistorySnapshot> | null = null
   private pageAbort: AbortController | null = null
   private epoch = 0
@@ -114,7 +118,7 @@ export class HistoryReader {
     if (JSON.stringify(names) === JSON.stringify(this.dialog.participantNames)) return
     this.dialog.participantNames = names; this.publish()
   }
-  start(): void {
+  start(useKept = true): void {
     if (!historyReadable(this.dialog)) {
       this.value.status = this.dialog.summary.historyAccess === 'loading' ? 'loading' : 'error'; this.value.message = this.dialog.summary.historyMessage || tr('토론방 기록 공개 범위를 확인해 주세요.'); this.publish(); return
     }
@@ -125,7 +129,7 @@ export class HistoryReader {
     this.query = JSON.stringify(structuredQuery)
     // B87: the messages this chat had when it was last open show at once, as Telegram draws a History it already has;
     // the listen then asks only for what changed since (a RESET or a mismatch reads everything again).
-    const kept = this.kept(this.query)
+    const kept = useKept ? this.kept(this.query) : null
     if (kept) {
       this.top = this.sorted(kept.documents)
       this.rows = new Map(this.top.slice(0, pageSize).map(doc => [doc.name, doc]))
@@ -148,6 +152,16 @@ export class HistoryReader {
             this.value.before = this.top[Math.min(pageSize, this.top.length) - 1] ? rawPosition(this.top[Math.min(pageSize, this.top.length) - 1]!, this.dialog.summary.id) : null
             this.value.hasMore = this.top.length > pageSize
             this.value.newerAvailable = false
+          } else if (this.attached) {
+            // B184: the live page replaces only its own rows; the older ones the window holds stay with their watches. It
+            // does not reach above the window's oldest row — a jump's window keeps its half before (B184 cond. 2).
+            const chat = this.dialog.summary.id, oldest = this.sorted(this.rows.values()).at(-1)
+            const page = this.top.slice(0, pageSize).filter(doc => !oldest || comparePosition(rawPosition(doc, chat), rawPosition(oldest, chat)) >= 0)
+            const names = new Set(page.map(doc => doc.name)), edge = page.at(-1)
+            const older = edge ? [...this.rows.values()].filter(doc => !names.has(doc.name) &&
+              comparePosition(rawPosition(doc, chat), rawPosition(edge, chat)) < 0) : [...this.rows.values()]
+            this.rows = new Map([...page, ...older].map(doc => [doc.name, doc]))
+            this.value.newerAvailable = false
           } else {
             // During older browsing only exact document targets own the rows.
             // Two independent streams must not race to overwrite the same row.
@@ -161,10 +175,16 @@ export class HistoryReader {
           if (this.closed || this.failed) return
           if (state === 'error') this.fail(error!)
           else if (state === 'loading') {
+            // B184 (Phase1 10-07): the live page a window joins on reaching the newest is a new listen, which says
+            // «loading» as it starts (relisten, firestore-rpc.ts). That is not a reconnect: the window keeps its rows and
+            // its place until the page's first snapshot merges into it. Clearing it here emptied the screen, jumped it to
+            // the newest 80 rows and cut the scroll to 0 — tdesktop adds the rows read down and keeps the view
+            // (history_widget.cpp addMessagesToBack → updateHistoryGeometry(false, true, ScrollChangeNoJumpToBottom)).
+            if (this.attached) return
             this.cancelPage()
             // Reconnect discards rows whose server authorization is not current.
             this.rows.clear(); this.top = []; this.token = null; this.groupNames = ''; this.stopGroups()
-            this.value.status = 'loading'; this.value.message = error?.message ?? ''; this.value.before = null; this.value.hasMore = false; this.value.newerAvailable = false; this.value.focusMessageId = undefined; this.following = true; this.publish()
+            this.value.status = 'loading'; this.value.message = error?.message ?? ''; this.value.before = null; this.value.hasMore = false; this.value.newerAvailable = false; this.value.focusMessageId = undefined; this.following = true; this.attached = false; this.publish()
           }
         },
       }, pageSize + 1, undefined, kept ? { token: kept.token, documents: new Map(kept.documents.map(doc => [doc.name, doc])) } : undefined)
@@ -181,7 +201,8 @@ export class HistoryReader {
   private stopGroups(): void { this.groupGeneration++; for (const stop of this.stops) stop(); this.stops = [] }
   private observeRows(): void {
     if (this.following) { this.stopGroups(); this.groupNames = ''; return }
-    const names = [...this.rows.keys()].sort()
+    const live = this.attached ? new Set(this.top.slice(0, pageSize).map(doc => doc.name)) : new Set<string>()
+    const names = [...this.rows.keys()].filter(name => !live.has(name)).sort()
     const signature = names.join('\n')
     if (signature === this.groupNames) return
     this.stopGroups(); this.groupNames = signature
@@ -213,7 +234,7 @@ export class HistoryReader {
   private fail(error: ReadFailure): void {
     if (this.closed || this.failed) return
     recordHistoryStep('history-failed', error.code)
-    this.failed = true; this.cancelPage(); this.stopTail?.(); this.stopGroups(); this.replies.clear()
+    this.failed = true; this.attached = false; this.cancelPage(); this.stopTail?.(); this.stopGroups(); this.replies.clear()
     this.value.status = 'error'; this.value.message = error.message
     this.rows.clear(); this.top = []; this.value.before = null; this.value.hasMore = false; this.value.newerAvailable = false
     this.publish()
@@ -225,6 +246,7 @@ export class HistoryReader {
     clearTimeout(this.expiryTimer)
     try {
       const raw = this.sorted(this.rows.values())
+      this.value.after = raw[0] ? rawPosition(raw[0], this.dialog.summary.id) : null
       if (raw.reduce((total, doc) => total + JSON.stringify(doc).length, 0) > 32 * 1024 * 1024) throw new ReadFailure('data')
       const messages = raw.map(doc => {
         const message = decodeMessage(doc, this.dialog)
@@ -276,7 +298,7 @@ export class HistoryReader {
     // A fresh CURRENT boundary avoids restoring a cached tail older than a
     // loaded document's edit/deletion snapshot on another stream.
     this.stopTail?.(); this.stopGroups(); this.groupNames = ''
-    this.following = true; this.start(); return this.snapshot
+    this.following = true; this.attached = false; this.start(); return this.snapshot
   }
   // Telegram's jump to date (resolveJumpToDate: the first message at or after the day's start), found with an
   // ascending query from that moment; null when nothing that can be shown comes after it.
@@ -293,41 +315,86 @@ export class HistoryReader {
     }
     return null
   }
+  // B184: a jump reads around its message, as tdesktop's delayedShowAt reads half a page each side of it
+  // (history_widget.cpp:5083-5085) and TI its halfLimit: up to half before (the message itself among them) and up to
+  // half after, never more of one side for less of the other. With nothing more after, the window reaches the newest
+  // and stays live (attached); otherwise reading down goes on with newer(). The rows on screen stay until the new ones
+  // are here, so the chat does not go blank in between.
   async jump(target: MessagePosition): Promise<HistorySnapshot> {
     if (this.closed || this.failed || this.paging || this.value.status !== 'ready') throw new Error(tr('기록을 불러온 뒤 다시 선택해 주세요.'))
     this.cancelPage()
     const epoch = this.epoch, pageAbort = new AbortController()
-    this.pageAbort = pageAbort; this.following = false
-    this.stopTail?.(); this.stopTail = null; this.stopGroups(); this.groupNames = ''
-    this.rows.clear(); this.top = []
-    this.value = { ...this.value, status: 'loading', message: '', before: null, hasMore: false, newerAvailable: true, focusMessageId: undefined }
-    this.publish()
+    this.pageAbort = pageAbort
     const task = (async (): Promise<HistorySnapshot> => {
       try {
-        // Include the selected message and its preceding context. Newer history
-        // is reached explicitly through the existing latest-message command.
-        const query = messagesQuery(this.dialog)
-        query.startAt = { before: true, values: [positionValue(target), { referenceValue: `${documents}/chats/${this.dialog.summary.id}/messages/${target.id}` }] }
-        const rows = await this.reader.query(`${documents}/chats/${this.dialog.summary.id}`, query, AbortSignal.any([this.abort.signal, pageAbort.signal]))
+        const half = Math.floor(pageSize / 2), chat = this.dialog.summary.id, signal = AbortSignal.any([this.abort.signal, pageAbort.signal])
+        const earlier = messagesQuery(this.dialog)
+        earlier.limit = { value: half + 1 }
+        earlier.startAt = { before: true, values: [positionValue(target), { referenceValue: `${documents}/chats/${chat}/messages/${target.id}` }] }
+        const [olderRows, newerRows] = await Promise.all([
+          this.reader.query(`${documents}/chats/${chat}`, earlier, signal),
+          this.reader.query(`${documents}/chats/${chat}`, newerMessagesQuery(this.dialog, target, half + 1), signal)])
         if (this.closed || this.failed || epoch !== this.epoch) return this.snapshot
-        const sorted = this.sorted(rows)
-        const selected = sorted.find(doc => rawPosition(doc, this.dialog.summary.id).id === target.id)
-        const reason = sorted.some(doc => comparePosition(rawPosition(doc, this.dialog.summary.id), target) > 0) ? 'newer-row' : !selected ? 'target-missing' : !decodeMessage(selected, this.dialog) ? 'target-hidden' : ''
-        if (reason) { recordHistoryStep('jump-check', `${reason} rows=${sorted.length}`); throw new ReadFailure('data') }
-        const page = sorted.slice(0, pageSize)
-        this.rows = new Map(page.map(doc => [doc.name, doc]))
-        this.value.before = page.length ? rawPosition(page.at(-1)!, this.dialog.summary.id) : null
-        this.value.hasMore = sorted.length > pageSize; this.value.newerAvailable = true
-        this.value.status = 'ready'; this.value.focusMessageId = target.id
+        const before = this.sorted(olderRows), after = this.sorted(newerRows).reverse()
+        const selected = before.find(doc => rawPosition(doc, chat).id === target.id)
+        const reason = before.some(doc => comparePosition(rawPosition(doc, chat), target) > 0) || after.some(doc => comparePosition(rawPosition(doc, chat), target) <= 0) ? 'cursor'
+          : !selected ? 'target-missing' : !decodeMessage(selected, this.dialog) ? 'target-hidden' : ''
+        if (reason) { recordHistoryStep('jump-check', `${reason} rows=${before.length}+${after.length}`); throw new ReadFailure('data') }
+        const olderPage = before.slice(0, half), newerPage = after.slice(0, half), atNewest = after.length <= half
+        this.stopTail?.(); this.stopTail = null; this.stopGroups(); this.groupNames = ''
+        this.following = false; this.attached = atNewest; this.top = []
+        this.rows = new Map([...newerPage, ...olderPage].map(doc => [doc.name, doc]))
+        this.value.before = olderPage.length ? rawPosition(olderPage.at(-1)!, chat) : null
+        this.value.hasMore = before.length > half; this.value.newerAvailable = !atNewest
+        this.value.status = 'ready'; this.value.message = ''; this.value.focusMessageId = target.id
+        if (atNewest) this.start(false)
         this.observeRows(); this.publish()
       } catch (error) {
         if (this.closed || this.failed || epoch !== this.epoch) return this.snapshot
         // Telegram shows a notice when it cannot reach a message; the chat itself stays. Return to the latest page.
         recordHistoryStep('jump-failed', error instanceof ReadFailure ? error.code : error instanceof Error ? error.name : 'unknown')
-        this.cancelPage(); this.stopGroups(); this.groupNames = ''; this.following = true
+        this.cancelPage(); this.stopTail?.(); this.stopTail = null; this.stopGroups(); this.groupNames = ''; this.following = true; this.attached = false
         this.value = { ...this.value, status: 'loading', message: '', focusMessageId: undefined, newerAvailable: false }
         this.publish(); this.start()
         throw new Error(tr('메시지로 이동하지 못했습니다. 최신 메시지를 다시 불러왔어요.'))
+      }
+      return this.snapshot
+    })()
+    this.paging = task
+    try { return await task } finally { if (this.paging === task) this.paging = null; if (this.pageAbort === pageAbort) this.pageAbort = null }
+  }
+  // B184: reading down from a window that does not reach the newest message — tdesktop loadMessagesDown
+  // (history_widget.cpp:4990-5001) on the scroll's preload (:5203-5208). The page after the window's newest row is
+  // added below; a window over historyLimit gives up its oldest rows. Reaching the newest, it joins the live page.
+  async newer(after: MessagePosition): Promise<HistorySnapshot> {
+    if (this.paging) return this.paging
+    if (this.closed || this.failed || this.value.status !== 'ready' || !this.value.newerAvailable || !this.value.after || comparePosition(after, this.value.after) !== 0) return this.snapshot
+    this.value.focusMessageId = undefined
+    const epoch = this.epoch, pageAbort = new AbortController()
+    this.pageAbort = pageAbort
+    const task = (async (): Promise<HistorySnapshot> => {
+      try {
+        const chat = this.dialog.summary.id
+        const rows = await this.reader.query(`${documents}/chats/${chat}`, newerMessagesQuery(this.dialog, after), AbortSignal.any([this.abort.signal, pageAbort.signal]))
+        if (this.closed || this.failed || epoch !== this.epoch) return this.snapshot
+        const ascending = this.sorted(rows).reverse()
+        if (ascending.some(doc => comparePosition(rawPosition(doc, chat), after) <= 0)) throw new ReadFailure('data')
+        for (const doc of ascending.slice(0, pageSize)) this.rows.set(doc.name, doc)
+        let all = this.sorted(this.rows.values())
+        if (all.length > historyLimit) {
+          all = all.slice(0, historyLimit)
+          this.value.hasMore = true; this.value.before = rawPosition(all.at(-1)!, chat)
+        }
+        this.rows = new Map(all.map(doc => [doc.name, doc]))
+        if (ascending.length <= pageSize) {
+          this.attached = true; this.value.newerAvailable = false
+          this.stopTail?.(); this.stopTail = null
+          this.start(false)
+        } else this.value.newerAvailable = true
+        this.observeRows(); this.publish()
+      } catch (error) {
+        if (!this.closed && !this.failed && epoch === this.epoch) recordHistoryStep('newer-failed', error instanceof ReadFailure ? error.code : 'unknown')
+        if (!this.closed && !this.failed && epoch === this.epoch) this.fail(error instanceof ReadFailure ? error : new ReadFailure('network'))
       }
       return this.snapshot
     })()
@@ -340,7 +407,9 @@ export class HistoryReader {
     this.value.focusMessageId = undefined
     const epoch = this.epoch, pageAbort = new AbortController()
     this.pageAbort = pageAbort
-    // Freeze the raw page boundary while the older server query is in flight.
+    // Freeze the raw page boundary while the older server query is in flight. A window that reaches the newest stays
+    // joined to the live page (B184), so new messages are still added below while older ones are read.
+    if (this.following) this.attached = true
     this.following = false
     this.observeRows()
     const task = (async (): Promise<HistorySnapshot> => {
@@ -354,7 +423,8 @@ export class HistoryReader {
         this.following = false
         for (const doc of sorted.slice(0, pageSize)) this.rows.set(doc.name, doc)
         const all = this.sorted(this.rows.values())
-        if (all.length > historyLimit) this.value.newerAvailable = true
+        // Over the limit the newest rows go: the window no longer reaches the newest, and reading down brings them back.
+        if (all.length > historyLimit) { this.value.newerAvailable = true; this.attached = false }
         this.rows = new Map(all.slice(-historyLimit).map(doc => [doc.name, doc]))
         const oldest = sorted[Math.min(pageSize, sorted.length) - 1]
         this.value.before = oldest ? rawPosition(oldest, this.dialog.summary.id) : before

@@ -448,6 +448,7 @@ const bridge: DesktopBridge = {
   undoContactDelete: (uid, operationId) => ipcRenderer.invoke('morse:undo-contact-delete', uid, operationId),
   thirdPartyNotices: () => ipcRenderer.invoke('morse:third-party-notices'),
   history: (uid, chatId, before) => ipcRenderer.invoke('morse:history', uid, chatId, before),
+  newerHistory: (uid, chatId, after) => ipcRenderer.invoke('morse:newer-history', uid, chatId, after),
   latestHistory: (uid, chatId) => ipcRenderer.invoke('morse:latest-history', uid, chatId),
   closeHistory: (uid, chatId) => ipcRenderer.invoke('morse:close-history', uid, chatId),
   searchMessages: (uid, chatId, id, query) => ipcRenderer.invoke('morse:search-messages', uid, chatId, id, query),

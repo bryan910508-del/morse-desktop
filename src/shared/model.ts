@@ -293,6 +293,8 @@ export interface HistorySnapshot extends HistoryPage {
   status: ReadStatus | 'unsupported'
   message: string
   newerAvailable: boolean
+  // B184: the newest message of the window (raw cursor) — where reading further down starts while newerAvailable.
+  after?: MessagePosition | null
   focusMessageId?: string
   // The quotes of the messages still on their way from this device, by the id they answer: read the same way as a
   // sent message's quote, so the bubble shows the same quote before and after the server has it (B46).
@@ -867,6 +869,7 @@ export interface DesktopBridge {
   discardDirectDraft(accountUid: string, chatId: string): Promise<void>
   thirdPartyNotices(): Promise<string>
   history(accountUid: string, chatId: string, before?: MessagePosition): Promise<HistorySnapshot>
+  newerHistory(accountUid: string, chatId: string, after: MessagePosition): Promise<HistorySnapshot>
   latestHistory(accountUid: string, chatId: string): Promise<HistorySnapshot>
   closeHistory(accountUid: string, chatId: string): Promise<void>
   searchMessages(accountUid: string, chatId: string, searchId: string, query: string): Promise<SearchSnapshot>

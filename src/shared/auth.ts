@@ -25,6 +25,8 @@ export interface AuthenticationSnapshot {
   securityCheck?: 'refused' | 'failed' | 'checking'
   // 3-1c: Sign in with Google is offered (its OAuth client is configured in this build).
   google?: boolean
+  // B193: the app is reading its saved accounts and restoring the first — the screen says «connecting», not the form.
+  starting?: boolean
 }
 // tdesktop intro_password_check.cpp: the hint, a pending reset's date (no recovery email: «Forgot?» asks for the 7-day
 // reset), whether a request is on its way, and the last refusal's words.

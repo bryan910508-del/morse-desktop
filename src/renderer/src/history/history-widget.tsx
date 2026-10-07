@@ -47,7 +47,7 @@ import { LocalMessageView, MessageView, type MessageLayout, type MessageMenuTarg
 import { deleteMessage, overlayMessage, reconcileActions, reconcileMessages, toggleReaction, useMessageOverlay } from './message-overlay'
 import { useVisibleRead } from './visible-read'
 import { useScrollDate } from './scroll-date'
-import { keepBottomOnResize } from './keep-bottom'
+import { followsBottom, keepBottomOnResize } from './keep-bottom'
 import { autoTranslate, offerTranslation, toggleTranslation, translationShown } from '../app/translations'
 import { usePresence } from '../app/presence'
 import { useTyping } from '../app/typing'
@@ -315,14 +315,25 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     catch (reason) { controller.toast(errorText(reason, tr('이전 메시지를 불러오지 못했습니다.')), 'error') }
     finally { pagingRef.current = false; setPaging(false) }
   }
+  // B184: reading down a window that does not reach the newest message — tdesktop's preloadHistoryByScroll calls
+  // loadMessagesDown within a few screens of the bottom (history_widget.cpp:5203-5208); here within one screen.
+  async function loadNewer(): Promise<void> {
+    const value = current.current
+    if (pagingRef.current || value.status !== 'ready' || !value.newerAvailable || !value.after) return
+    pagingRef.current = true; setPaging(true); bottom.current = false
+    try { applyHistory(await window.morse.newerHistory(accountUid, chatId, value.after)) }
+    catch (reason) { controller.toast(errorText(reason, tr('다음 메시지를 불러오지 못했습니다.')), 'error') }
+    finally { pagingRef.current = false; setPaging(false) }
+  }
   const onScroll = (): void => {
     const element = scroll.current
     if (!element) return
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight
-    bottom.current = distance < 80
+    bottom.current = followsBottom(distance, current.current.newerAvailable)
     setAway(distance > 480)
     scrollDate.check()
     if (element.scrollTop < 400) void loadOlder()
+    else if (distance < element.clientHeight) void loadNewer()
   }
   async function jumpLatest(): Promise<void> {
     bottom.current = true; pendingScroll.current = 'bottom'
