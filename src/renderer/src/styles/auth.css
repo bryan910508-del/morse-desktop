@@ -1,8 +1,12 @@
 /* Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
    Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL. */
-.intro { position: fixed; inset: 0; display: grid; place-items: center; overflow: auto; background: var(--window-bg) }
+/* B192: the step is centred with auto margins, not place-items — a centred grid item taller than the window spills
+   above the scroll origin, where no scrolling reaches it (the QR's top on a short window). Auto margins centre it while
+   it fits and fall to 0 when it does not, so it starts at the top and scrolls. The window's minimum stays tdesktop's
+   380×480 (window.style windowMinWidth/windowMinHeight). */
+.intro { position: fixed; inset: 0; display: grid; overflow-y: auto; background: var(--window-bg) }
 .intro-drag { position: fixed; top: 0; left: 0; right: 0; height: 40px; -webkit-app-region: drag }
-.intro-step { width: min(360px, calc(100vw - 48px)); display: grid; justify-items: center; gap: 12px; padding: 32px 0; text-align: center }
+.intro-step { width: min(360px, calc(100vw - 48px)); margin: auto; display: grid; justify-items: center; gap: 12px; padding: 32px 0; text-align: center }
 .intro-logo { width: 88px; height: 88px; margin-bottom: 6px; border-radius: 22px }
 .intro-step h1 { margin: 0; font-size: var(--t-title2); font-weight: 700; color: var(--text) }
 .intro-description { margin: 0 0 10px; font-size: var(--t-body); line-height: 1.55; color: var(--text-medium) }
@@ -34,8 +38,8 @@
 .backup-code-identities { display: flex; flex-direction: column; gap: 8px; margin: 10px 0 4px }
 
 /* Window::PasscodeLockWidget */
-.lock-screen { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 24px; background: var(--window-bg); color: var(--text) }
-.lock-screen-form { display: grid; justify-items: center; gap: 10px; width: min(320px, 100%) }
+.lock-screen { position: fixed; inset: 0; z-index: 40; display: grid; overflow-y: auto; padding: 24px; background: var(--window-bg); color: var(--text) }
+.lock-screen-form { display: grid; justify-items: center; gap: 10px; width: min(320px, 100%); margin: auto }
 .lock-screen-logo { width: 72px; height: 72px; margin-bottom: 6px }
 .lock-screen-form h1 { margin: 0 0 6px; font-size: var(--t-headline); font-weight: 600 }
 .lock-screen-field { display: flex; align-items: center; gap: 6px; width: 100% }
@@ -44,8 +48,10 @@
 .lock-screen-submit { width: 100% }
 .lock-screen-note { margin: 6px 0 0; font-size: var(--t-caption); line-height: 1.5; color: var(--text-weak); text-align: center }
 
-/* Intro::Widget as "Add Account": back, saved accounts. */
-.intro { position: relative }
+/* Intro::Widget as "Add Account": back, saved accounts. The back button is placed in .intro itself, which is fixed
+   (a containing block already). B192: a «position: relative» here undid .intro's fixed full-window box, so a sign-in
+   screen grew to its content inside #root's overflow: hidden — no wheel reached the rest, and focusing the recovery
+   code field scrolled #root down past the QR with no way back up. */
 .intro-back { position: absolute; top: 44px; left: 20px; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: var(--r-control); color: var(--accent); font-weight: 600 }
 .intro-back:hover { background: var(--accent-soft) }
 .intro-accounts { display: grid; gap: 6px; width: 100%; margin-top: 14px }

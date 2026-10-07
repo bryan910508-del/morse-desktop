@@ -228,9 +228,12 @@ button.bubble-quote:hover { background: var(--accent-border) }
 .drop-zone.disabled { grid-row: span 2 }
 
 .compose { flex: none; border-top: 1px solid var(--divider); background: var(--card) }
-/* B113: a read-only chat's bar in the composer's place (tdesktop muteUnmute). */
-.compose-readonly { display: flex; align-items: center; justify-content: center; height: var(--reply-bar) }
-.compose-readonly .button { color: var(--accent); font-weight: 600 }
+/* B113: a read-only chat's bar in the composer's place (tdesktop muteUnmute). B186: the whole bar is the one button,
+   as historyComposeButton — the composer row's height, no corners, the compose area's background, windowBgOver on hover. */
+.compose-readonly { display: flex; align-items: stretch; min-height: 54px; padding: 0 }
+.compose-readonly .button { width: 100%; min-height: 54px; border-radius: 0; color: var(--accent); font-weight: 600 }
+.compose-readonly .button:hover:not(:disabled), .compose-readonly .button:active:not(:disabled) { background: var(--card-pressed) }
+.compose-readonly .button:focus-visible { outline-offset: -2px }
 .compose-bar { display: flex; align-items: center; gap: 12px; height: var(--reply-bar); padding: 0 8px 0 16px }
 .compose-bar-icon { flex: none; color: var(--accent) }
 .compose-bar-text { flex: 1; min-width: 0; display: grid; gap: 1px; padding-left: 10px; border-left: 2px solid var(--accent) }

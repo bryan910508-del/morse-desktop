@@ -74,6 +74,8 @@ export interface Preferences {
   // iOS ChatSettingsView «입력 중 표시 보내기» and PowerSavingView «입력 중 표시 끄기» (MorsePowerSaving).
   sendTypingIndicator: boolean
   disableTypingIndicators: boolean
+  // Telegram Core::Settings::mainMenuAccountsShown: the main menu's account list is open until the person closes it.
+  mainMenuAccountsShown: boolean
   // iOS NotificationSettingsView (MorsePushPreferences): 1:1 and group notifications, sound, notifications while
   // the app is in use, and the badge counting messages or chats.
   notifyPersonal: boolean
@@ -102,7 +104,7 @@ export const defaultPreferences: Preferences = {
   storyStealth: false, closeToTray: false, showUnreadBadge: true, autoDeleteDefaultSeconds: 0, autoTranslateChats: false,
   autoDownloadPhotos: { user: 8 * 1024 * 1024, group: 8 * 1024 * 1024, channel: 8 * 1024 * 1024 }, recordVideoMessages: false, sendTypingIndicator: true, disableTypingIndicators: false,
   notifyPersonal: true, notifyGroup: true, notifyChannel: true, notificationSound: true, inAppNotifications: true, badgeMode: 'messages', spellCheck: true,
-  photoSendQuality: 'auto', videoSendQuality: 'auto', powerSavingAuto: true, powerSavingAlwaysOn: false, compressMediaUploads: false, reduceMessageAnimations: false, language: null
+  photoSendQuality: 'auto', videoSendQuality: 'auto', powerSavingAuto: true, powerSavingAlwaysOn: false, compressMediaUploads: false, reduceMessageAnimations: false, mainMenuAccountsShown: true, language: null
 }
 
 export interface AccountProfile {

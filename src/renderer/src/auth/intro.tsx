@@ -1,6 +1,6 @@
 // Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { ArrowLeft, KeyRound, RotateCw, Trash2, UserPlus } from 'lucide-react'
 import type { AccountAuthState } from '../../../shared/auth'
 import { morseUserIdAlphabet, qrShown } from '../../../shared/auth'
@@ -90,6 +90,9 @@ export function Intro() {
   const [manual, setManual] = useState(false)
   // Which provider's sign-in is under way (its button shows the spinner).
   const [provider, setProvider] = useState<'apple' | 'google' | null>(null)
+  // B192: the recovery code field takes the keyboard when the screen opens, without scrolling to it — autoFocus scrolled a
+  // short window past the QR, the first thing the screen asks for.
+  const focusCode = useCallback((element: HTMLInputElement | null) => { element?.focus({ preventScroll: true }) }, [])
   if (!auth) return null
   // A13-2 ②: a sign-in held for the two-step password — from a recovery code, QR or Apple alike — asks for it here.
   if (auth.phase === 'password' && auth.password) return <div className="intro">
@@ -199,7 +202,7 @@ export function Intro() {
           {qrShown(auth) && <p className="intro-or">{tr('또는 복구 코드로 연결')}</p>}
           <label className="intro-code">
             <KeyRound size={18} />
-            <input type="password" value={code} maxLength={256} placeholder={tr('복구 코드')} autoComplete="off" autoCapitalize="characters" spellCheck={false} autoFocus disabled={busy} onChange={event => setCode(event.target.value)} />
+            <input type="password" value={code} maxLength={256} placeholder={tr('복구 코드')} autoComplete="off" autoCapitalize="characters" spellCheck={false} ref={focusCode} disabled={busy} onChange={event => setCode(event.target.value)} />
           </label>
           <p className="intro-note">{tr('복구 코드는 로그인 확인에만 사용합니다.')}</p>
           <button className="button primary block" type="submit" disabled={busy || !code.trim()}>{busy && !provider ? <><Spinner size={16} />{tr('연결 확인 중…')}</> : tr('계정 연결')}</button>

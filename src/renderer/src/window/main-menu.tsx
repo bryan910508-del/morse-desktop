@@ -2,8 +2,9 @@
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { useState, type ReactNode } from 'react'
 import { ChevronDown, Moon } from 'lucide-react'
-import { useDesktop } from '../app/store'
+import { desktop, useDesktop } from '../app/store'
 import { controller } from '../app/ui'
+import { errorText } from '../app/format'
 import { useShortcut } from '../app/shortcuts'
 import { Avatar } from '../ui/avatar'
 import { Switch } from '../ui/controls'
@@ -25,8 +26,18 @@ export function MainMenu({ accountUid }: { accountUid: string }) {
   const theme = useDesktop(snapshot => snapshot?.preferences.theme ?? 'system')
   const systemDark = useDesktop(snapshot => snapshot?.systemDark ?? true)
   const appVersion = useDesktop(snapshot => snapshot?.appVersion ?? '')
-  // MainMenu::toggleAccounts: the account list opens from the cover and starts closed.
-  const [accounts, setAccounts] = useState(false)
+  // B191: the account list is open unless the person closed it, and stays as they left it (tdesktop
+  // Core::Settings::_mainMenuAccountsShown = true, core_settings.h:1146; MainMenu::toggleAccounts saves it,
+  // window_main_menu.cpp:596·614). The press shows its result at once; the saved value follows.
+  const saved = useDesktop(snapshot => snapshot?.preferences.mainMenuAccountsShown ?? true)
+  const [pressed, setPressed] = useState<boolean | null>(null)
+  const accounts = pressed ?? saved
+  const toggleAccounts = (): void => {
+    const next = !accounts
+    setPressed(next)
+    void window.morse.updatePreferences({ mainMenuAccountsShown: next }).then(value => desktop.replace(value))
+      .catch(reason => { setPressed(null); controller.toast(errorText(reason, tr('설정을 저장하지 못했습니다.')), 'error') })
+  }
   useShortcut(150, command => { if (command === 'back') { controller.setMainMenu(false); return true } return false })
   const dark = theme === 'dark' || theme === 'black' || (theme === 'system' && systemDark)
   const name = profile?.profile?.displayName || account?.displayName || 'Morse'
@@ -35,11 +46,11 @@ export function MainMenu({ accountUid }: { accountUid: string }) {
     <nav className="main-menu" aria-label={tr('메인 메뉴')}>
       {/* tdesktop keeps the menu below the macOS title bar, so the window buttons never cover the photo. */}
       <header className="main-menu-cover">
-        <button type="button" className="main-menu-userpic" aria-expanded={accounts} aria-label={tr('계정 목록')} onClick={() => setAccounts(value => !value)}>
+        <button type="button" className="main-menu-userpic" aria-expanded={accounts} aria-label={tr('계정 목록')} onClick={toggleAccounts}>
           <Avatar name={name} url={profile?.photo.status === 'ready' ? profile.photo.url : null} size={48} />
         </button>
         <div className="main-menu-account"><strong className="ellipsis">{name}</strong>{userId && <span className="ellipsis">@{userId}</span>}</div>
-        <button type="button" className={`main-menu-accounts-toggle${accounts ? ' open' : ''}`} aria-expanded={accounts} aria-label={tr('계정 목록')} title={tr('계정 목록')} onClick={() => setAccounts(value => !value)}><ChevronDown size={20} /></button>
+        <button type="button" className={`main-menu-accounts-toggle${accounts ? ' open' : ''}`} aria-expanded={accounts} aria-label={tr('계정 목록')} title={tr('계정 목록')} onClick={toggleAccounts}><ChevronDown size={20} /></button>
       </header>
       {accounts && <AccountsList variant="menu" onDone={() => controller.setMainMenu(false)} />}
       <div className="main-menu-items">
