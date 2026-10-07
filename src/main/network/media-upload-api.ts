@@ -3,6 +3,7 @@ import { callMorseFunction, MorseCallableFailure } from './morse-callable'
 import type { UploadDescriptor } from '../storage/upload-protocol'
 import { storageBucket } from '../media/media-document'
 import { object } from '../../shared/validation'
+import { recordConnectionStep } from '../platform/connection-diagnostics'
 
 export class UploadFailure extends Error {
   constructor(readonly reason: 'upload-network' | 'upload-permission' | 'upload-conflict' | 'upload-expired' | 'upload-metadata') { super(reason) }
@@ -44,9 +45,20 @@ function confirmedURL(raw: Record<string, unknown>, upload: UploadDescriptor, ui
   return `https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(upload.path)}?alt=media&token=${encodeURIComponent(token)}`
 }
 
+// B185: a picture of up to this size goes in one request (the resumable protocol's last chunk may be any size); a larger
+// file keeps 1 MiB chunks, so its progress moves and a lost connection resumes near where it stopped.
+export const singleRequestBytes = 8 * 1024 * 1024
+// B185 A5: how long each step of one upload took, one line in connection-check.log — no path, chat or token.
+export function uploadTimingLine(steps: readonly [string, number][], size: number, requests: number): string {
+  return `${steps.map(([name, ms]) => `${name}=${ms}`).join(' ')} total=${steps.reduce((sum, [, ms]) => sum + ms, 0)} kb=${Math.round(size / 1024)} req=${requests}`
+}
+
 export async function uploadAttachment(auth: ReadCredentials, uid: string, upload: UploadDescriptor, bytes: Buffer,
   saveSession: (url: string) => Promise<void>, progress: (loaded: number) => void, ownerSignal: AbortSignal, wasConfirmed = false): Promise<string> {
   const signal = AbortSignal.any([ownerSignal, auth.signal])
+  const steps: [string, number][] = []
+  let mark = Date.now(), requests = 0
+  const lap = (name: string): void => { const now = Date.now(); steps.push([name, now - mark]); mark = now }
   const request = async (url: string, init: { method: string; headers?: Record<string, string>; body?: string | Uint8Array }): Promise<Response> => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const bounded = AbortSignal.any([signal, AbortSignal.timeout(65000)])
@@ -57,6 +69,7 @@ export async function uploadAttachment(auth: ReadCredentials, uid: string, uploa
         headers: { ...init.headers, Authorization: `Firebase ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken } })
       if (response.status === 401 && attempt === 0) { await response.body?.cancel(); continue }
       if ([401, 403].includes(response.status)) { await response.body?.cancel(); throw new UploadFailure('upload-permission') }
+      requests++
       return response
     }
     throw new UploadFailure('upload-network')
@@ -67,6 +80,7 @@ export async function uploadAttachment(auth: ReadCredentials, uid: string, uploa
   try { prepared = await callMorseFunction(auth, 'prepareMorseChatMedia', { chatId: upload.chatId, expectedUid: uid }, signal, { limit: 2 * 1024 * 1024, refreshUnauthenticated: true }) }
   catch (error) { throw new UploadFailure(error instanceof MorseCallableFailure && error.delivery === 'answered' ? 'upload-permission' : 'upload-network') }
   if (prepared.ok !== true || prepared.chatId !== upload.chatId) throw new UploadFailure('upload-permission')
+  lap('prepare')
   const objectURL = `https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(upload.path)}`
   const metadata = async (): Promise<string | null> => {
     const response = await request(objectURL, { method: 'GET' })
@@ -74,9 +88,15 @@ export async function uploadAttachment(auth: ReadCredentials, uid: string, uploa
     if (response.status !== 200) { await response.body?.cancel(); throw new UploadFailure('upload-network') }
     return confirmedURL(await json(response), upload, uid)
   }
-  const existing = await metadata()
-  if (existing) { progress(upload.size); return existing }
-  if (wasConfirmed) throw new UploadFailure('upload-conflict')
+  // B185 A3: a send that has never started an upload session has put no byte up (the session is saved before the first
+  // byte), so there is nothing to look for first; only a resumed one asks what is already there.
+  const fresh = !upload.session && !wasConfirmed
+  if (!fresh) {
+    const existing = await metadata()
+    lap('get')
+    if (existing) { progress(upload.size); return existing }
+    if (wasConfirmed) throw new UploadFailure('upload-conflict')
+  }
   let url = upload.session ? sessionURL(upload.session, upload) : ''
   if (!url) {
     const start = await request(`https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o?name=${encodeURIComponent(upload.path)}`, {
@@ -91,32 +111,50 @@ export async function uploadAttachment(auth: ReadCredentials, uid: string, uploa
     url = sessionURL(raw, upload)
     // No bytes are issued until the resumable identity is durably committed.
     await saveSession(url)
+    lap('start')
   }
   signal.throwIfAborted()
-  const query = await request(url, { method: 'POST', headers: { 'X-Goog-Upload-Command': 'query' } })
-  const status = query.headers.get('X-Goog-Upload-Status'), received = query.headers.get('X-Goog-Upload-Size-Received')
-  await query.body?.cancel()
-  if (query.status === 404 || query.status === 410) throw new UploadFailure('upload-expired')
-  if (query.status !== 200 || !['active', 'final'].includes(status ?? '') || received === null || !/^\d+$/.test(received)) throw new UploadFailure('upload-network')
+  // A session just started has received nothing; only one saved by an earlier attempt is asked how far it got.
+  let status: string | null = 'active', received: string | null = '0'
+  if (!fresh) {
+    const query = await request(url, { method: 'POST', headers: { 'X-Goog-Upload-Command': 'query' } })
+    status = query.headers.get('X-Goog-Upload-Status'); received = query.headers.get('X-Goog-Upload-Size-Received')
+    await query.body?.cancel()
+    if (query.status === 404 || query.status === 410) throw new UploadFailure('upload-expired')
+    if (query.status !== 200 || !['active', 'final'].includes(status ?? '') || received === null || !/^\d+$/.test(received)) throw new UploadFailure('upload-network')
+    lap('query')
+  }
   let offset = Number(received)
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > bytes.length || (status !== 'final' && offset !== bytes.length && offset % (256 * 1024) !== 0)) throw new UploadFailure('upload-conflict')
   progress(offset)
+  // The finishing request answers with the object's own metadata, its download token among them (the Storage REST
+  // answer — what the iOS SDK reads too): checked as a separate read would be. Without it, the separate read.
+  let confirmed: string | null = null
   if (status !== 'final') {
+    const chunk = bytes.length <= singleRequestBytes ? bytes.length : 1024 * 1024
     while (true) {
       signal.throwIfAborted()
-      const end = Math.min(bytes.length, offset + 1024 * 1024), final = end === bytes.length
+      const end = Math.min(bytes.length, offset + chunk), final = end === bytes.length
       const part = await request(url, { method: 'POST', headers: { 'X-Goog-Upload-Offset': String(offset),
         'X-Goog-Upload-Command': end === offset ? 'finalize' : final ? 'upload, finalize' : 'upload' }, body: bytes.subarray(offset, end) })
       const uploadStatus = part.headers.get('X-Goog-Upload-Status')
-      await part.body?.cancel()
-      if (part.status === 404 || part.status === 410) throw new UploadFailure('upload-expired')
-      if (part.status !== 200 || uploadStatus !== (final ? 'final' : 'active')) throw new UploadFailure('upload-network')
+      if (part.status === 404 || part.status === 410) { await part.body?.cancel(); throw new UploadFailure('upload-expired') }
+      if (part.status !== 200 || uploadStatus !== (final ? 'final' : 'active')) { await part.body?.cancel(); throw new UploadFailure('upload-network') }
+      if (final) {
+        // Anything short of a full match — no token, or a field this answer leaves out — is settled by the separate read.
+        try { confirmed = confirmedURL(await json(part), upload, uid) } catch { confirmed = null }
+      } else await part.body?.cancel()
       offset = end; progress(offset)
       if (final) break
     }
+    lap('bytes')
   } else if (offset !== bytes.length) throw new UploadFailure('upload-conflict')
-  const confirmed = await metadata()
+  if (!confirmed) {
+    confirmed = await metadata()
+    lap('meta')
+  }
   if (!confirmed) throw new UploadFailure('upload-metadata')
   signal.throwIfAborted()
+  recordConnectionStep('upload-timing', uploadTimingLine(steps, upload.size, requests))
   return confirmed
 }

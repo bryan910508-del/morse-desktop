@@ -111,9 +111,27 @@ export const shownState = (row: Pick<StoredIntent, 'state' | 'reason'>): StoredI
 // while an earlier one of its room is still on its way — not sent yet, or its answer not known — and goes once that
 // one is through or has definitely failed, as a failed message in Telegram stands alone. Other rooms do not wait.
 // Until 0.241.0 a later message overtook an earlier one waiting out a retry (B40).
+// B185 A2 (user «텔레그램처럼 글 먼저», 10-07): a message waits for an earlier one of its room that is being sent — not
+// sent yet, or its answer unknown — as tdesktop's send requests wait for each other (data_histories.cpp:1155-1171
+// .afterRequest). A file still going up is not being sent yet: tdesktop's text goes into that order at once and the
+// file only once it is up (apiwrap.cpp sendUploadedPhoto → sendMedia), so a later text does not wait for it. Files keep
+// their own order among themselves (Uploader::maybeFinishFront, storage/file_upload.cpp:1094-1106).
+const goingUp = (row: Pick<StoredIntent, 'state' | 'reason'>): boolean => row.state === 'uploading' || waitingUpload(row)
+const carriesFile = (row: Pick<StoredIntent, 'parts' | 'wire'>): boolean => Boolean(row.parts?.length) || row.wire.type !== 'text'
+export function holdsBack(earlier: StoredIntent, row: StoredIntent): boolean {
+  if (!resumableIntent(earlier)) return false
+  return goingUp(earlier) ? carriesFile(row) : true
+}
+// B185 A1: an upload runs beside the queue, not in it (tdesktop's Uploader works apart from the send requests,
+// storage/file_upload.cpp, and a message joins its room's order only when its file is up — apiwrap.cpp sendUploadedPhoto).
+// While one is going up, the queue passes over it — and over any other upload, one going up at a time — so the other
+// rooms' messages go on, and its own room's texts too (A2); its room's later files wait behind it (holdsBack).
+export function sendableBesideUpload(row: Pick<StoredIntent, 'id' | 'state'>, uploadingId: string | null): boolean {
+  return row.id !== uploadingId && !(uploadingId !== null && row.state === 'uploading')
+}
 export function nextIntent(rows: StoredIntent[], now: number, retryAt: (id: string) => number, allowed: (row: StoredIntent) => boolean): { intent: StoredIntent | null; candidates: StoredIntent[] } {
   const candidates = rows.filter(row => allowed(row) && resumableIntent(row) &&
-    !rows.some(earlier => earlier.chatId === row.chatId && earlier.sequence < row.sequence && resumableIntent(earlier)))
+    !rows.some(earlier => earlier.chatId === row.chatId && earlier.sequence < row.sequence && holdsBack(earlier, row)))
   return { intent: candidates.find(row => retryAt(row.id) <= now) ?? null, candidates }
 }
 
@@ -173,6 +191,9 @@ export class OutboxPump {
   private readonly staging = new AttachmentStaging()
   private uploadAbort: AbortController | null = null
   private uploadChatId: string | null = null
+  // B185 A1: the upload going up beside the queue, and its message.
+  private uploadTask: Promise<void> | null = null
+  private uploadingId: string | null = null
   private uploadProgress: { loaded: number; total: number; current: number; count: number } | undefined
 
   constructor(private readonly uid: string, directory: string, private readonly auth: AccountAuthorization,
@@ -405,8 +426,8 @@ export class OutboxPump {
         // An upload the connection cut off is not a failure: it resumes by itself, so it shows the clock, not the red
         // mark that waits for the person (Telegram R-52: a clock until the server has it, failed only on its refusal).
         state: shownState(row),
-        reason: this.earlierForward(row, rows) ? tr('앞선 전달 메시지의 결과 확인 또는 대기 정리가 필요합니다.') : waitingUpload(row) ? tr('연결 대기 중') : row.state === 'uploading' ? tr('첨부 업로드 대기 중') : row.state === 'queued' ? tr('메시지 전송 대기 중') : deliveryReason(row.reason), busy: this.busyId === row.id,
-        voicePreview:row.voicePreview, forwarded: row.forwarded, storyReply: Boolean(row.wire.replyStoryId), progress: this.busyId === row.id ? this.uploadProgress : undefined,
+        reason: this.earlierForward(row, rows) ? tr('앞선 전달 메시지의 결과 확인 또는 대기 정리가 필요합니다.') : waitingUpload(row) ? tr('연결 대기 중') : row.state === 'uploading' ? tr('첨부 업로드 대기 중') : row.state === 'queued' ? tr('메시지 전송 대기 중') : deliveryReason(row.reason), busy: this.busyId === row.id || this.uploadingId === row.id,
+        voicePreview:row.voicePreview, forwarded: row.forwarded, storyReply: Boolean(row.wire.replyStoryId), progress: this.uploadingId === row.id ? this.uploadProgress : undefined,
         retryable: (row.state === 'upload-failed' && !waitingUpload(row)) || (row.state === 'failed' && retryableRejections.has(rejectionCode(row.reason))),
         ...(row.state === 'failed' && sanctionOf(row.reason) ? { sanction: sanctionOf(row.reason)!, ...(rejectionUntil(row.reason) ? { sanctionUntil: rejectionUntil(row.reason)! } : {}) } : {}) })) : [] }
   }
@@ -886,7 +907,7 @@ export class OutboxPump {
       for (const id of [...this.retryAt.keys()]) if (!rows.some(row => row.id === id)) this.retryAt.delete(id)
       const now = Date.now()
       const { intent, candidates } = nextIntent(rows, now, id => this.retryAt.get(id)?.at ?? 0,
-        row => this.composeAllowed(row.chatId) && !this.earlierForward(row, rows))
+        row => this.composeAllowed(row.chatId) && !this.earlierForward(row, rows) && sendableBesideUpload(row, this.uploadingId))
       if (!intent) {
         if (candidates.length) {
           const next = Math.min(...candidates.map(row => this.retryAt.get(row.id)?.at ?? now))
@@ -899,11 +920,10 @@ export class OutboxPump {
           !this.matchesDirect({ chatId: intent.chatId, peerUid: intent.wire.peerUid })) {
         await this.store({ kind: 'state', id: intent.id, state: 'failed', reason: 'CONFLICT' }); continue
       }
+      if (intent.state === 'uploading') { this.startUpload(intent, signal); continue }
       this.busyId = intent.id; void this.publish()
       if (intent.state === 'upload-failed') {
         await this.store({ kind: 'state', id: intent.id, state: 'uploading', reason: '' })
-      } else if (intent.state === 'uploading') {
-        await this.upload(intent, signal)
       } else if (intent.state === 'uncertain') {
         const result = await this.reconcile(intent, signal)
         if (!this.active(signal)) return
@@ -941,6 +961,15 @@ export class OutboxPump {
       }
       this.busyId = null; void this.publish()
     }
+  }
+  // The upload goes up on its own; when it is done — ready, failed or let go — the queue looks again.
+  private startUpload(intent: StoredIntent, signal: AbortSignal): void {
+    this.uploadingId = intent.id; void this.publish()
+    const task: Promise<void> = this.upload(intent, signal).catch(() => { /* store failures are reported by store() */ }).finally(() => {
+      if (this.uploadTask !== task) return
+      this.uploadTask = null; this.uploadingId = null; void this.publish(); this.kick()
+    })
+    this.uploadTask = task
   }
   private async upload(intent: StoredIntent, ownerSignal: AbortSignal): Promise<void> {
     if (!intent.parts?.length) throw new Error('Missing upload source descriptors')
@@ -1005,7 +1034,7 @@ export class OutboxPump {
     }
   }
   async retry(chatId: string, id: string): Promise<void> {
-    if (!this.eligible(chatId) || this.busyId === id || this.task) throw new Error(tr('진행 중인 전송이 끝난 뒤 다시 시도해 주세요.'))
+    if (!this.eligible(chatId) || this.busyId === id || this.uploadingId === id || this.task) throw new Error(tr('진행 중인 전송이 끝난 뒤 다시 시도해 주세요.'))
     const signal = this.generation.signal
     const task = (async () => {
       this.busyId = id; void this.publish()
@@ -1028,7 +1057,7 @@ export class OutboxPump {
     if (!reviewed) {
       const row = (await this.store<StoredIntent[]>({ kind: 'list', chatId })).find(item => item.id === id)
       if (!row) return
-      const plan = cancelPlan({ uploading: this.busyId === id && this.uploadChatId === chatId && Boolean(this.uploadAbort) })
+      const plan = cancelPlan({ uploading: this.uploadingId === id && this.uploadChatId === chatId && Boolean(this.uploadAbort) })
       this.cancelled.add(id); this.retryAt.delete(id)
       if (plan.abortUpload) this.uploadAbort?.abort()
       await this.store({ kind: 'finish', id, discarded: true }, validate)
@@ -1049,7 +1078,7 @@ export class OutboxPump {
     this.closed = true; this.pause(); this.known.clear()
     for (const entry of this.sent.values()) clearTimeout(entry.timer)
     this.sent.clear()
-    await this.opening; await this.task?.catch(() => {})
+    await this.opening; await this.task?.catch(() => {}); await this.uploadTask?.catch(() => {})
     if (this.repository) await this.repository.close(purge)
     this.views.clear(); this.pending.clear(); this.commentDraftsKnown.clear(); this.postDraftsKnown.clear(); this.noteDraftsKnown.clear(); this.storyComposerDraftsKnown.clear(); this.noteEditDraftsKnown.clear(); this.storyCaptionDraftsKnown.clear()
   }

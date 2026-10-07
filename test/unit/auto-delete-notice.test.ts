@@ -26,7 +26,7 @@ test('only a notice the server marked carries values', () => {
   assert.equal(autoDeleteNoticeFields(fields({ systemKind: { stringValue: 'somethingElse' }, autoDeleteActorName: { stringValue: '민지' } })), null)
   assert.equal(autoDeleteNoticeFields(fields({ systemKind: { stringValue: 'autoDeletePolicy' } })), null, 'without a name the stored sentence is used')
   assert.deepEqual(autoDeleteNoticeFields(fields({ systemKind: { stringValue: 'autoDeletePolicy' }, autoDeleteActorName: { stringValue: '민지' }, autoDeleteSeconds: { integerValue: '77' } })),
-    { actorName: '민지', seconds: 0, myOnly: false }, 'a period the server never offers reads as off')
+    { actorName: '민지', seconds: 77, myOnly: false }, 'a period the server never offers is kept as written (C2) — the line then keeps the stored sentence')
 })
 
 const inquiry = { id: 'inq1', cutoff: null }
@@ -53,4 +53,14 @@ test('an inquiry room draws the notice as a system line and hides a message past
   assert.equal(plain?.system, undefined)
   assert.equal(plain?.text, '안녕하세요')
   assert.equal(plain?.own, true)
+})
+
+// C2 (B163 follow-up): a period this app does not offer keeps the sentence the server stored — it is not «turned off».
+test('C2: a notice with a period this app does not offer keeps the server\'s sentence, never «turned off»', () => {
+  const notice = autoDeleteNoticeFields(fields({ systemKind: { stringValue: 'autoDeletePolicy' }, autoDeleteActorName: { stringValue: '민지' },
+    autoDeleteSeconds: { integerValue: '120' }, autoDeleteMyOnly: { booleanValue: false } }))
+  assert.equal(notice?.seconds, 120)
+  assert.equal(autoDeleteNoticeText(notice, stored), '민지님이 모든 메시지를 1주일 후 자동 삭제로 설정했어요.', 'the stored sentence')
+  const off = autoDeleteNoticeFields(fields({ systemKind: { stringValue: 'autoDeletePolicy' }, autoDeleteActorName: { stringValue: '민지' }, autoDeleteSeconds: { integerValue: '0' } }))
+  assert.equal(autoDeleteNoticeText(off, stored), '민지님이 이 대화의 자동 삭제를 껐어요.', 'a real «off» still reads off')
 })

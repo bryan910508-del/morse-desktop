@@ -371,7 +371,8 @@ export function autoDeleteLineText(f: Record<string, WireObject>): string | null
 export function autoDeleteNoticeFields(f: Record<string, WireObject>): AutoDeleteNotice | null {
   if (stringField(f, 'systemKind', 64) !== 'autoDeletePolicy') return null
   const actorName = stringField(f, 'autoDeleteActorName', 512).trim()
-  return actorName ? { actorName, seconds: autoDeleteSecondsValue(Math.trunc(numberField(f, 'autoDeleteSeconds'))), myOnly: boolField(f, 'autoDeleteMyOnly') } : null
+  // The period as written (C2): one this app does not offer keeps the sentence the server stored, never «turned off».
+  return actorName ? { actorName, seconds: Math.trunc(numberField(f, 'autoDeleteSeconds')), myOnly: boolField(f, 'autoDeleteMyOnly') } : null
 }
 export function expiry(doc: FirestoreDocument): number | null {
   const value = timeField(doc.fields, 'deleteAt', '')

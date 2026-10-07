@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { nextIntent, resumableIntent, shownState, waitingUpload } from '../../src/main/messaging/outbox'
+import { nextIntent, resumableIntent, sendableBesideUpload, shownState, waitingUpload } from '../../src/main/messaging/outbox'
 import type { StoredIntent } from '../../src/main/storage/delivery-protocol'
 
 // B40 (2026-10-02, Telegram R-54): a room's messages go in the order they were written. A message waits while an
@@ -53,4 +53,29 @@ test('an upload the connection cut off shows the clock and is not offered as fai
   for (const reason of ['upload-permission', 'upload-conflict', 'upload-expired', 'upload-metadata'])
     assert.equal(shownState({ state: 'upload-failed', reason }), 'upload-failed', `${reason} still waits for the person`)
   assert.equal(shownState({ state: 'uncertain', reason: 'ack-pending' }), 'uncertain')
+})
+
+// B185 A1·A2 (tdesktop data_histories.cpp:1155-1171 — only send requests wait for each other; storage/file_upload.cpp
+// uploads apart from them and a file joins its room's order only once it is up): while a picture goes up, the other
+// rooms' messages go, and so does a later text of its own room (user «텔레그램처럼 글 먼저»). A later file of the same room
+// keeps the files' order (Uploader front), and only one upload goes up at a time.
+const file = (sequence: number, chatId: string, state: StoredIntent['state'], reason = ''): StoredIntent =>
+  ({ ...row(sequence, chatId, state, reason), wire: { type: 'image' }, parts: [{ index: 0 }] } as unknown as StoredIntent)
+test('B185 A1·A2: a picture going up holds no text — of its own room or another — only the later files', () => {
+  const now = 1000
+  const rows = [file(1, 'a', 'uploading'), row(2, 'a', 'queued'), file(3, 'a', 'uploading'), row(4, 'b', 'queued'), file(5, 'c', 'uploading')]
+  const pick = (from: StoredIntent[], uploadingId: string | null) => nextIntent(from, now, () => 0, item => sendableBesideUpload(item, uploadingId))
+  assert.equal(pick(rows, null).intent?.id, 'm1', 'nothing going up: the first picture starts')
+  assert.equal(pick(rows, 'm1').intent?.id, 'm2', 'room A\'s later text goes while its picture is going up')
+  const rest = rows.filter(item => item.id !== 'm2')
+  assert.equal(pick(rest, 'm1').intent?.id, 'm4', 'and room B\'s')
+  assert.equal(pick(rest.filter(item => item.id !== 'm4'), 'm1').intent, null, 'room A\'s second picture waits behind its first; room C\'s waits for the uploader')
+  // A text still waits for an earlier message that is being sent — not yet answered.
+  assert.equal(pick([row(1, 'a', 'uncertain', 'ack-pending'), row(2, 'a', 'queued')], null).intent?.id, 'm1')
+  // The file is up and queued to be sent: from then on it is in its room's order like any message.
+  assert.equal(pick([file(1, 'a', 'queued'), row(2, 'a', 'queued')], null).intent?.id, 'm1')
+  // A file the connection cut off (waiting to resume) holds no text either; a later file waits for it.
+  const cut = [file(1, 'a', 'upload-failed', 'upload-network'), row(2, 'a', 'queued'), file(3, 'a', 'uploading')]
+  assert.equal(pick(cut, null).intent?.id, 'm1', 'it resumes first')
+  assert.equal(pick(cut, 'm1').intent?.id, 'm2')
 })
