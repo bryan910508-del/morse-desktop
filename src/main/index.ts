@@ -2054,6 +2054,11 @@ function registerIPC(): void {
     if (typeof version !== 'string' || version.length > 64) throw new Error(tr('스티커를 다시 선택해 주세요.'))
     return accounts.requireActive(identifier(uid)).openStickerPack(identifier(chatId), identifier(messageId), version)
   })
+  handle('sticker-message-favourite', (uid, chatId, messageId, version) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    if (typeof version !== 'string' || version.length > 64) throw new Error(tr('스티커를 다시 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).stickerMessageFavourite(identifier(chatId), identifier(messageId), version)
+  })
   handle('close-sticker-pack', uid => { accounts.requireActive(identifier(uid)).closeStickerPack() })
   handle('install-sticker-pack', (uid, setId) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
@@ -2072,6 +2077,24 @@ function registerIPC(): void {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     if (!(bytes instanceof Uint8Array) || !bytes.byteLength) throw new Error(tr('스티커를 다시 선택해 주세요.'))
     return accounts.requireActive(identifier(uid)).addStickerToPack(identifier(setId), bytes)
+  })
+  handle('open-sticker-pack-by-id', (uid, setId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).openStickerPackById(identifier(setId))
+  })
+  handle('remove-from-sticker-pack', (uid, setId, itemId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    if (typeof itemId !== 'string' || !/^[a-f0-9]{64}$/.test(itemId)) throw new Error(tr('스티커를 다시 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).removeFromStickerPack(identifier(setId), itemId)
+  })
+  handle('delete-sticker-pack', (uid, setId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).deleteStickerPack(identifier(setId))
+  })
+  handle('save-pack-sticker', (uid, setId, itemId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    if (typeof itemId !== 'string' || !/^[a-f0-9]{64}$/.test(itemId)) throw new Error(tr('스티커를 다시 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).savePackSticker(identifier(setId), itemId)
   })
   handle('uninstall-sticker-pack', (uid, setId) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))

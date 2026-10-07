@@ -37,4 +37,6 @@ export async function deleteStorageObject(auth: ReadCredentials, path: string, s
   const response = await fetch(`https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}`, { method: 'DELETE', signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
     headers: { Authorization: `Firebase ${credentials.idToken}`, 'X-Firebase-AppCheck': credentials.appCheckToken } })
   await response.body?.cancel()
+  // An object already gone is what was asked for; anything else (rules, quota, the network) says the file is still there.
+  if (!response.ok && response.status !== 404) throw new Error(tr('파일을 지우지 못했습니다. 다시 시도해 주세요.'))
 }

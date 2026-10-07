@@ -777,15 +777,16 @@ export class OutboxPump {
     }catch(error){if(error instanceof DeliveryCommandFailure && error.code==='capacity')throw new Error(tr('전송 대기 원본은 합계250MiB, 메시지는100개까지 보관할 수 있습니다.'));throw error}finally{bytes.fill(0)}
     void this.publish();this.kick()
   }
-  // ChatRoomView.sendStickerMessage: a sticker from this device's library goes out as a «sticker» message, 512 by 512,
-  // its PNG or GIF under chat_media and its MP4 under chat_videos (MorsePendingMediaUploadManager).
-  async enqueueSticker(chatId: string, id: string, stickerId: string, reply: ReplyBinding | null, validate: () => void): Promise<void> {
+  // ChatRoomView.sendStickerMessage: a sticker from this device's library — or a set's, whose bytes come with it, as
+  // iOS sends a set's sticker by its data without keeping it (MorseStickerPackSheet send) — goes out as a «sticker»
+  // message, 512 by 512, its PNG or GIF under chat_media and its MP4 under chat_videos (MorsePendingMediaUploadManager).
+  async enqueueSticker(chatId: string, id: string, stickerId: string, reply: ReplyBinding | null, validate: () => void, source: { kind: StickerKind; data: Uint8Array } | null = null): Promise<void> {
     await this.opening
     if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('첫 텍스트 메시지를 보낸 뒤 스티커를 보낼 수 있습니다.'))
     const request = { id, chatId, senderId: this.uid, caption: '', itemIds: [id], reply, sticker: stickerId }
     if (await this.store<boolean>({ kind: 'attachment-known', request })) { void this.publish(); this.kick(); return }
     validate()
-    const stored = await this.store<{ kind: StickerKind; data: Uint8Array } | null>({ kind: 'sticker-read', id: stickerId })
+    const stored = source ?? await this.store<{ kind: StickerKind; data: Uint8Array } | null>({ kind: 'sticker-read', id: stickerId })
     if (!stored) throw new Error(tr('스티커를 찾지 못했습니다. 보관함을 확인해 주세요.'))
     const bytes = Buffer.from(stored.data)
     try {

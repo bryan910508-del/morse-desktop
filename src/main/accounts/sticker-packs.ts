@@ -2,11 +2,12 @@ import { createHash, randomInt } from 'node:crypto'
 import type { StickerPack, StickerPackItem, StickerPackSnapshot } from '../../shared/sticker-packs'
 import { maxStickerBytes, stickerContentType, stickerKind } from '../../shared/stickers'
 import { maxStickerPackItems, maxStickerPackTitle } from '../../shared/sticker-packs'
-import { uploadStorageObject } from '../network/storage-object'
-import { ownedStickerPacksQuery, stickerIndexCreateWrite, stickerPackAddWrite, stickerPackCreateWrite } from '../network/sticker-pack-write'
-import { documents } from '../network/firestore-values'
+import { deleteStorageObject, uploadStorageObject } from '../network/storage-object'
+import { ownedStickerPacksQuery, stickerIndexCreateWrite, stickerIndexDeleteWrite, stickerPackAddWrite, stickerPackCreateWrite, stickerPackDeleteWrite, stickerPackRemoveWrite } from '../network/sticker-pack-write'
+import { documents, stringField } from '../network/firestore-values'
 import type { FirestoreReader, ReadCredentials } from '../network/firestore-rpc'
 import { installedStickerPackIds, readStickerPack, resolveStickerPack, stickerPackFromDocument } from '../network/sticker-pack-read'
+import { identifier } from '../../shared/validation'
 import { downloadStickerPackItem } from '../network/sticker-pack-media'
 import { rangeResponse } from '../media/range-response'
 import { tr } from '../../shared/i18n'
@@ -139,7 +140,8 @@ export class StickerPacks {
     const pack = await readStickerPack(reader, setId, this.auth.signal, () => this.validate())
     if (!pack || pack.ownerUid !== this.uid) throw new Error(tr('내가 만든 스티커팩에만 추가할 수 있습니다.'))
     const hash = createHash('sha256').update(raw).digest('hex')
-    if (pack.items.some(item => item.id === hash)) return pack
+    const held = pack.items.find(item => item.id === hash)
+    if (held) { this.remember(held, Buffer.from(raw)); return pack }
     if (pack.items.length >= maxStickerPackItems) throw new Error(tr('스티커팩에는 스티커를 {0}개까지 넣을 수 있습니다.', [maxStickerPackItems]))
     const item: StickerPackItem = { id: hash, kind, path: `sticker_sets/${pack.id}/${hash}.${kind}`, emoji: '', bytes: raw.byteLength }
     await uploadStorageObject(this.auth, item.path, raw, stickerContentType[kind], { ownerUid: this.uid, setId: pack.id }, AbortSignal.any([this.auth.signal, AbortSignal.timeout(300000)]))
@@ -152,6 +154,83 @@ export class StickerPacks {
     this.changed()
     return next
   }
+
+  // A set from the sticker panel (tdesktop's «View pack», stickers_list_widget.cpp:2684-2688): the sheet for an
+  // installed or own set, read again so its list is current.
+  async openPack(setId: string, chatId: string | null): Promise<void> {
+    this.opening?.abort(); const abort = new AbortController(); this.opening = abort
+    const signal = AbortSignal.any([abort.signal, this.auth.signal, AbortSignal.timeout(60000)])
+    this.value = { status: 'loading', chatId, pack: null, highlighted: null, installed: false, busy: false, message: '' }
+    this.changed()
+    try {
+      const pack = await readStickerPack(this.currentReader(), setId, signal, () => { this.validate(); signal.throwIfAborted() })
+      if (this.opening !== abort) return
+      this.value = pack
+        ? { status: 'ready', chatId, pack, highlighted: null, installed: this.isInstalled(pack.id), busy: false, message: '' }
+        : { status: 'none', chatId, pack: null, highlighted: null, installed: false, busy: false, message: tr('스티커팩을 찾을 수 없어요.') }
+    } catch {
+      if (this.opening !== abort || this.closed) return
+      this.value = { status: 'error', chatId, pack: null, highlighted: null, installed: false, busy: false, message: tr('스티커팩을 불러오지 못했습니다. 연결을 확인한 뒤 다시 시도해 주세요.') }
+    } finally { if (this.opening === abort) this.opening = null; if (!this.closed) this.changed() }
+  }
+
+  // The set's shown copies follow a change this account made to it: the panel's strip and an open sheet.
+  private replaced(next: StickerPack | null, setId: string): void {
+    if (this.installed) this.installed = next ? this.installed.map(known => known.id === setId ? next : known) : this.installed.filter(known => known.id !== setId)
+    if (this.value?.pack?.id === setId) this.value = next ? { ...this.value, pack: next } : null
+    this.changed()
+  }
+  // stickerIndex/{sha256}: let go only while it still names this set and this account (rules: its owner deletes).
+  private async releaseIndex(setId: string, itemId: string): Promise<void> {
+    const reader = this.currentReader()
+    const index = await reader.getDocument(`${documents}/stickerIndex/${itemId}`, this.auth.signal, () => this.validate())
+    if (!index || stringField(index.fields, 'setId', 160) !== setId || stringField(index.fields, 'ownerUid', 160) !== this.uid) return
+    await reader.commitStickerPackWrites([stickerIndexDeleteWrite(index)], this.auth.signal)
+  }
+  // removeSticker (iOS MorseStickerSets.swift:345-357; tdesktop's own-set «Delete», sticker_set_box.cpp:1903-1929): the
+  // set's list and count first — the sticker is gone from the set for everyone — then its index and its file, which
+  // a failure leaves behind without harm (iOS's try?).
+  async removeFromPack(setId: string, itemId: string): Promise<StickerPack> {
+    const reader = this.currentReader()
+    const doc = await reader.getDocument(`${documents}/stickerSets/${identifier(setId)}`, this.auth.signal, () => this.validate())
+    const pack = doc ? stickerPackFromDocument(doc) : null
+    if (!doc || !pack || pack.ownerUid !== this.uid) throw new Error(tr('내가 만든 스티커팩에서만 뺄 수 있습니다.'))
+    const item = pack.items.find(candidate => candidate.id === itemId)
+    const write = stickerPackRemoveWrite(doc, itemId)
+    if (!item || !write) { this.replaced(pack, setId); return pack }
+    await reader.commitStickerPackWrites([write], this.auth.signal)
+    this.validate()
+    const next = { ...pack, items: pack.items.filter(candidate => candidate.id !== itemId) }
+    this.replaced(next, setId)
+    await this.releaseIndex(setId, itemId).catch(() => {})
+    await deleteStorageObject(this.auth, item.path, AbortSignal.any([this.auth.signal, AbortSignal.timeout(60000)])).catch(() => {})
+    const cached = this.cache.get(itemId)
+    if (cached && cached.item.path === item.path) { cached.bytes.fill(0); this.cacheBytes -= cached.bytes.length; this.cache.delete(itemId) }
+    return next
+  }
+  // deleteSet (iOS MorseStickerSets.swift:359-371; tdesktop «Delete pack», sticker_set_box.cpp:936-980): each sticker's
+  // file and index while the set still names this account — Storage rules read the set's owner from it
+  // (storage.rules ownsStickerSet) — then the set, then this account's install of it. A file or index that cannot be
+  // let go stops here with the set still standing, so nothing is left that no one can delete; a retry passes over
+  // what is already gone (a missing file answers 404, a missing index reads as nothing).
+  async deletePack(setId: string): Promise<void> {
+    const reader = this.currentReader()
+    const doc = await reader.getDocument(`${documents}/stickerSets/${identifier(setId)}`, this.auth.signal, () => this.validate())
+    const pack = doc ? stickerPackFromDocument(doc) : null
+    if (!doc || !pack || pack.ownerUid !== this.uid) throw new Error(tr('내가 만든 스티커팩만 지울 수 있습니다.'))
+    for (const item of pack.items) {
+      await deleteStorageObject(this.auth, item.path, AbortSignal.any([this.auth.signal, AbortSignal.timeout(60000)]))
+      await this.releaseIndex(setId, item.id)
+      this.validate()
+    }
+    await reader.commitStickerPackWrites([stickerPackDeleteWrite(doc)], this.auth.signal)
+    this.validate()
+    await reader.uninstallStickerPack(this.uid, setId, this.auth.signal, () => this.validate()).catch(() => {})
+    this.replaced(null, setId)
+  }
+  // A set's sticker kept in this device's favourites (tdesktop «Add to Favorites», stickers_list_widget.cpp:2675-2682;
+  // iOS MorseStickerPackSheet saveToFavorites).
+  async packStickerBytes(setId: string, itemId: string): Promise<Uint8Array> { return new Uint8Array(await this.itemBytes(setId, itemId)) }
 
   private remember(item: StickerPackItem, bytes: Buffer): void {
     if (this.cache.has(item.id)) return

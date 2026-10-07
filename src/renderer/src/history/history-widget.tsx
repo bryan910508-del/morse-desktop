@@ -2,7 +2,7 @@
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowLeft, Bookmark, Check, Copy, Download, EllipsisVertical, File as FileIcon, Flag, Forward, Images, Info, Languages, Link, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Sticker, Timer, Trash2, X } from 'lucide-react'
+import { ArrowDown, ArrowLeft, Bookmark, Check, Copy, Download, EllipsisVertical, File as FileIcon, Flag, Forward, Images, Info, Languages, Link, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Star, StarOff, Timer, Trash2, X } from 'lucide-react'
 import type { ChatMessage, DialogSummary, HistorySnapshot } from '../../../shared/model'
 import type { LocalOutgoing, OutgoingSnapshot } from '../../../shared/delivery'
 import type { ReplyDraftSnapshot } from '../../../shared/reply-draft'
@@ -448,7 +448,11 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     // MorseChatRoom message menu «번역»: received text in another language; chosen again, the original returns.
     const translatable = !own && message.kind === 'text' && !message.encrypted && !message.system && owner?.kind !== 'secret' && Boolean(message.text.trim())
     const shown = translationShown(accountUid, chatId, message.id, message.text, autoTranslateRef.current)
+    // A sticker's menu waits a moment for whether it is a favourite (its bytes hashed once per message); not known by
+    // then, it offers the add, which for a favourite only moves it to the front.
+    let faved: { id: string; favourite: boolean } | null = null
     const open = (offer: boolean): void => {
+      const favourite = faved
       const copyLink: MenuEntry | null = link ? { label: link.email ? tr('이메일 복사') : tr('링크 복사'), icon: <Link size={18} />, onSelect: () => { const copied = copyText(link.email ? link.url.replace(/^mailto:/, '') : link.url); controller.toast(copied ? tr('복사했습니다.') : tr('복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null
       const copyMessage: MenuEntry | null = text && !message.encrypted ? { label: tr('텍스트 복사'), icon: <Copy size={18} />, onSelect: () => { const copied = copyText(text); controller.toast(copied ? tr('복사했습니다.') : tr('복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null
       // B113: a notice of the official notice chat offers copying (A13-5 §3-2), and B154 §2-1 one «삭제» (Telegram lets
@@ -471,8 +475,11 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
           ? (pinnedRef.current?.items.some(item => item.id === message.id)
             ? { label: tr('고정 해제'), icon: <PinOff size={18} />, onSelect: () => { void togglePin(accountUid, chatId, message.id, pinnedRef.current) } }
             : { label: tr('고정'), icon: <Pin size={18} />, onSelect: () => { void togglePin(accountUid, chatId, message.id, pinnedRef.current) } }) : null,
-        // MorseStickerPreview: a received sticker can be kept in my library.
-        message.kind === 'sticker' && savable ? { label: tr('스티커 저장'), icon: <Sticker size={18} />, onSelect: () => { void saveSticker(accountUid, chatId, message) } } : null,
+        // B208: a sticker is added to this device's favourites or taken out of them, by whether it is one
+        // (tdesktop history_view_context_menu.cpp:480-489 «Add to Favorites» / «Remove from Favorites»).
+        message.kind === 'sticker' && savable ? (favourite?.favourite
+          ? { label: tr('즐겨찾기에서 삭제'), icon: <StarOff size={18} />, onSelect: () => { void window.morse.removeSticker(accountUid, favourite.id).then(() => controller.toast(tr('즐겨찾기에서 삭제했어요')), reason => controller.toast(errorText(reason, tr('처리하지 못했습니다. 다시 시도해 주세요.')), 'error')) } }
+          : { label: tr('즐겨찾기에 추가'), icon: <Star size={18} />, onSelect: () => { void saveSticker(accountUid, chatId, message) } }) : null,
         savable && message.kind !== 'sticker' ? { label: message.kind === 'voice' ? tr('파일로 저장') : tr('저장'), icon: <Download size={18} />, onSelect: () => { void saveAttachment(accountUid, chatId, message, savable.index) } } : null,
         // AddPhotoActions: «Copy Image» beside the save, under the same restriction.
         savable?.kind === 'image' ? { label: tr('이미지 복사'), icon: <Copy size={18} />, onSelect: () => { void copyAttachmentImage(accountUid, chatId, message, savable.index) } } : null,
@@ -491,9 +498,14 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       popupMenu.open(point, entries, { header: mutable ? <ReactionStrip accountUid={accountUid} mine={message.reactions.filter(item => item.selected).map(item => item.emoji)}
         onPick={emoji => { popupMenu.close(); void toggleReaction(accountUid, message, emoji) }} /> : undefined })
     }
-    if (!translatable || !desktop.value?.onDevice.translation) open(false)
-    else if (shown) open(true)
-    else void offerTranslation(accountUid, chatId, message.id).then(open)
+    const proceed = (): void => {
+      if (!translatable || !desktop.value?.onDevice.translation) open(false)
+      else if (shown) open(true)
+      else void offerTranslation(accountUid, chatId, message.id).then(open)
+    }
+    if (message.kind !== 'sticker' || !savable || !message.version) { proceed(); return }
+    void Promise.race([window.morse.stickerMessageFavourite(accountUid, chatId, message.id, message.version).catch(() => null), new Promise<null>(resolve => setTimeout(() => resolve(null), 600))])
+      .then(state => { faved = state; proceed() })
   }, [accountUid, chatId, selectReply, removeMessages, copyMessages])
   const openLocalMenu = useCallback((item: LocalOutgoing, point: { x: number; y: number }) => {
     const failed = item.state === 'failed' || item.state === 'upload-failed'
@@ -743,7 +755,7 @@ export async function saveSticker(accountUid: string, chatId: string, message: C
     if (!ready.url) throw new Error(tr('스티커를 불러오지 못했습니다.'))
     const bytes = new Uint8Array(await (await fetch(ready.url)).arrayBuffer())
     await window.morse.addSticker(accountUid, bytes)
-    controller.toast(tr('스티커를 저장했습니다.'))
+    controller.toast(tr('즐겨찾기에 저장했어요'))
   } catch (reason) { controller.toast(errorText(reason, tr('처리하지 못했습니다. 다시 시도해 주세요.')), 'error') }
   finally { void window.morse.closeMedia(accountUid, requestId).catch(() => {}) }
 }

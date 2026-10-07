@@ -13,10 +13,12 @@ const validId = (id: unknown): string => {
   return id
 }
 
-// MorseStickerLibrary.save / items: the same bytes are kept once, newest last, within the library's limits.
+// MorseStickerLibrary.save / items: the same bytes are kept once, within the library's limits, newest first as
+// tdesktop's favourites are — a new one goes to the front (Stickers::pushFavedToFront, data_stickers.cpp:549-559) and
+// one saved again moves there (moveFavedToFront, :561-578, called from setIsFaved :603-604).
 export function executeSticker(db: Database.Database, command: StickerCommand): unknown {
   if (command.kind === 'stickers-list') {
-    return (db.prepare('SELECT id, kind, length(data) AS size FROM stickers ORDER BY created_at').all() as { id: string; kind: StickerKind; size: number }[])
+    return (db.prepare('SELECT id, kind, length(data) AS size FROM stickers ORDER BY created_at DESC, rowid DESC').all() as { id: string; kind: StickerKind; size: number }[])
   }
   if (command.kind === 'sticker-read') {
     const row = db.prepare('SELECT kind, data FROM stickers WHERE id=?').get(validId(command.id)) as { kind: StickerKind; data: Buffer } | undefined
@@ -33,7 +35,7 @@ export function executeSticker(db: Database.Database, command: StickerCommand): 
       const count = (db.prepare('SELECT COUNT(*) AS count FROM stickers').get() as { count: number }).count
       if (count >= maxStickers) throw Object.assign(new Error('Sticker capacity'), { deliveryCode: 'capacity' })
       db.prepare('INSERT INTO stickers(id,kind,data,created_at) VALUES(?,?,?,?)').run(id, kind, data, Date.now())
-    }
+    } else db.prepare('UPDATE stickers SET created_at=? WHERE id=?').run(Date.now(), id)
     return { id, kind, size: data.length }
   })()
 }

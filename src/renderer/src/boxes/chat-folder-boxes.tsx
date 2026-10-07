@@ -11,6 +11,7 @@ import { PeerAvatar } from '../ui/avatar'
 import { RoundCheck, Spinner, Switch, TextField } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
 import { tr } from '../../../shared/i18n'
+import { PeerRowName } from '../ui/official-mark'
 
 const noDialogs: DialogSummary[] = []
 
@@ -51,7 +52,7 @@ function ChatPickerBox({ title, initial, close, onDone }: { title: string; initi
           const checked = selected.has(dialog.id), secret = dialog.kind === 'secret'
           return <button key={dialog.id} type="button" className="peer-row" aria-pressed={checked} onClick={() => toggle(dialog.id)}>
             <PeerAvatar id={dialog.id} name={dialog.title} image={secret ? null : dialog.avatar} surface="dialogs" kind={secret ? 'secret' : undefined} size={42} />
-            <span className="peer-row-text"><strong className="ellipsis">{dialog.title}</strong></span>
+            <span className="peer-row-text"><PeerRowName name={dialog.title} official={dialog.official} /></span>
             <RoundCheck checked={checked} />
           </button>
         })}

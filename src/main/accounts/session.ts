@@ -32,7 +32,7 @@ import { OwnStories } from './own-stories'
 import { NoteRemoval } from './space-note-removal'
 import { NoteTextSave } from './space-note-text-save'
 import { NoteEditComparison } from './space-note-edit-comparison'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { NoteEditDraftStart, NoteEditDraftTarget, NoteEditDraftRecord, NoteEditDraftRow, NoteEditDraftWrite } from '../../shared/space-note-edit-drafts'
 import { NoteCreation } from './space-note-creation'
 import type { NoteDraftRecord, NoteDraftRow, NoteDraftTarget, NoteDraftWrite } from '../../shared/space-note-drafts'
@@ -133,7 +133,7 @@ import { StickerPacks } from './sticker-packs'
 import { downloadMedia } from '../media/download-media'
 import { ContactFlags } from './contact-flags'
 import type { PostLiker, PostLikersRequest, PostLikersSnapshot } from '../../shared/post-likers'
-import { maxStickerBytes, stickerContentType, type StickerItem, type StickerKind } from '../../shared/stickers'
+import { maxStickerBytes, stickerContentType, stickerKind, type StickerItem, type StickerKind } from '../../shared/stickers'
 import type { ContactFlagCommand } from '../storage/contact-flag-table'
 import { generalCategoryId, type ForumCategory } from '../../shared/forum'
 import { deleteTopicMessages, TopicDeletions, TopicDeletionStop } from './forum-topic-deletion'
@@ -281,6 +281,9 @@ export class AccountSession {
   private readonly chatFlags: ChatFlags
   private readonly contactFlags: ContactFlags
   private stickerList: { id: string; kind: StickerKind; size: number }[] | null = null
+  private readonly stickerMessageBytes: (chatId: string, messageId: string, version: string, signal: AbortSignal) => Promise<Buffer>
+  // A sticker message's bytes hashed once, so its menu knows at once the next time whether it is a favourite.
+  private readonly stickerMessageIds = new Map<string, string>()
   private stickerLoad: Promise<void> | null = null
   private readonly stickerPacks: StickerPacks
   private likers: (Omit<PostLikersSnapshot, 'items'> & { items: (Omit<PostLiker, 'photo'> & { photoURL: string | null })[] }) | null = null
@@ -611,12 +614,12 @@ export class AccountSession {
       () => { if (!this.closed && this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() } })
     // The bytes of a sticker message, read again through the message's own attachment so the sheet can
     // hash them (iOS reuses the bubble's loaded bytes; a Desktop media session holds one attachment at a time).
-    this.stickerPacks = new StickerPacks(profile.uid, credentials, () => this.reader, () => { if (!this.closed) this.events.changed() },
-      async (chatId, messageId, version, signal) => {
-        const resource = this.mediaResourceFor(chatId, { requestId: randomUUID(), messageId, version, index: 0 })
-        if (!resource || resource.summary.kind !== 'sticker') throw new Error(tr('스티커를 다시 선택해 주세요.'))
-        return downloadMedia(credentials, resource, signal, () => { if (this.closed || this.locked) throw new Error('Account changed') }, () => {}, maxStickerBytes)
-      })
+    this.stickerMessageBytes = async (chatId, messageId, version, signal) => {
+      const resource = this.mediaResourceFor(chatId, { requestId: randomUUID(), messageId, version, index: 0 })
+      if (!resource || resource.summary.kind !== 'sticker') throw new Error(tr('스티커를 다시 선택해 주세요.'))
+      return downloadMedia(credentials, resource, signal, () => { if (this.closed || this.locked) throw new Error('Account changed') }, () => {}, maxStickerBytes)
+    }
+    this.stickerPacks = new StickerPacks(profile.uid, credentials, () => this.reader, () => { if (!this.closed) this.events.changed() }, this.stickerMessageBytes)
     this.hiddenMessages = new HiddenMessages(<T,>(command: HiddenMessageCommand) => this.delivery.hiddenMessageState<T>(command),
       () => { if (!this.closed) this.selected?.hiddenChanged() })
     const connected = (): void => { if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('계정 연결을 확인해 주세요.')) }
@@ -1964,6 +1967,21 @@ export class AccountSession {
       throw new Error(code === 'capacity' ? tr('스티커는 200개까지 보관할 수 있어요.') : tr('스티커로 저장할 수 없는 파일이에요. PNG, GIF 또는 MP4를 사용해 주세요.'))
     }
   }
+  // B208: whether a sticker message is one of this device's favourites, for its menu's «Add to Favorites» /
+  // «Remove from Favorites» (tdesktop history_view_context_menu.cpp:480-489, isFaved by the document).
+  async stickerMessageFavourite(chatId: string, messageId: string, version: string): Promise<{ id: string; favourite: boolean }> {
+    if (this.closed || this.locked) throw new Error(tr('계정이 변경되었습니다.'))
+    const key = `${chatId}/${messageId}/${version}`
+    let id = this.stickerMessageIds.get(key)
+    if (!id) {
+      const bytes = await this.stickerMessageBytes(chatId, messageId, version, AbortSignal.timeout(60000))
+      id = createHash('sha256').update(bytes).digest('hex'); bytes.fill(0)
+      if (this.stickerMessageIds.size >= 500) this.stickerMessageIds.delete(this.stickerMessageIds.keys().next().value!)
+      this.stickerMessageIds.set(key, id)
+    }
+    const list = this.stickerList ?? await this.delivery.stickerState<{ id: string; kind: StickerKind; size: number }[]>({ kind: 'stickers-list' })
+    return { id, favourite: list.some(item => item.id === id) }
+  }
   async removeSticker(id: string): Promise<'done'> {
     if (this.closed || this.locked) throw new Error(tr('계정이 변경되었습니다.'))
     await this.delivery.stickerState({ kind: 'sticker-remove', id })
@@ -1986,6 +2004,24 @@ export class AccountSession {
     if (this.closed || this.locked) throw new Error(tr('계정이 변경되었습니다.'))
     await this.stickerPacks.uninstall(setId)
   }
+  // B208 (tdesktop's sticker panel and set box): a set opened from the panel, a sticker taken out of an own set, an
+  // own set deleted, and a set's sticker kept in this device's favourites.
+  async openStickerPackById(setId: string): Promise<void> {
+    if (this.closed || this.locked) throw new Error(tr('계정이 변경되었습니다.'))
+    await this.stickerPacks.openPack(setId, this.selected?.dialog.summary.id ?? null)
+  }
+  async removeFromStickerPack(setId: string, itemId: string): Promise<void> {
+    if (this.closed || this.locked) throw new Error(tr('계정이 변경되었습니다.'))
+    await this.stickerPacks.removeFromPack(setId, itemId)
+  }
+  async deleteStickerPack(setId: string): Promise<void> {
+    if (this.closed || this.locked) throw new Error(tr('계정이 변경되었습니다.'))
+    await this.stickerPacks.deletePack(setId)
+  }
+  async savePackSticker(setId: string, itemId: string): Promise<string> {
+    if (this.closed || this.locked) throw new Error(tr('계정이 변경되었습니다.'))
+    return this.addSticker(await this.stickerPacks.packStickerBytes(setId, itemId))
+  }
   // MediaEditorScreen StickerAction: a new set, or a sticker added to a set this account made.
   async ownedStickerPacks() {
     if (this.closed || this.locked) throw new Error(tr('계정이 변경되었습니다.'))
@@ -1999,13 +2035,16 @@ export class AccountSession {
     if (this.closed || this.locked) throw new Error(tr('계정이 변경되었습니다.'))
     return this.stickerPacks.addToPack(setId, bytes)
   }
-  // A sticker chosen from a set is kept in this device's library first (Telegram's recent stickers), then sent
-  // through the same queue as a library sticker; the receiver finds the set again by the bytes' hash.
+  // A sticker chosen from a set goes out by its own bytes through the same queue as a library sticker, and is not kept
+  // in this device's favourites: iOS sends a set's sticker by its data (MorseStickerPackSheet send), and tdesktop puts
+  // a sent sticker in Recent, never in Favorites (data_stickers.cpp setIsFaved is only the menu's «Add to Favorites»).
+  // The receiver finds the set again by the bytes' hash.
   async sendPackSticker(chatId: string, id: string, setId: string, itemId: string, reply: ReplyBinding | null): Promise<void> {
     if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
-    const bytes = await this.stickerPacks.itemBytes(setId, itemId)
-    const stickerId = await this.addSticker(new Uint8Array(bytes))
-    await this.sendSticker(chatId, id, stickerId, reply)
+    const bytes = new Uint8Array(await this.stickerPacks.itemBytes(setId, itemId))
+    const kind = stickerKind(bytes)
+    if (!kind) throw new Error(tr('스티커를 불러오지 못했습니다.'))
+    await this.sendSticker(chatId, id, createHash('sha256').update(bytes).digest('hex'), reply, { kind, data: bytes })
   }
   // The same sticker sent into a 1:1 inquiry room, from this device's library or from an installed set.
   async sendInquirySticker(request: import('../../shared/channel-inquiries').InquiryTargetRequest, stickerId: string): Promise<'queued'> {
@@ -2017,8 +2056,8 @@ export class AccountSession {
   async sendInquiryPackSticker(request: import('../../shared/channel-inquiries').InquiryTargetRequest, setId: string, itemId: string): Promise<'queued'> {
     if (this.closed || this.locked) throw new Error(tr('문의를 다시 열어 주세요.'))
     const bytes = await this.stickerPacks.itemBytes(setId, itemId)
-    const stickerId = await this.addSticker(new Uint8Array(bytes))
-    return this.sendInquirySticker(request, stickerId)
+    if (!stickerKind(bytes)) throw new Error(tr('스티커를 불러오지 못했습니다.'))
+    return this.channelInquiries.sendSticker(request, { extension: stickerKind(bytes)!, bytes: Buffer.from(bytes) })
   }
   stickerPackResponse(setId: string, itemId: string, request: Request): Promise<Response> { return this.stickerPacks.response(setId, itemId, request) }
   async stickerResponse(id: string, request: Request): Promise<Response> {
@@ -2027,12 +2066,12 @@ export class AccountSession {
     if (!stored) return new Response(null, { status: 404 })
     return new Response(new Uint8Array(stored.data), { headers: { 'Content-Type': stickerContentType[stored.kind], 'Content-Length': String(stored.data.byteLength), 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } })
   }
-  async sendSticker(chatId: string, id: string, stickerId: string, reply: ReplyBinding | null): Promise<void> {
+  async sendSticker(chatId: string, id: string, stickerId: string, reply: ReplyBinding | null, source: { kind: StickerKind; data: Uint8Array } | null = null): Promise<void> {
     if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
     await this.delivery.enqueueSticker(chatId, id, stickerId, reply, () => {
       if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
       if (reply) this.draftReply.validate(chatId, reply)
-    })
+    }, source)
     await this.draftReply.refresh(chatId)
   }
   contactsSnapshot() {

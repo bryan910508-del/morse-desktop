@@ -3,6 +3,10 @@
 import type { OfficialKind } from '../../../shared/model'
 import { tr } from '../../../shared/i18n'
 
+// B178 §2-1: a person's mark — the contacts list's own word when they are a contact, else the mark read for the screen.
+export const officialOf = (own: OfficialKind | null | undefined, marks: Readonly<Record<string, OfficialKind>>, uid: string): OfficialKind | null =>
+  own ?? marks[uid] ?? null
+
 export const officialLabel = (kind: OfficialKind): string => kind === 'support' ? tr('공식 고객센터') : tr('공식 계정')
 
 // B111: an official account's mark (publicProfiles.official — the support account and Morse's notices alike), drawn as

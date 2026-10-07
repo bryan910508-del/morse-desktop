@@ -67,7 +67,10 @@ function chooseDestination(accountUid: string): Promise<Destination | null> {
 // iOS MorseStickerEditor: a picture cropped to a square and drawn at 512px with its transparency, «배경 제거» through
 // Vision, «원본 복원», and «저장» / «저장 후 전송». A GIF or MP4 is cropped the same way by the Mac media helper, every
 // frame kept; where the helper is not available it is kept as it is, as iOS keeps it.
-function StickerEditor({ accountUid, close, done }: { accountUid: string; close(): void; done(sticker: StickerItem | null): void }) {
+// What «저장 후 전송» sends: the favourite it was kept as, or the set's sticker it became.
+export type MadeSticker = { kind: 'favourite'; sticker: StickerItem } | { kind: 'pack'; setId: string; itemId: string }
+
+function StickerEditor({ accountUid, close, done }: { accountUid: string; close(): void; done(sticker: MadeSticker | null): void }) {
   // B51: background removal needs Vision's subject mask (macOS 14); elsewhere the button is left out.
   const canCutout = useDesktop(snapshot => snapshot?.onDevice.backgroundRemoval ?? false)
   const [source, setSource] = useState<Source | null>(null), [still, setStill] = useState<Source | null>(null)
@@ -147,17 +150,19 @@ function StickerEditor({ accountUid, close, done }: { accountUid: string; close(
       if (bytes.length > maxStickerBytes) throw new Error(tr('10MB 이하 파일을 선택해 주세요.'))
       const destination = await chooseDestination(accountUid)
       if (!destination) { setBusy(false); return }
+      // The sticker goes only where it was put, as iOS MorseStickerEditor.commit stores it and then sends those bytes:
+      // one put in a set is sent as that set's sticker (its id is its bytes' SHA-256) and is not kept in the favourites.
       if (destination.kind !== 'favorites') {
         const pack = destination.kind === 'pack' ? destination.pack : await window.morse.createStickerPack(accountUid, destination.title)
         await window.morse.addStickerToPack(accountUid, pack.id, bytes)
         controller.toast(tr('«{0}» 스티커팩에 추가했습니다.', [pack.title]))
-        if (!send) { done(null); close(); return }
+        const itemId = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new Uint8Array(bytes))), byte => byte.toString(16).padStart(2, '0')).join('')
+        done(send ? { kind: 'pack', setId: pack.id, itemId } : null); close(); return
       }
-      // A sticker is sent from this device's library, so one that goes out is kept there too.
       const id = await window.morse.addSticker(accountUid, bytes)
       const kind = stickerKind(bytes)!
-      if (destination.kind === 'favorites') controller.toast(tr('스티커를 저장했습니다.'))
-      done(send ? { id, kind, size: bytes.length, url: `morse://app/__sticker/${id}` } : null); close()
+      controller.toast(tr('스티커를 저장했습니다.'))
+      done(send ? { kind: 'favourite', sticker: { id, kind, size: bytes.length, url: `morse://app/__sticker/${id}` } } : null); close()
     } catch (reason) { setError(errorText(reason, tr('처리하지 못했습니다. 다시 시도해 주세요.'))); setBusy(false) }
   }
   return <Box title={tr('스티커 만들기')} width={frame + 44} onClose={busy ? undefined : close} buttons={<>
@@ -190,8 +195,8 @@ function StickerEditor({ accountUid, close, done }: { accountUid: string; close(
   </Box>
 }
 
-export function showStickerEditor(accountUid: string, done: (sticker: StickerItem | null) => void): void {
+export function showStickerEditor(accountUid: string, done: (sticker: MadeSticker | null) => void): void {
   let settled = false
-  const settle = (value: StickerItem | null): void => { if (!settled) { settled = true; done(value) } }
+  const settle = (value: MadeSticker | null): void => { if (!settled) { settled = true; done(value) } }
   controller.showLayer(close => <StickerEditor accountUid={accountUid} close={close} done={settle} />, { onClose: () => settle(null) })
 }

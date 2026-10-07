@@ -28,8 +28,8 @@ import { showChatAutoDeleteBox } from '../boxes/auto-delete-box'
 import { autoDeleteSummary, canChangeAutoDelete } from '../../../shared/chat-auto-delete'
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { DialogAvatar, UserAvatar } from '../ui/user-avatar'
-import { OfficialMark, PeerRowName, officialLabel } from '../ui/official-mark'
-import { useOfficialMarks } from '../app/official-marks'
+import { OfficialMark, PeerRowName, officialLabel, officialOf } from '../ui/official-mark'
+import { useOfficialMarks, useRowsOnScreen } from '../app/official-marks'
 import { usePresence } from '../app/presence'
 import { openPersonalChannel, PersonalChannelSection, usePersonalChannelCard } from './personal-channel'
 import { tr } from '../../../shared/i18n'
@@ -80,7 +80,9 @@ export function ContactProfile({ accountUid, uid, fromChat }: { accountUid: stri
   const snapshot = useDesktop(state => state?.contacts?.profile ?? null)
   const inContacts = useDesktop(state => Boolean(state?.contacts?.items.some(item => item.uid === uid)))
   const presence = usePresence(uid, true)
-  const official = useDesktop(state => state?.contacts?.items.find(item => item.uid === uid)?.official ?? null)
+  // B178 §2-2: a person who is not a contact (a group member opened from the list) has their mark read for the profile.
+  const contactOfficial = useDesktop(state => state?.contacts?.items.find(item => item.uid === uid)?.official ?? null)
+  const official = officialOf(contactOfficial, useOfficialMarks(accountUid, 'profile', inContacts ? [] : [uid]), uid)
   const personalUrl = useDesktop(state => state?.contacts?.items.find(item => item.uid === uid)?.personalPhotoURL ?? null)
   // The list row's picture of this person (the same address) while the profile's own read finishes.
   const listUrl = useDesktop(state => { const avatar = state?.contacts?.items.find(item => item.uid === uid)?.avatar; return avatar?.status === 'ready' ? avatar.url : null })
@@ -206,20 +208,8 @@ function GroupInfo({ accountUid, dialog, onProfile }: { accountUid: string; dial
   }, [ready, photo?.hasPhoto, photo?.status, current?.version])
   // B178 §2-5: the members' official marks, read only for the rows on screen (a group may hold thousands).
   const memberList = useRef<HTMLDivElement>(null)
-  const [onScreen, setOnScreen] = useState<string[]>([])
-  const marks = useOfficialMarks(accountUid, 'members', onScreen)
   const memberRows = current?.status === 'ready' ? current.members : null
-  useEffect(() => {
-    const root = memberList.current
-    if (!root || typeof IntersectionObserver === 'undefined') return
-    const seen = new Set<string>()
-    const observer = new IntersectionObserver(entries => {
-      for (const entry of entries) { const uid = (entry.target as HTMLElement).dataset.uid; if (uid) { if (entry.isIntersecting) seen.add(uid); else seen.delete(uid) } }
-      setOnScreen([...seen])
-    })
-    for (const row of root.querySelectorAll<HTMLElement>('[data-uid]')) observer.observe(row)
-    return () => observer.disconnect()
-  }, [memberRows])
+  const marks = useOfficialMarks(accountUid, 'members', useRowsOnScreen(memberList, memberRows))
   if (!current || current.status === 'loading') return <div className="empty-state"><Spinner size={22} /></div>
   if (current.status !== 'ready') return <div className="empty-state">{current.message || tr('그룹 정보를 확인할 수 없습니다.')}</div>
   const members = current.members, version = current.version

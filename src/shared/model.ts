@@ -51,6 +51,10 @@ export type LinkState = 'ready' | 'waiting-network' | 'connecting' | 'updating'
 // A recovery code change (A3): the new code, whether the server confirmed it, and — made by Apple/Google — whether it
 // waits for the person to confirm again (§9).
 export interface BackupCodeChange { backupCode: string; confirmed: boolean; needsProof?: boolean }
+// B178 §2-5: the screens that show people on rows of their own, each with its own set of uids whose official marks are
+// read while they are shown — a profile over the search's results, or a channel's subscribers beside a group's members,
+// must not clear each other's.
+export type PeopleSurface = 'members' | 'blocked' | 'lookup' | 'profile' | 'subscribers'
 export interface Preferences {
   theme: ThemePreference
   messageFontSize: number
@@ -472,7 +476,7 @@ export interface DesktopBridge {
   blockedUsers(accountUid: string): Promise<import('./account-tools').BlockedUser[]>
   setBlockedUser(accountUid: string, target: import('./account-tools').BlockTarget, blocked: boolean): Promise<void>
   signInSessions(accountUid: string): Promise<import('./account-tools').SignInSessions>
-  showPeople(accountUid: string, surface: 'members' | 'blocked' | 'lookup', uids: string[]): Promise<void>
+  showPeople(accountUid: string, surface: PeopleSurface, uids: string[]): Promise<void>
   revokeSignInSessions(accountUid: string, sessionId: string | null): Promise<{ gone: boolean }>
   setSessionTtl(accountUid: string, days: number): Promise<void>
   // A null current code uses the code kept on this device for an Apple sign-up.
@@ -927,9 +931,15 @@ export interface DesktopBridge {
   // Telegram StickerPackScreen (iOS MorseStickerPackSheet): the set a tapped sticker belongs to, install/remove,
   // and sending one of its stickers into the chat the sheet was opened from.
   openStickerPack(accountUid: string, chatId: string, messageId: string, version: string): Promise<void>
+  // B208: whether a sticker message is a favourite on this device, and its library id (its bytes' SHA-256).
+  stickerMessageFavourite(accountUid: string, chatId: string, messageId: string, version: string): Promise<{ id: string; favourite: boolean }>
   closeStickerPack(accountUid: string): Promise<void>
   installStickerPack(accountUid: string, setId: string): Promise<void>
   uninstallStickerPack(accountUid: string, setId: string): Promise<void>
+  openStickerPackById(accountUid: string, setId: string): Promise<void>
+  removeFromStickerPack(accountUid: string, setId: string, itemId: string): Promise<void>
+  deleteStickerPack(accountUid: string, setId: string): Promise<void>
+  savePackSticker(accountUid: string, setId: string, itemId: string): Promise<string>
   ownedStickerPacks(accountUid: string): Promise<import('./sticker-packs').StickerPack[]>
   createStickerPack(accountUid: string, title: string): Promise<import('./sticker-packs').StickerPack>
   addStickerToPack(accountUid: string, setId: string, bytes: Uint8Array): Promise<import('./sticker-packs').StickerPack>

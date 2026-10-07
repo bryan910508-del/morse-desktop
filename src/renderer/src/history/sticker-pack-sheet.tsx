@@ -6,6 +6,8 @@ import { errorText } from '../app/format'
 import { Spinner } from '../ui/controls'
 import { Box } from '../ui/layers'
 import { tr } from '../../../shared/i18n'
+import { popupMenu, pointFor } from '../ui/popup-menu'
+import { deletePack, packStickerMenu } from './sticker-actions'
 
 // One sticker of a set, drawn as the bubble draws it (iOS MorseStickerSetItemView).
 export function StickerPackItemView({ pack, item }: { pack: StickerPack; item: StickerPackItem }) {
@@ -36,7 +38,11 @@ function StickerPackSheet({ accountUid, close }: { accountUid: string; close(): 
   }
   const subtitle = pack ? [tr('스티커 {0}개', [String(pack.items.length)]), pack.ownerUid !== accountUid && pack.ownerName ? tr('{0} 님이 만든 스티커팩', [pack.ownerName]) : ''].filter(Boolean).join(' · ') : ''
   const owner = Boolean(pack && pack.ownerUid === accountUid)
-  return <Box title={pack ? pack.title : tr('스티커')} width={420} onClose={busy ? undefined : close} className="sticker-pack-box" buttons={pack && !owner ? <>
+  // B208: a set this account made can be deleted from its sheet (tdesktop's own set box, sticker_set_box.cpp:936-980).
+  const remove = (): void => { if (pack) void deletePack(accountUid, pack).then(done => { if (done) close() }) }
+  return <Box title={pack ? pack.title : tr('스티커')} width={420} onClose={busy ? undefined : close} className="sticker-pack-box" buttons={pack && owner ? <>
+    <button className="button flat danger block" disabled={busy} onClick={remove}>{tr('스티커팩 삭제')}</button>
+  </> : pack ? <>
     <button className={`button ${state?.installed ? 'flat danger' : 'primary'} block`} disabled={busy} onClick={toggle}>
       {state?.busy && <Spinner size={14} />}
       {state?.installed ? tr('스티커 {0}개 제거', [String(pack.items.length)]) : tr('스티커 {0}개 추가', [String(pack.items.length)])}
@@ -48,7 +54,8 @@ function StickerPackSheet({ accountUid, close }: { accountUid: string; close(): 
         <p className="sticker-pack-sub">{subtitle}{owner ? ` · ${tr('내 스티커팩')}` : ''}</p>
         <div className="sticker-pack-grid" role="list">
           {pack.items.map(item => <button key={item.id} type="button" role="listitem" className={`sticker-pack-item${item.id === state.highlighted ? ' highlighted' : ''}`}
-            disabled={busy || !state.chatId} title={state.chatId ? tr('이 대화에 보내기') : undefined} onClick={() => send(item)}>
+            disabled={busy || !state.chatId} title={state.chatId ? tr('이 대화에 보내기') : undefined} onClick={() => send(item)}
+            onContextMenu={event => { event.preventDefault(); popupMenu.open(pointFor(event, event.currentTarget), packStickerMenu(accountUid, pack, item, state.chatId ? () => send(item) : null, false)) }}>
             <StickerPackItemView pack={pack} item={item} />
           </button>)}
         </div>
@@ -60,5 +67,11 @@ function StickerPackSheet({ accountUid, close }: { accountUid: string; close(): 
 // Opened from a sticker bubble: the main process hashes the sticker and looks its set up while the sheet shows.
 export function showStickerPackSheet(accountUid: string, chatId: string, messageId: string, version: string): void {
   void window.morse.openStickerPack(accountUid, chatId, messageId, version).catch(() => {})
+  controller.showLayer(close => <StickerPackSheet accountUid={accountUid} close={close} />, { onClose: () => { void window.morse.closeStickerPack(accountUid).catch(() => {}) } })
+}
+
+// B208: opened from the sticker panel (a set on its strip, or a sticker's «스티커팩 보기»).
+export function showStickerPackSheetById(accountUid: string, setId: string): void {
+  void window.morse.openStickerPackById(accountUid, setId).catch(() => {})
   controller.showLayer(close => <StickerPackSheet accountUid={accountUid} close={close} />, { onClose: () => { void window.morse.closeStickerPack(accountUid).catch(() => {}) } })
 }

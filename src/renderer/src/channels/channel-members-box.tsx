@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Check, Shield, ShieldOff, SlidersHorizontal, X } from 'lucide-react'
 import type { ChannelSummary } from '../../../shared/channels'
 import { channelAdminPermissionLabels, type ChannelAdminPermissionKey, type ChannelAdminRow } from '../../../shared/channel-admins'
@@ -14,6 +14,8 @@ import { Spinner, Switch } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { UserAvatar } from '../ui/user-avatar'
+import { PeerRowName } from '../ui/official-mark'
+import { useOfficialMarks, useRowsOnScreen } from '../app/official-marks'
 import type { GroupPhotoImage } from '../../../shared/group-photo'
 import { locale, tr } from '../../../shared/i18n'
 
@@ -74,18 +76,22 @@ function PermissionsBox({ title, label, initial, submitLabel, close, submit }: {
 
 const noContacts: ContactSummary[] = []
 
-function MemberList({ status, message, rows, empty }: { status: string; message: string; rows: MemberRow[]; empty: string }) {
+function MemberList({ accountUid, status, message, rows, empty }: { accountUid: string; status: string; message: string; rows: MemberRow[]; empty: string }) {
+  // B178 §2-2: a channel's subscribers, admins and join requests are people on rows, marked as a group's members are —
+  // read only for the rows on screen (TI ItemListPeerItem).
+  const list = useRef<HTMLDivElement>(null)
+  const marks = useOfficialMarks(accountUid, 'subscribers', useRowsOnScreen(list, rows))
   if (status === 'loading') return <div className="empty-state"><Spinner size={22} /></div>
   if (status !== 'ready') return <div className="empty-state">{message || tr('목록을 불러오지 못했습니다.')}</div>
   if (!rows.length) return <div className="empty-state">{empty}</div>
-  return <div className="peer-list tall">{rows.map(row => {
+  return <div className="peer-list tall" ref={list}>{rows.map(row => {
     const content = <>
       <UserAvatar uid={row.uid} name={row.name} size={42} image={row.photo} />
-      <span className="peer-row-text"><strong className="ellipsis">{row.name}</strong>{row.detail && <small className="ellipsis">{row.detail}</small>}</span>
+      <span className="peer-row-text"><PeerRowName name={row.name} official={marks[row.uid]} />{row.detail && <small className="ellipsis">{row.detail}</small>}</span>
       {row.trailing}
     </>
-    return row.onClick ? <button key={row.uid} type="button" className="peer-row" onClick={event => row.onClick!(pointFor(event, event.currentTarget))}>{content}</button>
-      : <div key={row.uid} className="peer-row">{content}</div>
+    return row.onClick ? <button key={row.uid} data-uid={row.uid} type="button" className="peer-row" onClick={event => row.onClick!(pointFor(event, event.currentTarget))}>{content}</button>
+      : <div key={row.uid} data-uid={row.uid} className="peer-row">{content}</div>
   })}</div>
 }
 
@@ -197,7 +203,7 @@ function ChannelMembersBox({ accountUid, channel, kind, close }: { accountUid: s
   const count = list.status === 'ready' ? list.rows.length : null
   return <Box title={<>{titles[kind]}{count !== null && <small className="box-title-count">{count.toLocaleString(locale())}</small>}</>} width={400} onClose={close}>
     {kind === 'admins' && owner && <p className="box-note">{tr('관리자를 눌러 권한을 바꾸거나 해제할 수 있습니다. 새 관리자는 구독자 목록에서 지정합니다.')}</p>}
-    <MemberList status={list.status} message={list.message} rows={list.rows} empty={kind === 'subscribers' ? tr('아직 구독자가 없습니다.') : kind === 'admins' ? tr('지정된 관리자가 없습니다.') : tr('대기 중인 가입 요청이 없습니다.')} />
+    <MemberList accountUid={accountUid} status={list.status} message={list.message} rows={list.rows} empty={kind === 'subscribers' ? tr('아직 구독자가 없습니다.') : kind === 'admins' ? tr('지정된 관리자가 없습니다.') : tr('대기 중인 가입 요청이 없습니다.')} />
   </Box>
 }
 

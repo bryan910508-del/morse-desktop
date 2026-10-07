@@ -39,8 +39,8 @@ function emptyProfile(selection: Selection, status: ContactProfileSnapshot['stat
 // Contact membership comes from the owner's collection. Only an explicitly
 // selected, current member gets profile and reciprocal-membership subscriptions.
 let watchSteps = 0
-export type PeopleSurface = 'members' | 'blocked' | 'lookup'
-export const peopleSurfaces: readonly PeopleSurface[] = ['members', 'blocked', 'lookup']
+export type PeopleSurface = import('../../shared/model').PeopleSurface
+export const peopleSurfaces: readonly PeopleSurface[] = ['members', 'blocked', 'lookup', 'profile', 'subscribers']
 const maxShownPeople = 200
 type OfficialKind = import('../../shared/model').OfficialKind
 
