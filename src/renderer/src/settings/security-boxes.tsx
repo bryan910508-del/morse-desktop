@@ -4,7 +4,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { PeerRowName } from '../ui/official-mark'
 import { useOfficialMarks } from '../app/official-marks'
 import { Hand, KeyRound, Laptop, Monitor, Smartphone, X } from 'lucide-react'
-import { lastSeenModes, sessionPlace, sessionQrLine, sessionTtlDayOptions, type BlockedUser, type LastSeenMode, type LastSeenPrivacy, type SignInSession, type SignInSessions } from '../../../shared/account-tools'
+import { lastSeenModes, sessionQrLine, sessionTtlDayOptions, type BlockedUser, type LastSeenMode, type LastSeenPrivacy, type SignInSession, type SignInSessions } from '../../../shared/account-tools'
 import { controller } from '../app/ui'
 import { errorText, fullTime, sessionActiveTime } from '../app/format'
 import { trackWrite } from '../app/drafts'
@@ -13,7 +13,7 @@ import { BackupCodeBox } from '../boxes/backup-code-box'
 import { Spinner, TextField } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
 import { UserAvatar } from '../ui/user-avatar'
-import { locale, tr } from '../../../shared/i18n'
+import { tr } from '../../../shared/i18n'
 import type { BackupCodeChange } from '../../../shared/model'
 
 // PrivacyLastSeenSettingsView: who can see the last seen time. Exceptions set on iPhone are kept.
@@ -115,9 +115,6 @@ function SessionInfoBox({ session, close, terminate }: { session: SignInSession;
     {session.createdAt !== null && <div className="session-info-row"><span>{tr('로그인')}</span><strong>{fullTime(session.createdAt)}</strong></div>}
     {session.qr && <div className="session-info-row"><span>{tr('로그인 방식')}</span><strong>{sessionQrLine(session.qr)}</strong></div>}
     {session.ip && <div className="session-info-row"><span>{tr('IP 주소')}</span><strong className="selectable">{session.ip}</strong></div>}
-    {session.origin && <div className="session-info-row"><span>{tr('위치')}</span><strong>{sessionPlace(session.origin, locale())}</strong></div>}
-    {/* A13 §8: the place is the IP's, from DB-IP (CC BY 4.0, credited here and in the privacy policy). */}
-    {session.origin && <p className="box-note">{tr('위치는 IP 로 추정한 것이라 정확하지 않을 수 있어요.')}<br />{tr('IP 위치: DB-IP')}</p>}
   </Box>
 }
 // SelfDestructionBox (Type::Sessions): 1 week, 3, 6 or 12 months.

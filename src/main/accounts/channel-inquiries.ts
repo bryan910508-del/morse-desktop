@@ -86,6 +86,22 @@ export function decodeInquiry(doc: FirestoreDocument, uid: string): Inquiry {
     autoDeleteSeconds: autoDeleteSecondsValue(Math.trunc(numberField(f, 'autoDeleteSeconds'))), autoDeleteMyOnly: boolField(f, 'autoDeleteMyOnly'),
     outboxRead: inquiryOutboxRead(f, role === 'owner' ? subscriberId : ownerId) }
 }
+// B222: a picture's or a video's caption, the same on the three apps (contracts/B222-inquiry-video-caption.md §1,
+// iOS MorseInquiryMessageMapper.videoCaption c444f691). Telegram keeps a caption as the message's text, and an edit
+// on any app rewrites `text` only, so `text` comes first — unless it is the media itself: Android sends the uploaded
+// address there (FirestoreInquiryRoom.kt:58-66). Then, or with no text, the mirror field iOS-before and Android read.
+const inquiryMediaFolders = new Set(['inquiry_files', 'inquiry_media', 'inquiry_videos'])
+export function inquiryMediaAddress(text: string, mediaUrl: string, inquiryId: string): boolean {
+  if (!mediaUrl || text === mediaUrl || text.toLowerCase().startsWith('gs://')) return true
+  try { if (new URL(text).hostname.toLowerCase() === 'firebasestorage.googleapis.com') return true } catch { /* not an address */ }
+  const parts = text.split('/')
+  return parts.length === 3 && inquiryMediaFolders.has(parts[0]!) && parts[1] === inquiryId && parts[2] !== ''
+}
+function inquiryMediaCaption(f: Record<string, WireObject>, kind: 'image' | 'video', inquiryId: string): string {
+  const text = stringField(f, 'text', 100000).trim(), mediaUrl = stringField(f, 'mediaUrl', 4096).trim()
+  if (text && !inquiryMediaAddress(text, mediaUrl, inquiryId)) return text
+  return stringField(f, kind === 'image' ? 'imageCaption' : 'videoCaption', 100000).trim()
+}
 export function decodeInquiryMessage(doc: FirestoreDocument, inquiry: Pick<Inquiry, 'id' | 'cutoff'>, uid: string): InquiryMessageItem | null {
   const prefix = `${documents}/channelInquiries/${inquiry.id}/messages/`, id = doc.name.slice(prefix.length), f = doc.fields
   if (!doc.name.startsWith(prefix) || id.includes('/')) throw new ReadFailure('data')
@@ -102,7 +118,7 @@ export function decodeInquiryMessage(doc: FirestoreDocument, inquiry: Pick<Inqui
       text: autoDeleteNoticeText(autoDeleteNoticeFields(f), stored) || tr('시스템 메시지'), label: '', createdAt, edited: false, version: documentVersion(doc) }
   }
   const raw = stringField(f, 'type', 32) || 'text', kind = (kinds.includes(raw) ? raw : 'text') as InquiryMessageKind
-  const caption = stringField(f, 'imageCaption', 100000) || stringField(f, 'videoCaption', 100000)
+  const caption = kind === 'image' || kind === 'video' ? inquiryMediaCaption(f, kind, inquiry.id) : stringField(f, 'imageCaption', 100000) || stringField(f, 'videoCaption', 100000)
   const label = kind === 'text' ? '' : kind === 'file' ? stringField(f, 'fileName', 512) || tr('파일') : kind === 'location' ? stringField(f, 'locationName', 512) || tr('위치')
     : kind === 'event' ? stringField(f, 'eventTitle', 512) || tr('일정') : labels[kind] ?? tr('메시지')
   const attachments = mediaResources(doc, inquiry.id, kind, false, 'inquiry').map(resource => resource.summary)

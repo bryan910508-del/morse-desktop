@@ -1,7 +1,7 @@
 import { historyReadable } from '../network/firestore-values'
 import type { MessagePosition } from '../../shared/model'
 import { withinCutoff } from '../../shared/model'
-import { idleReadSync, type ReadSyncState } from '../../shared/read-receipts'
+import { idleReadSync, readCovers, readCursor, type ReadSyncState } from '../../shared/read-receipts'
 import type { ReadDialog } from '../network/firestore-values'
 import { ServerRejection } from '../network/contracts'
 import type { ReadReceiptCommand, ReadReceiptStore, StoredReadReceipt } from '../storage/read-receipt-protocol'
@@ -66,7 +66,12 @@ export class ReadSync {
     // Capture authorization was checked synchronously against the displayed
     // history. A later blur does not undo an observation already made.
     // B104: the server still counting the chat unread is a reason to send the read even where it was sent already.
-    await this.store({ kind: 'read-enqueue', chatId, target, recount: (this.context().dialogs.get(chatId)?.summary.unreadCount ?? 0) > 0 })
+    const dialog = this.context().dialogs.get(chatId), recount = (dialog?.summary.unreadCount ?? 0) > 0
+    // B201: otherwise a read the server already holds is not asked for again — tdesktop sends readHistory only while the
+    // server's inbox read position is behind it (History::readInboxTillNeedsRequest, history.cpp:2074-2085). Opening a
+    // chat with nothing unread, never read on this device, sent one before. It counts as saved: the position is there.
+    if (!recount && readCovers(dialog?.summary.readPositions[this.uid], readCursor(target))) return true
+    await this.store({ kind: 'read-enqueue', chatId, target, recount })
     if (this.closed) return false
     this.kick()
     return true

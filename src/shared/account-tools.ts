@@ -7,25 +7,19 @@ export interface BlockedUser { uid: string; userId: string; displayName: string;
 export interface BlockTarget { uid: string; userId: string; displayName: string }
 // A6 §4: a row of the account's session list as Telegram shows one (tdesktop api_authorizations.cpp: the device model,
 // «app version», the system, the last activity). A13 §2.2 · §3: a session a phone approved by QR says so and which phone
-// approved it; and every session shows the IP it came from and the place that IP points to (Telegram
-// settings_active_sessions.cpp:463-467) — seen only by the account itself (its own signInSessions).
+// approved it; and every session shows the IP it came from (Telegram settings_active_sessions.cpp:463-467) — seen only
+// by the account itself (its own signInSessions). B206 (10-08): the server no longer writes the country the IP pointed
+// to, so no place is shown.
 export type SessionPlatform = 'iOS' | 'Android' | 'macOS' | 'Windows' | 'other'
 export interface SessionQr { approvedBy: string; approverSessionId: string; approverGone: boolean }
 export interface SignInSession {
   id: string; deviceModel: string; appName: string; appVersion: string; systemVersion: string; platform: SessionPlatform
   lastSeenAt: number | null; createdAt: number | null; current: boolean
-  qr: SessionQr | null; ip: string; origin: { country: string; region: string } | null
+  qr: SessionQr | null; ip: string
 }
 // The same words as Android §32: «QR 로그인 · {승인 기기}에서 승인», or the approving phone signed out since.
 export function sessionQrLine(qr: SessionQr): string {
   return qr.approverGone ? tr('QR 로그인 · 승인 기기 로그아웃됨') : tr('QR 로그인 · {0}에서 승인', [qr.approvedBy])
-}
-// «지역, 나라»: the country by its name in the app's language, its two-letter code if that has none.
-export function sessionPlace(origin: { country: string; region: string } | null, locale: string): string {
-  if (!origin) return ''
-  let country = origin.country
-  try { country = new Intl.DisplayNames([locale], { type: 'region' }).of(origin.country) ?? origin.country } catch { /* the code stays */ }
-  return origin.region ? `${origin.region}, ${country}` : country
 }
 // Telegram's «automatically terminate old sessions» choices (account.setAuthorizationTTL, telegram-refs R-14):
 // 1 week, 3, 6 or 12 months; 6 months when the account has chosen none (A6 §3-2).

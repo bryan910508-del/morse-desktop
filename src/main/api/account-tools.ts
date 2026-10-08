@@ -48,13 +48,12 @@ export function decodeSignInSession(doc: FirestoreDocument, currentSessionId: st
   const f = fieldsOf(doc), id = lastSegment(doc.name)
   if (f.revokeRequestedAt) return null
   const verified = text(f.platform, 20), platform = platforms.find(item => item === verified) ?? 'other'
-  const linked = f.linkedBy?.mapValue?.fields ?? {}, place = f.origin?.mapValue?.fields ?? {}
-  const country = text(place.country, 8).trim().toUpperCase()
+  const linked = f.linkedBy?.mapValue?.fields ?? {}
   const qr = text(f.loginProvider, 20) === 'qr' ? {
     approvedBy: text(linked.deviceLabel, 160).replace(/^Morse\s*·\s*/, '').trim() || text(linked.platform, 20) || tr('다른 기기'),
     approverSessionId: text(linked.sessionId, 128), approverGone: false } : null
   return {
-    qr, ip: text(f.ip, 64).trim(), origin: /^[A-Z]{2}$/.test(country) ? { country, region: text(place.region, 64).trim() } : null,
+    qr, ip: text(f.ip, 64).trim(),
     id, platform, current: id === currentSessionId,
     deviceModel: text(f.deviceModel, 100).trim() || text(f.deviceLabel, 160).replace(/^Morse\s*·\s*/, '').trim() || tr('알 수 없는 기기'),
     appName: text(f.appName, 40).trim() || (platform === 'other' ? 'Morse' : `Morse ${platform}`),
