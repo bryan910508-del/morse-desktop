@@ -749,13 +749,9 @@ export async function copyAttachmentImage(accountUid: string, chatId: string, me
 }
 
 export async function saveSticker(accountUid: string, chatId: string, message: ChatMessage): Promise<void> {
-  const requestId = crypto.randomUUID()
   try {
-    const ready = await window.morse.openMedia(accountUid, chatId, { requestId, messageId: message.id, version: message.version, index: 0 })
-    if (!ready.url) throw new Error(tr('스티커를 불러오지 못했습니다.'))
-    const bytes = new Uint8Array(await (await fetch(ready.url)).arrayBuffer())
-    await window.morse.addSticker(accountUid, bytes)
+    // B210: main faves the message's sticker document (or registers its bytes first, for one sent before references).
+    await window.morse.faveStickerMessage(accountUid, chatId, message.id, message.version)
     controller.toast(tr('즐겨찾기에 저장했어요'))
   } catch (reason) { controller.toast(errorText(reason, tr('처리하지 못했습니다. 다시 시도해 주세요.')), 'error') }
-  finally { void window.morse.closeMedia(accountUid, requestId).catch(() => {}) }
 }

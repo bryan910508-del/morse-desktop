@@ -47,6 +47,9 @@ function storagePath(raw: string, chatId: string | readonly string[], kind: Atta
       if (!url.pathname.startsWith(prefix)) return null
       path = decodeURIComponent(url.pathname.slice(prefix.length))
     }
+    // B195: a sticker sent as a reference is drawn from the server's own copy, which belongs to no room
+    // (sticker_files/{sha256}.{kind}; storage.rules: any signed-in account reads, only the server writes).
+    if (kind === 'sticker' && /^sticker_files\/[a-f0-9]{64}\.(png|gif|mp4)$/.test(path)) return path
     const parts = path.split('/')
     const roots = storageRoots(scope, kind), names = typeof chatId === 'string' ? [chatId] : chatId
     // This module is reached from the delivery worker (channel-post-creation-table), and a worker thread

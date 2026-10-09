@@ -71,7 +71,7 @@ import { documents, stringField } from '../network/firestore-values'
 import { NotEmitted, ServerRejection } from '../network/contracts'
 import { outgoingCategory } from '../../shared/forum'
 import { stickerContentType, stickerSidePx, type StickerKind } from '../../shared/stickers'
-import { definiteRejections, deliveryReason, retryableRejections, textDigest } from './text-identity'
+import { definiteRejections, deliveryReason, retryableRejections, stickerReferenceRefusals, textDigest } from './text-identity'
 import { draftPreviewChars } from '../../shared/chat-list-preview'
 import { directChatId } from './direct-chat-id'
 import { directPairPath, isPairDialog, pairCorrection, pairLookup, pairReadFailed, pairRoom, settledMoves, type PairLookup } from './direct-chat-pair'
@@ -84,6 +84,7 @@ import { rejectionCode, rejectionUntil, sanctionOf, storedRejection } from '../.
 function pendingText(row: StoredIntent): string {
   if (row.parts && row.parts.length > 1) return tr('사진 {0}장', [row.parts.length])
   const named = row.upload ? /^(음성 메시지|스티커)\.(\w+)$/u.exec(row.upload.name) : null
+  if (!named && row.wire.type === 'sticker' && row.wire.stickerId) return `${tr('스티커')}.${row.wire.stickerKind}`
   return named ? `${tr(named[1]!)}.${named[2]}` : row.text
 }
 
@@ -780,6 +781,25 @@ export class OutboxPump {
   // ChatRoomView.sendStickerMessage: a sticker from this device's library — or a set's, whose bytes come with it, as
   // iOS sends a set's sticker by its data without keeping it (MorseStickerPackSheet send) — goes out as a «sticker»
   // message, 512 by 512, its PNG or GIF under chat_media and its MP4 under chat_videos (MorsePendingMediaUploadManager).
+  // B195: the server no longer has the copy a queued reference names (STICKER_NOT_FOUND); the account resends the bytes.
+  stickerRefused: ((chatId: string, id: string, reason: string) => void) | null = null
+  // B195: a sticker the server holds a copy of goes as a reference to it (tdesktop SendExistingDocument →
+  // MTP_inputMediaDocument, api_sending.cpp:701-716): stickerId, stickerKind and the set it came from, no bytes.
+  async enqueueStickerReference(chatId: string, id: string, sticker: { id: string; kind: StickerKind; setId?: string }, reply: ReplyBinding | null, validate: () => void): Promise<void> {
+    await this.opening
+    if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('첫 텍스트 메시지를 보낸 뒤 스티커를 보낼 수 있습니다.'))
+    validate()
+    const category = outgoingCategory(this.context().dialogs.get(chatId))
+    const wire: MediaSendWire = { id, chatId, senderId: this.uid, type: 'sticker', text: '', mediaUrl: '', isSilent: false, isEncrypted: false, protocolVersion: 3,
+      stickerId: sticker.id, stickerKind: sticker.kind, ...(sticker.setId ? { stickerSetId: sticker.setId } : {}),
+      ...(reply ? { replyToId: reply.messageId } : {}), ...(category ? { categoryId: category } : {}) }
+    try { await this.store({ kind: 'enqueue-sticker-reference', wire, reply }, validate) }
+    catch (error) {
+      if (error instanceof DeliveryCommandFailure && error.code === 'capacity') throw new Error(tr('전송 대기 원본은 합계 250 MB, 메시지는 100개까지 보관할 수 있습니다.'))
+      throw error
+    }
+    void this.publish(); this.kick()
+  }
   async enqueueSticker(chatId: string, id: string, stickerId: string, reply: ReplyBinding | null, validate: () => void, source: { kind: StickerKind; data: Uint8Array } | null = null): Promise<void> {
     await this.opening
     if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('첫 텍스트 메시지를 보낸 뒤 스티커를 보낼 수 있습니다.'))
@@ -961,6 +981,7 @@ export class OutboxPump {
           if (error instanceof ServerRejection && definiteRejections.has(error.reason)) {
             if (!await this.movedToPairDialog(intent, error))
               await this.store({ kind: 'state', id: intent.id, state: 'failed', reason: storedRejection(error.reason, error.until) })
+            if (stickerReferenceRefusals.has(error.reason) && intent.wire.type === 'sticker' && intent.wire.stickerId) this.stickerRefused?.(intent.chatId, intent.id, error.reason)
           } else {
             this.backoff(intent.id)
             await this.store({ kind: 'state', id: intent.id, state: 'uncertain', reason: 'ack-pending' })

@@ -62,18 +62,27 @@ export class StickerPacks {
     return this.installed?.find(pack => pack.id === setId) ?? null
   }
 
-  // A sticker bubble was tapped: hash its bytes and show its set, or say it has none.
-  async open(chatId: string, messageId: string, version: string): Promise<void> {
+  // A sticker bubble was tapped: show its set, or say it has none. B195: a sticker sent as a reference names its document
+  // (and the set it came from), as Telegram's document carries its set — no bytes are read; an older one is found by
+  // the SHA-256 of its bytes.
+  async open(chatId: string, messageId: string, version: string, known?: { id: string; setId?: string }): Promise<void> {
     this.opening?.abort(); const abort = new AbortController(); this.opening = abort
     const signal = AbortSignal.any([abort.signal, this.auth.signal, AbortSignal.timeout(60000)])
     this.value = { status: 'loading', chatId, pack: null, highlighted: null, installed: false, busy: false, message: '' }
     this.changed()
     try {
-      const bytes = await this.stickerBytes(chatId, messageId, version, signal)
-      const hash = createHash('sha256').update(bytes).digest('hex')
-      const resolved = await resolveStickerPack(this.currentReader(), hash, signal, () => { this.validate(); signal.throwIfAborted() })
+      const check = (): void => { this.validate(); signal.throwIfAborted() }
+      const bytes = known ? null : await this.stickerBytes(chatId, messageId, version, signal)
+      const hash = known?.id ?? createHash('sha256').update(bytes!).digest('hex')
+      let resolved: { pack: StickerPack; item: StickerPackItem } | null = null
+      if (known?.setId) {
+        const pack = await readStickerPack(this.currentReader(), known.setId, signal, check)
+        const item = pack?.items.find(candidate => candidate.id === hash)
+        if (pack && item) resolved = { pack, item }
+      }
+      resolved ??= await resolveStickerPack(this.currentReader(), hash, signal, check)
       if (this.opening !== abort) return
-      if (resolved) this.remember(resolved.item, bytes)
+      if (resolved && bytes) this.remember(resolved.item, bytes)
       this.value = resolved
         ? { status: 'ready', chatId, pack: resolved.pack, highlighted: resolved.item.id, installed: this.isInstalled(resolved.pack.id), busy: false, message: '' }
         : { status: 'none', chatId, pack: null, highlighted: null, installed: false, busy: false, message: tr('이 스티커는 스티커팩에 속해 있지 않아요.') }
@@ -230,6 +239,7 @@ export class StickerPacks {
   }
   // A set's sticker kept in this device's favourites (tdesktop «Add to Favorites», stickers_list_widget.cpp:2675-2682;
   // iOS MorseStickerPackSheet saveToFavorites).
+  itemKind(setId: string, itemId: string): StickerPackItem['kind'] | null { return this.packNamed(setId)?.items.find(item => item.id === itemId)?.kind ?? null }
   async packStickerBytes(setId: string, itemId: string): Promise<Uint8Array> { return new Uint8Array(await this.itemBytes(setId, itemId)) }
 
   private remember(item: StickerPackItem, bytes: Buffer): void {

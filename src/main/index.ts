@@ -424,7 +424,7 @@ async function snapshot(): Promise<DesktopSnapshot> {
     manualUnread: screenLocked ? null : active?.manualUnread.snapshot ?? null,
     dialogActionsAvailable: !screenLocked && active?.state === 'ready' && active.readStatus === 'ready',
     signInAvailable: authentication.available, authentication: authentication.entrySnapshot, appLock: appLockSnapshot(),
-    presence: appLocked || !active ? {} : active.presence.snapshot(), pinnedMessages: appLocked || !active ? null : active.pinnedMessages(), deferredMessages: appLocked || !active ? null : active.deferredMessages(), typing: appLocked || !active ? null : active.typingState(), listTyping: appLocked || !active ? {} : active.listTypingState(), postLikers: appLocked || !active ? null : active.postLikers(), stickers: appLocked || !active ? null : active.stickers(), stickerPack: appLocked || !active ? null : active.stickerPackSnapshot(), stickerPacks: appLocked || !active ? null : active.installedStickerPacks(), accountStates: appLocked ? [] : accountStates(), addingAccount: authentication.addingRequested, maxAccounts: maxAccounts()
+    presence: appLocked || !active ? {} : active.presence.snapshot(), pinnedMessages: appLocked || !active ? null : active.pinnedMessages(), deferredMessages: appLocked || !active ? null : active.deferredMessages(), typing: appLocked || !active ? null : active.typingState(), listTyping: appLocked || !active ? {} : active.listTypingState(), postLikers: appLocked || !active ? null : active.postLikers(), stickers: appLocked || !active ? null : active.stickers(), recentStickers: appLocked || !active ? null : active.recentStickers(), stickerPack: appLocked || !active ? null : active.stickerPackSnapshot(), stickerPacks: appLocked || !active ? null : active.installedStickerPacks(), accountStates: appLocked ? [] : accountStates(), addingAccount: authentication.addingRequested, maxAccounts: maxAccounts()
   }
 }
 // The renderer's full read establishes the baseline for later change batches.
@@ -2053,6 +2053,21 @@ function registerIPC(): void {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     if (typeof version !== 'string' || version.length > 64) throw new Error(tr('스티커를 다시 선택해 주세요.'))
     return accounts.requireActive(identifier(uid)).openStickerPack(identifier(chatId), identifier(messageId), version)
+  })
+  handle('fave-sticker', (uid, id) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error(tr('스티커를 다시 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).faveSticker(id)
+  })
+  handle('remove-recent-sticker', (uid, id) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error(tr('스티커를 다시 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).removeRecentSticker(id)
+  })
+  handle('fave-sticker-message', (uid, chatId, messageId, version) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    if (typeof version !== 'string' || version.length > 64) throw new Error(tr('스티커를 다시 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).faveStickerMessage(identifier(chatId), identifier(messageId), version)
   })
   handle('sticker-message-favourite', (uid, chatId, messageId, version) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))

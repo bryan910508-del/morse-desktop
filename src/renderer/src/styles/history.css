@@ -372,7 +372,7 @@ button.service-pill { cursor: pointer }
 .entity-emoji { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; padding: 8px; overflow-y: auto }
 .entity-emoji button { height: 38px; border-radius: 8px; font-size: 24px; line-height: 1 }
 .entity-emoji button:hover { background: var(--card-pressed) }
-.entity-emoji-label { grid-column: 1 / -1; padding: 6px 4px 2px; font-size: 12px; font-weight: 600; color: var(--text-weak) }
+.entity-emoji-label, .entity-section-label { grid-column: 1 / -1; padding: 6px 4px 2px; font-size: 12px; font-weight: 600; color: var(--text-weak) }
 .entity-stickers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; padding: 8px; overflow-y: auto; align-content: start }
 .entity-sticker, .entity-create { aspect-ratio: 1; border-radius: 10px; display: grid; place-items: center; padding: 4px }
 .entity-sticker:hover { background: var(--card-pressed) }

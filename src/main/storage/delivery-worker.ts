@@ -56,6 +56,7 @@ import { executePeerPhoto } from './peer-photo-table'
 import { executeChatFlag } from './chat-flag-table'
 import { executeContactFlag } from './contact-flag-table'
 import { executeSticker } from './sticker-table'
+import { executeStickerReference } from './sticker-reference-table'
 import { executeEventReminder } from './event-reminder-table'
 import { executeContactPhoto } from './contact-photo-table'
 import { executeContactDetails } from './contact-details-table'
@@ -273,7 +274,8 @@ function execute(command: DeliveryCommand): unknown {
     case 'peer-photos-read': case 'peer-photo-seen': case 'peer-photo-forget': return executePeerPhoto(db, command)
     case 'chat-flags-read': case 'chat-flag-set': return executeChatFlag(db, command)
     case 'contact-flags-read': case 'contact-flag-set': return executeContactFlag(db, command)
-    case 'stickers-list': case 'sticker-read': case 'sticker-add': case 'sticker-remove': return executeSticker(db, command)
+    case 'stickers-list': case 'sticker-read': case 'sticker-add': case 'sticker-remove': case 'stickers-clear': return executeSticker(db, command)
+    case 'enqueue-sticker-reference': return executeStickerReference(db, uid, command)
     case 'userpic-read': case 'userpic-write': case 'userpic-owners': case 'userpic-owner': case 'userpic-usage': case 'userpic-clear': return userpics.execute(command)
     case 'media-cache-read': case 'media-cache-write': case 'media-cache-usage': case 'media-cache-clear': return mediaFiles.execute(command)
     case 'event-reminders': case 'event-reminder-add': case 'event-reminder-remove': return executeEventReminder(db, command)

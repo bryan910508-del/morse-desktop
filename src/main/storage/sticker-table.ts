@@ -7,6 +7,8 @@ export type StickerCommand =
   | { kind: 'sticker-read'; id: string }
   | { kind: 'sticker-add'; data: Uint8Array }
   | { kind: 'sticker-remove'; id: string }
+  // B210 §4: the device's list after its newest went to the server (StickerLibrary.migrate).
+  | { kind: 'stickers-clear' }
 
 const validId = (id: unknown): string => {
   if (typeof id !== 'string' || !/^[a-f0-9]{64}$/.test(id)) throw new Error('Invalid sticker id')
@@ -25,6 +27,7 @@ export function executeSticker(db: Database.Database, command: StickerCommand): 
     return row ? { kind: row.kind, data: new Uint8Array(row.data) } : null
   }
   if (command.kind === 'sticker-remove') { db.prepare('DELETE FROM stickers WHERE id=?').run(validId(command.id)); return null }
+  if (command.kind === 'stickers-clear') { db.prepare('DELETE FROM stickers').run(); return null }
   const data = Buffer.from(command.data)
   const kind = stickerKind(data)
   if (!kind || !data.length || data.length > maxStickerBytes) throw Object.assign(new Error('Invalid sticker'), { deliveryCode: 'invalid' })

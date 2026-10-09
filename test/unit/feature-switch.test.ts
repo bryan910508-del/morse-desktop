@@ -31,7 +31,7 @@ test('off unless one says true', () => {
 })
 
 test('the server\'s names', () => {
-  assert.deepEqual(featureSwitches, { qr_login: 'qrLogin', two_step: 'twoStep', system_notices: 'systemNotices' })
+  assert.deepEqual(featureSwitches, { qr_login: 'qrLogin', two_step: 'twoStep', system_notices: 'systemNotices', sticker_reference_send: 'stickerReferenceSend' })
   assert.equal(featureAccessPath('u1'), 'users/u1/featureAccess/state')
 })
 

@@ -472,6 +472,16 @@ export class ChannelInquiries {
   }
   // A sticker of this device's library, sent into a room as it is sent into a chat: the object goes to the room's
   // own folder and the message is a «sticker» of the usual 512 by 512 (ChatRoomView.sendStickerMessage).
+  // B195: a sticker the server holds a copy of goes as a reference to it; sendMorseInquiryMessage checks stickerFiles and
+  // fills the address (morse-release-authority canonicalMessage, as acceptMessage does in a chat).
+  async sendStickerReference(request: InquiryTargetRequest, sticker: { id: string; kind: 'png' | 'gif' | 'mp4'; setId?: string }): Promise<'queued'> {
+    const state = this.requireRoom(request)
+    if (!/^[a-f0-9]{64}$/.test(sticker.id)) throw new Error(tr('스티커를 보내지 못했습니다.'))
+    await this.enqueue({ id: request.messageId, inquiryId: request.inquiryId,
+      message: { senderType: state.value.role, type: 'sticker', text: '', stickerId: sticker.id, stickerKind: sticker.kind, ...(sticker.setId ? { stickerSetId: sticker.setId } : {}) },
+      preview: { kind: 'sticker', text: tr('스티커') } })
+    return 'queued'
+  }
   async sendSticker(request: InquiryTargetRequest, sticker: { extension: 'png' | 'gif' | 'webp' | 'mp4'; bytes: Buffer }): Promise<'queued'> {
     const state = this.requireRoom(request)
     inquiryAttachmentPath(request.inquiryId, request.messageId, sticker.extension)

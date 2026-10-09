@@ -227,6 +227,9 @@ export interface ChatMessage {
   encrypted: boolean
   silent?: boolean
   circular?: boolean
+  // B195: the server's sticker document this sticker names (stickerId·stickerKind·stickerSetId), when the sender sent a
+  // reference; an older sticker has only its bytes.
+  sticker?: { id: string; kind: 'png' | 'gif' | 'mp4'; setId?: string }
   mediaMetadata?: MediaMetadata | null
   readEligible: boolean
   state: 'pending' | 'sent' | 'failed'
@@ -282,6 +285,12 @@ export interface MediaSendWire extends Omit<TextSendWire, 'type'>, MediaMetadata
   imageCaption?: string
   videoCaption?: string
   thumbnailUrl?: '__blind__'
+  // B195: a sticker sent as a reference to the server's own copy (sticker_files/{stickerId}.{stickerKind}, registered in
+  // stickerFiles) — tdesktop SendExistingDocument → MTP_inputMediaDocument (api_sending.cpp:701-716). No bytes go up and
+  // mediaUrl stays empty: the server fills it and the size from the registry (morse-message-authority stickerFileFields).
+  stickerId?: string
+  stickerKind?: 'png' | 'gif' | 'mp4'
+  stickerSetId?: string
 }
 export type SendWire = TextSendWire | MediaSendWire
 export interface OutgoingOperation {
@@ -339,6 +348,8 @@ export interface DesktopSnapshot {
   listTyping?: Record<string, { until: number; names: string[] }>
   postLikers: import('./post-likers').PostLikersSnapshot | null
   stickers: import('./stickers').StickerItem[] | null
+  // B210: the server's recent stickers of this account, newest first (Telegram's getRecentStickers).
+  recentStickers: import('./stickers').StickerItem[] | null
   // The sticker set sheet that is open, and the sets this account installed (null until known).
   stickerPack: import('./sticker-packs').StickerPackSnapshot | null
   stickerPacks: import('./sticker-packs').StickerPack[] | null
@@ -927,6 +938,10 @@ export interface DesktopBridge {
   stickerCropAnimated(accountUid: string, bytes: Uint8Array, kind: 'gif' | 'mp4', square: { x: number; y: number; size: number }): Promise<Uint8Array | null>
   transcribeVoice(accountUid: string, bytes: Uint8Array): Promise<import('./transcript').TranscriptResult>
   removeSticker(accountUid: string, id: string): Promise<'done'>
+  // B210: a recent sticker out of the server's list (saveRecentSticker unsave), and a sticker message into the favourites.
+  faveSticker(accountUid: string, id: string): Promise<'done'>
+  removeRecentSticker(accountUid: string, id: string): Promise<'done'>
+  faveStickerMessage(accountUid: string, chatId: string, messageId: string, version: string): Promise<'done'>
   sendSticker(accountUid: string, chatId: string, id: string, stickerId: string, reply: import('./reply-draft').ReplyBinding | null): Promise<void>
   // Telegram StickerPackScreen (iOS MorseStickerPackSheet): the set a tapped sticker belongs to, install/remove,
   // and sending one of its stickers into the chat the sheet was opened from.

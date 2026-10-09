@@ -46,6 +46,7 @@ import type { HiddenMessageCommand } from './hidden-message-table'
 import type { ChatFlagCommand } from './chat-flag-table'
 import type { ContactFlagCommand } from './contact-flag-table'
 import type { StickerCommand } from './sticker-table'
+import type { StickerReferenceCommand } from './sticker-reference-table'
 import type { UserpicCommand } from './userpic-cache-table'
 import type { MediaCacheCommand } from './media-cache-table'
 import type { PeerPhotoCommand } from './peer-photo-table'
@@ -91,6 +92,7 @@ export type DeliveryCommand =
   | ChatFlagCommand
   | ContactFlagCommand
   | StickerCommand
+  | StickerReferenceCommand
   | UserpicCommand
   | MediaCacheCommand
   | PeerPhotoCommand

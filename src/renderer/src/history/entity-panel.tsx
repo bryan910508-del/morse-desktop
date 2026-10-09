@@ -7,7 +7,7 @@ import { StickerPackItemView } from './sticker-pack-sheet'
 import { useDesktop } from '../app/store'
 import { popupMenu, pointFor, type MenuEntry } from '../ui/popup-menu'
 import { showStickerEditor } from './sticker-editor'
-import { favouriteStickerMenu, packStickerMenu, stickerSetMenu } from './sticker-actions'
+import { favouriteStickerMenu, packStickerMenu, recentStickerMenu, stickerSetMenu } from './sticker-actions'
 import { readRecentEmoji, recentEmojiShown, recordRecentEmoji } from './recent-emoji'
 import { tr } from '../../../shared/i18n'
 
@@ -20,6 +20,7 @@ export function EntityPanel({ accountUid, onEmoji, onSticker, onPackSticker, onC
   const pick = (emoji: string): void => { recordRecentEmoji(emoji); onEmoji(emoji) }
   const [packId, setPackId] = useState<string | null>(null)
   const stickers = useDesktop(snapshot => snapshot?.stickers ?? null)
+  const recentStickers = useDesktop(snapshot => snapshot?.recentStickers ?? null)
   const packs = useDesktop(snapshot => snapshot?.stickerPacks ?? null)
   const pack: StickerPack | null = packId ? packs?.find(known => known.id === packId) ?? null : null
   const root = useRef<HTMLDivElement>(null)
@@ -67,10 +68,23 @@ export function EntityPanel({ accountUid, onEmoji, onSticker, onPackSticker, onC
           <button type="button" className="entity-create" onClick={() => showStickerEditor(accountUid, made => { if (made?.kind === 'favourite') onSticker(made.sticker); else if (made) onPackSticker(made.setId, made.itemId) })}><Plus size={22} /><span>{tr('스티커 만들기')}</span></button>
           {stickers === null ? null : stickers.map(item => <button key={item.id} type="button" className="entity-sticker" onClick={() => onSticker(item)}
             onContextMenu={event => menuAt(event, favouriteStickerMenu(accountUid, item, () => onSticker(item)))}>
-            {item.kind === 'mp4' ? <video src={item.url} autoPlay loop muted playsInline /> : <img src={item.url} alt={tr('스티커')} draggable={false} loading="lazy" />}
+            <LibrarySticker item={item} />
           </button>)}
-          {stickers !== null && !stickers.length && <p className="entity-empty">{packs?.length ? tr('채팅에서 스티커를 눌러 스티커팩을 추가해 보세요.') : tr('사진으로 첫 스티커를 만들어 보세요.')}</p>}
+          {/* B210: the server's Recents under the favourites, as tdesktop's sticker panel orders its sections
+              (FavedSetId, then RecentSetId — stickers_list_widget.cpp:3395-3420). */}
+          {recentStickers !== null && recentStickers.length > 0 && <>
+            <div className="entity-section-label">{tr('최근 사용')}</div>
+            {recentStickers.map(item => <button key={`recent-${item.id}`} type="button" className="entity-sticker" onClick={() => onSticker(item)}
+              onContextMenu={event => menuAt(event, recentStickerMenu(accountUid, item, () => onSticker(item), Boolean(stickers?.some(known => known.id === item.id))))}>
+              <LibrarySticker item={item} />
+            </button>)}
+          </>}
+          {stickers !== null && !stickers.length && !recentStickers?.length && <p className="entity-empty">{packs?.length ? tr('채팅에서 스티커를 눌러 스티커팩을 추가해 보세요.') : tr('사진으로 첫 스티커를 만들어 보세요.')}</p>}
         </div>}
       </>}
   </div>
+}
+
+function LibrarySticker({ item }: { item: StickerItem }) {
+  return item.kind === 'mp4' ? <video src={item.url} autoPlay loop muted playsInline /> : <img src={item.url} alt={tr('스티커')} draggable={false} loading="lazy" />
 }

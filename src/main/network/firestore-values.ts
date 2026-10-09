@@ -339,8 +339,15 @@ function messagePoll(f: Record<string, WireObject>): MessagePoll | undefined {
     replyToId: replyId || undefined,
     categoryId: encrypted || system ? undefined : stringField(f, 'categoryId', 160) || undefined,
     ...(kind === 'poll' ? { poll: messagePoll(f) } : {}),
+    ...(kind === 'sticker' && !encrypted ? stickerReference(f) : {}),
     readEligible: Boolean(senderId) && !encrypted && stringField(f, 'status', 32) !== 'failed' &&
       (!system || kind === 'channelPost') && (!declaredChat || roomNames(dialog).includes(declaredChat)) }
+}
+// B195: a sticker sent as a reference names the server's document of it (morse-message-authority stickerReferenceShape).
+export function stickerReference(f: Record<string, WireObject>): { sticker?: { id: string; kind: 'png' | 'gif' | 'mp4'; setId?: string } } {
+  const id = stringField(f, 'stickerId', 80), kind = stringField(f, 'stickerKind', 8), setId = stringField(f, 'stickerSetId', 160)
+  if (!/^[a-f0-9]{64}$/.test(id) || !['png', 'gif', 'mp4'].includes(kind)) return {}
+  return { sticker: { id, kind: kind as 'png' | 'gif' | 'mp4', ...(/^[A-Za-z0-9_-]{1,160}$/.test(setId) ? { setId } : {}) } }
 }
 // B113: a notice's systemEvent (server morse-system-notices.js eventFields) — only from the service account, with a kind.
 export function systemNoticeOf(f: Record<string, WireObject>): SystemNotice | null {

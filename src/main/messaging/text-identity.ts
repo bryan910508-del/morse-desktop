@@ -6,7 +6,7 @@ import { bannedNotice, rejectionCode, rejectionUntil, restrictedNotice } from '.
 // The Railway server's canonical() (morse-message-authority.js) in its exact field order: the payloadDigest it
 // stores must equal this, or a send whose answer was lost is taken for a conflict when it is looked up.
 // IDs and transport flags are excluded.
-const stringFields = ['encryptedMediaMetadata', 'fileName', 'mediaUrl', 'thumbnailUrl', 'thumbData', 'videoCaption', 'imageCaption', 'categoryId', 'replyToId',
+const stringFields = ['stickerId', 'stickerKind', 'stickerSetId', 'encryptedMediaMetadata', 'fileName', 'mediaUrl', 'thumbnailUrl', 'thumbData', 'videoCaption', 'imageCaption', 'categoryId', 'replyToId',
   'replyStoryOwnerName', 'replyStoryThumbData', 'replyStoryOwnerType', 'replyStoryId', 'replyStoryOwnerId', 'replyStoryThumbnailUrl', 'replyStoryMediaType',
   'replyStoryText', 'replyStoryChannelId', 'iv', 'pollQuestion'] as const
 const numberFields = ['replyStoryExpiresAt', 'fileSize', 'videoDuration', 'videoWidthPx', 'videoHeightPx', 'mediaWidthPx', 'mediaHeightPx', 'voiceDuration'] as const
@@ -55,7 +55,10 @@ export const retryableRejections = new Set(['UNAUTHORIZED', 'SUSPENDED', 'CHAT_M
 // DIRECT_CHAT_EXISTS: the pair already has a dialog under another id (morse-message-authority.js). The list
 // receives that dialog; this room's message was not stored. B88 §28 moves it there and sends it again
 // (outbox.ts movedToPairDialog); it stays failed with this notice only when that room cannot be confirmed.
-export const definiteRejections = new Set([...retryableRejections, 'INVALID_PAYLOAD', 'REPLY_MESSAGE_NOT_FOUND', 'CONFLICT', 'DIRECT_CHAT_EXISTS', 'ACCOUNT_BANNED', 'CHAT_RESTRICTED'])
+// STICKER_NOT_FOUND and STICKER_REFERENCE_OFF (B195): a sticker reference the server holds no copy of, or one sent while
+// the switch is off; the account sends those bytes again under a new id (session.ts stickerReferenceRefused).
+export const stickerReferenceRefusals = new Set(['STICKER_NOT_FOUND', 'STICKER_REFERENCE_OFF'])
+export const definiteRejections = new Set([...retryableRejections, 'INVALID_PAYLOAD', 'REPLY_MESSAGE_NOT_FOUND', 'CONFLICT', 'DIRECT_CHAT_EXISTS', 'ACCOUNT_BANNED', 'CHAT_RESTRICTED', ...stickerReferenceRefusals])
 export function deliveryReason(reason: string): string {
   if (rejectionCode(reason) === 'ACCOUNT_RESTRICTED') return restrictedNotice(rejectionUntil(reason))
   return ({ ACCOUNT_BANNED: bannedNotice(), CHAT_RESTRICTED: tr('이 대화는 Morse 운영 정책 위반으로 이용할 수 없습니다.'), BLOCKED: tr('차단 상태로 전송할 수 없습니다.'), PEER_GONE: tr('상대 계정을 확인할 수 없습니다.'),
@@ -69,6 +72,8 @@ export function deliveryReason(reason: string): string {
     REPLY_MESSAGE_NOT_FOUND: tr('답장 원본이 없어 전송되지 않았습니다. 최신 대화에서 다시 작성해 주세요.'),
     UNAUTHORIZED: tr('로그인 상태를 다시 확인해 주세요.'), INVALID_PAYLOAD: tr('전송할 수 없는 내용입니다.'),
     CONFLICT: tr('서버 기록과 전송 정보가 일치하지 않습니다.'),
+    STICKER_NOT_FOUND: tr('서버에 없는 스티커라 보내지 못했습니다.'),
+    STICKER_REFERENCE_OFF: tr('서버에 없는 스티커라 보내지 못했습니다.'),
     DIRECT_CHAT_EXISTS: tr('이 상대와의 대화가 이미 있습니다. 대화 목록의 기존 대화에서 다시 보내 주세요.'),
     'ack-pending': tr('전송 결과를 확인하고 있습니다.'),
     'not-found': tr('전송 여부를 확인할 수 없습니다. 대화 기록을 확인해 주세요.'),

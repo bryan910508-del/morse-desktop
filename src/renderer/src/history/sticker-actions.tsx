@@ -20,6 +20,16 @@ export function favouriteStickerMenu(accountUid: string, item: StickerItem, send
   ]
 }
 
+// B210: a recent sticker — send it, keep it in the favourites, or take it out of Recents (the same menu on the Recents
+// section, stickers_list_widget.cpp:2675-2682 and :2690 «Remove from Recent» → Api::ToggleRecentSticker).
+export function recentStickerMenu(accountUid: string, item: StickerItem, send: () => void, faved: boolean): MenuEntry[] {
+  return [
+    { label: tr('보내기'), icon: <Send size={18} />, onSelect: send },
+    !faved && { label: tr('즐겨찾기에 추가'), icon: <Star size={18} />, onSelect: () => { void window.morse.faveSticker(accountUid, item.id).then(() => controller.toast(tr('즐겨찾기에 저장했어요'))).catch(failed) } },
+    { label: tr('최근에서 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void window.morse.removeRecentSticker(accountUid, item.id).catch(failed) } }
+  ]
+}
+
 // A set's sticker: send it, keep it in the favourites, open its set, and — in a set this account made — take it out
 // (the same menu, :2675-2688; the own set's «Delete», sticker_set_box.cpp:1903-1929).
 export function packStickerMenu(accountUid: string, pack: StickerPack, item: StickerPackItem, send: (() => void) | null, openSet: boolean): MenuEntry[] {
