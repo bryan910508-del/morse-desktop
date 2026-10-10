@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState, type MouseEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { Plus, Star } from 'lucide-react'
 import emojis from './emoji-data.json'
-import type { StickerItem } from '../../../shared/stickers'
+import { recentStickerRow, type StickerItem } from '../../../shared/stickers'
 import type { StickerPack } from '../../../shared/sticker-packs'
 import { StickerPackItemView } from './sticker-pack-sheet'
 import { useDesktop } from '../app/store'
@@ -20,7 +20,10 @@ export function EntityPanel({ accountUid, onEmoji, onSticker, onPackSticker, onC
   const pick = (emoji: string): void => { recordRecentEmoji(emoji); onEmoji(emoji) }
   const [packId, setPackId] = useState<string | null>(null)
   const stickers = useDesktop(snapshot => snapshot?.stickers ?? null)
-  const recentStickers = useDesktop(snapshot => snapshot?.recentStickers ?? null)
+  const recentList = useDesktop(snapshot => snapshot?.recentStickers ?? null)
+  // tdesktop: the recent row leaves out the favourites and shows 20 (shared/stickers.ts recentStickerRow); drawn again
+  // whenever either list changes, so ★ in or out shows at once.
+  const recentStickers = useMemo(() => recentList === null ? null : recentStickerRow(recentList, stickers), [recentList, stickers])
   const packs = useDesktop(snapshot => snapshot?.stickerPacks ?? null)
   const pack: StickerPack | null = packId ? packs?.find(known => known.id === packId) ?? null : null
   const root = useRef<HTMLDivElement>(null)

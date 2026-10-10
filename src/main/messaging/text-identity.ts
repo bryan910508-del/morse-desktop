@@ -48,7 +48,17 @@ export function textDigest(wire: SendWire): string {
     canonical.pollIsClosed = false
   } else delete canonical.pollQuestion
   if (source.isCircleVideo === true) canonical.isCircleVideo = true
+  // B253: kept by the server's canonical only when true, after isCircleVideo (placement to confirm with the server).
+  if (source.isForwarded === true) canonical.isForwarded = true
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
+}
+// The digest the server stored for this message: a server older than isForwarded drops the field before it hashes,
+// so a forwarded copy matches either way (B253, until every server keeps it).
+export function textDigestMatches(wire: SendWire, stored: string): boolean {
+  if (stored === textDigest(wire)) return true
+  if (!wire.isForwarded) return false
+  const { isForwarded: _forwarded, ...plain } = wire
+  return stored === textDigest(plain as SendWire)
 }
 // A10 §4: an operator's restriction ends by itself, so its message can go again then; a ban and a closed room do not.
 export const retryableRejections = new Set(['UNAUTHORIZED', 'SUSPENDED', 'CHAT_MISSING', 'NOT_PARTICIPANT', 'PEER_GONE', 'BLOCKED', 'POSTING_RESTRICTED', 'ACCOUNT_RESTRICTED'])

@@ -38,7 +38,7 @@ export function executeForwardBatch(db: Database.Database, uid: string, command:
           insertForwardMedia(db, uid, { id: request.id, source: request.sources[index]!, targets }, item.media)
         } else for (const target of targets) {
           const wire: TextSendWire = { id: target.messageId, chatId: target.chatId, senderId: uid, type: 'text',
-            text: item.text, isSilent: item.isSilent, isEncrypted: false, protocolVersion: 3 }
+            text: item.text, isSilent: item.isSilent, isEncrypted: false, protocolVersion: 3, isForwarded: true }
           insert.run(wire.id, wire.chatId, JSON.stringify(wire), textDigest(wire), Date.now(), request.id)
         }
       }

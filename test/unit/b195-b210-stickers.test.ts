@@ -27,8 +27,9 @@ test('the digest of a reference is the server\'s: its sticker fields come first 
 
 test('a reference carries no bytes and no address: only its document, the set and the reply', () => {
   assert.equal(stickerReferenceWire(reference(), me).stickerId, sha(1))
+  assert.equal(stickerReferenceWire(reference({ isSilent: true }), me).isSilent, true, 'a silent forward keeps its flag (B246)')
   for (const bad of [{ mediaUrl: 'https://x' }, { text: 'x' }, { stickerId: 'nothex' }, { stickerKind: 'webp' as never }, { stickerSetId: 'a/b' },
-    { senderId: 'other' }, { mediaKeys: ['k'] }, { isSilent: true }]) assert.throws(() => stickerReferenceWire(reference(bad), me), JSON.stringify(bad))
+    { senderId: 'other' }, { mediaKeys: ['k'] }, { isSilent: 'yes' as never }]) assert.throws(() => stickerReferenceWire(reference(bad), me), JSON.stringify(bad))
 })
 
 function queue(): Database.Database {

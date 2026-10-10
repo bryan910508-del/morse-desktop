@@ -23,6 +23,8 @@ export type InquirySendCommand =
   | { kind: 'inquiry-send-state'; id: string; state: 'queued' | 'failed'; reason: string }
   | { kind: 'inquiry-send-remove'; id: string }
   | { kind: 'inquiry-send-forget-room'; inquiryId: string }
+  // B246: a sticker reference the server refused goes again under its id by its bytes, in its place.
+  | { kind: 'inquiry-send-sticker-bytes'; id: string; payload: InquirySendPayload; bytes: Uint8Array }
 
 // At most this many wait at once; a room is not a place to queue a backlog.
 export const maxInquirySends = 100
@@ -61,5 +63,15 @@ export function executeInquirySend(db: Database.Database, command: InquirySendCo
     case 'inquiry-send-state': db.prepare('UPDATE inquiry_sends SET state=?,reason=? WHERE id=?').run(command.state, command.reason, command.id); return null
     case 'inquiry-send-remove': db.prepare('DELETE FROM inquiry_sends WHERE id=?').run(command.id); return null
     case 'inquiry-send-forget-room': db.prepare('DELETE FROM inquiry_sends WHERE inquiry_id=?').run(command.inquiryId); return null
+    case 'inquiry-send-sticker-bytes': return db.transaction(() => {
+      const row = db.prepare('SELECT inquiry_id,payload,media,media_url FROM inquiry_sends WHERE id=?').get(command.id) as { inquiry_id: string; payload: string; media: Buffer | null; media_url: string | null } | undefined
+      if (!row) return conflict('Inquiry sticker row')
+      const before = JSON.parse(row.payload) as InquirySendPayload, { payload, bytes } = command
+      const sha = createHash('sha256').update(bytes).digest('hex')
+      if (before.message.type !== 'sticker' || before.message.stickerId !== sha || before.media || row.media || row.media_url || payload.message.type !== 'sticker' ||
+          ['stickerId', 'stickerKind', 'stickerSetId'].some(key => key in payload.message) || !payload.media || payload.media.sha256 !== sha || payload.media.size !== bytes.byteLength) return conflict('Inquiry sticker bytes')
+      db.prepare("UPDATE inquiry_sends SET digest=?,payload=?,media=?,state='queued',reason='' WHERE id=?").run(digest(row.inquiry_id, payload), JSON.stringify(payload), Buffer.from(bytes), command.id)
+      return null
+    })()
   }
 }

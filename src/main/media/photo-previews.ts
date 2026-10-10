@@ -38,6 +38,12 @@ function imageMime(bytes: Buffer): string | null {
   return null
 }
 
+// A sticker may also be an MP4 (iOS MorseStickerLibrary kinds png · gif · mp4).
+function previewMime(bytes: Buffer, sticker: boolean): string | null {
+  const image = imageMime(bytes)
+  if (image || !sticker) return image
+  return bytes.length >= 12 && bytes.subarray(4, 8).toString('ascii') === 'ftyp' ? 'video/mp4' : null
+}
 export class PhotoPreviews {
   private readonly ready = new Map<string, Preview>()
   private readonly thumbs = new Map<string, string>()
@@ -99,13 +105,23 @@ export class PhotoPreviews {
     recordPhotoStep('thumb-ready', `chars-${thumb.length}`)
     return thumb
   }
+  // B252: a sticker bubble's picture, held here beside the photos' — every bubble of a room at once, each under its own
+  // message (tdesktop gives each Sticker view its own media view: history_view_sticker.cpp:566-575, loaded by
+  // checkStickerLarge :190). It came through the attachment viewer's single slot before (MediaSession), which refuses
+  // a second open while one downloads, so only the first sticker of a room was drawn. An MP4 one plays as video.
+  async loadSticker(chatId: string, request: MediaRequest): Promise<{ url: string; video: boolean } | null> {
+    const url = await this.load(chatId, request)
+    const preview = url ? this.ready.get(PhotoPreviews.key(chatId, request)) : undefined
+    return url && preview ? { url, video: preview.mime === 'video/mp4' } : null
+  }
   private async download(key: string, chatId: string, request: MediaRequest, limit: number): Promise<string | null> {
+    const resource = this.resolve(chatId, request), sticker = resource?.summary.kind === 'sticker'
     const bytes = await this.fetch(chatId, request, limit)
     if (!bytes) return null
     // Keeping the placeholder as well means turning automatic download off later still shows this
-    // photo, and costs nothing: the picture is already here.
-    this.remember(key, bytes)
-    const mime = imageMime(bytes)
+    // photo, and costs nothing: the picture is already here. A sticker keeps none (it is drawn whole or not at all).
+    if (!sticker) this.remember(key, bytes)
+    const mime = previewMime(bytes, sticker)
     if (this.closed || !mime) { bytes.fill(0); return null }
     recordPhotoStep('preview-ready', `${mime} ${bytes.length}`)
     // A picture already held under this key leaves first, so the budget counts it once.
@@ -124,7 +140,7 @@ export class PhotoPreviews {
   }
   private async fetch(chatId: string, request: MediaRequest, limit: number): Promise<Buffer | null> {
     const resource = this.resolve(chatId, request)
-    if (!resource?.path || !resource.summary.available || resource.summary.blind || resource.summary.kind !== 'image') {
+    if (!resource?.path || !resource.summary.available || resource.summary.blind || (resource.summary.kind !== 'image' && resource.summary.kind !== 'sticker')) {
       recordPhotoStep('preview-skipped', !resource ? 'no-resource' : !resource.path ? 'no-path'
         : !resource.summary.available ? 'unavailable' : resource.summary.blind ? 'blind' : `kind-${resource.summary.kind}`)
       return null
@@ -139,7 +155,7 @@ export class PhotoPreviews {
       recordPhotoStep('preview-failed', error instanceof Error ? error.message.slice(0, 60) : 'unknown')
       return null
     }
-    if (this.closed || !imageMime(bytes)) {
+    if (this.closed || !previewMime(bytes, resource.summary.kind === 'sticker')) {
       recordPhotoStep('preview-unreadable', this.closed ? 'closed' : `bytes-${bytes.length}`)
       bytes.fill(0); return null
     }

@@ -27,7 +27,9 @@ export interface UploadDescriptor extends Omit<AttachmentFile, 'kind'> {
 export interface UploadPart { index: number; upload: UploadDescriptor; url: string | null }
 export type UploadCommand =
   | { kind: 'attachment-known'; request: UploadRequest }
-  | { kind: 'enqueue-attachment'; request: UploadRequest; wire: MediaSendWire; parts: { upload: UploadDescriptor; bytes: Uint8Array }[] }
+  // replacesReference (B246): the same message, a sticker reference the server refused, goes again under its id by its
+  // bytes — its row turns into this upload where it stands.
+  | { kind: 'enqueue-attachment'; request: UploadRequest; wire: MediaSendWire; parts: { upload: UploadDescriptor; bytes: Uint8Array }[]; replacesReference?: true }
   | { kind: 'upload-source'; id: string; index: number }
   | { kind: 'upload-session'; id: string; index: number; session: string }
   | { kind: 'upload-complete'; id: string; index: number; url: string }

@@ -282,8 +282,6 @@ export class AccountSession {
   private readonly chatFlags: ChatFlags
   private readonly contactFlags: ContactFlags
   private readonly stickerLibrary: StickerLibrary
-  // B195: a set's sticker queued as a reference, kept until its answer so a STICKER_NOT_FOUND can send its bytes.
-  private readonly stickerFallback = new Map<string, { setId: string; itemId: string } | { library: { id: string; kind: StickerKind } }>()
   private readonly stickerMessageBytes: (chatId: string, messageId: string, version: string, signal: AbortSignal) => Promise<Buffer>
   // A sticker message's bytes hashed once, so its menu knows at once the next time whether it is a favourite.
   private readonly stickerMessageIds = new Map<string, string>()
@@ -629,7 +627,7 @@ export class AccountSession {
       { list: () => this.delivery.stickerState<{ id: string; kind: StickerKind }[]>({ kind: 'stickers-list' }),
         read: id => this.delivery.stickerState<{ kind: StickerKind; data: Uint8Array } | null>({ kind: 'sticker-read', id }),
         clear: () => this.delivery.stickerState({ kind: 'stickers-clear' }) })
-    this.delivery.stickerRefused = (chatId, id, reason) => { void this.stickerReferenceRefused(chatId, id, reason).catch(() => {}) }
+    this.delivery.stickerRefused = (chatId, id, reason, ref) => { void this.stickerReferenceRefused(chatId, id, reason, ref).catch(() => {}) }
     this.hiddenMessages = new HiddenMessages(<T,>(command: HiddenMessageCommand) => this.delivery.hiddenMessageState<T>(command),
       () => { if (!this.closed) this.selected?.hiddenChanged() })
     const connected = (): void => { if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('계정 연결을 확인해 주세요.')) }
@@ -645,6 +643,8 @@ export class AccountSession {
     this.accountTools = new AccountToolsApi(profile.uid, credentials, connected)
     this.twoStep = new TwoStepSettingsApi(profile.uid, credentials, connected)
     this.inquirySends = new InquirySends(profile.uid, credentials, connected, command => this.delivery.inquirySendState(command), () => { if (!this.closed) events.changed() })
+    this.inquirySends.stickerBytes = ref => this.stickerReferenceBytes(ref)
+    this.inquirySends.stickerReferenceOff = () => this.stickerLibrary.referenceSendRefused()
     void Promise.resolve().then(() => this.inquirySends.load()).catch(() => {})
     this.channelOperations = new ChannelOperations(profile.uid, credentials, connected, command => this.delivery.channelOperationState(command), () => { if (!this.closed) events.changed() },
       request => { if (!this.closed) this.channelHome.refreshPost(request.channelId, request.postId) })
@@ -1603,7 +1603,7 @@ export class AccountSession {
       if (!this.closed && !this.locked && this.forwardPreparation === owner) this.events.forwardProgress({ operationId: request.id, ...value })
     }
     owner.task = this.delivery.enqueueForwardMedia(request,
-      () => prepareForwardMedia(this.credentials, resolve, request.targets.length, signal, progress), validate,
+      () => prepareForwardMedia(this.credentials, resolve, request.targets.length, signal, progress, 0, this.forwardStickerReference), validate,
       () => { owner.committing = true; progress({ phase: 'saving', current: 0, count: 0, loaded: 0, total: null }) })
       .finally(() => { if (this.forwardPreparation === owner) this.forwardPreparation = null })
     return owner.task
@@ -1630,6 +1630,9 @@ export class AccountSession {
       return messages.map(message => ({ text: message.text, isSilent: Boolean(message.silent) }))
     })
   }
+  // B246: a forwarded sticker reference goes as that reference while sticker_reference_send is on and the server holds
+  // the copy (StickerLibrary.route), else by its bytes.
+  private readonly forwardStickerReference = async (sticker: { id: string }): Promise<boolean> => await this.stickerLibrary.route(sticker.id) === 'reference'
   private forwardMediaSource(request: ForwardRequest): ForwardMediaSource {
     const source = this.contextMessage(request.source.chatId, request.source.messageId, request.source.version)
     if (!source?.forward || !canForwardMedia(source.message) || !this.selected) throw new Error(tr('원본이 변경되었거나 만료되었습니다. 최신 첨부를 다시 선택해 주세요.'))
@@ -1670,7 +1673,7 @@ export class AccountSession {
       if (!this.closed && !this.locked && this.forwardPreparation === owner) this.events.forwardProgress({ operationId: request.id, ...value })
     }
     owner.task = this.delivery.enqueueForwardMedia(request,
-      () => prepareForwardMedia(this.credentials, () => this.forwardMediaSource(request), request.targets.length, signal, progress), validate,
+      () => prepareForwardMedia(this.credentials, () => this.forwardMediaSource(request), request.targets.length, signal, progress, 0, this.forwardStickerReference), validate,
       () => { owner.committing = true; progress({ phase: 'saving', current: 0, count: 0, loaded: 0, total: null }) })
       .finally(() => { if (this.forwardPreparation === owner) this.forwardPreparation = null })
     return owner.task
@@ -1701,7 +1704,7 @@ export class AccountSession {
       if (!this.closed && !this.locked && this.forwardPreparation === owner) this.events.forwardProgress({ operationId: request.id, ...value })
     }
     owner.task = this.delivery.enqueueForwardBatch(request,
-      () => prepareForwardBatch(this.credentials, () => this.forwardBatchSources(request), request.targets.length, signal, progress), validate,
+      () => prepareForwardBatch(this.credentials, () => this.forwardBatchSources(request), request.targets.length, signal, progress, this.forwardStickerReference), validate,
       () => { owner.committing = true; progress({ phase: 'saving', current: 0, count: 0, loaded: 0, total: null }) })
       .finally(() => { if (this.forwardPreparation === owner) this.forwardPreparation = null })
     return owner.task
@@ -1816,6 +1819,12 @@ export class AccountSession {
   photoThumb(chatId: string, request: MediaRequest): Promise<string | null> {
     if (this.closed || this.locked) return Promise.resolve(null)
     return Promise.resolve(this.photoPreviews.thumb(chatId, request))
+  }
+  // B252: a sticker bubble's picture, every bubble of the room at once (photo-previews.ts loadSticker). A sticker is
+  // small and Telegram loads it with the message, so no automatic-download limit holds it back.
+  stickerPreview(chatId: string, request: MediaRequest): Promise<{ url: string; video: boolean } | null> {
+    if (this.closed || this.locked) return Promise.resolve(null)
+    return this.photoPreviews.loadSticker(chatId, request)
   }
   photoPreviewResponse(token: string, request: Request): Response { return this.photoPreviews.response(token, request) }
   // Telegram's row menu keeps these apart: "Clear history" leaves the room in the list, "Delete
@@ -2077,7 +2086,6 @@ export class AccountSession {
     if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
     const kind = this.stickerPacks.itemKind(setId, itemId)
     if (kind && await this.stickerLibrary.route(itemId) === 'reference') {
-      this.keepStickerFallback(id, { setId, itemId })
       return this.sendStickerReference(chatId, id, { id: itemId, kind, setId }, reply)
     }
     const bytes = new Uint8Array(await this.stickerPacks.itemBytes(setId, itemId))
@@ -2113,7 +2121,6 @@ export class AccountSession {
     const kind = this.stickerLibrary.kindOf(stickerId)
     if (!kind) throw new Error(tr('스티커를 찾지 못했습니다. 보관함을 확인해 주세요.'))
     if (await this.stickerLibrary.route(stickerId) === 'reference') {
-      this.keepStickerFallback(id, { library: { id: stickerId, kind } })
       return this.sendStickerReference(chatId, id, { id: stickerId, kind }, reply)
     }
     await this.sendStickerBytes(chatId, id, { kind, data: await this.stickerLibrary.bytes({ id: stickerId, kind }) }, reply)
@@ -2132,25 +2139,21 @@ export class AccountSession {
     }, source)
     await this.draftReply.refresh(chatId)
   }
-  private keepStickerFallback(id: string, source: { setId: string; itemId: string } | { library: { id: string; kind: StickerKind } }): void {
-    if (this.stickerFallback.size >= 100) this.stickerFallback.delete(this.stickerFallback.keys().next().value!)
-    this.stickerFallback.set(id, source)
+  // B246: the bytes of a refused reference, found from what it names — the set's own file when it names a set (it stays
+  // while the server's copy is missing), else the server's copy (there when the switch was off). Null: none to be had.
+  async stickerReferenceBytes(ref: { id: string; kind: StickerKind; setId?: string }): Promise<Uint8Array | null> {
+    if (ref.setId) { try { return new Uint8Array(await this.stickerPacks.setItemBytes(ref.setId, ref.id)) } catch { /* the server copy next */ } }
+    try { return new Uint8Array(await this.stickerLibrary.bytes({ id: ref.id, kind: ref.kind })) } catch { return null }
   }
-  // B195: the server refused a queued reference — STICKER_NOT_FOUND (no copy) or STICKER_REFERENCE_OFF (the switch is
-  // off): the sticker goes again by its bytes under a new id (a new message, as the review's contract asks) and
-  // the refused line is let go; one whose source this run no longer knows stays refused for the person.
-  private async stickerReferenceRefused(chatId: string, id: string, reason: string): Promise<void> {
+  // B195·B246 (contracts/B195-B210-stickers.md «다시 보내는 id», 22:4x): the server refused a queued reference —
+  // STICKER_NOT_FOUND (no copy) or STICKER_REFERENCE_OFF (the switch is off) — and wrote nothing for it, so the same
+  // message goes again by its bytes under the same id, where it stands in the queue. Without bytes it stays refused.
+  private async stickerReferenceRefused(chatId: string, id: string, reason: string, ref: { id: string; kind: StickerKind; setId?: string }): Promise<void> {
     if (reason === 'STICKER_REFERENCE_OFF') this.stickerLibrary.referenceSendRefused()
-    const source = this.stickerFallback.get(id)
-    this.stickerFallback.delete(id)
-    if (!source || this.closed) return
-    const bytes = new Uint8Array('library' in source ? await this.stickerLibrary.bytes(source.library) : await this.stickerPacks.itemBytes(source.setId, source.itemId))
-    const kind = stickerKind(bytes)
-    if (!kind) return
-    await this.delivery.enqueueSticker(chatId, randomUUID().toUpperCase(), createHash('sha256').update(bytes).digest('hex'), null, () => {
-      if (this.closed || this.locked) throw new Error(tr('계정이 변경되었습니다.'))
-    }, { kind, data: bytes })
-    await this.delivery.discard(chatId, id)
+    if (this.closed) return
+    const bytes = await this.stickerReferenceBytes(ref)
+    if (!bytes || stickerKind(bytes) !== ref.kind) return
+    await this.delivery.stickerReferenceToBytes(chatId, id, { kind: ref.kind, data: bytes })
   }
   contactsSnapshot() {
     const value = this.contacts.snapshot

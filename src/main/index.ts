@@ -2575,6 +2575,10 @@ function registerIPC(): void {
   // Telegram's automatic media download: the renderer asks for every photo, and the limit kept for that
   // kind of peer decides whether it is fetched (Data::AutoDownload). `asked` is the person pressing the
   // picture themselves, which passes no limit. A picture that cannot be previewed answers with nothing.
+  handle('sticker-preview', (uid, chatId, request) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).stickerPreview(identifier(chatId), mediaRequest(request))
+  })
   handle('photo-preview', (uid, chatId, request, asked) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     if (typeof asked !== 'boolean') throw new Error(tr('사진을 다시 선택해 주세요.'))

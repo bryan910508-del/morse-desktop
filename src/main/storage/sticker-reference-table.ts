@@ -12,15 +12,16 @@ import { requireReply } from './reply-draft-table'
 export type StickerReferenceCommand = { kind: 'enqueue-sticker-reference'; wire: MediaSendWire; reply: ReplyBinding | null }
 
 const referenceKeys = new Set(['id', 'chatId', 'senderId', 'type', 'text', 'mediaUrl', 'isSilent', 'isEncrypted', 'protocolVersion',
-  'stickerId', 'stickerKind', 'stickerSetId', 'replyToId', 'categoryId'])
+  'stickerId', 'stickerKind', 'stickerSetId', 'replyToId', 'categoryId', 'isForwarded'])
 export function stickerReferenceWire(wire: MediaSendWire, uid: string): MediaSendWire {
   identifier(wire.id); identifier(wire.chatId)
   if (Object.keys(wire).some(key => !referenceKeys.has(key)) || wire.senderId !== uid || wire.type !== 'sticker' || wire.text !== '' ||
-      wire.mediaUrl !== '' || wire.isSilent !== false || wire.isEncrypted !== false || wire.protocolVersion !== 3 ||
+      wire.mediaUrl !== '' || typeof wire.isSilent !== 'boolean' || wire.isEncrypted !== false || wire.protocolVersion !== 3 ||
       typeof wire.stickerId !== 'string' || !/^[a-f0-9]{64}$/.test(wire.stickerId) || !['png', 'gif', 'mp4'].includes(wire.stickerKind ?? '') ||
       (wire.stickerSetId !== undefined && !/^[A-Za-z0-9_-]{1,160}$/.test(wire.stickerSetId)) ||
       (wire.replyToId !== undefined && !/^[A-Za-z0-9_-]{1,160}$/.test(wire.replyToId)) ||
-      (wire.categoryId !== undefined && (typeof wire.categoryId !== 'string' || wire.categoryId.length > 160))) throw new Error('Invalid sticker reference')
+      (wire.categoryId !== undefined && (typeof wire.categoryId !== 'string' || wire.categoryId.length > 160)) ||
+      (wire.isForwarded !== undefined && wire.isForwarded !== true)) throw new Error('Invalid sticker reference')
   return wire
 }
 

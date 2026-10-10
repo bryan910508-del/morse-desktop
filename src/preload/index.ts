@@ -481,6 +481,7 @@ const bridge: DesktopBridge = {
   clearCache: () => ipcRenderer.invoke('morse:clear-cache'),
   sendAttachment: (uid, chatId, id, caption, itemIds, reply, video) => ipcRenderer.invoke('morse:send-attachment', uid, chatId, id, caption, itemIds, reply, video),
   closeMedia: (uid, requestId) => ipcRenderer.invoke('morse:close-media', uid, requestId),
+  stickerPreview: (uid, chatId, request) => ipcRenderer.invoke('morse:sticker-preview', uid, chatId, request),
   photoPreview: (uid, chatId, request, asked) => ipcRenderer.invoke('morse:photo-preview', uid, chatId, request, asked),
   photoThumb: (uid, chatId, request) => ipcRenderer.invoke('morse:photo-thumb', uid, chatId, request),
   saveMedia: (uid, requestId) => ipcRenderer.invoke('morse:save-media', uid, requestId),

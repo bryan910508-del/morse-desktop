@@ -7,6 +7,8 @@ import { UploadRefused } from '../network/upload-refused'
 import { DeliveryCommandFailure } from '../storage/delivery-client'
 import type { InquirySendCommand, InquirySendMedia, StoredInquirySend } from '../storage/inquiry-send-table'
 import { tr } from '../../shared/i18n'
+import { stickerReferenceRefusals } from '../messaging/text-identity'
+import { stickerSidePx } from '../../shared/stickers'
 import { recordRetry } from '../platform/connection-diagnostics'
 
 // The device's queue of messages sent into inquiry rooms (user decision 2026-09-29: it survives a restart, as
@@ -158,6 +160,25 @@ export class InquirySends {
       this.publish()
     }
   }
+  // B246 (contracts/B195-B210-stickers.md «다시 보내는 id·문의방»): the same refused reference, by the bytes the account
+  // finds for it (the set's file, else the server's copy), stays where it is and goes again; with none to be had it
+  // stays refused, saying so for a sticker.
+  stickerBytes: ((ref: { id: string; kind: 'png' | 'gif' | 'mp4'; setId?: string }) => Promise<Uint8Array | null>) | null = null
+  stickerReferenceOff: (() => void) | null = null
+  private async stickerToBytes(row: StoredInquirySend, reason: string): Promise<void> {
+    if (reason === 'STICKER_REFERENCE_OFF') this.stickerReferenceOff?.()
+    const message = row.message, id = String(message.stickerId), kind = message.stickerKind
+    const ref = (kind === 'png' || kind === 'gif' || kind === 'mp4') ? { id, kind, ...(typeof message.stickerSetId === 'string' ? { setId: message.stickerSetId } : {}) } as const : null
+    const bytes = ref ? await this.stickerBytes?.(ref).catch(() => null) ?? null : null
+    if (!ref || !bytes || createHash('sha256').update(bytes).digest('hex') !== ref.id) {
+      await this.store({ kind: 'inquiry-send-state', id: row.id, state: 'failed', reason: tr('이 스티커를 보내지 못했습니다. 스티커를 다시 골라 보내 주세요.') })
+      return
+    }
+    const { stickerId: _id, stickerKind: _kind, stickerSetId: _set, ...rest } = message
+    const payload = { message: { ...rest, mediaWidthPx: stickerSidePx, mediaHeightPx: stickerSidePx }, preview: row.preview,
+      media: { extension: ref.kind, noun: tr('스티커'), urlInText: false, size: bytes.byteLength, sha256: ref.id, md5: createHash('md5').update(bytes).digest('base64') } }
+    await this.store({ kind: 'inquiry-send-sticker-bytes', id: row.id, payload, bytes })
+  }
   private async attempt(row: StoredInquirySend, signal: AbortSignal): Promise<void> {
     const validate = (): void => { signal.throwIfAborted(); this.allowed() }
     let stage = 'upload'
@@ -185,6 +206,12 @@ export class InquirySends {
       // Only a refusal for good fails the message; a busy or contended server, or a proof that had just expired, is
       // tried again like a lost connection (morse-callable.ts transientAnswers).
       const refused = (error instanceof MorseCallableFailure && error.delivery === 'answered' && !transientAnswers.has(error.status)) || error instanceof UploadRefused
+      // B246: a sticker reference refused for its copy or the switch goes again by its bytes under the same id.
+      if (refused && error instanceof MorseCallableFailure && stickerReferenceRefusals.has(error.reason) && typeof row.message.stickerId === 'string') {
+        this.retries.delete(row.id)
+        await this.stickerToBytes(row, error.reason)
+        return
+      }
       if (refused) {
         this.retries.delete(row.id)
         await this.store({ kind: 'inquiry-send-state', id: row.id, state: 'failed',

@@ -239,6 +239,18 @@ export class StickerPacks {
   }
   // A set's sticker kept in this device's favourites (tdesktop «Add to Favorites», stickers_list_widget.cpp:2675-2682;
   // iOS MorseStickerPackSheet saveToFavorites).
+  // B246: a set's sticker by the set's id, read from the server when this account has not the set at hand (a refused
+  // reference names its set; the set's own file stays while the server's copy is missing).
+  async setItemBytes(setId: string, itemId: string): Promise<Buffer> {
+    if (this.packNamed(setId)?.items.some(item => item.id === itemId)) return this.itemBytes(setId, itemId)
+    const signal = AbortSignal.any([this.auth.signal, AbortSignal.timeout(60000)])
+    const pack = await readStickerPack(this.currentReader(), setId, signal, () => this.validate())
+    const item = pack?.items.find(candidate => candidate.id === itemId)
+    if (!item) throw new Error(tr('스티커를 찾지 못했습니다.'))
+    const bytes = await downloadStickerPackItem(this.auth, item, signal, () => this.validate())
+    this.remember(item, bytes)
+    return bytes
+  }
   itemKind(setId: string, itemId: string): StickerPackItem['kind'] | null { return this.packNamed(setId)?.items.find(item => item.id === itemId)?.kind ?? null }
   async packStickerBytes(setId: string, itemId: string): Promise<Uint8Array> { return new Uint8Array(await this.itemBytes(setId, itemId)) }
 

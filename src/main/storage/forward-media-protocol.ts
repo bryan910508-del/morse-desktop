@@ -8,4 +8,7 @@ export interface PreparedForwardMedia {
   isSilent: boolean
   blind: boolean
   parts: ForwardMediaPart[]
+  // B246: a sticker sent as a reference is forwarded as that reference (tdesktop forwards the document itself), while
+  // the switch is on; its bytes stay beside it only to be checked.
+  sticker?: { id: string; kind: 'png' | 'gif' | 'mp4'; setId?: string }
 }

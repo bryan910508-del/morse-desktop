@@ -259,6 +259,9 @@ export interface TextSendWire extends StoryReplyWireFields {
   isSilent: boolean
   isEncrypted: false
   protocolVersion: 3
+  // B253: a forwarded copy says so (server canonical keeps only true); the server then leaves it out of the sender's
+  // Recents, as Telegram puts only stickers that were sent there (forwardMessages does not).
+  isForwarded?: true
   replyToId?: string
   // iOS stampOutgoingCategoryIfNeeded: a message sent into a group with topics carries one.
   categoryId?: string
@@ -900,6 +903,8 @@ export interface DesktopBridge {
   openMedia(accountUid: string, chatId: string, request: MediaRequest): Promise<MediaReady>
   closeMedia(accountUid: string, requestId: string): Promise<void>
   // Telegram's automatic media download: the picture of one photo message, if it can be previewed.
+  // B252: a sticker bubble's picture (every bubble of a room at once), and whether it plays as video.
+  stickerPreview(accountUid: string, chatId: string, request: import('./media').MediaRequest): Promise<{ url: string; video: boolean } | null>
   photoPreview(accountUid: string, chatId: string, request: import('./media').MediaRequest, asked: boolean): Promise<string | null>
   photoThumb(accountUid: string, chatId: string, request: import('./media').MediaRequest): Promise<string | null>
   saveMedia(accountUid: string, requestId: string): Promise<boolean>

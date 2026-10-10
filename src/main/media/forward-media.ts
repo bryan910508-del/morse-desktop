@@ -12,7 +12,8 @@ import { tr } from '../../shared/i18n'
 
 export interface ForwardMediaSource { message: ChatMessage; resources: MediaResource[] }
 export async function prepareForwardMedia(credentials: ReadCredentials, resolve: () => ForwardMediaSource,
-  targetCount: number, signal: AbortSignal, progress: (value: Omit<ForwardProgress, 'operationId'>) => void, reservedBytes = 0): Promise<PreparedForwardMedia> {
+  targetCount: number, signal: AbortSignal, progress: (value: Omit<ForwardProgress, 'operationId'>) => void, reservedBytes = 0,
+  stickerReference?: (sticker: NonNullable<ChatMessage['sticker']>) => Promise<boolean>): Promise<PreparedForwardMedia> {
   const original = resolve(), message = original.message
   if (!canForwardMedia(message)) throw new Error(tr('전달할 수 있는 첨부를 다시 선택해 주세요.'))
   const kind = message.kind as PreparedForwardMedia['kind'], parts: PreparedForwardMedia['parts'] = []
@@ -48,8 +49,13 @@ export async function prepareForwardMedia(credentials: ReadCredentials, resolve:
         sha256: createHash('sha256').update(bytes).digest('hex'), md5: createHash('md5').update(bytes).digest('base64'), bytes })
       bytes = null
     }
+    // B246: a sticker that came as a reference goes on as it (tdesktop forwards the document, not its bytes) while the
+    // switch is on and the server holds its copy, silent if the original was.
+    const sticker = kind === 'sticker' && message.sticker && parts.length === 1 && parts[0]!.sha256 === message.sticker.id &&
+      stickerReference && await stickerReference(message.sticker) ? message.sticker : undefined
     check(); retained = true
-    return { kind, metadata, caption: message.caption ?? '', isSilent: Boolean(message.silent), blind: Boolean(message.attachments?.some(part => part.blind)), parts }
+    return { kind, metadata, caption: message.caption ?? '', isSilent: Boolean(message.silent), blind: Boolean(message.attachments?.some(part => part.blind)), parts,
+      ...(sticker ? { sticker: { id: sticker.id, kind: sticker.kind, ...(sticker.setId ? { setId: sticker.setId } : {}) } } : {}) }
   } catch (error) {
     throw new Error(signal.aborted ? tr('첨부 준비가 취소되었습니다. 아직 저장되지 않은 원본은 정리했습니다.') : error instanceof Error ? error.message : tr('첨부 원본을 준비하지 못했습니다.'))
   } finally {

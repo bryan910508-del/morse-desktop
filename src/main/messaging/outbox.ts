@@ -71,7 +71,7 @@ import { documents, stringField } from '../network/firestore-values'
 import { NotEmitted, ServerRejection } from '../network/contracts'
 import { outgoingCategory } from '../../shared/forum'
 import { stickerContentType, stickerSidePx, type StickerKind } from '../../shared/stickers'
-import { definiteRejections, deliveryReason, retryableRejections, stickerReferenceRefusals, textDigest } from './text-identity'
+import { definiteRejections, deliveryReason, retryableRejections, stickerReferenceRefusals, textDigest, textDigestMatches } from './text-identity'
 import { draftPreviewChars } from '../../shared/chat-list-preview'
 import { directChatId } from './direct-chat-id'
 import { directPairPath, isPairDialog, pairCorrection, pairLookup, pairReadFailed, pairRoom, settledMoves, type PairLookup } from './direct-chat-pair'
@@ -781,8 +781,9 @@ export class OutboxPump {
   // ChatRoomView.sendStickerMessage: a sticker from this device's library — or a set's, whose bytes come with it, as
   // iOS sends a set's sticker by its data without keeping it (MorseStickerPackSheet send) — goes out as a «sticker»
   // message, 512 by 512, its PNG or GIF under chat_media and its MP4 under chat_videos (MorsePendingMediaUploadManager).
-  // B195: the server no longer has the copy a queued reference names (STICKER_NOT_FOUND); the account resends the bytes.
-  stickerRefused: ((chatId: string, id: string, reason: string) => void) | null = null
+  // B195·B246: the server refused a queued reference (STICKER_NOT_FOUND / STICKER_REFERENCE_OFF); the account finds the
+  // bytes and stickerReferenceToBytes sends them under the same id.
+  stickerRefused: ((chatId: string, id: string, reason: string, sticker: { id: string; kind: StickerKind; setId?: string }) => void) | null = null
   // B195: a sticker the server holds a copy of goes as a reference to it (tdesktop SendExistingDocument →
   // MTP_inputMediaDocument, api_sending.cpp:701-716): stickerId, stickerKind and the set it came from, no bytes.
   async enqueueStickerReference(chatId: string, id: string, sticker: { id: string; kind: StickerKind; setId?: string }, reply: ReplyBinding | null, validate: () => void): Promise<void> {
@@ -798,6 +799,30 @@ export class OutboxPump {
       if (error instanceof DeliveryCommandFailure && error.code === 'capacity') throw new Error(tr('전송 대기 원본은 합계 250 MB, 메시지는 100개까지 보관할 수 있습니다.'))
       throw error
     }
+    void this.publish(); this.kick()
+  }
+  // B246 (contracts/B195-B210-stickers.md «다시 보내는 id»): a refused reference goes again by its bytes under the same id,
+  // where it stands in the queue — the server wrote neither the message nor its identity for the refusal (Telegram
+  // resends an outgoing message under its random_id). Its reply and topic stay those it was written with.
+  async stickerReferenceToBytes(chatId: string, id: string, source: { kind: StickerKind; data: Uint8Array }): Promise<void> {
+    await this.opening
+    const row = (await this.store<StoredIntent[]>({ kind: 'list', chatId })).find(item => item.id === id)
+    if (!row || row.wire.type !== 'sticker' || !row.wire.stickerId) return
+    const stickerId = createHash('sha256').update(source.data).digest('hex')
+    if (stickerId !== row.wire.stickerId) throw new Error('Sticker bytes mismatch')
+    const bytes = Buffer.from(source.data)
+    try {
+      // The same message: silent if it was sent silently (Telegram resends with its flags).
+      const wire: MediaSendWire = { id, chatId, senderId: this.uid, type: 'sticker', text: '', mediaUrl: '', isSilent: row.wire.isSilent === true, isEncrypted: false, protocolVersion: 3,
+        mediaWidthPx: stickerSidePx, mediaHeightPx: stickerSidePx, ...(row.wire.replyToId ? { replyToId: row.wire.replyToId } : {}), ...(row.wire.categoryId ? { categoryId: row.wire.categoryId } : {}),
+        ...(row.wire.isForwarded ? { isForwarded: true as const } : {}) }
+      const root = source.kind === 'mp4' ? 'chat_videos' : 'chat_media'
+      const upload = { id, chatId, name: `스티커.${source.kind}`, kind: 'sticker' as const, size: bytes.byteLength, contentType: stickerContentType[source.kind],
+        path: `${root}/${chatId}/${id}.${source.kind}`, sha256: stickerId, md5: createHash('md5').update(bytes).digest('base64'), session: null }
+      const request = { id, chatId, senderId: this.uid, caption: '', itemIds: [id], reply: null, sticker: stickerId }
+      await this.store({ kind: 'enqueue-attachment', request, wire, parts: [{ upload, bytes }], replacesReference: true })
+    } finally { bytes.fill(0) }
+    this.retryAt.delete(id)
     void this.publish(); this.kick()
   }
   async enqueueSticker(chatId: string, id: string, stickerId: string, reply: ReplyBinding | null, validate: () => void, source: { kind: StickerKind; data: Uint8Array } | null = null): Promise<void> {
@@ -981,7 +1006,9 @@ export class OutboxPump {
           if (error instanceof ServerRejection && definiteRejections.has(error.reason)) {
             if (!await this.movedToPairDialog(intent, error))
               await this.store({ kind: 'state', id: intent.id, state: 'failed', reason: storedRejection(error.reason, error.until) })
-            if (stickerReferenceRefusals.has(error.reason) && intent.wire.type === 'sticker' && intent.wire.stickerId) this.stickerRefused?.(intent.chatId, intent.id, error.reason)
+            if (stickerReferenceRefusals.has(error.reason) && intent.wire.type === 'sticker' && intent.wire.stickerId && intent.wire.stickerKind) {
+              this.stickerRefused?.(intent.chatId, intent.id, error.reason, { id: intent.wire.stickerId, kind: intent.wire.stickerKind, ...(intent.wire.stickerSetId ? { setId: intent.wire.stickerSetId } : {}) })
+            }
           } else {
             this.backoff(intent.id)
             await this.store({ kind: 'state', id: intent.id, state: 'uncertain', reason: 'ack-pending' })
@@ -1049,7 +1076,7 @@ export class OutboxPump {
       const doc = rows[0]
       if (doc) {
         if (doc.name !== `${documents}/chats/${intent.chatId}/messages/${intent.id}` || stringField(doc.fields, 'senderId', 160) !== this.uid ||
-            stringField(doc.fields, 'payloadDigest', 64) !== textDigest(intent.wire)) {
+            !textDigestMatches(intent.wire, stringField(doc.fields, 'payloadDigest', 64))) {
           await this.store({ kind: 'state', id: intent.id, state: 'failed', reason: 'CONFLICT' }); return 'conflict'
         }
         if (!this.cancelled.has(intent.id)) this.keepSent(intent)

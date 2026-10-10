@@ -53,14 +53,15 @@ export function executeUpload(db: Database.Database, uid: string, command: Uploa
     return Boolean(old)
   }
   if (command.kind === 'enqueue-attachment') return db.transaction(() => {
-    const { wire, parts, request } = command
+    const { wire, parts, request } = command, replacing = command.replacesReference === true
     const receipt = requestDigest(uid, request)
     identifier(wire.id); identifier(wire.chatId)
     if (request.id !== wire.id || request.chatId !== wire.chatId || request.itemIds.length !== parts.length ||
-        (request.reply?.messageId ?? undefined) !== wire.replyToId ||
+        (replacing ? request.reply !== null || wire.type !== 'sticker' : (request.reply?.messageId ?? undefined) !== wire.replyToId) ||
         (wire.type !== 'file' && wire.type !== 'sticker' && (wire.type === 'image' ? wire.imageCaption ?? '' : wire.videoCaption ?? '') !== request.caption) ||
         (wire.type === 'sticker') !== (request.sticker !== undefined)) throw new Error('Upload request mismatch')
-    if (wire.senderId !== uid || wire.isEncrypted !== false || wire.protocolVersion !== 3 || wire.isSilent !== false ||
+    // A silent message keeps its flag when the same message goes again by bytes (B246); a new upload is never silent.
+    if (wire.senderId !== uid || wire.isEncrypted !== false || wire.protocolVersion !== 3 || (replacing ? typeof wire.isSilent !== 'boolean' : wire.isSilent !== false) ||
         wire.mediaUrl !== '' || wire.mediaKeys !== undefined || !['image', 'video', 'file','voice','sticker'].includes(wire.type) ||
         !parts.length || parts.length > maxAlbumPhotos || (parts.length > 1 && wire.type !== 'image')) throw new Error('Invalid upload intent')
     if(wire.type==='voice'){
@@ -74,7 +75,8 @@ export function executeUpload(db: Database.Database, uid: string, command: Uploa
       const part = parts[0]!
       if (request.caption !== '' || parts.length !== 1 || request.itemIds[0] !== wire.id || wire.text !== '' || wire.mediaWidthPx !== 512 || wire.mediaHeightPx !== 512 ||
         createHash('sha256').update(part.bytes).digest('hex') !== request.sticker ||
-        Object.keys(wire).some(k => !['id', 'chatId', 'senderId', 'type', 'text', 'mediaUrl', 'isSilent', 'isEncrypted', 'protocolVersion', 'mediaWidthPx', 'mediaHeightPx', 'replyToId', 'categoryId'].includes(k))) throw new Error('Invalid sticker preparation')
+        (wire.isForwarded !== undefined && (!replacing || wire.isForwarded !== true)) ||
+        Object.keys(wire).some(k => !['id', 'chatId', 'senderId', 'type', 'text', 'mediaUrl', 'isSilent', 'isEncrypted', 'protocolVersion', 'mediaWidthPx', 'mediaHeightPx', 'replyToId', 'categoryId', 'isForwarded'].includes(k))) throw new Error('Invalid sticker preparation')
     }
     let size = 0
     for (const [index, { upload, bytes }] of parts.entries()) {
@@ -94,6 +96,24 @@ export function executeUpload(db: Database.Database, uid: string, command: Uploa
     const digest = createHash('sha256').update(JSON.stringify(source)).digest('hex')
     const old = db.prepare('SELECT chat_id,source_digest,upload_request_digest FROM intents WHERE id=?').get(wire.id) as
       { chat_id: string; source_digest: string; upload_request_digest: string | null } | undefined
+    if (old && replacing) {
+      // B246 (contracts/B195-B210-stickers.md «다시 보내는 id»): the server wrote nothing for a refused reference
+      // (STICKER_NOT_FOUND / STICKER_REFERENCE_OFF), so the same id goes again by bytes, in the row's place. A second
+      // hand-over of the same bytes is the same message.
+      const row = db.prepare('SELECT wire,state,upload FROM intents WHERE id=?').get(wire.id) as { wire: string | null; state: string; upload: string | null }
+      if (old.source_digest === digest && old.upload_request_digest === receipt) return
+      const before = row.wire ? JSON.parse(row.wire) as MediaSendWire : null
+      if (old.chat_id !== wire.chatId || row.upload !== null || !before || before.type !== 'sticker' || before.stickerId !== request.sticker ||
+          before.replyToId !== wire.replyToId || before.categoryId !== wire.categoryId || before.isSilent !== wire.isSilent || before.isForwarded !== wire.isForwarded || !['failed', 'queued'].includes(row.state)) throw Object.assign(new Error('Sticker reference replacement conflict'), { deliveryCode: 'conflict' })
+      const originals = db.prepare('SELECT COALESCE(SUM(length(source)),0) AS size FROM upload_parts').get() as { size: number }
+      if (originals.size + size > 250 * 1024 * 1024) throw Object.assign(new Error('Upload capacity exceeded'), { deliveryCode: 'capacity' })
+      db.prepare("UPDATE intents SET wire=?,digest='',state='uploading',reason='',upload=?,source_digest=?,upload_request_digest=? WHERE id=?")
+        .run(JSON.stringify(wire), JSON.stringify(parts[0]!.upload), digest, receipt, wire.id)
+      const insert = db.prepare('INSERT INTO upload_parts(intent_id,part_index,descriptor,source) VALUES(?,?,?,?)')
+      for (const [index, part] of parts.entries()) insert.run(wire.id, index, JSON.stringify(part.upload), Buffer.from(part.bytes.buffer, part.bytes.byteOffset, part.bytes.byteLength))
+      return
+    }
+    if (replacing) throw Object.assign(new Error('Sticker reference replacement without its row'), { deliveryCode: 'conflict' })
     if (old) {
       if (old.chat_id !== wire.chatId || old.source_digest !== digest || old.upload_request_digest !== receipt) throw Object.assign(new Error('Upload identity conflict'), { deliveryCode: 'conflict' })
       return

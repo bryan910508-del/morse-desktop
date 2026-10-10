@@ -260,13 +260,16 @@ export function MediaTile({ accountUid, chatId, message, part, label, single, ra
 // is, an MP4 looping silently.
 function StickerView({ accountUid, chatId, message }: { accountUid: string; chatId: string; message: ChatMessage }) {
   const [ready, setReady] = useState<{ url: string; video: boolean } | null>(null), [failed, setFailed] = useState(false)
+  // B252: from the room's previews, one per message, so every sticker of the room is drawn — not through the attachment
+  // viewer's single slot, which let only the first bubble load (tdesktop: a media view per Sticker,
+  // history_view_sticker.cpp:566-575).
   useEffect(() => {
     let alive = true
-    const id = crypto.randomUUID()
-    void window.morse.openMedia(accountUid, chatId, { requestId: id, messageId: message.id, version: message.version, index: 0 })
-      .then(value => { if (alive && value.url) setReady({ url: value.url, video: value.presentation === 'video' }); else if (alive) setFailed(true) })
+    setReady(null); setFailed(false)
+    void window.morse.stickerPreview(accountUid, chatId, { requestId: crypto.randomUUID(), messageId: message.id, version: message.version, index: 0 })
+      .then(value => { if (!alive) return; if (value) setReady(value); else setFailed(true) })
       .catch(() => { if (alive) setFailed(true) })
-    return () => { alive = false; void window.morse.closeMedia(accountUid, id).catch(() => {}) }
+    return () => { alive = false }
   }, [accountUid, chatId, message.id, message.version])
   // Telegram OpenChatMessage → StickerPackScreen: a tap opens the sticker's set, never a photo viewer.
   return <div className="sticker-view" data-sticker-url={ready?.url} role="button" tabIndex={0} title={tr('스티커팩 보기')}
