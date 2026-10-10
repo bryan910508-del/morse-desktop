@@ -81,10 +81,11 @@ import { rejectionCode, rejectionUntil, sanctionOf, storedRejection } from '../.
 
 // The delivery worker words a waiting attachment in Korean («사진 3장», «음성 메시지.m4a», «스티커.png»); the chat shows it in
 // the app's language.
-function pendingText(row: StoredIntent): string {
+export function pendingText(row: Pick<StoredIntent, 'parts' | 'upload' | 'wire' | 'text'>): string {
   if (row.parts && row.parts.length > 1) return tr('사진 {0}장', [row.parts.length])
-  const named = row.upload ? /^(음성 메시지|스티커)\.(\w+)$/u.exec(row.upload.name) : null
-  if (!named && row.wire.type === 'sticker' && row.wire.stickerId) return `${tr('스티커')}.${row.wire.stickerKind}`
+  // B264: a sticker is «스티커», never its upload's file name («스티커.png») — by its bytes or by reference.
+  if (row.wire.type === 'sticker') return tr('스티커')
+  const named = row.upload ? /^(음성 메시지)\.(\w+)$/u.exec(row.upload.name) : null
   return named ? `${tr(named[1]!)}.${named[2]}` : row.text
 }
 

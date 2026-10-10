@@ -130,11 +130,13 @@ import { HiddenChats, emptyRevokedDirect, withLocalDeletion } from './hidden-cha
 import { HiddenMessages } from './hidden-messages'
 import { ChatFlags } from './chat-flags'
 import { StickerPacks } from './sticker-packs'
+import { stickerPackItemURL } from '../../shared/sticker-packs'
 import { StickerLibrary } from './sticker-library'
 import { downloadMedia } from '../media/download-media'
 import { ContactFlags } from './contact-flags'
 import type { PostLiker, PostLikersRequest, PostLikersSnapshot } from '../../shared/post-likers'
-import { maxStickerBytes, stickerContentType, stickerKind, type StickerItem, type StickerKind } from '../../shared/stickers'
+import { maxStickerBytes, stickerContentType, stickerKind, stickerLibraryURL, type StickerDraw, type StickerItem, type StickerKind } from '../../shared/stickers'
+import { StickerDraws } from '../messaging/sticker-draws'
 import type { ContactFlagCommand } from '../storage/contact-flag-table'
 import { generalCategoryId, type ForumCategory } from '../../shared/forum'
 import { deleteTopicMessages, TopicDeletions, TopicDeletionStop } from './forum-topic-deletion'
@@ -299,6 +301,8 @@ export class AccountSession {
   readonly inquiryRows: InquiryRows
   // Messages sent into inquiry rooms that the server has not accepted yet, kept on the device (inquiry-sends.ts).
   readonly inquirySends: InquirySends
+  // B264: the picture each sticker this device sent is drawn from, by message id (messaging/sticker-draws.ts).
+  private readonly stickerDraws = new StickerDraws()
   // Likes, new words and deletes of channel posts and comments, kept until the server shows them (channel-operations.ts).
   readonly channelOperations: ChannelOperations
   readonly historyClears: HistoryClears
@@ -412,7 +416,7 @@ export class AccountSession {
           if (replies.length) this.localReplies.set(chatId, replies); else this.localReplies.delete(chatId)
           if (this.selected?.dialog.summary.id === chatId) this.selected.localRepliesChanged()
         }
-        events.outgoing(chatId, snapshot)
+        events.outgoing(chatId, this.withStickerDraws(snapshot))
       }, () => { if (!this.closed) { this.followPeople(); events.changed() } }, newChatAutoDelete)
     void this.userpics.load().then(() => { if (!this.closed) { this.dialogAvatars.prune(); this.contacts.listAvatars.prune(); events.changed() } })
     this.draftReply = new ReplyDraft(credentials.signal, command => this.delivery.replyState(command),
@@ -1824,6 +1828,10 @@ export class AccountSession {
   // small and Telegram loads it with the message, so no automatic-download limit holds it back.
   stickerPreview(chatId: string, request: MediaRequest): Promise<{ url: string; video: boolean } | null> {
     if (this.closed || this.locked) return Promise.resolve(null)
+    // B264: the server's copy of a sticker this device sent keeps the picture it was sent from — no second download and
+    // no spinner (tdesktop: the local message and the server's are the same document).
+    const sent = this.stickerDraws.get(request.messageId)
+    if (sent) return Promise.resolve(sent)
     return this.photoPreviews.loadSticker(chatId, request)
   }
   photoPreviewResponse(token: string, request: Request): Response { return this.photoPreviews.response(token, request) }
@@ -2086,28 +2094,40 @@ export class AccountSession {
     if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
     const kind = this.stickerPacks.itemKind(setId, itemId)
     if (kind && await this.stickerLibrary.route(itemId) === 'reference') {
-      return this.sendStickerReference(chatId, id, { id: itemId, kind, setId }, reply)
+      return this.drawingSticker(id, { url: stickerPackItemURL(setId, itemId), video: kind === 'mp4' }, () => this.sendStickerReference(chatId, id, { id: itemId, kind, setId }, reply))
     }
     const bytes = new Uint8Array(await this.stickerPacks.itemBytes(setId, itemId))
     const bytesKind = stickerKind(bytes)
     if (!bytesKind) throw new Error(tr('스티커를 불러오지 못했습니다.'))
-    await this.sendStickerBytes(chatId, id, { kind: bytesKind, data: bytes }, reply)
+    await this.drawingSticker(id, { url: stickerPackItemURL(setId, itemId), video: bytesKind === 'mp4' }, () => this.sendStickerBytes(chatId, id, { kind: bytesKind, data: bytes }, reply))
+  }
+  // B264: the picture a sticker is sent from is noted before it is queued — the sending row is drawn from the first
+  // snapshot on — and dropped if it was not queued.
+  private async drawingSticker<T>(messageId: string, draw: StickerDraw, send: () => Promise<T>): Promise<T> {
+    this.stickerDraws.note(messageId, draw)
+    try { return await send() }
+    catch (error) { this.stickerDraws.forget(messageId); throw error }
   }
   // The same sticker sent into a 1:1 inquiry room, from the favourites or recents or from an installed set.
   async sendInquirySticker(request: import('../../shared/channel-inquiries').InquiryTargetRequest, stickerId: string): Promise<'queued'> {
     this.stickerGuard()
     const kind = this.stickerLibrary.kindOf(stickerId)
     if (!kind) throw new Error(tr('스티커를 찾지 못했습니다. 보관함을 확인해 주세요.'))
-    if (await this.stickerLibrary.route(stickerId) === 'reference') return this.channelInquiries.sendStickerReference(request, { id: stickerId, kind })
-    return this.channelInquiries.sendSticker(request, { extension: kind, bytes: await this.stickerLibrary.bytes({ id: stickerId, kind }) })
+    const draw = { url: stickerLibraryURL(stickerId), video: kind === 'mp4' }
+    if (await this.stickerLibrary.route(stickerId) === 'reference') return this.drawingSticker(request.messageId, draw, () => this.channelInquiries.sendStickerReference(request, { id: stickerId, kind }))
+    const bytes = await this.stickerLibrary.bytes({ id: stickerId, kind })
+    return this.drawingSticker(request.messageId, draw, () => this.channelInquiries.sendSticker(request, { extension: kind, bytes }))
   }
   async sendInquiryPackSticker(request: import('../../shared/channel-inquiries').InquiryTargetRequest, setId: string, itemId: string): Promise<'queued'> {
     this.stickerGuard()
     const kind = this.stickerPacks.itemKind(setId, itemId)
-    if (kind && await this.stickerLibrary.route(itemId) === 'reference') return this.channelInquiries.sendStickerReference(request, { id: itemId, kind, setId })
+    if (kind && await this.stickerLibrary.route(itemId) === 'reference') {
+      return this.drawingSticker(request.messageId, { url: stickerPackItemURL(setId, itemId), video: kind === 'mp4' }, () => this.channelInquiries.sendStickerReference(request, { id: itemId, kind, setId }))
+    }
     const bytes = await this.stickerPacks.itemBytes(setId, itemId)
-    if (!stickerKind(bytes)) throw new Error(tr('스티커를 불러오지 못했습니다.'))
-    return this.channelInquiries.sendSticker(request, { extension: stickerKind(bytes)!, bytes: Buffer.from(bytes) })
+    const bytesKind = stickerKind(bytes)
+    if (!bytesKind) throw new Error(tr('스티커를 불러오지 못했습니다.'))
+    return this.drawingSticker(request.messageId, { url: stickerPackItemURL(setId, itemId), video: bytesKind === 'mp4' }, () => this.channelInquiries.sendSticker(request, { extension: bytesKind, bytes: Buffer.from(bytes) }))
   }
   stickerPackResponse(setId: string, itemId: string, request: Request): Promise<Response> { return this.stickerPacks.response(setId, itemId, request) }
   async stickerResponse(id: string, request: Request): Promise<Response> {
@@ -2120,10 +2140,12 @@ export class AccountSession {
     if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
     const kind = this.stickerLibrary.kindOf(stickerId)
     if (!kind) throw new Error(tr('스티커를 찾지 못했습니다. 보관함을 확인해 주세요.'))
+    const draw = { url: stickerLibraryURL(stickerId), video: kind === 'mp4' }
     if (await this.stickerLibrary.route(stickerId) === 'reference') {
-      return this.sendStickerReference(chatId, id, { id: stickerId, kind }, reply)
+      return this.drawingSticker(id, draw, () => this.sendStickerReference(chatId, id, { id: stickerId, kind }, reply))
     }
-    await this.sendStickerBytes(chatId, id, { kind, data: await this.stickerLibrary.bytes({ id: stickerId, kind }) }, reply)
+    const data = await this.stickerLibrary.bytes({ id: stickerId, kind })
+    await this.drawingSticker(id, draw, () => this.sendStickerBytes(chatId, id, { kind, data }, reply))
   }
   private async sendStickerReference(chatId: string, id: string, sticker: { id: string; kind: StickerKind; setId?: string }, reply: ReplyBinding | null): Promise<void> {
     await this.delivery.enqueueStickerReference(chatId, id, sticker, reply, () => {
@@ -2433,7 +2455,11 @@ export class AccountSession {
   }
   notificationHint(hint: NotificationHint): void { this.notifications.receive(hint) }
   notificationPreferencesChanged(): void { this.notifications.pause(); this.notifications.resume() }
-  outgoing(chatId: string) { return this.delivery.snapshot(chatId) }
+  async outgoing(chatId: string): Promise<OutgoingSnapshot> { return this.withStickerDraws(await this.delivery.snapshot(chatId)) }
+  // B264: a sticker of this device on its way carries its picture.
+  private withStickerDraws(snapshot: OutgoingSnapshot): OutgoingSnapshot { return { ...snapshot, items: this.stickerDraws.decorate(snapshot.items) } }
+  // The inquiry rooms' sending rows, a sticker with its picture (B264).
+  inquirySendItems(): ReturnType<InquirySends['items']> { return this.stickerDraws.decorate(this.inquirySends.items()) }
   async startStoryCaptionDraft(target: StoryCaptionDraftStart): Promise<StoryCaptionDraftRecord> {
     const draft = this.ownStories.captionDraftSource(target)
     const validate = (): void => { this.ownStories.captionDraftSource(target) }

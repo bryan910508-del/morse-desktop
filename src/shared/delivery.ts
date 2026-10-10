@@ -9,6 +9,9 @@ export interface LocalOutgoing {
   forwarded?: boolean
   storyReply?: boolean
   voicePreview?: import('./voice-queue-preview').VoiceQueueMetadata
+  // B264: a sticker this device is sending, drawn as that sticker from the bytes already here (tdesktop draws the local
+  // message with its document — api_sending.cpp:182, :284).
+  sticker?: import('./stickers').StickerDraw
   createdAt: number
   // 'sent': the server has it and the history has not shown it yet (see OutboxPump.sent).
   state: DeliveryState | 'sent'

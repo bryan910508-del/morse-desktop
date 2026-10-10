@@ -103,7 +103,7 @@ function EditMessageBox({ initial, close, save }: { initial: string; close(): vo
 function inquiryLocal(entry: PendingEntry, inquiryId: string): LocalOutgoing {
   // The room's own order is when each was written (B90 keeps that order for a chat's outbox the same way).
   return { id: entry.id, chatId: inquiryId, sequence: entry.at, text: entry.text, createdAt: entry.at, state: entry.failed !== undefined ? 'failed' : entry.sent ? 'sent' : 'queued',
-    reason: entry.failed ?? '', busy: entry.failed === undefined && !entry.sent, retryable: entry.failed !== undefined }
+    reason: entry.failed ?? '', busy: entry.failed === undefined && !entry.sent, retryable: entry.failed !== undefined, ...(entry.sticker ? { sticker: entry.sticker } : {}) }
 }
 const attachWindowMs = 900 * 1000
 

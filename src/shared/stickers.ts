@@ -5,6 +5,11 @@ export interface StickerItem { id: string; kind: StickerKind; size: number; url:
 export const maxStickerBytes = 10 * 1024 * 1024
 export const maxStickers = 200
 export const stickerSidePx = 512
+// A sticker of this device's library, drawn by its id (the SHA-256 of its bytes).
+export const stickerLibraryURL = (id: string): string => `morse://app/__sticker/${id}`
+// B264: the picture a sticker this device sends is drawn from — the library's or an installed set's address — and whether
+// it is an MP4 that plays as video.
+export interface StickerDraw { url: string; video: boolean }
 
 // tdesktop's «Recent» row in the sticker panel (stickers_list_widget.cpp:78 kRecentDisplayLimit, :3352-3367 — the
 // same in 64ca5475 and feec5f9d): the recent list less what is already a favourite (it has its own row above), each

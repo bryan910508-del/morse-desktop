@@ -11,6 +11,7 @@ import { messageKindLabel, unsupportedMessageNotice } from '../../../shared/mess
 import { duration as formatDuration, messageTime } from '../app/format'
 import { RoundCheck, Spinner } from '../ui/controls'
 import { pointFor } from '../ui/popup-menu'
+import { LocalStickerView, localSticker } from './local-sticker'
 import { QueuedVoicePlay } from './voice-record'
 import { UserAvatar } from '../ui/user-avatar'
 import { useTranslation } from '../app/translations'
@@ -440,14 +441,19 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
 export const LocalMessageView = memo(function LocalMessageView({ accountUid, item, layout, onMenu, reply }: { accountUid: string; item: LocalOutgoing; layout: MessageLayout; onMenu(item: LocalOutgoing, point: { x: number; y: number }): void; reply?: ReplyPreview }) {
   const failed = item.state === 'failed' || item.state === 'upload-failed'
   const percent = item.progress ? Math.round(100 * item.progress.loaded / Math.max(1, item.progress.total)) : null
+  // B264: a sticker on its way is drawn as the sticker with its clock (local-sticker.tsx).
+  const sticker = localSticker(item)
   return <div className={rowClass(true, layout, failed ? ' failed' : '')} onContextMenu={event => { event.preventDefault(); onMenu(item, pointFor(event, event.currentTarget)) }}>
     {failed && <button type="button" className="history-failed" aria-label={tr('보내지 못한 메시지 메뉴')} onClick={event => onMenu(item, pointFor(event, event.currentTarget))}><CircleAlert size={22} /></button>}
-    <div className="bubble">
+    <div className={sticker ? 'bubble media-only round' : 'bubble'}>
+      {sticker && item.replyToId && reply && <ReplyQuote preview={reply} />}
+      {sticker ? <LocalStickerView draw={sticker} /> : <>
       {(item.forwarded || item.storyReply) && <div className="bubble-label">{item.forwarded ? tr('전달된 메시지') : tr('스토리 답장')}</div>}
       {item.replyToId && reply && <ReplyQuote preview={reply} />}
       {item.voicePreview ? <div className="voice-message own local"><QueuedVoicePlay accountUid={accountUid} item={item} /><span className="voice-message-body"><small>{tr('음성 메시지 · {0}', [formatDuration(item.voicePreview.duration)])}</small></span></div>
         : <div className="bubble-text selectable">{item.text || tr('첨부')}<span className="bubble-meta-space own" /></div>}
-      {item.progress && <div className="bubble-progress" role="progressbar" aria-valuenow={percent ?? 0} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${percent}%` }} /></div>}
+      </>}
+      {item.progress && !sticker && <div className="bubble-progress" role="progressbar" aria-valuenow={percent ?? 0} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${percent}%` }} /></div>}
       <span className="bubble-meta">
         <time>{messageTime(item.createdAt)}</time>
         {failed ? <CircleAlert size={14} aria-label={tr('전송 실패')} /> : item.state === 'sent' ? <Check size={15} aria-label={tr('보냄')} /> : <Clock3 size={13} aria-label={item.state === 'uploading' ? tr('업로드 중') : tr('보내는 중')} />}

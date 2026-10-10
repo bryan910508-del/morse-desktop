@@ -7,7 +7,7 @@ import { useDesktop } from '../app/store'
 // waiting to be sent again or deleted, or just sent. The device's own queue keeps it (main/accounts/inquiry-sends.ts),
 // so it outlives the open room, the window and a restart, as a chat's local messages do (HistoryItem stays in its
 // History); the room's row marks it (iOS MorseInquiryListRowModel hasFailedOutgoing / hasSendingOutgoing, 1f27102b).
-export type PendingEntry = { id: string; text: string; at: number; failed?: string; sent?: true }
+export type PendingEntry = { id: string; text: string; at: number; failed?: string; sent?: true; sticker?: import('../../../shared/stickers').StickerDraw }
 
 const none: PendingEntry[] = []
 function entries(snapshot: DesktopSnapshot | null, accountUid: string, inquiryId: string): PendingEntry[] {
@@ -16,10 +16,10 @@ function entries(snapshot: DesktopSnapshot | null, accountUid: string, inquiryId
   return items.length ? items.map(entry) : none
 }
 function entry(item: InquirySendItem): PendingEntry {
-  return { id: item.id, text: item.text, at: item.at, ...(item.state === 'failed' ? { failed: item.reason } : {}), ...(item.state === 'sent' ? { sent: true as const } : {}) }
+  return { id: item.id, text: item.text, at: item.at, ...(item.state === 'failed' ? { failed: item.reason } : {}), ...(item.state === 'sent' ? { sent: true as const } : {}), ...(item.sticker ? { sticker: item.sticker } : {}) }
 }
 const same = (a: PendingEntry[], b: PendingEntry[]): boolean => a.length === b.length &&
-  a.every((item, index) => { const other = b[index]!; return item.id === other.id && item.text === other.text && item.at === other.at && item.failed === other.failed && item.sent === other.sent })
+  a.every((item, index) => { const other = b[index]!; return item.id === other.id && item.text === other.text && item.at === other.at && item.failed === other.failed && item.sent === other.sent && item.sticker?.url === other.sticker?.url })
 
 export function useInquiryPending(accountUid: string, inquiryId: string): PendingEntry[] {
   const select = useCallback((snapshot: DesktopSnapshot | null) => entries(snapshot, accountUid, inquiryId), [accountUid, inquiryId])

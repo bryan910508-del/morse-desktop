@@ -415,7 +415,7 @@ async function snapshot(): Promise<DesktopSnapshot> {
     discussionJoin: screenLocked ? null : active?.discussionJoin.snapshot ?? null,
     channelInquiries: screenLocked ? null : active?.channelInquiries.snapshot ?? null,
     inquiryRows: appLocked || !active ? [] : active.inquiryRowList(),
-    inquirySends: appLocked || !active ? [] : active.inquirySends.items(),
+    inquirySends: appLocked || !active ? [] : active.inquirySendItems(),
     channelOperations: appLocked || !active ? [] : active.channelOperations.items(),
     chatFolders: appLocked || !active ? null : active.chatFolderList(),
     connection: active?.state ?? 'offline', link: active?.link ?? 'ready', dialogs: appLocked ? [] : dialogs, openDialogs: appLocked || !active ? [] : active.openDialogs(),
