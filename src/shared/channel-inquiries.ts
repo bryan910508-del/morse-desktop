@@ -12,7 +12,9 @@ export type InquiryMessageKind = 'text' | 'image' | 'video' | 'voice' | 'file' |
 // A message of this account on its way into a room, from the device's own queue (main/accounts/inquiry-sends.ts):
 // 'sending' until the server accepts it, 'failed' once the server refused it, 'sent' for a minute after it went, until
 // the room's own history shows it.
-export interface InquirySendItem { id: string; inquiryId: string; kind: InquiryMessageKind; text: string; at: number; state: 'sending' | 'failed' | 'sent'; reason: string; busy: boolean ; sticker?: import('./stickers').StickerDraw }
+export interface InquirySendItem { id: string; inquiryId: string; kind: InquiryMessageKind; text: string; at: number; state: 'sending' | 'failed' | 'sent'; reason: string; busy: boolean
+  // B269: its media, drawn as a chat's message on its way is (LocalOutgoing.media).
+  media?: import('./delivery').LocalMedia }
 export interface InquirySummary { id: string; peerUid: string; channelId: string; channelName: string; peerName: string; lastMessage: string; lastMessageAt: number | null; unread: number; photo?: import('./group-photo').GroupPhotoImage | null }
 export interface InquiryMessageItem { id: string; own: boolean; senderType: InquiryRole; kind: InquiryMessageKind; text: string; label: string; createdAt: number | null; edited: boolean
   // The message this one answers, and a few words of it, as a chat's reply carries (HistoryMessageReply).

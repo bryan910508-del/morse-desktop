@@ -3,6 +3,8 @@
 import { createHash } from 'node:crypto'
 import { voiceSendRequest, type VoiceSendRequest } from '../../shared/voice-send'
 import type { MediaSendWire } from '../../shared/model'
+import type { LocalMedia } from '../../shared/delivery'
+import { mediaOfFields, type SendingMedia } from './sending-media'
 import type { VideoFacts } from '../../shared/uploads'
 import type { StoryReplyDetachCommand } from '../storage/story-reply-detach-table'
 import type { StoryReplyDetachReceipt } from '../../shared/story-reply-detach'
@@ -81,6 +83,10 @@ import { rejectionCode, rejectionUntil, sanctionOf, storedRejection } from '../.
 
 // The delivery worker words a waiting attachment in Korean («사진 3장», «음성 메시지.m4a», «스티커.png»); the chat shows it in
 // the app's language.
+// B269: the media a queued row will be once the server has it, for its bubble to be drawn as that from the start.
+export function localMediaOf(row: Pick<StoredIntent, 'parts' | 'wire'>): LocalMedia | undefined {
+  return mediaOfFields(row.wire as unknown as Record<string, unknown>, (row.parts ?? []).map(part => ({ index: part.index, name: part.upload.name, size: part.upload.size })))
+}
 export function pendingText(row: Pick<StoredIntent, 'parts' | 'upload' | 'wire' | 'text'>): string {
   if (row.parts && row.parts.length > 1) return tr('사진 {0}장', [row.parts.length])
   // B264: a sticker is «스티커», never its upload's file name («스티커.png») — by its bytes or by reference.
@@ -431,14 +437,30 @@ export class OutboxPump {
       !this.initialized ? tr('전송 기록을 불러오는 중…') : this.joinChat === chatId ? tr('토론방 참여 기록을 확인한 뒤 작성할 수 있습니다.') : !this.composeAllowed(chatId) ? this.context().dialogs.get(chatId)?.composeMessage || tr('토론방 작성 조건을 확인해 주세요.') : !this.eligible(chatId) ? tr('이 대화에는 지금 메시지를 보낼 수 없습니다.') : '',
       items: visible ? outgoingOrder(chatId, rows, [...this.sent.values()].map(entry => entry.row)).map(({ row, sent }) => sent ? {
         id: row.id, chatId, sequence: row.sequence, text: pendingText(row), replyToId: row.wire.replyToId, createdAt: row.createdAt, state: 'sent' as const, reason: '', busy: false,
-        voicePreview: row.voicePreview, forwarded: row.forwarded, storyReply: Boolean(row.wire.replyStoryId), retryable: false } : ({ id: row.id, chatId, sequence: row.sequence, text: pendingText(row), replyToId: row.wire.replyToId, createdAt: row.createdAt,
+        voicePreview: row.voicePreview, forwarded: row.forwarded, storyReply: Boolean(row.wire.replyStoryId), retryable: false, ...this.mediaOf(row) } : ({ id: row.id, chatId, sequence: row.sequence, text: pendingText(row), replyToId: row.wire.replyToId, createdAt: row.createdAt,
         // An upload the connection cut off is not a failure: it resumes by itself, so it shows the clock, not the red
         // mark that waits for the person (Telegram R-52: a clock until the server has it, failed only on its refusal).
         state: shownState(row),
         reason: this.earlierForward(row, rows) ? tr('앞선 전달 메시지의 결과 확인 또는 대기 정리가 필요합니다.') : waitingUpload(row) ? tr('연결 대기 중') : row.state === 'uploading' ? tr('첨부 업로드 대기 중') : row.state === 'queued' ? tr('메시지 전송 대기 중') : deliveryReason(row.reason), busy: this.busyId === row.id || this.uploadingId === row.id,
-        voicePreview:row.voicePreview, forwarded: row.forwarded, storyReply: Boolean(row.wire.replyStoryId), progress: this.uploadingId === row.id ? this.uploadProgress : undefined,
+        voicePreview:row.voicePreview, forwarded: row.forwarded, storyReply: Boolean(row.wire.replyStoryId), progress: this.uploadingId === row.id ? this.uploadProgress : undefined, ...this.mediaOf(row),
         retryable: (row.state === 'upload-failed' && !waitingUpload(row)) || (row.state === 'failed' && retryableRejections.has(rejectionCode(row.reason))),
         ...(row.state === 'failed' && sanctionOf(row.reason) ? { sanction: sanctionOf(row.reason)!, ...(rejectionUntil(row.reason) ? { sanctionUntil: rejectionUntil(row.reason)! } : {}) } : {}) })) : [] }
+  }
+  // B269: a row's media, and — for a picture row read back after a restart, its bytes still queued — where its pictures
+  // are read from when drawn (the queue's own integrity-checked source, as voice-queue-source reads a voice message).
+  private mediaOf(row: StoredIntent): { media?: LocalMedia } {
+    const media = localMediaOf(row)
+    if (!media) return {}
+    const parts = row.parts
+    if (media.kind === 'image' && parts?.length && (row.state === 'uploading' || row.state === 'upload-failed')) {
+      this.sendingMedia?.want(row.id, parts.length, async index => {
+        const part = parts[index]
+        if (!part) return null
+        try { return { bytes: await this.store<Uint8Array>({ kind: 'upload-source', id: row.id, index: part.index }), contentType: part.upload.contentType } }
+        catch { return null }
+      })
+    }
+    return { media }
   }
   private keepSent(row: StoredIntent): void {
     if (this.closed) return
@@ -785,6 +807,8 @@ export class OutboxPump {
   // B195·B246: the server refused a queued reference (STICKER_NOT_FOUND / STICKER_REFERENCE_OFF); the account finds the
   // bytes and stickerReferenceToBytes sends them under the same id.
   stickerRefused: ((chatId: string, id: string, reason: string, sticker: { id: string; kind: StickerKind; setId?: string }) => void) | null = null
+  // B269: what each sending message is drawn from (the account's; see SendingMedia).
+  sendingMedia: SendingMedia | null = null
   // B195: a sticker the server holds a copy of goes as a reference to it (tdesktop SendExistingDocument →
   // MTP_inputMediaDocument, api_sending.cpp:701-716): stickerId, stickerKind and the set it came from, no bytes.
   async enqueueStickerReference(chatId: string, id: string, sticker: { id: string; kind: StickerKind; setId?: string }, reply: ReplyBinding | null, validate: () => void): Promise<void> {
@@ -873,8 +897,13 @@ export class OutboxPump {
     if (reply) wire.replyToId = reply.messageId
     const category = outgoingCategory(this.context().dialogs.get(chatId))
     if (category) wire.categoryId = category
+    // B269: the pictures it is drawn from, kept before it is queued — the row can reach the window, and ask for them, before
+    // the write answers (tdesktop makes the local media before it adds the message, api_sending.cpp:1316 → :1227) — and
+    // let go if it is not queued.
+    if (wire.type === 'image') this.sendingMedia?.keepPictures(wire.id, parts.map(part => ({ bytes: part.bytes, contentType: part.upload.contentType })))
     try { await this.store({ kind: 'enqueue-attachment', request, wire, parts }) }
     catch (error) {
+      this.sendingMedia?.forget(wire.id)
       if (error instanceof DeliveryCommandFailure && error.code === 'capacity') throw new Error(tr('전송 대기 원본은 합계 250 MB, 메시지는 100개까지 보관할 수 있습니다.'))
       throw error
     }

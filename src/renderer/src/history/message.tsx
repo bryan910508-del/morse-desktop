@@ -11,7 +11,7 @@ import { messageKindLabel, unsupportedMessageNotice } from '../../../shared/mess
 import { duration as formatDuration, messageTime } from '../app/format'
 import { RoundCheck, Spinner } from '../ui/controls'
 import { pointFor } from '../ui/popup-menu'
-import { LocalStickerView, localSticker } from './local-sticker'
+import { localMediaMessage, sendingProgress } from './local-media'
 import { QueuedVoicePlay } from './voice-record'
 import { UserAvatar } from '../ui/user-avatar'
 import { useTranslation } from '../app/translations'
@@ -259,7 +259,7 @@ export function MediaTile({ accountUid, chatId, message, part, label, single, ra
 
 // iOS sticker message (MessageBubbleLayoutCalculator .sticker: 184pt square, no bubble): a PNG or GIF drawn as it
 // is, an MP4 looping silently.
-function StickerView({ accountUid, chatId, message }: { accountUid: string; chatId: string; message: ChatMessage }) {
+function StickerView({ accountUid, chatId, message, local }: { accountUid: string; chatId: string; message: ChatMessage; local?: boolean }) {
   const [ready, setReady] = useState<{ url: string; video: boolean } | null>(null), [failed, setFailed] = useState(false)
   // B252: from the room's previews, one per message, so every sticker of the room is drawn — not through the attachment
   // viewer's single slot, which let only the first bubble load (tdesktop: a media view per Sticker,
@@ -272,7 +272,12 @@ function StickerView({ accountUid, chatId, message }: { accountUid: string; chat
       .catch(() => { if (alive) setFailed(true) })
     return () => { alive = false }
   }, [accountUid, chatId, message.id, message.version])
-  // Telegram OpenChatMessage → StickerPackScreen: a tap opens the sticker's set, never a photo viewer.
+  // Telegram OpenChatMessage → StickerPackScreen: a tap opens the sticker's set, never a photo viewer. One on its way
+  // (B269) has no copy on the server yet to name its set.
+  if (local) return <div className="sticker-view" data-sticker-url={ready?.url}>
+    {ready ? ready.video ? <video src={ready.url} autoPlay loop muted playsInline /> : <img src={ready.url} alt={tr('스티커')} draggable={false} />
+      : failed ? <span className="sticker-missing">{tr('스티커')}</span> : null}
+  </div>
   return <div className="sticker-view" data-sticker-url={ready?.url} role="button" tabIndex={0} title={tr('스티커팩 보기')}
     onClick={event => { event.stopPropagation(); showStickerPackSheet(accountUid, chatId, message.id, message.version) }}
     onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showStickerPackSheet(accountUid, chatId, message.id, message.version) } }}>
@@ -281,23 +286,38 @@ function StickerView({ accountUid, chatId, message }: { accountUid: string; chat
   </div>
 }
 
-export function Attachments({ accountUid, chatId, message, own, onOpen }: { accountUid: string; chatId: string; message: ChatMessage; own: boolean; onOpen(message: ChatMessage, index: number): void }) {
+// tdesktop's radial over a medium being sent (history_view_photo.cpp:366-373, :413-456; history_view_document.cpp:923-926):
+// how far it has gone up, or turning while it waits.
+function SendingRing({ value, className }: { value: number | null; className?: string }) {
+  const ring = 2 * Math.PI * 20
+  return <span className={`sending-ring${value === null ? ' waiting' : ''}${className ? ` ${className}` : ''}`} role="progressbar" aria-label={tr('업로드 중')}
+    aria-valuemin={0} aria-valuemax={100} aria-valuenow={value === null ? undefined : Math.round(value * 100)}>
+    <svg viewBox="0 0 48 48" aria-hidden="true"><circle className="track" cx="24" cy="24" r="20" />
+      <circle cx="24" cy="24" r="20" style={{ strokeDasharray: ring, strokeDashoffset: ring * (1 - (value ?? .25)) }} /></svg>
+  </span>
+}
+
+// local (B269): a message on its way, drawn by the same views as the server's copy — the ring over it while it goes up.
+export function Attachments({ accountUid, chatId, message, own, onOpen, local }: { accountUid: string; chatId: string; message: ChatMessage; own: boolean; onOpen(message: ChatMessage, index: number): void
+  local?: { progress: number | null; going: boolean } }) {
   const parts = message.attachments ?? []
+  const ring = local?.going ? <SendingRing value={local.progress} className="over-media" /> : null
   if (message.kind === 'voice' && parts[0] && !parts[0].blind) return <VoicePlayer accountUid={accountUid} chatId={chatId} message={message} own={own} />
-  if (message.kind === 'video' && message.circular && parts.length === 1 && !parts[0]!.blind) return <RoundVideo accountUid={accountUid} chatId={chatId} message={message} />
-  if (message.kind === 'sticker' && parts[0] && !parts[0].blind) return <StickerView accountUid={accountUid} chatId={chatId} message={message} />
-  if (message.kind === 'file') return <>{parts.map(part => <button key={part.index} type="button" className="file-message" disabled={!part.available} onClick={event => { event.stopPropagation(); onOpen(message, part.index) }}>
-    <span className="file-message-icon">{part.blind ? <LockKeyhole size={20} /> : <FileIcon size={20} />}</span>
-    <span className="file-message-text"><strong className="ellipsis">{part.name}</strong><small>{part.available ? tr('눌러서 열기') : tr('아직 열 수 없습니다')}</small></span>
+  if (message.kind === 'video' && message.circular && parts.length === 1 && !parts[0]!.blind) return ring ? <div className="local-media"><RoundVideo accountUid={accountUid} chatId={chatId} message={message} />{ring}</div>
+    : <RoundVideo accountUid={accountUid} chatId={chatId} message={message} />
+  if (message.kind === 'sticker' && parts[0] && !parts[0].blind) return <StickerView accountUid={accountUid} chatId={chatId} message={message} local={Boolean(local)} />
+  if (message.kind === 'file') return <>{parts.map(part => <button key={part.index} type="button" className={`file-message${local ? ' sending' : ''}`} disabled={!part.available} onClick={event => { event.stopPropagation(); onOpen(message, part.index) }}>
+    <span className="file-message-icon">{part.blind ? <LockKeyhole size={20} /> : local?.going ? <SendingRing value={local.progress} /> : <FileIcon size={20} />}</span>
+    <span className="file-message-text"><strong className="ellipsis">{part.name}</strong><small>{local ? local.going ? tr('업로드 중') : tr('보내는 중') : part.available ? tr('눌러서 열기') : tr('아직 열 수 없습니다')}</small></span>
   </button>)}</>
   const metadata = message.mediaMetadata
   const single = parts.length === 1
   // iOS records a photo's size in mediaWidthPx/mediaHeightPx and a video's in videoWidthPx/videoHeightPx.
   const width = metadata?.mediaWidthPx ?? metadata?.videoWidthPx, height = metadata?.mediaHeightPx ?? metadata?.videoHeightPx
   const ratio = width && height ? width / height : null
-  return <div className={`media-grid count-${Math.min(parts.length, 4)}`}>{parts.map(part => <MediaTile key={part.index} accountUid={accountUid} chatId={chatId} message={message} part={part} single={single} ratio={ratio}
+  return <div className={`media-grid count-${Math.min(parts.length, 4)}${local ? ' local-media' : ''}`}>{parts.map(part => <MediaTile key={part.index} accountUid={accountUid} chatId={chatId} message={message} part={part} single={single} ratio={ratio}
     label={part.blind ? tr('가려진 {0}', [messageKindLabel(part.kind)]) : part.kind === 'video' && metadata?.videoDuration !== undefined ? formatDuration(metadata.videoDuration) : message.circular && part.kind === 'video' ? tr('원형 영상') : messageKindLabel(part.kind)}
-    onOpen={onOpen} />)}</div>
+    onOpen={onOpen} />)}{ring}</div>
 }
 
 // The link under the pointer when a message menu opens, for Telegram's «링크 복사» / «이메일 복사».
@@ -440,20 +460,23 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
 
 export const LocalMessageView = memo(function LocalMessageView({ accountUid, item, layout, onMenu, reply }: { accountUid: string; item: LocalOutgoing; layout: MessageLayout; onMenu(item: LocalOutgoing, point: { x: number; y: number }): void; reply?: ReplyPreview }) {
   const failed = item.state === 'failed' || item.state === 'upload-failed'
-  const percent = item.progress ? Math.round(100 * item.progress.loaded / Math.max(1, item.progress.total)) : null
-  // B264: a sticker on its way is drawn as the sticker with its clock (local-sticker.tsx).
-  const sticker = localSticker(item)
+  // B269: a medium on its way is drawn as the message the server's copy will be (local-media.ts), the ring over it while
+  // it goes up (tdesktop draws the local message with its media — api_sending.cpp:1227-1240; history_view_photo.cpp:366-373).
+  const media = localMediaMessage(item)
+  const caption = media?.caption?.trim() ? media.caption : ''
+  const round = media !== null && (media.kind === 'sticker' || (media.kind === 'video' && media.circular))
+  const going = !failed && item.state !== 'sent' && (item.state === 'uploading' || Boolean(item.progress))
+  const local = { progress: sendingProgress(item.progress), going }
   return <div className={rowClass(true, layout, failed ? ' failed' : '')} onContextMenu={event => { event.preventDefault(); onMenu(item, pointFor(event, event.currentTarget)) }}>
     {failed && <button type="button" className="history-failed" aria-label={tr('보내지 못한 메시지 메뉴')} onClick={event => onMenu(item, pointFor(event, event.currentTarget))}><CircleAlert size={22} /></button>}
-    <div className={sticker ? 'bubble media-only round' : 'bubble'}>
-      {sticker && item.replyToId && reply && <ReplyQuote preview={reply} />}
-      {sticker ? <LocalStickerView draw={sticker} /> : <>
+    <div className={`bubble${media && !caption ? ' media-only' : ''}${round ? ' round' : ''}`}>
       {(item.forwarded || item.storyReply) && <div className="bubble-label">{item.forwarded ? tr('전달된 메시지') : tr('스토리 답장')}</div>}
       {item.replyToId && reply && <ReplyQuote preview={reply} />}
-      {item.voicePreview ? <div className="voice-message own local"><QueuedVoicePlay accountUid={accountUid} item={item} /><span className="voice-message-body"><small>{tr('음성 메시지 · {0}', [formatDuration(item.voicePreview.duration)])}</small></span></div>
+      {media ? <Attachments accountUid={accountUid} chatId={item.chatId} message={media} own onOpen={() => {}} local={local} />
+        : item.voicePreview ? <div className="voice-message own local"><QueuedVoicePlay accountUid={accountUid} item={item} /><span className="voice-message-body"><small>{tr('음성 메시지 · {0}', [formatDuration(item.voicePreview.duration)])}</small></span></div>
         : <div className="bubble-text selectable">{item.text || tr('첨부')}<span className="bubble-meta-space own" /></div>}
-      </>}
-      {item.progress && !sticker && <div className="bubble-progress" role="progressbar" aria-valuenow={percent ?? 0} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${percent}%` }} /></div>}
+      {media && caption && <div className="bubble-text selectable">{caption}<span className="bubble-meta-space own" /></div>}
+      {!media && item.progress && <div className="bubble-progress" role="progressbar" aria-valuenow={Math.round(100 * (sendingProgress(item.progress) ?? 0))} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${Math.round(100 * (sendingProgress(item.progress) ?? 0))}%` }} /></div>}
       <span className="bubble-meta">
         <time>{messageTime(item.createdAt)}</time>
         {failed ? <CircleAlert size={14} aria-label={tr('전송 실패')} /> : item.state === 'sent' ? <Check size={15} aria-label={tr('보냄')} /> : <Clock3 size={13} aria-label={item.state === 'uploading' ? tr('업로드 중') : tr('보내는 중')} />}

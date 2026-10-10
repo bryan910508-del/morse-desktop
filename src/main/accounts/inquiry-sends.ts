@@ -6,6 +6,7 @@ import { uploadInquiryAttachment } from '../network/inquiry-photo-upload-api'
 import { UploadRefused } from '../network/upload-refused'
 import { DeliveryCommandFailure } from '../storage/delivery-client'
 import type { InquirySendCommand, InquirySendMedia, StoredInquirySend } from '../storage/inquiry-send-table'
+import { mediaOfFields, type SendingMedia } from '../messaging/sending-media'
 import { tr } from '../../shared/i18n'
 import { stickerReferenceRefusals } from '../messaging/text-identity'
 import { stickerSidePx } from '../../shared/stickers'
@@ -50,11 +51,24 @@ export class InquirySends {
       upload: (upload, signal, validate) => uploadInquiryAttachment(auth, uid, upload, AbortSignal.any([signal, AbortSignal.timeout(600000)]), () => {}, validate)
     }) {}
 
+  // B269: what each message on its way is drawn from (the account's; see SendingMedia).
+  sendingMedia: SendingMedia | null = null
   items(): InquirySendItem[] {
     const now = Date.now()
     for (const [id, entry] of this.recent) if (entry.until <= now || this.rows.some(row => row.id === id)) this.recent.delete(id)
     return [...this.rows.map(row => ({ id: row.id, inquiryId: row.inquiryId, kind: row.preview.kind, text: row.preview.text, at: row.createdAt,
-      state: row.state === 'failed' ? 'failed' as const : 'sending' as const, reason: row.reason, busy: row.id === this.busy })), ...[...this.recent.values()].map(entry => entry.item)]
+      state: row.state === 'failed' ? 'failed' as const : 'sending' as const, reason: row.reason, busy: row.id === this.busy, ...this.mediaOf(row) })), ...[...this.recent.values()].map(entry => entry.item)]
+  }
+  // B269: a row's media, and — for a picture read back after a restart — where its bytes are read from when drawn.
+  private mediaOf(row: StoredInquirySend): { media?: import('../../shared/delivery').LocalMedia } {
+    const media = mediaOfFields(row.message, row.media ? [{ index: 0, name: typeof row.message.fileName === 'string' ? row.message.fileName : '', size: row.media.size }] : [])
+    if (!media) return {}
+    const stored = row.media
+    if (media.kind === 'image' && stored && !row.mediaUrl) this.sendingMedia?.want(row.id, 1, async () => {
+      try { const bytes = await this.store<Uint8Array | null>({ kind: 'inquiry-send-media', id: row.id }); return bytes ? { bytes, contentType: inquiryContentType(stored.extension) } : null }
+      catch { return null }
+    })
+    return { media }
   }
   private publish(): void { if (!this.closed) this.changed() }
   private async store<T = void>(command: InquirySendCommand): Promise<T> {
@@ -76,10 +90,14 @@ export class InquirySends {
     if (!this.loaded) await this.load()
     const media = request.media ? { extension: request.media.extension, noun: request.media.noun, urlInText: request.media.urlInText, size: request.media.bytes.byteLength,
       sha256: createHash('sha256').update(request.media.bytes).digest('hex'), md5: createHash('md5').update(request.media.bytes).digest('base64') } : null
+    // B269: the picture it is drawn from, kept before it is queued (the row may be drawn before the write answers), let go
+    // if it is not.
+    if (request.message.type === 'image' && request.media) this.sendingMedia?.keepPictures(request.id, [{ bytes: request.media.bytes, contentType: inquiryContentType(request.media.extension) }])
     try {
       await this.store({ kind: 'inquiry-send-enqueue', id: request.id, inquiryId: request.inquiryId, payload: { message: request.message, preview: request.preview, media },
         ...(request.media ? { bytes: request.media.bytes } : {}), createdAt: Date.now() })
     } catch (error) {
+      this.sendingMedia?.forget(request.id)
       if (error instanceof DeliveryCommandFailure && error.code === 'capacity') throw new Error(tr('보내는 중인 메시지가 너무 많습니다. 앞의 메시지가 간 뒤 다시 보내 주세요.'))
       throw error
     }
@@ -197,7 +215,7 @@ export class InquirySends {
       await this.network.send(payload, signal, validate)
       await this.store({ kind: 'inquiry-send-remove', id: row.id })
       this.retries.delete(row.id)
-      this.recent.set(row.id, { item: { id: row.id, inquiryId: row.inquiryId, kind: row.preview.kind, text: row.preview.text, at: row.createdAt, state: 'sent', reason: '', busy: false }, until: Date.now() + sentVisibleMs })
+      this.recent.set(row.id, { item: { id: row.id, inquiryId: row.inquiryId, kind: row.preview.kind, text: row.preview.text, at: row.createdAt, state: 'sent', reason: '', busy: false, ...this.mediaOf(row) }, until: Date.now() + sentVisibleMs })
       if (this.expiry) clearTimeout(this.expiry)
       this.expiry = setTimeout(() => { this.expiry = null; this.publish() }, sentVisibleMs + 50)
     } catch (error) {
@@ -223,4 +241,8 @@ export class InquirySends {
       this.retries.set(row.id, { attempt, at: Date.now() + inquiryRetryDelay(attempt) })
     }
   }
+}
+// The type of the bytes an inquiry message carries, by the extension it is stored under.
+function inquiryContentType(extension: InquirySendMedia['extension']): string {
+  return { jpg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif', mp4: 'video/mp4', mov: 'video/quicktime', bin: 'application/octet-stream', m4a: 'audio/mp4' }[extension]
 }

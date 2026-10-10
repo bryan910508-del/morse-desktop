@@ -9,9 +9,10 @@ export interface LocalOutgoing {
   forwarded?: boolean
   storyReply?: boolean
   voicePreview?: import('./voice-queue-preview').VoiceQueueMetadata
-  // B264: a sticker this device is sending, drawn as that sticker from the bytes already here (tdesktop draws the local
-  // message with its document — api_sending.cpp:182, :284).
-  sticker?: import('./stickers').StickerDraw
+  // B269: the media of a message this device is sending, drawn as the server's copy will be — the same attachments,
+  // their sizes and placeholder — from the bytes already here (tdesktop addNewLocalMessage(…, local.media),
+  // api_sending.cpp:1227-1240). B264's sticker is one of its kinds.
+  media?: LocalMedia
   createdAt: number
   // 'sent': the server has it and the history has not shown it yet (see OutboxPump.sent).
   state: DeliveryState | 'sent'
@@ -47,4 +48,13 @@ export interface PendingDirect {
   // The pair's dialog exists under another id (a chat made before ids were derived from the two accounts,
   // or by a released client): this row is not listed, and a window showing it moves to that dialog.
   supersededBy?: string
+}
+// What a sending message's media is, read from its queued row: the kind and parts the server's copy will have, and the
+// fields its bubble is drawn from (the size, the placeholder, a video's length, a file's name and size, the caption).
+export interface LocalMedia {
+  kind: 'image' | 'video' | 'file' | 'sticker'
+  parts: { index: number; name: string; size: number }[]
+  caption: string
+  metadata: import('./media-metadata').MediaMetadata
+  circular?: true
 }

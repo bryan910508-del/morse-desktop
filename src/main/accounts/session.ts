@@ -136,7 +136,7 @@ import { downloadMedia } from '../media/download-media'
 import { ContactFlags } from './contact-flags'
 import type { PostLiker, PostLikersRequest, PostLikersSnapshot } from '../../shared/post-likers'
 import { maxStickerBytes, stickerContentType, stickerKind, stickerLibraryURL, type StickerDraw, type StickerItem, type StickerKind } from '../../shared/stickers'
-import { StickerDraws } from '../messaging/sticker-draws'
+import { SendingMedia } from '../messaging/sending-media'
 import type { ContactFlagCommand } from '../storage/contact-flag-table'
 import { generalCategoryId, type ForumCategory } from '../../shared/forum'
 import { deleteTopicMessages, TopicDeletions, TopicDeletionStop } from './forum-topic-deletion'
@@ -302,7 +302,8 @@ export class AccountSession {
   // Messages sent into inquiry rooms that the server has not accepted yet, kept on the device (inquiry-sends.ts).
   readonly inquirySends: InquirySends
   // B264: the picture each sticker this device sent is drawn from, by message id (messaging/sticker-draws.ts).
-  private readonly stickerDraws = new StickerDraws()
+  // B269: what each message this device sends is drawn from, and its server copy after it (B264's stickers among them).
+  private readonly sendingMedia = new SendingMedia()
   // Likes, new words and deletes of channel posts and comments, kept until the server shows them (channel-operations.ts).
   readonly channelOperations: ChannelOperations
   readonly historyClears: HistoryClears
@@ -416,7 +417,7 @@ export class AccountSession {
           if (replies.length) this.localReplies.set(chatId, replies); else this.localReplies.delete(chatId)
           if (this.selected?.dialog.summary.id === chatId) this.selected.localRepliesChanged()
         }
-        events.outgoing(chatId, this.withStickerDraws(snapshot))
+        events.outgoing(chatId, snapshot)
       }, () => { if (!this.closed) { this.followPeople(); events.changed() } }, newChatAutoDelete)
     void this.userpics.load().then(() => { if (!this.closed) { this.dialogAvatars.prune(); this.contacts.listAvatars.prune(); events.changed() } })
     this.draftReply = new ReplyDraft(credentials.signal, command => this.delivery.replyState(command),
@@ -632,6 +633,7 @@ export class AccountSession {
         read: id => this.delivery.stickerState<{ kind: StickerKind; data: Uint8Array } | null>({ kind: 'sticker-read', id }),
         clear: () => this.delivery.stickerState({ kind: 'stickers-clear' }) })
     this.delivery.stickerRefused = (chatId, id, reason, ref) => { void this.stickerReferenceRefused(chatId, id, reason, ref).catch(() => {}) }
+    this.delivery.sendingMedia = this.sendingMedia
     this.hiddenMessages = new HiddenMessages(<T,>(command: HiddenMessageCommand) => this.delivery.hiddenMessageState<T>(command),
       () => { if (!this.closed) this.selected?.hiddenChanged() })
     const connected = (): void => { if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('계정 연결을 확인해 주세요.')) }
@@ -648,6 +650,7 @@ export class AccountSession {
     this.twoStep = new TwoStepSettingsApi(profile.uid, credentials, connected)
     this.inquirySends = new InquirySends(profile.uid, credentials, connected, command => this.delivery.inquirySendState(command), () => { if (!this.closed) events.changed() })
     this.inquirySends.stickerBytes = ref => this.stickerReferenceBytes(ref)
+    this.inquirySends.sendingMedia = this.sendingMedia
     this.inquirySends.stickerReferenceOff = () => this.stickerLibrary.referenceSendRefused()
     void Promise.resolve().then(() => this.inquirySends.load()).catch(() => {})
     this.channelOperations = new ChannelOperations(profile.uid, credentials, connected, command => this.delivery.channelOperationState(command), () => { if (!this.closed) events.changed() },
@@ -1813,9 +1816,15 @@ export class AccountSession {
   // themselves passes no limits and is held only by what a preview can keep.
   photoPreview(chatId: string, request: MediaRequest, limits: AutoDownloadLimits | null): Promise<string | null> {
     if (this.closed || this.locked) return Promise.resolve(null)
-    if (!limits) return this.photoPreviews.load(chatId, request)
-    const dialog = this.index.get(chatId)?.summary ?? null
-    return this.photoPreviews.load(chatId, request, autoDownloadLimit({ autoDownloadPhotos: limits }, autoDownloadSource(dialog, !dialog)))
+    const load = (): Promise<string | null> => {
+      if (!limits) return this.photoPreviews.load(chatId, request)
+      const dialog = this.index.get(chatId)?.summary ?? null
+      return this.photoPreviews.load(chatId, request, autoDownloadLimit({ autoDownloadPhotos: limits }, autoDownloadSource(dialog, !dialog)))
+    }
+    // B269 (tdesktop UpdateCloudFile, data_cloud_file.cpp:200-216): a picture this device is sending, and the server's
+    // copy of it, are drawn from the bytes sent — no download, and no limit holds back one's own picture.
+    const sending = this.sendingMedia.picture(request.messageId, request.index)
+    return sending ? sending.then(url => url ?? load()) : load()
   }
   // The placeholder kept from a picture this account already fetched, for a bubble whose preview has
   // since been evicted. It never fetches: a photo held back by the automatic download limit is not
@@ -1828,13 +1837,14 @@ export class AccountSession {
   // small and Telegram loads it with the message, so no automatic-download limit holds it back.
   stickerPreview(chatId: string, request: MediaRequest): Promise<{ url: string; video: boolean } | null> {
     if (this.closed || this.locked) return Promise.resolve(null)
-    // B264: the server's copy of a sticker this device sent keeps the picture it was sent from — no second download and
-    // no spinner (tdesktop: the local message and the server's are the same document).
-    const sent = this.stickerDraws.get(request.messageId)
+    // B264: the sticker this device is sending, and the server's copy of it, keep the picture it was sent from — no second
+    // download and no spinner (tdesktop: the local message and the server's are the same document).
+    const sent = this.sendingMedia.sticker(request.messageId)
     if (sent) return Promise.resolve(sent)
     return this.photoPreviews.loadSticker(chatId, request)
   }
   photoPreviewResponse(token: string, request: Request): Response { return this.photoPreviews.response(token, request) }
+  sendingMediaResponse(token: string, request: Request): Response { return this.sendingMedia.response(token, request) }
   // Telegram's row menu keeps these apart: "Clear history" leaves the room in the list, "Delete
   // chat" removes it. For me only is this device's hide; for everyone follows iOS performDelete -
   // a private room's history is revoked through the callable and then the room document goes, and a
@@ -2104,9 +2114,9 @@ export class AccountSession {
   // B264: the picture a sticker is sent from is noted before it is queued — the sending row is drawn from the first
   // snapshot on — and dropped if it was not queued.
   private async drawingSticker<T>(messageId: string, draw: StickerDraw, send: () => Promise<T>): Promise<T> {
-    this.stickerDraws.note(messageId, draw)
+    this.sendingMedia.noteSticker(messageId, draw)
     try { return await send() }
-    catch (error) { this.stickerDraws.forget(messageId); throw error }
+    catch (error) { this.sendingMedia.forget(messageId); throw error }
   }
   // The same sticker sent into a 1:1 inquiry room, from the favourites or recents or from an installed set.
   async sendInquirySticker(request: import('../../shared/channel-inquiries').InquiryTargetRequest, stickerId: string): Promise<'queued'> {
@@ -2455,11 +2465,8 @@ export class AccountSession {
   }
   notificationHint(hint: NotificationHint): void { this.notifications.receive(hint) }
   notificationPreferencesChanged(): void { this.notifications.pause(); this.notifications.resume() }
-  async outgoing(chatId: string): Promise<OutgoingSnapshot> { return this.withStickerDraws(await this.delivery.snapshot(chatId)) }
-  // B264: a sticker of this device on its way carries its picture.
-  private withStickerDraws(snapshot: OutgoingSnapshot): OutgoingSnapshot { return { ...snapshot, items: this.stickerDraws.decorate(snapshot.items) } }
-  // The inquiry rooms' sending rows, a sticker with its picture (B264).
-  inquirySendItems(): ReturnType<InquirySends['items']> { return this.stickerDraws.decorate(this.inquirySends.items()) }
+  async outgoing(chatId: string): Promise<OutgoingSnapshot> { return this.delivery.snapshot(chatId) }
+  inquirySendItems(): ReturnType<InquirySends['items']> { return this.inquirySends.items() }
   async startStoryCaptionDraft(target: StoryCaptionDraftStart): Promise<StoryCaptionDraftRecord> {
     const draft = this.ownStories.captionDraftSource(target)
     const validate = (): void => { this.ownStories.captionDraftSource(target) }
@@ -2782,7 +2789,7 @@ export class AccountSession {
   async close(purge: boolean): Promise<void> {
     if (this.closed) return
     this.keptHistories.clear(); this.settleListed(false)
-    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stickerLibrary.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
+    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.sendingMedia.clear(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stickerLibrary.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
     this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); 
     await storyClose
     await noteClose

@@ -511,7 +511,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     const failed = item.state === 'failed' || item.state === 'upload-failed'
     popupMenu.open(point, [
       item.retryable ? { label: tr('다시 보내기'), icon: <RotateCcw size={18} />, onSelect: () => { void window.morse.retryMessage(accountUid, chatId, item.id).catch(reason => controller.toast(errorText(reason, tr('다시 보내지 못했습니다.')), 'error')) } } : null,
-      item.text && !item.sticker ? { label: tr('텍스트 복사'), icon: <Copy size={18} />, onSelect: () => { controller.toast(copyText(item.text) ? tr('복사했습니다.') : tr('복사하지 못했습니다.')) } } : null,
+      // B269: a medium's file name is not its text; its caption is.
+      (item.media ? item.media.caption : item.text) ? { label: tr('텍스트 복사'), icon: <Copy size={18} />, onSelect: () => { controller.toast(copyText(item.media ? item.media.caption : item.text) ? tr('복사했습니다.') : tr('복사하지 못했습니다.')) } } : null,
       // A10 §4 (Telegram R-56): refused because the operator restricted or banned this account — the operator's mail.
       item.sanction ? { label: tr('자세히·이의 제기'), icon: <Info size={18} />, onSelect: () => { void window.morse.operatorMail(accountUid, item.sanction!, item.sanctionUntil ?? null).catch(reason => controller.toast(errorText(reason, tr('메일을 열지 못했습니다.')), 'error')) } } : null,
       // A sent item is already the server's message; only the history's own menu changes it.

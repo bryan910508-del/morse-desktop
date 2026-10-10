@@ -3199,6 +3199,10 @@ async function configureRenderer(): Promise<void> {
       if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
       return accounts.active?.stickerResponse(url.pathname.slice('/__sticker/'.length), request) ?? new Response(null, { status: 403 })
     }
+    if (url.hostname === 'app' && url.pathname.startsWith('/__sending-media/')) {
+      if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
+      return accounts.active?.sendingMediaResponse(url.pathname.slice('/__sending-media/'.length), request) ?? new Response(null, { status: 403 })
+    }
     if (url.hostname === 'app' && url.pathname.startsWith('/__sticker-pack/')) {
       if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
       const [setId, itemId, ...rest] = url.pathname.slice('/__sticker-pack/'.length).split('/')
