@@ -29,7 +29,7 @@ import { systemNoticeShortcut } from '../../../shared/system-notices'
 import { showSessionsBox } from '../settings/security-boxes'
 import { showTwoStepBox } from '../settings/two-step-box'
 import { albumPlaceholder } from '../../../shared/media-metadata'
-import { albumMosaic } from './album-mosaic'
+import { albumMosaic, singleMediaWidth } from './album-mosaic'
 import { fileKey, setFileState } from './file-states'
 import type { FileState } from '../../../shared/media'
 
@@ -382,13 +382,6 @@ export function Attachments({ accountUid, chatId, message, own, onOpen, local }:
   return <div className={`media-grid ${mosaic ? 'mosaic' : `count-${Math.min(parts.length, 4)}`}${local ? ' local-media' : ''}`} style={mosaic ? { aspectRatio: `${mosaic.width} / ${mosaic.height}` } : single && ratio ? { width: singleMediaWidth(ratio) } : undefined}>{parts.map(part => <MediaTile key={part.index} accountUid={accountUid} chatId={chatId} message={message} part={part} single={single} ratio={ratio} place={mosaic?.tiles[part.index]}
     label={part.blind ? tr('가려진 {0}', [messageKindLabel(part.kind)]) : part.kind === 'video' && metadata?.videoDuration !== undefined ? formatDuration(metadata.videoDuration) : message.circular && part.kind === 'video' ? tr('원형 영상') : messageKindLabel(part.kind)}
     onOpen={onOpen} />)}{ring}</div>
-}
-
-// B310 (tdesktop Photo::countOptimalSize sizes the bubble to the picture): one photo or video is as wide as it is drawn —
-// a tall one held to the 420 px height is narrower than the media column, and the group narrows with it rather than
-// leaving the rest of the column empty beside it.
-export function singleMediaWidth(ratio: number): string {
-  return `min(320px, 56vw, ${Math.max(100, Math.round(420 * ratio))}px)`
 }
 
 // The link under the pointer when a message menu opens, for Telegram's «링크 복사» / «이메일 복사».

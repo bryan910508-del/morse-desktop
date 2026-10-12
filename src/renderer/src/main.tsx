@@ -17,6 +17,7 @@ import { MainWindow } from './window/main-window'
 import { openLink } from './app/links'
 import { language, tr } from '../../shared/i18n'
 import { useChannelOperationNotices } from './channels/channel-operations'
+import { installTapRecorder } from './app/tap-recorder'
 
 function takeOpenLink(): void {
   void window.morse.takeOpenLink().then(url => {
@@ -86,6 +87,7 @@ function App() {
 }
 
 preventFileDropNavigation()
+installTapRecorder(lost => { void window.morse.recordLostTap(lost).catch(() => {}) })
 desktop.start()
 document.documentElement.lang = language()
 createRoot(document.getElementById('root')!).render(<ErrorBoundary><App /></ErrorBoundary>)

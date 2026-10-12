@@ -18,7 +18,12 @@ export interface NotificationHost {
   show(content: NotificationContent, click: () => void, dismiss: () => void): (() => void) | null
   open(chatId: string): void
   report(message: string): void
+  // rh-3: why a shown notification was taken back (tap-check.log) — a reason code, never the chat or the message.
+  withdrawn?(reason: string): void
 }
+// Who asked to look at the shown notifications again: the chat list's rebuild (a read on another device lands here),
+// the window coming into use, a chat opened, the preferences, or a reconnect.
+export type ResumeCause = 'list' | 'focus' | 'history' | 'preferences' | 'other'
 interface Context { ready: boolean; reader: FirestoreReader | null; dialogs: Map<string, ReadDialog> }
 interface Pending extends NotificationHint { at: number }
 interface Displayed { doc: FirestoreDocument; position: MessagePosition; version: string; close(): void; stop(): void; timer?: ReturnType<typeof setTimeout> }
@@ -57,17 +62,26 @@ export class AccountNotifications {
       !this.host.locked() && this.host.preferences().notifications
   }
   private message(doc: FirestoreDocument, chatId: string, suppressForeground = true): ChatMessage | null {
+    const verdict = this.judge(doc, chatId, suppressForeground)
+    return typeof verdict === 'string' ? null : verdict
+  }
+  // The message, or the reason it is not to be shown (rh-3: the reason goes into tap-check.log when a shown one is taken back).
+  private judge(doc: FirestoreDocument, chatId: string, suppressForeground: boolean): ChatMessage | string {
     const dialog = this.context().dialogs.get(chatId)
-    if (!dialog || dialog.summary.kind === 'secret' || dialog.summary.muted || !dialog.summary.participantUids.includes(this.uid)) return null
+    if (!dialog) return 'no-dialog'
+    if (dialog.summary.kind === 'secret') return 'secret'
+    if (dialog.summary.muted) return 'muted'
+    if (!dialog.summary.participantUids.includes(this.uid)) return 'not-participant'
     const message = decodeMessage(doc, dialog)
     // A channel post arrives as the server's «channelPost» card in the channel's discussion chat.
     const channelPost = Boolean(message && message.kind === 'channelPost' && message.system && dialog.summary.discussion)
     // MorsePushPreferences: 1:1, group and channel notifications apart, and none while the app is in use when that is off.
     const preferences = this.host.preferences()
-    if ((channelPost ? !preferences.notifyChannel : dialog.summary.kind === 'group' ? !preferences.notifyGroup : !preferences.notifyPersonal) ||
-      (!preferences.inAppNotifications && this.host.appActive())) return null
-    if (!message || message.senderId === this.uid || message.encrypted || (message.system && !channelPost) || !message.readEligible || message.kind === 'unsupported' ||
-        readCovers(dialog.summary.readPositions[this.uid], readCursor(message.position)) || (suppressForeground && this.host.foreground(chatId))) return null
+    if (channelPost ? !preferences.notifyChannel : dialog.summary.kind === 'group' ? !preferences.notifyGroup : !preferences.notifyPersonal) return 'kind-off'
+    if (!preferences.inAppNotifications && this.host.appActive()) return 'in-app-off'
+    if (!message || message.senderId === this.uid || message.encrypted || (message.system && !channelPost) || !message.readEligible || message.kind === 'unsupported') return 'not-notifiable'
+    if (readCovers(dialog.summary.readPositions[this.uid], readCursor(message.position))) return 'read-position'
+    if (suppressForeground && this.host.foreground(chatId)) return 'foreground'
     return message
   }
   private kick(): void {
@@ -110,8 +124,8 @@ export class AccountNotifications {
     if (!this.message(doc, hint.chatId)) return
     const previous = this.displayed.get(hint.chatId)
     if (previous && comparePosition(previous.position, message.position) >= 0) return
-    this.remove(hint.chatId)
-    if (this.displayed.size >= 12) this.remove(this.displayed.keys().next().value!)
+    this.remove(hint.chatId, 'replaced')
+    if (this.displayed.size >= 12) this.remove(this.displayed.keys().next().value!, 'overflow')
     const preview = this.host.preferences().showNotificationPreview
     const dialog = this.context().dialogs.get(hint.chatId)!
     const labels: Partial<Record<ChatMessage['kind'], string>> = { image: tr('사진'), video: tr('동영상'), voice: tr('음성 메시지'), file: tr('파일'), sticker: tr('스티커'), location: tr('위치'), event: tr('이벤트'), channelPost: tr('게시물', [], 'kind') }
@@ -124,50 +138,59 @@ export class AccountNotifications {
       body: post ? preview ? clean(post.body, 240) : tr('새 게시물이 올라왔어요') : preview ? clean(`${message.senderName ? `${message.senderName}: ` : ''}${body}`, 240) : tr('새 메시지가 도착했습니다.'), silent: message.silent === true || !this.host.preferences().notificationSound },
     () => {
       if (this.displayed.get(hint.chatId) !== entry || !this.active(signal) || !this.message(entry.doc, hint.chatId, false)) return
-      this.remove(hint.chatId); this.host.open(hint.chatId)
-    }, () => { if (this.displayed.get(hint.chatId) === entry) this.remove(hint.chatId) })
-    if (!close || this.displayed.get(hint.chatId) !== entry) { close?.(); this.remove(hint.chatId); return }
+      this.remove(hint.chatId, 'clicked'); this.host.open(hint.chatId)
+    }, () => { if (this.displayed.get(hint.chatId) === entry) this.remove(hint.chatId, 'system-closed') })
+    if (!close || this.displayed.get(hint.chatId) !== entry) { close?.(); this.remove(hint.chatId, 'not-shown'); return }
     entry.close = close
     // Only displayed notifications own document subscriptions; history loading
     // never creates candidates. Edits/deletion withdraw an outdated preview.
     let loadingCount = 0
+    const next = (doc: FirestoreDocument | undefined): ChatMessage | string => {
+      if (!doc) return 'gone'
+      const verdict = this.judge(doc, hint.chatId, true)
+      return typeof verdict === 'string' ? verdict : verdict.version !== entry.version ? 'edited' : verdict
+    }
     entry.stop = reader.watch({ documents: { documents: [name] } }, signal, {
       snapshot: rows => {
         if (this.displayed.get(hint.chatId) !== entry) return
         try {
-          const next = rows.get(name), decoded = next && this.message(next, hint.chatId)
-          if (!decoded || decoded.version !== entry.version) this.remove(hint.chatId)
-          else entry.doc = next!
-        } catch { this.remove(hint.chatId) }
+          const verdict = next(rows.get(name))
+          if (typeof verdict === 'string') this.remove(hint.chatId, `watch:${verdict}`)
+          else entry.doc = rows.get(name)!
+        } catch { this.remove(hint.chatId, 'watch:error') }
       }, state: state => {
         // The initial loading event is synchronous. Any later reset/retry loses
         // preview authority and withdraws the banner until a new message arrives.
-        if ((state === 'error' || (state === 'loading' && ++loadingCount > 1)) && this.displayed.get(hint.chatId) === entry) this.remove(hint.chatId)
+        if ((state === 'error' || (state === 'loading' && ++loadingCount > 1)) && this.displayed.get(hint.chatId) === entry) this.remove(hint.chatId, state === 'error' ? 'watch:error' : 'watch:reset')
       }
     }, 1)
     if (this.displayed.get(hint.chatId) !== entry) { entry.stop(); return }
     const until = Math.min(60 * 60 * 1000, Math.max(1, (expiry(doc) ?? Date.now() + 60 * 60 * 1000) - Date.now()))
-    entry.timer = setTimeout(() => { if (this.displayed.get(hint.chatId) === entry) this.remove(hint.chatId) }, until)
+    entry.timer = setTimeout(() => { if (this.displayed.get(hint.chatId) === entry) this.remove(hint.chatId, 'expired') }, until)
   }
-  private remove(chatId: string): void {
+  private remove(chatId: string, reason: string): void {
     const item = this.displayed.get(chatId)
     if (!item) return
     this.displayed.delete(chatId); clearTimeout(item.timer); item.stop(); item.close()
+    this.host.withdrawn?.(reason)
   }
-  resume(): void {
+  resume(cause: ResumeCause = 'other'): void {
     for (const [chatId, entry] of this.displayed) {
-      try { if (!this.active(this.generation.signal) || !this.message(entry.doc, chatId)) this.remove(chatId) }
-      catch { this.remove(chatId) }
+      try {
+        if (!this.active(this.generation.signal)) { this.remove(chatId, `resume:${cause}:inactive`); continue }
+        const verdict = this.judge(entry.doc, chatId, true)
+        if (typeof verdict === 'string') this.remove(chatId, `resume:${cause}:${verdict}`)
+      } catch { this.remove(chatId, `resume:${cause}:error`) }
     }
     this.kick()
   }
   observed(chatId: string, position: MessagePosition): void {
     const item = this.displayed.get(chatId)
-    if (item && readCovers(readCursor(position), readCursor(item.position))) this.remove(chatId)
+    if (item && readCovers(readCursor(position), readCursor(item.position))) this.remove(chatId, 'read-here')
   }
   pause(): void {
     this.generation.abort(); this.generation = new AbortController(); clearTimeout(this.wake); this.wake = undefined
-    this.pending.clear(); for (const chatId of this.displayed.keys()) this.remove(chatId)
+    this.pending.clear(); for (const chatId of [...this.displayed.keys()]) this.remove(chatId, 'paused')
   }
   async close(): Promise<void> { this.closed = true; this.pause(); await this.task; this.recent.clear() }
 }

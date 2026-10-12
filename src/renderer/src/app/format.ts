@@ -41,10 +41,15 @@ export function duration(seconds: number): string {
   const total = Math.max(0, Math.round(seconds)), minutes = Math.floor(total / 60)
   return `${minutes}:${String(total % 60).padStart(2, '0')}`
 }
+// tdesktop Ui::FormatSizeText (ui/text/format_values.cpp:54-68): under 1 KB in bytes, then KB and MB with one decimal,
+// cut rather than rounded (1023 bytes are «1023 B», 1535 are «1.4 KB»). Morse adds GB the same way for large files.
 export function bytes(size: number): string {
-  if (size >= 1024 * 1024 * 1024) return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`
-  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`
-  return `${Math.max(1, Math.ceil(size / 1024))} KB`
+  const whole = Math.max(0, Math.floor(size))
+  const tenths = (unit: number, name: string): string => { const value = Math.floor(whole * 10 / unit); return `${Math.floor(value / 10)}.${value % 10} ${name}` }
+  if (whole >= 1024 * 1024 * 1024) return tenths(1024 * 1024 * 1024, 'GB')
+  if (whole >= 1024 * 1024) return tenths(1024 * 1024, 'MB')
+  if (whole >= 1024) return tenths(1024, 'KB')
+  return `${whole} B`
 }
 // Morse iOS AvatarView: the first character of the name, uppercased.
 export function initials(name: string): string {

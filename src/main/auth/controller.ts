@@ -611,6 +611,7 @@ export class AuthenticationController {
     }
     const socket: SocketPath = {
       whenSendable: (ms, signal) => owner.transport.whenSendable(ms, signal),
+      notSendableSince: () => owner.transport.notSendableSince(),
       send: (wire, signal) => owner.transport.send(wire, signal),
       markRead: (chatId, target, signal) => owner.transport.markRead(chatId, record.profile.uid, target, signal)
     }

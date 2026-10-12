@@ -5,6 +5,7 @@ import { MorseCallableFailure } from '../network/morse-callable'
 import type { MessagePosition, SendAcknowledgement, SendWire } from '../../shared/model'
 import type { ReadAcknowledgement } from '../../shared/read-receipts'
 import { tr } from '../../shared/i18n'
+import { systemNetwork } from '../network/reachability'
 
 // A15 (contracts/A15-send-fallback.md §3.2-3.3, user «권장대로» 10-03 17:5x; inbox B95 — in Russia the message server's
 // socket does not carry, while Google's paths do): a message goes over the socket when it can, and otherwise, under
@@ -18,6 +19,8 @@ export const socketWaitMs = 5000
 export interface SocketPath {
   // Resolves true as soon as a message can go over the socket, false when it cannot within the time.
   whenSendable(ms: number, signal: AbortSignal): Promise<boolean>
+  // Since when the socket has been unable to send, null while it can. Without it the wait counts from the send.
+  notSendableSince?(): number | null
   send(wire: SendWire, signal: AbortSignal): Promise<SendAcknowledgement>
   markRead(chatId: string, target: MessagePosition, signal: AbortSignal): Promise<ReadAcknowledgement>
 }
@@ -31,9 +34,33 @@ export type PathNote = (detail: 'send socket-not-ready' | 'send socket-failed' |
 // is the socket's refusal (B88's DIRECT_CHAT_EXISTS with its room included). A request that never left goes again as one
 // that never left; anything else the callable says — no answer, a timeout, UNAUTHENTICATED — is «sending, try again»
 // (§3.3), which the outbox does under the same id after checking the server (uncertain).
+// The system's word on the network (reachability.ts SystemNetwork).
+export interface NetworkPath {
+  readonly online: boolean
+  readonly onlineSince: number
+  whenOnline(signal: AbortSignal): Promise<void>
+}
+
+// Three apps, one rule (review 10-12 21:5x): the five seconds count from the moment the network is there and the socket
+// cannot send — the later of the socket losing its way and the network coming back. While there is no network nothing
+// counts and nothing goes by the callable; a network that carries everything but the socket gives it five seconds, as
+// before. A wait the network leaves in the middle starts again from its return.
+async function socketReady(socket: SocketPath, network: NetworkPath, signal: AbortSignal, now: () => number = Date.now): Promise<boolean> {
+  const begun = now()
+  for (;;) {
+    if (!network.online) { await network.whenOnline(signal); if (signal.aborted) return false }
+    const since = socket.notSendableSince ? socket.notSendableSince() : begun
+    if (since === null) return true
+    const start = Math.max(since, network.onlineSince)
+    const ready = await socket.whenSendable(Math.max(0, socketWaitMs - (now() - start)), signal)
+    if (ready || signal.aborted) return ready
+    if (network.online && network.onlineSince <= start) return false
+  }
+}
+
 async function socketFirst<T>(socket: SocketPath, signal: AbortSignal, bySocket: () => Promise<T>, byCallable: () => Promise<T>,
-  what: 'send' | 'read', note?: PathNote): Promise<T> {
-  if (await socket.whenSendable(socketWaitMs, signal)) {
+  what: 'send' | 'read', note?: PathNote, network: NetworkPath = systemNetwork): Promise<T> {
+  if (await socketReady(socket, network, signal)) {
     try { return await bySocket() }
     catch (error) { if (error instanceof ServerRejection || signal.aborted) throw error }
     note?.(`${what} socket-failed`)
@@ -46,13 +73,14 @@ async function socketFirst<T>(socket: SocketPath, signal: AbortSignal, bySocket:
   }
 }
 
-export function sendWithFallback(wire: SendWire, signal: AbortSignal, socket: SocketPath, callable: CallablePath, note?: PathNote): Promise<SendAcknowledgement> {
+export function sendWithFallback(wire: SendWire, signal: AbortSignal, socket: SocketPath, callable: CallablePath, note?: PathNote,
+  network?: NetworkPath): Promise<SendAcknowledgement> {
   return socketFirst(socket, signal, () => socket.send(wire, signal),
-    async () => committedSendAck(await callable('sendMorseMessage', { ...wire }, signal), wire), 'send', note)
+    async () => committedSendAck(await callable('sendMorseMessage', { ...wire }, signal), wire), 'send', note, network)
 }
 
 export function markReadWithFallback(chatId: string, readerId: string, target: MessagePosition, signal: AbortSignal, socket: SocketPath,
-  callable: CallablePath, note?: PathNote): Promise<ReadAcknowledgement> {
+  callable: CallablePath, note?: PathNote, network?: NetworkPath): Promise<ReadAcknowledgement> {
   return socketFirst(socket, signal, () => socket.markRead(chatId, target, signal),
-    async () => committedReadAck(await callable('markMorseRead', { chatId, messageId: target.id }, signal), chatId, readerId, target), 'read', note)
+    async () => committedReadAck(await callable('markMorseRead', { chatId, messageId: target.id }, signal), chatId, readerId, target), 'read', note, network)
 }

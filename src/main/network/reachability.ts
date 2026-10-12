@@ -46,12 +46,42 @@ export class Reachability {
 // One network for the whole app, as Telegram has one base::NetworkReachability.
 export const reachability = new Reachability()
 
+// Whether the system says there is a network, and since when (A15: the socket's five seconds count only while it does).
+// Until the first reading the network is taken to be there, as the app starts with requests going out.
+export class SystemNetwork {
+  private state = true
+  private since: number
+  private readonly waiters = new Set<() => void>()
+  constructor(private readonly now: () => number = Date.now) { this.since = now() }
+  get online(): boolean { return this.state }
+  // The moment the network last came back (or this reading began).
+  get onlineSince(): number { return this.since }
+  set(online: boolean): void {
+    if (online === this.state) return
+    this.state = online
+    if (!online) return
+    this.since = this.now()
+    for (const wake of [...this.waiters]) wake()
+  }
+  // Resolves once the network is there, or when the signal ends.
+  whenOnline(signal: AbortSignal): Promise<void> {
+    if (this.state || signal.aborted) return Promise.resolve()
+    return new Promise(resolve => {
+      const done = (): void => { this.waiters.delete(done); signal.removeEventListener('abort', done); resolve() }
+      this.waiters.add(done); signal.addEventListener('abort', done, { once: true })
+    })
+  }
+}
+export const systemNetwork = new SystemNetwork()
+
 // The system's own word (base::NetworkReachability::availableChanges): Electron gives the main process no event for
 // it, so Chromium's state (net.isOnline) is read every two seconds, and offline turning online is a return.
-export function watchSystemOnline(isOnline: () => boolean, returned: () => void, every = 2000): () => void {
+export function watchSystemOnline(isOnline: () => boolean, returned: () => void, every = 2000, network: SystemNetwork = systemNetwork): () => void {
   let online = isOnline()
+  network.set(online)
   const timer = setInterval(() => {
     const now = isOnline()
+    network.set(now)
     if (now && !online) returned()
     online = now
   }, every)

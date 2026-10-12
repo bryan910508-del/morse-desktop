@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { videoSendPreset } from '../../src/shared/photo-quality'
 import { schemeLinkTarget } from '../../src/shared/text-links'
 import { advancedChannelPosts } from '../../src/main/accounts/channel-post-notices'
-import { listTypingDocumentNames, listTypingState } from '../../src/main/accounts/chat-typing'
+import { listTypingRooms, listTypingState } from '../../src/main/accounts/chat-typing'
 import { AccountNotifications, channelPostNotice, type NotificationContent } from '../../src/main/messaging/notifications'
 import { defaultPreferences, type DialogSummary, type MessagePosition, type Preferences } from '../../src/shared/model'
 import type { FirestoreReader } from '../../src/main/network/firestore-rpc'
@@ -86,10 +86,10 @@ const watcher = (chatId: string, uid: string, typing: boolean, atMs: number): Fi
 
 // Telegram's dialog row send actions, read from the same watcher documents the chat header reads.
 test('the chat list follows the other people of its first chats and shows who types', () => {
-  const names = listTypingDocumentNames([dialog('memo_me', 'direct', ['me']), dialog('s1', 'secret', ['me', 'a']), dialog('c1', 'direct', ['me', 'a']), dialog('g1', 'group', ['me', 'a', 'b'])], 'me')
-  assert.deepEqual(names, [`${documents}/chats/c1/watchers/a`, `${documents}/chats/g1/watchers/a`, `${documents}/chats/g1/watchers/b`])
+  const rooms = listTypingRooms([dialog('memo_me', 'direct', ['me']), dialog('s1', 'secret', ['me', 'a']), dialog('c1', 'direct', ['me', 'a']), dialog('g1', 'group', ['me', 'b', 'a'])], 'me')
+  assert.deepEqual(rooms, [{ chatId: 'c1', peer: 'a', members: 'a,me' }, { chatId: 'g1', peer: null, members: 'a,b,me' }])
   const many = Array.from({ length: 40 }, (_, index) => dialog(`c${index}`, 'direct', ['me', 'p']))
-  assert.equal(listTypingDocumentNames(many, 'me').length, 30)
+  assert.equal(listTypingRooms(many, 'me').length, 30)
   const now = 1_750_000_000_000
   const state = listTypingState([watcher('g1', 'a', true, now - 1000), watcher('g1', 'b', true, now - 9000), watcher('c1', 'a', false, now), watcher('c1', 'me', true, now)], 'me', now)
   assert.deepEqual(state, { g1: { until: now - 1000 + 8000, uids: ['a'] } })

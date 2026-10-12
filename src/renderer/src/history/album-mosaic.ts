@@ -17,3 +17,12 @@ export function albumMosaic(count: number, metadata: MediaMetadata | null | unde
   const percent = (value: number, of: number): number => Math.round(value / of * 10000) / 100
   return { width, height, tiles: rects.map(rect => ({ left: percent(rect.x, width), top: percent(rect.y, height), width: percent(rect.width, width), height: percent(rect.height, height) })) }
 }
+
+// B310 (tdesktop Photo::countOptimalSize sizes the bubble to the picture): one photo or video is as wide as it is drawn —
+// a tall one held to the 420 px height is narrower than the media column, and the group narrows with it rather than
+// leaving the rest of the column empty beside it. B331 (Photo::countCurrentSize(newWidth), history_view_photo.cpp:272-
+// 320): the width it then gets is never more than the bubble is given where it is shown — a side pane's narrow column
+// included — which .media-grid's max-width keeps; the height follows the width drawn (aspect-ratio), never the window's.
+export function singleMediaWidth(ratio: number): string {
+  return `${Math.min(320, Math.max(100, Math.round(420 * ratio)))}px`
+}

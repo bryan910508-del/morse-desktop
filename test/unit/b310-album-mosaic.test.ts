@@ -37,3 +37,14 @@ test('the album\'s tiles as hundredths of the group; a photo of unknown size is 
   const unknown = albumMosaic(2, {})
   assert.deepEqual([unknown.width, unknown.height], [430, 213])
 })
+
+// B331 (tdesktop Photo::countCurrentSize(newWidth)): one photo's width is its own — at most 320 px, a tall one the width
+// its 420 px height gives — and nothing of the window's; the bubble it is shown in narrows it further (max-width).
+test('one photo or video is sized by itself, never by the window', async () => {
+  const { singleMediaWidth } = await import('../../src/renderer/src/history/album-mosaic')
+  assert.equal(singleMediaWidth(4 / 3), '320px')
+  assert.equal(singleMediaWidth(1), '320px')
+  assert.equal(singleMediaWidth(9 / 16), '236px')
+  assert.equal(singleMediaWidth(0.1), '100px')
+  for (const ratio of [0.2, 0.5, 1, 2, 4]) assert.doesNotMatch(singleMediaWidth(ratio), /vw|cqw/)
+})

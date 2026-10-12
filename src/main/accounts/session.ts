@@ -154,6 +154,7 @@ import { channelDiscussionReference } from './channel-discussion-reference'
 import type { HiddenChatCommand } from '../storage/hidden-chat-table'
 import { recordDeferredStep } from '../platform/deferred-diagnostics'
 import { recordHistoryStep } from '../platform/history-diagnostics'
+import { recordConnectionStep } from '../platform/connection-diagnostics'
 import { EventReminders } from './event-reminders'
 import type { EventReminderRequest } from '../../shared/chat-event'
 import { maxScheduleAheadMs, type DeferredKind, type DeferredMessagesSnapshot, type DeferredSendRequest } from '../../shared/deferred-send'
@@ -403,7 +404,8 @@ export class AccountSession {
     this.pins = new PinnedMessages(credentials.signal, command => this.delivery.bookmarkState(command), () => { if (!this.closed) events.changed() })
     this.deferred = new DeferredMessages(profile.uid, credentials.signal, () => { if (!this.closed) events.changed() })
     this.typing = new ChatTyping(profile.uid, credentials.signal, () => { if (!this.closed) events.changed() })
-    this.listTyping = new DialogTyping(profile.uid, credentials.signal, () => { if (!this.closed) events.changed() })
+    this.listTyping = new DialogTyping(profile.uid, credentials.signal, () => { if (!this.closed) events.changed() },
+      () => recordConnectionStep('list-typing-refused'))
     this.dialogAvatars = new DialogAvatars(profile.uid, credentials, chatId => this.dialogAvatarSource(chatId), () => { if (!this.closed) events.changed() },
       chatId => this.directAvatarSource(chatId), async (raw, request) => {
         const url = new URL(raw), prefix = '/__contact-personal/'
@@ -1389,7 +1391,7 @@ export class AccountSession {
     this.clearOpenUnreadMark()
     this.channelPosts.observe(this.chatRows.values(), index, this.reader, this.credentials.signal)
     this.listTyping.bind(this.locked ? [] : this.list, this.locked ? null : this.reader)
-    this.notifications.resume()
+    this.notifications.resume('list')
     this.events.changed()
     this.settleListed()
   }
@@ -1441,7 +1443,7 @@ export class AccountSession {
     this.syncPresence()
     if (!this.locked) this.draftReply.bind(dialog, this.reader)
     queueMicrotask(() => { if (this.selected === history) this.acknowledgeReaction() })
-    history.start(); this.notifications.resume(); this.clearOpenUnreadMark(); return history
+    history.start(); this.notifications.resume('history'); this.clearOpenUnreadMark(); return history
   }
   // B104: the open chat loses «안 읽음 표시» as Telegram's does on showHistory (clearsUnreadMark), once per version of the chat.
   private unreadMarkCleared = ''
@@ -2539,11 +2541,11 @@ export class AccountSession {
   readingActivityChanged(): void {
     if (this.events.canRead()) this.reads.resume(); else this.reads.pause()
     this.syncPresence()
-    this.notifications.resume()
+    this.notifications.resume('focus')
     this.channelInquiries.activity()
   }
   notificationHint(hint: NotificationHint): void { this.notifications.receive(hint) }
-  notificationPreferencesChanged(): void { this.notifications.pause(); this.notifications.resume() }
+  notificationPreferencesChanged(): void { this.notifications.pause(); this.notifications.resume('preferences') }
   async outgoing(chatId: string): Promise<OutgoingSnapshot> { return this.delivery.snapshot(chatId) }
   inquirySendItems(): ReturnType<InquirySends['items']> { return this.inquirySends.items() }
   async startStoryCaptionDraft(target: StoryCaptionDraftStart): Promise<StoryCaptionDraftRecord> {

@@ -1,4 +1,4 @@
-import type { FirestoreReader } from '../network/firestore-rpc'
+import type { FirestoreReader, WatchEvents } from '../network/firestore-rpc'
 import { documents, timestamp, type FirestoreDocument, type WireObject } from '../network/firestore-values'
 import { positionMilliseconds, type DialogSummary } from '../../shared/model'
 
@@ -74,23 +74,26 @@ export class ChatTyping {
 }
 
 // Telegram's dialog row «typing…» (Dialogs::Ui row send actions): the chat list follows the watcher documents of its
-// first chats in one listen, a 1:1 chat's other person and every other member of a small group.
+// first chats, a 1:1 chat's other person and every member of a small group.
 export const listTypingChats = 30
 export const listTypingDocuments = 500
 const listTypingGroupMembers = 100
 
-export function listTypingDocumentNames(dialogs: readonly DialogSummary[], me: string): string[] {
-  const names: string[] = []
-  let chats = 0
+// One room the list follows: the target is ChatTyping's (typingTarget), the members are what its row says now.
+export interface ListTypingRoom { chatId: string; peer: string | null; members: string }
+
+export function listTypingRooms(dialogs: readonly DialogSummary[], me: string): ListTypingRoom[] {
+  const rooms: ListTypingRoom[] = []
+  let followed = 0
   for (const dialog of dialogs) {
-    if (chats >= listTypingChats) break
+    if (rooms.length >= listTypingChats) break
     if (dialog.kind === 'secret' || dialog.id === `memo_${me}` || !dialog.participantUids.includes(me)) continue
     const others = dialog.participantUids.filter(uid => uid !== me)
-    if (!others.length || (dialog.kind === 'group' && others.length > listTypingGroupMembers) || names.length + others.length > listTypingDocuments) continue
-    for (const uid of others) names.push(`${documents}/chats/${dialog.id}/watchers/${uid}`)
-    chats++
+    if (!others.length || (dialog.kind === 'group' && others.length > listTypingGroupMembers) || followed + others.length > listTypingDocuments) continue
+    followed += others.length
+    rooms.push({ chatId: dialog.id, peer: dialog.kind !== 'group' && others.length === 1 ? others[0] ?? null : null, members: [...dialog.participantUids].sort().join(',') })
   }
-  return names
+  return rooms
 }
 
 export interface ListTypingEntry { until: number; uids: string[] }
@@ -110,35 +113,88 @@ export function listTypingState(rows: Iterable<FirestoreDocument>, me: string, n
   return state
 }
 
+// What DialogTyping needs of a FirestoreReader: one Listen stream that carries many targets (B277 ②, ListenTargets).
+export interface TypingListen {
+  add(wire: WireObject, events: WatchEvents, maxDocuments: number, maxBytes?: number): () => void
+  close(): void
+}
+export interface TypingReader { listenTargets(signal: AbortSignal): TypingListen }
+
+interface ListenedRoom { room: ListTypingRoom; rows: Map<string, FirestoreDocument>; stop: () => void }
+
+// B333: every room is its own target on one stream, as Telegram takes a send action for the one history it names
+// (Api::Updates::handleSendActionUpdate, api_updates.cpp:1095-1103) and paints it in that row alone
+// (dialogs_layout.cpp:695-696). A room the server refuses — it is no longer one this account is in, or one listen
+// asked more of the rules than they allow — ends that room only; the others go on. The list changing adds the rooms
+// that came into it and removes the ones that left, by id: a new order listens to nothing again.
 export class DialogTyping {
-  private key = ''
-  private reader: FirestoreReader | null = null
-  private rows = new Map<string, FirestoreDocument>()
-  private stop: () => void = () => {}
+  private reader: TypingReader | null = null
+  private listen: TypingListen | null = null
+  private readonly rooms = new Map<string, ListenedRoom>()
+  // A room whose listen ended, with the members its row had then: it is listened again only once they change.
+  private readonly ended = new Map<string, string>()
 
-  constructor(private readonly uid: string, private readonly signal: AbortSignal, private readonly changed: () => void) {}
+  constructor(private readonly uid: string, private readonly signal: AbortSignal, private readonly changed: () => void,
+    private readonly refused: () => void = () => {}) {}
 
-  bind(dialogs: readonly DialogSummary[], reader: FirestoreReader | null): void {
-    const names = reader ? listTypingDocumentNames(dialogs, this.uid) : []
-    const key = names.join('\n')
-    if (key === this.key && reader === this.reader) return
-    this.clear()
-    this.key = key; this.reader = reader
-    if (!reader || !names.length) return
-    let current = true
-    const stop = reader.watch({ documents: { documents: names } }, this.signal, {
-      snapshot: rows => { if (!current) return; this.rows = new Map(rows); this.changed() },
-      state: () => {}
-    }, names.length, 2 * 1024 * 1024)
-    this.stop = () => { current = false; stop() }
+  bind(dialogs: readonly DialogSummary[], reader: TypingReader | null): void {
+    if (reader !== this.reader) {
+      this.clear()
+      if (!reader) return
+      this.reader = reader
+      this.listen = reader.listenTargets(this.signal)
+    }
+    const listen = this.listen
+    if (!listen) return
+    const present = new Set(dialogs.map(dialog => dialog.id))
+    for (const chatId of [...this.ended.keys()]) if (!present.has(chatId)) this.ended.delete(chatId)
+    const wanted = new Map(listTypingRooms(dialogs, this.uid).map(room => [room.chatId, room]))
+    let dropped = false
+    for (const [chatId, listened] of [...this.rooms]) {
+      const room = wanted.get(chatId)
+      if (room && room.peer === listened.room.peer) { listened.room = room; continue }
+      listened.stop(); this.rooms.delete(chatId)
+      if (listened.rows.size) dropped = true
+    }
+    for (const room of wanted.values()) {
+      if (this.rooms.has(room.chatId)) continue
+      const members = this.ended.get(room.chatId)
+      if (members === room.members) continue
+      this.ended.delete(room.chatId)
+      this.start(listen, room)
+    }
+    if (dropped) this.changed()
   }
+
+  private start(listen: TypingListen, room: ListTypingRoom): void {
+    const listened: ListenedRoom = { room, rows: new Map(), stop: () => {} }
+    this.rooms.set(room.chatId, listened)
+    const mine = (): boolean => this.rooms.get(room.chatId) === listened
+    listened.stop = listen.add(typingTarget(room.chatId, room.peer), {
+      snapshot: rows => { if (!mine()) return; listened.rows = new Map(rows); this.changed() },
+      state: (state, error) => {
+        if (!mine() || state !== 'error') return
+        this.rooms.delete(room.chatId)
+        this.ended.set(room.chatId, listened.room.members)
+        if (error?.code === 'permission') this.refused()
+        if (listened.rows.size) this.changed()
+      }
+    }, room.peer ? 1 : 500, 2 * 1024 * 1024)
+  }
+
+  // Sign-out, a lock or a new reader: every room stops, and one that ended may be listened again.
   clear(): void {
-    this.stop(); this.stop = () => {}
-    const had = this.rows.size > 0
-    this.rows = new Map(); this.key = ''; this.reader = null
+    let had = false
+    for (const listened of this.rooms.values()) { listened.stop(); if (listened.rows.size) had = true }
+    this.rooms.clear(); this.ended.clear()
+    this.listen?.close(); this.listen = null; this.reader = null
     if (had) this.changed()
   }
+
+  // The rooms listened to now, for tests and diagnostics.
+  get size(): number { return this.rooms.size }
+
   snapshot(now = Date.now()): Record<string, ListTypingEntry> {
-    return listTypingState(this.rows.values(), this.uid, now)
+    return listTypingState([...this.rooms.values()].flatMap(listened => [...listened.rows.values()]), this.uid, now)
   }
 }

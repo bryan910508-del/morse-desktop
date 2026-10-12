@@ -4,7 +4,7 @@ import type { FirestoreDocument } from '../network/firestore-values'
 import type { ChannelCommentsRequest, ChannelCommentsSnapshot } from '../../shared/channel-comments'
 import type { FirestoreReader, ReadCredentials } from '../network/firestore-rpc'
 import { documents, stringField, numberField } from '../network/firestore-values'
-import { channelCommentReplyName, CommentAuthors, decodeChannelComments, ReceivedComments } from './channel-comments'
+import { channelCommentReplyName, CommentAuthors, commentsSkipped, decodeChannelComments, ReceivedComments } from './channel-comments'
 import type { PeoplePhotoResolver } from './channel-people-photos'
 import { tr } from '../../shared/i18n'
 // Public reads and explicit own-comment removal share the current parent lifetime.
@@ -59,7 +59,7 @@ export class PublicChannelComments {
     catch { this.value.status = 'blocked'; this.value.message = tr('현재 공개 게시물에서 댓글을 다시 선택해 주세요.'); this.changed(); return }
     const generation = this.generation, current = (): boolean => generation === this.generation && this.value?.selectionId === request.selectionId
     const show = (rows: Map<string, FirestoreDocument>): void => {
-      this.value!.items = decodeChannelComments(rows.values(), request, this.uid); this.rows = new Map(rows)
+      this.value!.items = decodeChannelComments(rows.values(), request, this.uid, commentsSkipped); this.rows = new Map(rows)
       this.authors.bind(this.reader, new Set(this.value!.items.map(item => item.authorId)))
       this.value!.status = 'ready'; this.value!.message = ''; this.value!.waiting = false
     }

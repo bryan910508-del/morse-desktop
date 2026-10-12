@@ -10,6 +10,9 @@ import { childId, documents, numberField, stringField, timestamp, type Firestore
 import type { PeoplePhotoResolver } from './channel-people-photos'
 import { PeerProfiles } from './peer-profiles'
 import { tr } from '../../shared/i18n'
+import { recordHistoryStep } from '../platform/history-diagnostics'
+
+export const commentsSkipped = (count: number): void => recordHistoryStep('comment-skipped', String(count))
 function decode(doc: FirestoreDocument, request: ChannelCommentsRequest, uid: string): ChannelCommentItem {
   const id = childId(doc.name, `${documents}/channels/${request.channelId}/posts/${request.postId}/comments`), f = doc.fields
   if (stringField(f, 'channelId', 160) !== request.channelId || stringField(f, 'postId', 160) !== request.postId || typeof f.text?.stringValue !== 'string' || f.text.stringValue.length > 1000) throw new Error('Comment identity or text invalid')
@@ -23,8 +26,16 @@ function decode(doc: FirestoreDocument, request: ChannelCommentsRequest, uid: st
   }
   return { revision: channelPostRevision(doc), id, authorId, authorName: stringField(f, 'authorName', 512).trim() || tr('이름 정보 없음'), own: authorId === uid, text: f.text.stringValue, position, parent, parentId, parentAuthorName: stringField(f, 'parentAuthorName', 512).trim() }
 }
-export function decodeChannelComments(docs: Iterable<FirestoreDocument>, request: ChannelCommentsRequest, uid: string): ChannelCommentItem[] {
-  const items = [...docs].map(doc => decode(doc, request, uid)), byId = new Map(items.map(item => [item.id, item]))
+// B332b: a comment that cannot be read — no text, the wrong shape, another post's — is left out on its own and only
+// counted, as iOS (nil) and Android (skipped) leave it; the rest of the pane stays. One such document used to empty the
+// whole pane with an error.
+export function decodeChannelComments(docs: Iterable<FirestoreDocument>, request: ChannelCommentsRequest, uid: string,
+  skipped: (count: number) => void = () => {}): ChannelCommentItem[] {
+  const items: ChannelCommentItem[] = []
+  let broken = 0
+  for (const doc of docs) { try { items.push(decode(doc, request, uid)) } catch { broken++ } }
+  if (broken) skipped(broken)
+  const byId = new Map(items.map(item => [item.id, item]))
   for (const item of items) if (item.parent === 'unavailable' && item.parentId) {
     const parent = byId.get(item.parentId)
     if (parent) item.parent = parent.parent === 'none' ? 'present' : 'invalid'
@@ -132,7 +143,7 @@ export class ChannelComments {
     catch { this.value.status = 'blocked'; this.value.message = tr('현재 읽을 수 있는 최신 게시물에서 댓글을 다시 열어 주세요.'); this.changed(); return }
     const generation = this.generation, current = () => generation === this.generation && this.value?.selectionId === request.selectionId
     const show = (rows: Map<string, FirestoreDocument>): void => {
-      const items = decodeChannelComments(rows.values(), request, this.uid)
+      const items = decodeChannelComments(rows.values(), request, this.uid, commentsSkipped)
       this.rows = new Map(rows); this.value!.items = items; this.value!.status = 'ready'; this.value!.message = ''; this.value!.waiting = false
       this.authors.bind(this.reader, new Set(items.map(item => item.authorId)))
     }

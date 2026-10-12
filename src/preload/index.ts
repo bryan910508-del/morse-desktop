@@ -489,6 +489,7 @@ const bridge: DesktopBridge = {
   photoThumb: (uid, chatId, request) => ipcRenderer.invoke('morse:photo-thumb', uid, chatId, request),
   saveMedia: (uid, requestId) => ipcRenderer.invoke('morse:save-media', uid, requestId),
   holdLocalPreview: bytes => ipcRenderer.invoke('morse:hold-local-preview', bytes),
+  recordLostTap: lost => ipcRenderer.invoke('morse:record-lost-tap', lost),
   releaseLocalPreview: url => ipcRenderer.invoke('morse:release-local-preview', url),
   fileState: (uid, chatId, request) => ipcRenderer.invoke('morse:file-state', uid, chatId, request),
   fetchFile: (uid, chatId, request) => ipcRenderer.invoke('morse:fetch-file', uid, chatId, request),

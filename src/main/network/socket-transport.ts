@@ -26,13 +26,6 @@ export interface TransportEvents {
   reactionUpdated?(body: unknown): void
 }
 
-// The long poll is worth trying only on a network where the websocket has never once connected.
-// Six tries at five seconds is about half a minute of saying so before the slower way is used.
-export const fallbackAfter = 6
-export function shouldFallBack(everConnected: boolean, fallback: boolean, failures: number): boolean {
-  return !everConnected && !fallback && failures >= fallbackAfter
-}
-
 export class SocketMessageTransport {
   private socket: Socket | null = null
   private generation = 0
@@ -48,11 +41,6 @@ export class SocketMessageTransport {
   private renewing = false
   // What the server said it can do when it registered this socket (registered.capabilities).
   private capabilities: string[] = []
-  // A network that does not carry websockets at all: nothing has ever connected, and enough tries have
-  // failed to say so. Then, and only then, the long poll is used again.
-  private fallback = false
-  private everConnected = false
-  private connectFailures = 0
   // Listening for the network coming back (reachability.ts) while this connection is being made.
   private unsubscribe: (() => void) | null = null
 
@@ -60,7 +48,15 @@ export class SocketMessageTransport {
   constructor(private readonly version: string, private readonly events: TransportEvents, private readonly open: typeof io = io) {}
   get ready(): boolean { return this.currentState === 'ready' }
   get state(): ConnectionState { return this.currentState }
-  private transition(value: ConnectionState): void { this.currentState = value; this.events.state(value); for (const wake of [...this.waiters]) wake() }
+  private transition(value: ConnectionState): void { this.currentState = value; this.events.state(value); this.noteSendable(); for (const wake of [...this.waiters]) wake() }
+  // A15: since when this socket has been unable to send (null while it can). The fallback's five seconds count from
+  // here, or from the network's return if that is later (send-fallback.ts).
+  private unsendableSince: number | null = Date.now()
+  private noteSendable(): void {
+    if (this.sendable) this.unsendableSince = null
+    else this.unsendableSince ??= Date.now()
+  }
+  notSendableSince(): number | null { this.noteSendable(); return this.unsendableSince }
   // A15: those waiting for the socket to be able to send (send-fallback.ts), woken at every state change.
   private readonly waiters = new Set<() => void>()
   // Whether a message can go over this socket now: what send() and markRead() ask before they emit.
@@ -84,6 +80,7 @@ export class SocketMessageTransport {
     clearTimeout(this.registrationTimer)
     this.registrationTimer = undefined
     clearTimeout(this.renewTimer); this.renewTimer = undefined; this.renewing = false
+    this.noteSendable()
     return ++this.registrationCycle
   }
 
@@ -96,12 +93,16 @@ export class SocketMessageTransport {
     // falling back to the poll after a websocket failure was worse still — once 290 seconds. Connecting
     // as a websocket and giving it five seconds came back in 3 to 31. Telegram waits no longer either:
     // its connect timeout grows from one second to eight (kMinConnectedTimeout 1000,
-    // kMaxConnectedTimeout 8000). The long poll is kept for a network where the websocket never works
-    // at all — see fallbackAfter — not as the way every connection starts.
+    // kMaxConnectedTimeout 8000).
+    // B314: the websocket is the only way, also on a network where it never works. A long poll needs every request of a
+    // session to reach the same server, which several message servers do not give; Telegram's own HTTP way is one
+    // request at a time and needs no such thing (mtproto/connection_http.cpp). Where the socket cannot carry, a message
+    // and a read go through the Firebase callable under the same id (A15, send-fallback.ts) and what comes in comes over
+    // Firestore, so nothing waits on the socket.
     const socket = this.open(serverContract.socketURL, {
       autoConnect: false, reconnection: true, reconnectionAttempts: Infinity,
       reconnectionDelay: 1000, reconnectionDelayMax: 30000, randomizationFactor: 0.5,
-      transports: this.fallback ? ['polling', 'websocket'] : ['websocket'], timeout: 5000
+      transports: ['websocket'], timeout: 5000
     })
     this.socket = socket
     const active = (): boolean => generation === this.generation && socket === this.socket
@@ -144,6 +145,7 @@ export class SocketMessageTransport {
       this.events.step?.('renewing')
       const cycle = this.registrationCycle
       this.renewing = true
+      this.noteSendable()
       try {
         const idToken = await credentials.idToken(true)
         if (!active() || !socket.connected || cycle !== this.registrationCycle || !this.renewing) return
@@ -167,11 +169,9 @@ export class SocketMessageTransport {
         if (active() && cycle === this.registrationCycle && this.currentState === 'registering') void register()
       }, delay)
     }
-    // Which transport carries the connection, so a long-poll that an edge closes every couple of
-    // minutes can be told apart from a websocket the network really dropped.
+    // Which transport carries the connection — a websocket only since B314; the line stays so the log reads as before.
     socket.on('connect', () => {
       if (!active()) return
-      this.everConnected = true; this.connectFailures = 0
       this.events.step?.('transport', socket.io.engine?.transport?.name ?? '')
       socket.io.engine?.once('upgrade', () => { if (active()) this.events.step?.('transport-upgraded', socket.io.engine?.transport?.name ?? '') })
       void register()
@@ -186,11 +186,6 @@ export class SocketMessageTransport {
       if (!active()) return
       this.events.step?.('connect-error', error?.message ?? '')
       this.transition('connecting')
-      this.connectFailures += 1
-      if (!shouldFallBack(this.everConnected, this.fallback, this.connectFailures)) return
-      this.fallback = true
-      this.events.step?.('transport-fallback')
-      this.connect(credentials, forceRefresh)
     })
     socket.on('registered', (body: unknown) => {
       if (!active() || (this.currentState !== 'registering' && !this.renewing)) return

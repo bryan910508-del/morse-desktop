@@ -927,6 +927,8 @@ export interface DesktopBridge {
   // B323-a·b: a picture or a video the window chose, held by main and shown from the address it answers.
   holdLocalPreview(bytes: Uint8Array): Promise<string>
   releaseLocalPreview(url: string): Promise<void>
+  // F5: a press lost before it did anything, for this device's tap-check.log.
+  recordLostTap(lost: { at: number; detail: string }): Promise<void>
   // F2: a file bubble's own fetching and opening (tdesktop Document _savel/_cancell/_openl).
   fileState(accountUid: string, chatId: string, request: import('./media').MediaRequest): Promise<import('./media').FileState>
   fetchFile(accountUid: string, chatId: string, request: import('./media').MediaRequest): Promise<void>

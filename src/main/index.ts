@@ -134,6 +134,7 @@ import { extname, isAbsolute, join, resolve, sep } from 'node:path'
 import { SettingsStore } from './platform/settings'
 import type { OpenedFileSystem } from './media/opened-files'
 import { LocalPreviews, localPreviewRoute } from './platform/local-previews'
+import { noteWindowInput, recordLostTap, recordTapStep } from './platform/tap-diagnostics'
 import { AccountRegistry } from './accounts/registry'
 import { AuthenticationDomain } from './auth/domain'
 import { CredentialVault } from './auth/credential-vault'
@@ -230,6 +231,8 @@ const accounts = new AccountRegistry(uid => ({
     preferences: () => settings.preferences,
     locked: () => screenLocked || shutdown !== 'running',
     appActive: () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused()),
+    // rh-3: why a shown notification was taken back, and whether the window was in use then (tap-check.log).
+    withdrawn: reason => recordTapStep('notice-withdrawn', `${reason} focused=${mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused() ? 1 : 0}`),
     show: (content, click, dismiss) => notifications.show(uid, content, click, dismiss),
     open: chatId => openNotificationChat(uid, chatId),
     openInquiry: (channelId, inquiryId) => openNotificationInquiry(uid, channelId, inquiryId),
@@ -1053,6 +1056,8 @@ function registerIPC(): void {
     return localPreviews.hold(bytes)
   })
   handle('release-local-preview', url => { localPreviews.release(url) }, true)
+  // F5: a press the window saw lost (tap-recorder.ts), written with what main saw of it.
+  handle('record-lost-tap', lost => { recordLostTap(lost) }, true)
   handle('background-photo-url', (scope, id) => backgroundPhotos.url(backgroundPhotoOwner(backgroundPhotoScope(scope)), backgroundPhotoId(id)))
   handle('release-background-photo-url', token => backgroundPhotos.revoke(backgroundPhotoId(token)), true)
   handle('chat-background', (uid, chatId) => accounts.requireActive(identifier(uid)).chatBackground(identifier(chatId)))
@@ -3046,7 +3051,11 @@ function createWindow(): void {
   // B58: the page's wheel events carry no phases. Chromium's gestureScrollBegin/End mark a whole scroll sequence (a
   // phase-less wheel makes one per tick — measured 10-02 on Electron 44), not the fingers lifting, so only a fling, if
   // one is reported, is passed on: like Telegram's ScrollMomentum it ends the swipe and its coasting is not a new one.
-  window.webContents.on('input-event', (_event, input) => { if (input.type === 'gestureFlingStart') emit({ type: 'scroll-phase', phase: 'momentum' }) })
+  window.webContents.on('input-event', (_event, input) => {
+    if (input.type === 'gestureFlingStart') emit({ type: 'scroll-phase', phase: 'momentum' })
+    // F5: whether a press reached the window at all (tap-diagnostics.ts).
+    else if (input.type === 'mouseDown' || input.type === 'mouseUp') noteWindowInput(input.type === 'mouseDown' ? 'down' : 'up', window.isFocused())
+  })
   window.on('enter-full-screen', () => emit({ type: 'full-screen', value: true }))
   window.on('leave-full-screen', () => emit({ type: 'full-screen', value: false }))
   const readingActivityChanged = (): void => { for (const session of accounts.all) session.readingActivityChanged() }
