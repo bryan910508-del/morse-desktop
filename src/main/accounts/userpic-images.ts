@@ -37,4 +37,16 @@ export function forgetImages(): void {
   for (const entry of images.values()) entry.bytes.fill(0)
   images.clear(); stored = 0
 }
+// B288: pictures put back after the lock from a cache file — read only, never written — each read buffer emptied once
+// copied. Stops as soon as `alive` says no (the app locked again, the account closed). How many came back.
+export async function restorePictures(raws: readonly string[], read: (raw: string) => Promise<{ bytes: Buffer; mime: string } | null>, alive: () => boolean): Promise<number> {
+  let restored = 0
+  await Promise.all(raws.map(async raw => {
+    if (!alive()) return
+    const stored = await read(raw)
+    if (!stored) return
+    try { if (alive()) { rememberImage(raw, stored.bytes, stored.mime); restored++ } } finally { stored.bytes.fill(0) }
+  }))
+  return restored
+}
 export function imageStoreState(): { entries: number; bytes: number } { return { entries: images.size, bytes: stored } }

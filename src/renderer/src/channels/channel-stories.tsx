@@ -181,8 +181,10 @@ function ChannelStoryComposer({ accountUid, channel, close }: { accountUid: stri
   const [caption, setCaption] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  useEffect(() => () => { if (file) URL.revokeObjectURL(file.url) }, [file])
-  function pick(chosen: File | undefined): void {
+  // B323-a: the chosen picture or video is held by main and drawn — and its first frame taken — from the address it
+  // answers; the page's policy allows no blob: copy (the preview stayed empty and a video story could not be made).
+  useEffect(() => () => { if (file) void window.morse.releaseLocalPreview(file.url).catch(() => {}) }, [file])
+  async function pick(chosen: File | undefined): Promise<void> {
     setError('')
     if (!chosen) return
     const kind = chosen.type.startsWith('image/') ? 'image' : chosen.type === 'video/mp4' || chosen.type === 'video/quicktime' ? 'video' : null
@@ -190,7 +192,8 @@ function ChannelStoryComposer({ accountUid, channel, close }: { accountUid: stri
     // storage.rules: a video under 50 MB; a picture is made smaller before it goes out.
     if (kind === 'video' && chosen.size >= 50 * 1024 * 1024) { setError(tr('50 MB 미만의 동영상을 선택해 주세요.')); return }
     if (kind === 'image' && chosen.size >= 60 * 1024 * 1024) { setError(tr('사진이 너무 큽니다.')); return }
-    setFile({ kind, url: URL.createObjectURL(chosen), file: chosen })
+    try { setFile({ kind, url: await window.morse.holdLocalPreview(new Uint8Array(await chosen.arrayBuffer())), file: chosen }) }
+    catch (reason) { setError(errorText(reason, tr('사진 또는 MP4·MOV 동영상을 선택해 주세요.'))) }
   }
   async function publish(): Promise<void> {
     if (!file || busy) return
@@ -221,7 +224,7 @@ function ChannelStoryComposer({ accountUid, channel, close }: { accountUid: stri
     <button className="button flat" disabled={busy} onClick={close}>{tr('취소')}</button>
     <button className="button flat" data-autofocus disabled={busy || !file} onClick={() => { void publish() }}>{busy ? <Spinner size={14} /> : null}{tr('올리기')}</button>
   </>}>
-    <input ref={input} type="file" hidden accept="image/jpeg,image/png,image/heic,image/webp,video/mp4,video/quicktime" onChange={event => { pick(event.target.files?.[0]); event.target.value = '' }} />
+    <input ref={input} type="file" hidden accept="image/jpeg,image/png,image/heic,image/webp,video/mp4,video/quicktime" onChange={event => { void pick(event.target.files?.[0]); event.target.value = '' }} />
     <div className="channel-story-preview">{preview}</div>
     {file && <button type="button" className="button flat" disabled={busy} onClick={() => input.current?.click()}>{tr('다른 파일 선택')}</button>}
     <label className="field"><span>{tr('설명')}</span><textarea rows={2} maxLength={maxChannelStoryCaption} value={caption} disabled={busy} placeholder={tr('설명 추가')} onChange={event => setCaption(event.target.value)} /></label>

@@ -1,13 +1,15 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { ChannelComments } from '../../src/main/accounts/channel-comments'
+import { PublicChannelComments } from '../../src/main/accounts/channel-public-comments'
 import { PeerProfiles, publicProfilePath } from '../../src/main/accounts/peer-profiles'
 import { channelPostRevision } from '../../src/main/media/channel-post-media-document'
 import type { FirestoreReader, ReadCredentials, WatchEvents } from '../../src/main/network/firestore-rpc'
 import { documents, type FirestoreDocument } from '../../src/main/network/firestore-values'
 
-// A8 §4 (Telegram R-41): a comment shows its author as they are now, from their public profile; what the comment was
-// written with stands in while that is unknown, and a deleted account shows as one.
+// A8 §4 (Telegram R-41): a comment shows its author as they are now, from their public profile; the name the comment
+// was written with stands in while that is unknown, and a deleted account shows as one. B266/B153 §4: the picture
+// follows the person's own rule, as anywhere — never the copy the comment keeps.
 const credentials: ReadCredentials = { signal: new AbortController().signal, authorize: async () => ({ idToken: 'id', appCheckToken: 'check', expiresAt: Date.now() + 3600000 }) }
 const at = { seconds: '1790121600', nanos: 0 }
 const uid = 'me', root = `${documents}/channels/ch-a`
@@ -45,15 +47,25 @@ test('the authors of the comments on screen are read from their public profiles,
   comments.clear()
 })
 
-test('a renamed author shows by their name now, a missing or refused profile by what the comment kept, a deleted account as one', () => {
+test('a renamed author shows by their name now, a missing or refused profile by the name the comment kept, a deleted account as one', () => {
   const { comments, list, authors, photos } = pane()
   list.events.snapshot(rows(comment('c1', 'a1', '옛 이름'), comment('c2', 'a2', '두번째'), comment('c3', 'a3', '세번째', { parentCommentId: { stringValue: 'c1' }, parentAuthorName: { stringValue: '옛 이름' } })))
   authors()[0]!.events.snapshot(rows(profile('a1', { displayName: { stringValue: '새 이름' }, photoURL: { stringValue: 'gs://now/a1.jpg' } }),
     profile('a2', { accountDeleted: { booleanValue: true } })))
   assert.deepEqual(view(comments), [['c1', '새 이름', ''], ['c2', '탈퇴한 계정', ''], ['c3', '세번째', '새 이름']],
     'renamed; deleted; not made yet (a3) keeps what it wrote, and a reply names its parent\'s author as they are now')
+  // B153 §4: a1 keeps the default rule (mutual contacts) and is not one; a3 is unread — neither picture is drawn, nor
+  // the copy each comment keeps.
   photos.length = 0; void comments.snapshot
-  assert.deepEqual(photos, [['a1', 'gs://now/a1.jpg'], ['a2', null], ['a3', 'gs://written/a3.jpg']])
+  assert.deepEqual(photos, [['a1', null], ['a2', null], ['a3', null]])
+  // A picture shown to everyone is drawn; a contact's by the contacts' own mutual rule.
+  authors()[0]!.events.snapshot(rows(profile('a1', { displayName: { stringValue: '새 이름' }, photoURL: { stringValue: 'gs://now/a1.jpg' }, privacy: { mapValue: { fields: { photo: { stringValue: 'everyone' } } } } })))
+  comments.authors.contactPhoto = author => author === 'a3' ? 'gs://contact/a3.jpg' : undefined
+  photos.length = 0; void comments.snapshot
+  assert.deepEqual(photos, [['a1', 'gs://now/a1.jpg'], ['a2', null], ['a3', 'gs://contact/a3.jpg']])
+  comments.authors.contactPhoto = author => author === 'a1' ? '' : undefined
+  photos.length = 0; void comments.snapshot
+  assert.deepEqual(photos[0], ['a1', null], 'a contact whose rule hides it from this account: none, whatever everyone sees')
   comments.clear()
 })
 
@@ -70,15 +82,35 @@ test('one refused author does not leave the others beside them unknown', () => {
   assert.equal(authors().length, 0, 'closing the pane stops the reads')
 })
 
-test('authors are not contacts: no contact document, the picture whoever they are, and nothing for the contact rows', () => {
+test('authors are not contacts: no contact document, the picture they show to everyone, and nothing for the contact rows', () => {
   const targets: string[][] = []
   const reader = { watch: (target: { documents: { documents: string[] } }, _s: AbortSignal, events: WatchEvents) => { targets.push(target.documents.documents); events.snapshot(rows(profile('a1', { displayName: { stringValue: '민지' }, photoURL: { stringValue: 'gs://p' } }))); return () => {} } } as unknown as FirestoreReader
   const seen: string[] = []
   const authors = new PeerProfiles(uid, credentials, credentials.signal, () => {}, (person) => { seen.push(person) }, 'authors')
   authors.bind(reader, ['a1'])
   assert.deepEqual(targets, [[publicProfilePath('a1')]])
-  assert.deepEqual(authors.profile('a1'), { name: '민지', photo: 'gs://p', mutual: true, official: null, photoEveryone: '' })
+  assert.deepEqual(authors.profile('a1'), { name: '민지', photo: '', mutual: false, official: null, photoEveryone: '' }, 'B153: not mutual, default rule')
   assert.equal(authors.withdrawn('a1'), false)
   assert.deepEqual(seen, [], 'an author\'s picture is not kept as a contact\'s')
   authors.close()
+})
+
+// B266: a channel looked at before following shows its comments' authors by the same rule (one CommentAuthors).
+test('a public post\'s comments show their authors as a followed channel\'s do', () => {
+  const targets: { paths: string[]; events: WatchEvents; query: boolean }[] = []
+  const reader = { watch(target: { query?: unknown; documents?: { documents: string[] } }, _s: AbortSignal, events: WatchEvents) {
+    targets.push({ paths: target.documents?.documents ?? [], events, query: Boolean(target.query) }); return () => {} } } as unknown as FirestoreReader
+  const photos: [string, string | null][] = []
+  const comments = new PublicChannelComments(uid, credentials, () => ({ reader, post }), () => {})
+  comments.people = (author, raw) => { photos.push([author, raw]); return null }
+  comments.open({ selectionId: 's1', requestId: 'r1', channelId: 'ch-a', postId: 'p1', revision: channelPostRevision(post) })
+  targets.find(target => target.query)!.events.snapshot(rows(comment('c1', 'a1', '옛 이름'), comment('c2', 'a2', '둘')))
+  const authors = targets.filter(target => !target.query)
+  assert.deepEqual(authors.map(target => target.paths), [[publicProfilePath('a1'), publicProfilePath('a2')]])
+  authors[0]!.events.snapshot(rows(profile('a1', { displayName: { stringValue: '새 이름' }, photoURL: { stringValue: 'gs://now/a1.jpg' } }),
+    profile('a2', { displayName: { stringValue: '둘' }, photoURL: { stringValue: 'gs://now/a2.jpg' }, privacy: { mapValue: { fields: { photo: { stringValue: 'everyone' } } } } })))
+  photos.length = 0
+  assert.deepEqual(comments.snapshot!.items.map(item => item.authorName), ['새 이름', '둘'])
+  assert.deepEqual(photos, [['a1', null], ['a2', 'gs://now/a2.jpg']])
+  comments.clear()
 })

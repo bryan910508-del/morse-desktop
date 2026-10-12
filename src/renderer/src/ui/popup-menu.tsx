@@ -22,6 +22,13 @@ export const popupMenu = {
     change({ id: ++sequence, x: point.x, y: point.y, entries, ...options })
   },
   close(): void { if (current) change(null) },
+  // The open menu gives way to a larger choice in its place — tdesktop's reactions selector grows over its menu
+  // (Selector::expand, history_view_reactions_selector.cpp:1014-1070). The same menu: nothing is closed.
+  expand(header: ReactNode): void {
+    if (!current) return
+    current = { ...current, id: ++sequence, entries: [], header }
+    for (const listener of [...listeners]) listener()
+  },
   get isOpen(): boolean { return current !== null }
 }
 

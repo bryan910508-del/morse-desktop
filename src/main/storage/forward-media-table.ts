@@ -10,6 +10,7 @@ import { forwardMediaFormat, forwardMediaRoot } from '../media/forward-media-for
 import { mediaMetadata } from '../../shared/media-metadata'
 import { textDigest } from '../messaging/text-identity'
 import { stickerReferenceWire } from './sticker-reference-table'
+import { forwardWireSource } from '../../shared/channel-inquiries'
 
 const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 export function forwardMediaDigest(media: PreparedForwardMedia): string {
@@ -43,7 +44,7 @@ export function insertForwardMedia(db: Database.Database, uid: string, request: 
     const reference = db.prepare("INSERT INTO intents(id,chat_id,wire,digest,created_at,state,forward_operation_id) VALUES(?,?,?,?,?,'queued',?)")
     for (const target of request.targets) {
       const wire = stickerReferenceWire({ id: target.messageId, chatId: target.chatId, senderId: uid, type: 'sticker', text: '', mediaUrl: '', isSilent: media.isSilent,
-        isEncrypted: false, protocolVersion: 3, isForwarded: true, stickerId: media.sticker.id, stickerKind: media.sticker.kind, ...(media.sticker.setId ? { stickerSetId: media.sticker.setId } : {}) }, uid)
+        isEncrypted: false, protocolVersion: 3, isForwarded: true, forwardSource: forwardWireSource(request.source), stickerId: media.sticker.id, stickerKind: media.sticker.kind, ...(media.sticker.setId ? { stickerSetId: media.sticker.setId } : {}) }, uid)
       reference.run(wire.id, wire.chatId, JSON.stringify(wire), textDigest(wire), Date.now(), request.id)
     }
     return
@@ -53,7 +54,7 @@ export function insertForwardMedia(db: Database.Database, uid: string, request: 
   const metadata = mediaMetadata(media.metadata, media.kind, media.parts.length)
   for (const target of request.targets) {
     const wire: MediaSendWire = { id: target.messageId, chatId: target.chatId, senderId: uid, type: media.kind,
-      text: media.kind === 'file' ? first.name : '', mediaUrl: '', isSilent: media.isSilent, isEncrypted: false, protocolVersion: 3, isForwarded: true,
+      text: media.kind === 'file' ? first.name : '', mediaUrl: '', isSilent: media.isSilent, isEncrypted: false, protocolVersion: 3, isForwarded: true, forwardSource: forwardWireSource(request.source),
       ...metadata, ...(media.blind ? { thumbnailUrl: '__blind__' } : {}),
       ...(media.kind === 'file' ? { fileName: first.name, fileSize: first.bytes.length } : media.caption ?
         media.kind === 'image' ? { imageCaption: media.caption } : media.kind === 'video' ? { videoCaption: media.caption } : {} : {}) }

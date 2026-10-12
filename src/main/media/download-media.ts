@@ -1,22 +1,30 @@
 import type { ReadCredentials } from '../network/firestore-rpc'
 import { storageBucket, type MediaResource } from './media-document'
 import { tr } from '../../shared/i18n'
+import { idleTimeout, maxReceivedMediaBytes, mediaIdleMs } from '../../shared/media-limits'
 import { downloadChannelPostMedia } from '../network/channel-post-media'
 
 export class MediaFailure extends Error {}
 // Shared authenticated download for explicit viewing and forwarding. The
 // caller resolves a current document; no bearer download URL enters this API.
 export async function downloadMedia(credentials: ReadCredentials, resource: MediaResource, ownerSignal: AbortSignal,
-  current: () => void, progress: (loaded: number, total: number | null) => void, maxBytes = 50 * 1024 * 1024): Promise<Buffer> {
+  current: () => void, progress: (loaded: number, total: number | null) => void, maxBytes = maxReceivedMediaBytes): Promise<Buffer> {
   if (!resource.path || !resource.summary.available) throw new MediaFailure(tr('첨부 원본을 확인할 수 없습니다.'))
-  const signal = AbortSignal.any([ownerSignal, credentials.signal, AbortSignal.timeout(120000)])
+  // B308: given up when it stops moving (mediaIdleMs), not after two minutes for the whole file.
+  const idle = idleTimeout(mediaIdleMs, () => new MediaFailure(tr('첨부를 불러오지 못했습니다. 다시 시도해 주세요.')))
+  try { return await download(credentials, resource, AbortSignal.any([ownerSignal, credentials.signal, idle.signal]), idle.touch, current, progress, maxBytes) }
+  finally { idle.stop() }
+}
+async function download(credentials: ReadCredentials, resource: MediaResource, signal: AbortSignal, touch: () => void,
+  current: () => void, progress: (loaded: number, total: number | null) => void, maxBytes: number): Promise<Buffer> {
   const check = (): void => { signal.throwIfAborted(); current() }
+  const path = resource.path!
   // storage.rules: a channel post's objects are read only after authorizeMorseMediaRead grants them.
   if (resource.grantPostId) {
-    return downloadChannelPostMedia(credentials, resource.path, resource.grantPostId, signal, current, maxBytes,
-      (loaded: number, total: number) => progress(loaded, total || null))
+    return downloadChannelPostMedia(credentials, path, resource.grantPostId, signal, current, maxBytes,
+      (loaded: number, total: number) => { touch(); progress(loaded, total || null) })
   }
-  const endpoint = `https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(resource.path)}?alt=media`
+  const endpoint = `https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}?alt=media`
   let response: Response | undefined
   for (let attempt = 0; attempt < 2; attempt++) {
     const authorization = await credentials.authorize(signal, attempt > 0)
@@ -42,7 +50,7 @@ export async function downloadMedia(credentials: ReadCredentials, resource: Medi
     check(); progress(0, total)
     while (true) {
       const chunk = await reader.read()
-      check()
+      touch(); check()
       if (chunk.done) break
       size += chunk.value.byteLength
       if (size >= maxBytes) throw new MediaFailure(limitMessage)

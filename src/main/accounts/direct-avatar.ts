@@ -48,11 +48,11 @@ export class DirectAvatar {
   private get answered(): boolean { return this.peers?.hasAnswer(this.binding.uid) ?? false }
   // Whether anything of this person may be drawn: after the answer only a person this account may still see.
   private get allowed(): boolean { return this.answered ? Boolean(this.peers?.profile(this.binding.uid)) : true }
-  // The picture this row draws now: the person's own after the answer, the last confirmed one before it.
-  // Someone not on the contact list waits for the answer: a picture remembered from when they were may no longer be theirs to see.
+  // The picture this row draws now: the person's own after the answer, the last answer remembered before it (B153 §4) —
+  // remembered as this account could see it then, contact or not (PeerProfiles decides before it remembers).
   private get shownRaw(): string {
     if (this.answered) return this.peers?.photoFor(this.binding.uid, this.binding.contact) ?? ''
-    return this.binding.contact ? this.cache?.known(`user:${this.binding.uid}`) ?? '' : ''
+    return this.cache?.known(`user:${this.binding.uid}`) ?? ''
   }
 
   refresh(): void {
@@ -75,6 +75,8 @@ export class DirectAvatar {
       if (photo.attach(raw)) this.started = true
     }
   }
+  // The cached picture this row draws now ('' for none, or one of the device's own).
+  get drawnRaw(): string { return !this.local && this.photo?.snapshot.status === 'ready' ? this.raw : '' }
   get snapshot(): GroupPhotoImage {
     try {
       const current = this.current()

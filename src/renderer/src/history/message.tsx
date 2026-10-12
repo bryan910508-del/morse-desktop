@@ -1,23 +1,25 @@
 // Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { memo, useEffect, useRef, useState, type MouseEvent } from 'react'
-import { Camera, Check, CircleAlert, Clock3, Download, File as FileIcon, Image as ImageIcon, LockKeyhole, Megaphone, MessageSquareText, MessageSquareWarning, Mic, NotebookPen, Pause, Play } from 'lucide-react'
+import { Camera, Check, CircleAlert, Clock3, Download, File as FileIcon, Image as ImageIcon, LockKeyhole, Megaphone, MessageSquareText, MessageSquareWarning, Mic, NotebookPen, Pause, Play, X } from 'lucide-react'
 import type { ChatMessage, ReplyPreview } from '../../../shared/model'
-import type { LocalOutgoing } from '../../../shared/delivery'
+import { deliveryFailed, type LocalOutgoing } from '../../../shared/delivery'
 import type { MessageStorySource } from '../../../shared/message-story-source'
 import { positionMilliseconds } from '../../../shared/model'
 import { decodeMemoNote } from '../../../shared/memo-note'
 import { messageKindLabel, unsupportedMessageNotice } from '../../../shared/message-kinds'
-import { duration as formatDuration, messageTime } from '../app/format'
+import { bytes, duration as formatDuration, errorText, messageTime } from '../app/format'
 import { RoundCheck, Spinner } from '../ui/controls'
 import { pointFor } from '../ui/popup-menu'
+import { ForwardedHeader } from './forwarded-header'
 import { localMediaMessage, sendingProgress } from './local-media'
 import { QueuedVoicePlay } from './voice-record'
 import { UserAvatar } from '../ui/user-avatar'
 import { useTranslation } from '../app/translations'
-import { useDesktop } from '../app/store'
+import { useDesktop, useDesktopEvent } from '../app/store'
 import { controller } from '../app/ui'
 import { endPlayback, startPlayback } from './playback-bar'
+import { onMessageText } from './text-point'
 import { showReactionPeople } from './reaction-people'
 import { showStickerPackSheet } from './sticker-pack-sheet'
 import { emojiOnlyFontSize, emojiOnlyText, LinkCard, linkCardFor, LinkedText } from './linked-text'
@@ -26,6 +28,10 @@ import { locale, tr } from '../../../shared/i18n'
 import { systemNoticeShortcut } from '../../../shared/system-notices'
 import { showSessionsBox } from '../settings/security-boxes'
 import { showTwoStepBox } from '../settings/two-step-box'
+import { albumPlaceholder } from '../../../shared/media-metadata'
+import { albumMosaic } from './album-mosaic'
+import { fileKey, setFileState } from './file-states'
+import type { FileState } from '../../../shared/media'
 
 export interface MessageLayout { date: boolean; unread: boolean; top: boolean; bottom: boolean; name: boolean; photo: boolean; gutter: boolean; roomOnly: boolean }
 
@@ -190,9 +196,11 @@ function RoundVideo({ accountUid, chatId, message }: { accountUid: string; chatI
 
 // Telegram's automatic media download: a photo fills its tile as soon as it arrives, and a press
 // still opens the full-size view. Anything else, and a photo with the preference off, keeps the tile.
-export function MediaTile({ accountUid, chatId, message, part, label, single, ratio, shape = 'fixed', onOpen }: {
+export function MediaTile({ accountUid, chatId, message, part, label, single, ratio, shape = 'fixed', place, onOpen }: {
   accountUid: string; chatId: string; message: ChatMessage; part: NonNullable<ChatMessage['attachments']>[number]
   label: string; single: boolean; ratio: number | null
+  // Its place in an album's mosaic, in hundredths of the group (albumMosaic).
+  place?: { left: number; top: number; width: number; height: number }
   // 'natural': the shape given only holds the place; once the picture is there it keeps its own, as Telegram's does.
   shape?: 'fixed' | 'natural'
   onOpen(message: ChatMessage, index: number): void
@@ -216,7 +224,9 @@ export function MediaTile({ accountUid, chatId, message, part, label, single, ra
   // itself is there. A message carrying none is the case Telegram answers by asking the server for
   // the small size whatever the preference says, so a photo is never a blank tile; Morse keeps no
   // small size, so the main process fetches the picture once and keeps only a 32px placeholder.
-  const carried = message.mediaMetadata?.thumbData ?? ''
+  // B310ⓑ: each photo of an album its own (thumbDatas[i]); the first falls back to thumbData; any other without one is
+  // filled and fetched as before — not drawn with the first photo's colours.
+  const carried = albumPlaceholder(message.mediaMetadata, part.index)
   const wantedThumb = held && !asked && !carried && showable
   // Every photo is asked for once; main answers with nothing when this room's limit holds it back, and
   // the person's own press asks again without one.
@@ -244,8 +254,9 @@ export function MediaTile({ accountUid, chatId, message, part, label, single, ra
     // here (Photo::countOptimalSize reads the photo's own width and height), so the bubble does not
     // change shape when the picture arrives — and a picture waiting to be asked for keeps that shape
     // instead of collapsing to a band.
-    disabled={!part.available} style={single && ratio && (shape === 'fixed' || !preview) ? { aspectRatio: String(ratio) } : undefined}
-    aria-label={fetches ? tr('사진 내려받기') : undefined}
+    disabled={!part.available} style={place ? { left: `${place.left}%`, top: `${place.top}%`, width: `${place.width}%`, height: `${place.height}%` }
+      : single && ratio && (shape === 'fixed' || !preview) ? { aspectRatio: String(ratio) } : undefined}
+    aria-label={fetches ? tr('사진 내려받기') : label}
     onClick={event => { event.stopPropagation(); if (fetches) setAsked(true); else onOpen(message, part.index) }}>
     {placeholder && <img className={`media-thumb${sharpThumb ? ' sharp' : ''}`} src={`data:image/jpeg;base64,${placeholder}`} alt="" aria-hidden="true"
       onLoad={event => { const image = event.currentTarget; setSharpThumb(part.kind === 'video' && (image.naturalWidth >= 240 || image.naturalHeight >= 240)) }} />}
@@ -253,7 +264,8 @@ export function MediaTile({ accountUid, chatId, message, part, label, single, ra
       : part.blind ? <LockKeyhole size={26} /> : part.kind === 'video' ? <Play size={30} /> : part.kind === 'voice' ? <Mic size={26} />
         : asked ? <span className="media-download" aria-hidden="true"><Spinner size={22} /></span>
           : fetches ? <span className="media-download" aria-hidden="true"><Download size={22} /></span> : <ImageIcon size={26} />}
-    <span>{label}</span>
+    {/* tdesktop draws no word on a photo; a video keeps its length, a hidden one says what it is. */}
+    {(part.kind !== 'image' || part.blind) && <span>{label}</span>}
   </button>
 }
 
@@ -288,13 +300,60 @@ function StickerView({ accountUid, chatId, message, local }: { accountUid: strin
 
 // tdesktop's radial over a medium being sent (history_view_photo.cpp:366-373, :413-456; history_view_document.cpp:923-926):
 // how far it has gone up, or turning while it waits.
-function SendingRing({ value, className }: { value: number | null; className?: string }) {
+function SendingRing({ value, className, label = tr('업로드 중') }: { value: number | null; className?: string; label?: string }) {
   const ring = 2 * Math.PI * 20
-  return <span className={`sending-ring${value === null ? ' waiting' : ''}${className ? ` ${className}` : ''}`} role="progressbar" aria-label={tr('업로드 중')}
+  return <span className={`sending-ring${value === null ? ' waiting' : ''}${className ? ` ${className}` : ''}`} role="progressbar" aria-label={label}
     aria-valuemin={0} aria-valuemax={100} aria-valuenow={value === null ? undefined : Math.round(value * 100)}>
     <svg viewBox="0 0 48 48" aria-hidden="true"><circle className="track" cx="24" cy="24" r="20" />
       <circle cx="24" cy="24" r="20" style={{ strokeDasharray: ring, strokeDashoffset: ring * (1 - (value ?? .25)) }} /></svg>
   </span>
+}
+
+// F1·F3 — tdesktop Media::customInfoLayout: a photo, a video and a sticker shown alone carry the time on themselves
+// (Photo, Gif, Sticker: true; history_view_photo.h:88, history_view_gif.h:117), so it stays on the picture when reactions
+// go under it (history_view_message.cpp:1926-1933); a file or a voice message (Document: false, history_view_document.h:67)
+// keeps the bubble's own time, under its lines as a text's.
+const infoOverMedia = (kind: ChatMessage['kind']): boolean => kind === 'image' || kind === 'video' || kind === 'sticker'
+
+// F2 (tdesktop HistoryView::Document, history_view_document.cpp:1455-1463): a file not here is pressed to fetch it — a ring
+// in its icon's place shows how far it has come, and a press stops it — and once it is here it is pressed to be opened
+// by the system (Data::ResolveDocument). Under its name, its size, or while it comes «what has come / all of it»
+// (FormatDownloadText, :347). Until its state is known, and when it cannot be asked, the press opens the viewer.
+function FileMessage({ accountUid, chatId, message, part, onOpen }: { accountUid: string; chatId: string; message: ChatMessage
+  part: NonNullable<ChatMessage['attachments']>[number]; onOpen(message: ChatMessage, index: number): void }) {
+  const [file, setFile] = useState<FileState | null>(null)
+  const key = fileKey(chatId, message.id, part.index)
+  const request = () => ({ requestId: crypto.randomUUID(), messageId: message.id, version: message.version, index: part.index })
+  useEffect(() => {
+    let alive = true
+    void window.morse.fileState(accountUid, chatId, request()).then(next => { if (alive) setFile(next) }).catch(() => {})
+    return () => { alive = false }
+  }, [accountUid, chatId, message.id, message.version, part.index])
+  useDesktopEvent(event => {
+    if (event.type !== 'file-state' || event.accountUid !== accountUid || event.chatId !== chatId || event.messageId !== message.id || event.index !== part.index) return
+    setFile(event.state)
+    if (event.state.state === 'remote' && event.state.error) controller.toast(event.state.error, 'error')
+  })
+  useEffect(() => { setFileState(key, file?.state ?? null); return () => setFileState(key, null) }, [key, file?.state])
+  const press = (): void => {
+    if (!file) { onOpen(message, part.index); return }
+    if (file.state === 'loading') { void window.morse.cancelFile(accountUid, chatId, request()).catch(() => {}); return }
+    if (file.state === 'remote') {
+      setFile({ state: 'loading', loaded: 0, total: null })
+      void window.morse.fetchFile(accountUid, chatId, request()).catch(reason => { setFile({ state: 'remote' }); controller.toast(errorText(reason, tr('첨부를 불러오지 못했습니다. 다시 시도해 주세요.')), 'error') })
+      return
+    }
+    void window.morse.openFile(accountUid, chatId, request()).catch(reason => controller.toast(errorText(reason, tr('파일을 열지 못했습니다.')), 'error'))
+  }
+  const total = file?.state === 'loading' ? file.total ?? part.size ?? null : null
+  const status = file?.state === 'loading' ? (total ? `${bytes(file.loaded)} / ${bytes(total)}` : bytes(file.loaded)) : part.size ? bytes(part.size) : tr('파일')
+  return <button type="button" className={`file-message${file?.state === 'remote' ? ' remote' : ''}`}
+    aria-label={`${part.name} · ${file?.state === 'loading' ? tr('내려받기 멈추기') : file?.state === 'remote' ? tr('파일 내려받기') : tr('파일 열기')}`}
+    onClick={event => { event.stopPropagation(); press() }}>
+    <span className="file-message-icon">{file?.state === 'loading' ? <><SendingRing value={total ? Math.min(1, file.loaded / total) : null} label={tr('내려받는 중')} /><X size={16} className="file-message-stop" /></>
+      : file?.state === 'remote' ? <Download size={20} /> : <FileIcon size={20} />}</span>
+    <span className="file-message-text"><strong className="ellipsis">{part.name}</strong><small>{status}</small></span>
+  </button>
 }
 
 // local (B269): a message on its way, drawn by the same views as the server's copy — the ring over it while it goes up.
@@ -306,18 +365,30 @@ export function Attachments({ accountUid, chatId, message, own, onOpen, local }:
   if (message.kind === 'video' && message.circular && parts.length === 1 && !parts[0]!.blind) return ring ? <div className="local-media"><RoundVideo accountUid={accountUid} chatId={chatId} message={message} />{ring}</div>
     : <RoundVideo accountUid={accountUid} chatId={chatId} message={message} />
   if (message.kind === 'sticker' && parts[0] && !parts[0].blind) return <StickerView accountUid={accountUid} chatId={chatId} message={message} local={Boolean(local)} />
-  if (message.kind === 'file') return <>{parts.map(part => <button key={part.index} type="button" className={`file-message${local ? ' sending' : ''}`} disabled={!part.available} onClick={event => { event.stopPropagation(); onOpen(message, part.index) }}>
-    <span className="file-message-icon">{part.blind ? <LockKeyhole size={20} /> : local?.going ? <SendingRing value={local.progress} /> : <FileIcon size={20} />}</span>
-    <span className="file-message-text"><strong className="ellipsis">{part.name}</strong><small>{local ? local.going ? tr('업로드 중') : tr('보내는 중') : part.available ? tr('눌러서 열기') : tr('아직 열 수 없습니다')}</small></span>
-  </button>)}</>
+  if (message.kind === 'file') return <>{parts.map(part => local || part.blind || !part.available
+    ? <button key={part.index} type="button" className={`file-message${local ? ' sending' : ''}`} disabled={!part.available} onClick={event => { event.stopPropagation(); onOpen(message, part.index) }}>
+      <span className="file-message-icon">{part.blind ? <LockKeyhole size={20} /> : local?.going ? <SendingRing value={local.progress} /> : <FileIcon size={20} />}</span>
+      <span className="file-message-text"><strong className="ellipsis">{part.name}</strong><small>{local ? local.going ? tr('업로드 중') : tr('보내는 중') : part.available ? (part.size ? bytes(part.size) : tr('파일')) : tr('아직 열 수 없습니다')}</small></span>
+    </button>
+    : <FileMessage key={part.index} accountUid={accountUid} chatId={chatId} message={message} part={part} onOpen={onOpen} />)}</>
   const metadata = message.mediaMetadata
   const single = parts.length === 1
   // iOS records a photo's size in mediaWidthPx/mediaHeightPx and a video's in videoWidthPx/videoHeightPx.
   const width = metadata?.mediaWidthPx ?? metadata?.videoWidthPx, height = metadata?.mediaHeightPx ?? metadata?.videoHeightPx
   const ratio = width && height ? width / height : null
-  return <div className={`media-grid count-${Math.min(parts.length, 4)}${local ? ' local-media' : ''}`}>{parts.map(part => <MediaTile key={part.index} accountUid={accountUid} chatId={chatId} message={message} part={part} single={single} ratio={ratio}
+  // B310 (tdesktop GroupedMedia + Ui::LayoutMediaGroup): an album is a mosaic of its photos by their own shapes, every one
+  // inside the group's width; the sizes the message carries (imageWidthsPx/imageHeightsPx) place them before they load.
+  const mosaic = parts.length > 1 ? albumMosaic(parts.length, metadata) : null
+  return <div className={`media-grid ${mosaic ? 'mosaic' : `count-${Math.min(parts.length, 4)}`}${local ? ' local-media' : ''}`} style={mosaic ? { aspectRatio: `${mosaic.width} / ${mosaic.height}` } : single && ratio ? { width: singleMediaWidth(ratio) } : undefined}>{parts.map(part => <MediaTile key={part.index} accountUid={accountUid} chatId={chatId} message={message} part={part} single={single} ratio={ratio} place={mosaic?.tiles[part.index]}
     label={part.blind ? tr('가려진 {0}', [messageKindLabel(part.kind)]) : part.kind === 'video' && metadata?.videoDuration !== undefined ? formatDuration(metadata.videoDuration) : message.circular && part.kind === 'video' ? tr('원형 영상') : messageKindLabel(part.kind)}
     onOpen={onOpen} />)}{ring}</div>
+}
+
+// B310 (tdesktop Photo::countOptimalSize sizes the bubble to the picture): one photo or video is as wide as it is drawn —
+// a tall one held to the 420 px height is narrower than the media column, and the group narrows with it rather than
+// leaving the rest of the column empty beside it.
+export function singleMediaWidth(ratio: number): string {
+  return `min(320px, 56vw, ${Math.max(100, Math.round(420 * ratio))}px)`
 }
 
 // The link under the pointer when a message menu opens, for Telegram's «링크 복사» / «이메일 복사».
@@ -409,10 +480,16 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
   const card = plainText && !memo && !emojiOnly ? linkCardFor(message.text) : null
   const shown = card?.share ? card.share.bodyText : text
   const mediaOnly = media && !text && !plainLabel
+  // B310 (tdesktop Photo::needsBubble / GroupedMedia::needsBubble, history_view_photo.cpp:1205-1218,
+  // history_view_media_grouped.cpp:904-940): a photo or a video with no caption, reply, forward, story or sender's name
+  // is its own bubble — rounded, the time over it — not a picture inside one.
+  const bare = mediaOnly && !message.encrypted && (message.kind === 'image' || (message.kind === 'video' && !message.circular)) &&
+    !message.reply && !message.forward && !message.storySource && !(layout.name && !own && message.senderName)
   // ChatMessageDateAndStatusNode: under reactions the date joins their LAST row when that row's width and the date's
   // fit the bubble (`currentRowWidth + dateWidth <= constrainedWidth`), whatever the number of rows, and goes below
   // otherwise — the date is the row's last item, pushed to its end. A picture alone and a sticker keep theirs on it.
-  const inlineMeta = message.reactions.length > 0 && !mediaOnly && !round && !emojiOnly
+  const overMedia = mediaOnly && infoOverMedia(message.kind)
+  const inlineMeta = message.reactions.length > 0 && !overMedia && !round && !emojiOnly
   const metaSpace = <span className={`bubble-meta-space${message.edited ? ' edited' : ''}${own ? ' own' : ''}`} />
   const meta = <span className={`bubble-meta${inlineMeta ? ' inline' : ''}`}>
     {message.edited && !emojiOnly && <span>{tr('수정됨')}</span>}
@@ -421,14 +498,23 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
   </span>
   return <div className={rowClass(own, layout, `${selected ? ' selected' : ''}${highlighted ? ' highlight' : ''}${selecting ? ' selecting' : ''}`)}
     data-message-id={message.id} onContextMenu={openMenu} onClick={selecting ? () => props.onToggle(message) : undefined}
-    onDoubleClick={event => { if (!selecting && !message.encrypted && (event.target as HTMLElement).closest('.bubble')) { window.getSelection()?.removeAllRanges(); props.onReply(message) } }}>
+    onDoubleClick={event => { if (!selecting && !message.encrypted && (event.target as HTMLElement).closest('.bubble') && !onMessageText(event.target, event.clientX, event.clientY)) { window.getSelection()?.removeAllRanges(); props.onReply(message) } }}>
     {selecting && <span className="history-check"><RoundCheck checked={selected} /></span>}
-    {layout.gutter && <span className="history-photo">{layout.photo && <UserAvatar uid={message.senderId} name={message.senderName || '?'} size={33} roomOnly={layout.roomOnly} />}</span>}
-    <div className={`bubble${message.encrypted ? ' encrypted' : ''}${mediaOnly ? ' media-only' : ''}${round ? ' round' : ''}${emojiOnly ? ' emoji-only' : ''}${card?.url ? ' has-link-card' : ''}`}>
-      {layout.name && !own && message.senderName && <div className="bubble-name ellipsis">{message.senderName}</div>}
+    {/* B266 — tdesktop Element::fromLink / fromPhotoLink (history_view_element.cpp:2458-2493, .h:725-727): the sender's
+        name and picture in a group open them as a person. Not in a channel's discussion room, which shows its owner by
+        the room's name and its people by the room's own copies only (iOS MorseGroupChatSenderDisplay). */}
+    {layout.gutter && <span className="history-photo">{layout.photo && (selecting || message.system || layout.roomOnly ? <UserAvatar uid={message.senderId} name={message.senderName || '?'} size={33} roomOnly={layout.roomOnly} />
+      : <button type="button" className="history-photo-button" aria-label={message.senderName || tr('보낸 사람')} onClick={event => { event.stopPropagation(); controller.openPersonInfo(message.senderId, message.senderName ?? '') }}>
+        <UserAvatar uid={message.senderId} name={message.senderName || '?'} size={33} roomOnly={layout.roomOnly} />
+      </button>)}</span>}
+    <div className={`bubble${message.encrypted ? ' encrypted' : ''}${mediaOnly ? ' media-only' : ''}${overMedia ? ' info-over' : ''}${bare ? ' bare' : ''}${round ? ' round' : ''}${emojiOnly ? ' emoji-only' : ''}${card?.url ? ' has-link-card' : ''}`}>
+      {layout.name && !own && message.senderName && (selecting || message.system || layout.roomOnly ? <div className="bubble-name ellipsis">{message.senderName}</div>
+        : <button type="button" className="bubble-name ellipsis" onClick={event => { event.stopPropagation(); controller.openPersonInfo(message.senderId, message.senderName ?? '') }}>{message.senderName}</button>)}
+      {!message.encrypted && message.forward && <ForwardedHeader accountUid={accountUid} forward={message.forward} disabled={selecting} />}
       {!message.encrypted && message.storySource && <StorySource source={message.storySource} />}
       {!message.encrypted && message.reply && <ReplyQuote preview={message.reply} onOpen={() => props.onJumpReply(message)} />}
-      {media && <Attachments accountUid={accountUid} chatId={chatId} message={message} own={own} onOpen={props.onOpenMedia} />}
+      {media && (overMedia ? <div className="bubble-media"><Attachments accountUid={accountUid} chatId={chatId} message={message} own={own} onOpen={props.onOpenMedia} />{meta}</div>
+        : <Attachments accountUid={accountUid} chatId={chatId} message={message} own={own} onOpen={props.onOpenMedia} />)}
       {poll && <PollCard accountUid={accountUid} message={message} poll={poll} />}
       {memo ? <div className="bubble-memo selectable">
         {memo.title.trim() && <strong><NotebookPen size={14} aria-hidden />{memo.title.trim()}{!memo.body && metaSpace}</strong>}
@@ -443,14 +529,14 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
         onClick={event => { event.stopPropagation(); showSessionsBox(accountUid) }}>{tr('기기 관리')}</button>}
       {message.notice && systemNoticeShortcut(message.notice) === 'two-step' && <button type="button" className="bubble-notice-action" disabled={selecting}
         onClick={event => { event.stopPropagation(); showTwoStepBox(accountUid) }}>{tr('2단계 인증')}</button>}
-      {!inlineMeta && meta}
+      {!inlineMeta && !overMedia && meta}
       {message.reactions.length > 0 && <div className="bubble-reactions">{message.reactions.slice(0, 20).map(reaction => {
         // Telegram and iOS MorseReactionButton: one to three people show as small photos instead of a number.
         const faces = reaction.users && reaction.count <= 3 && reaction.users.length === reaction.count ? reaction.users : null
         return <button key={reaction.emoji} type="button" className={reaction.selected ? 'selected' : undefined}
           aria-pressed={reaction.selected} aria-label={`${reaction.emoji} ${reaction.count}${reaction.users?.length ? ` · ${reaction.users.map(user => user.name).join(', ')}` : ''}`} disabled={selecting || !message.version}
           onClick={event => { event.stopPropagation(); props.onReaction(message, reaction.emoji) }}
-          onContextMenu={event => { if (!reaction.users?.length) return; event.preventDefault(); event.stopPropagation(); showReactionPeople(reaction.emoji, reaction.count, reaction.users) }}>
+          onContextMenu={event => { if (!reaction.users?.length) return; event.preventDefault(); event.stopPropagation(); showReactionPeople(reaction.emoji, reaction.count, reaction.users, accountUid, !layout.roomOnly) }}>
           <span>{reaction.emoji}</span>{faces ? <span className="bubble-reaction-faces">{faces.map(user => <UserAvatar key={user.uid} uid={user.uid} name={user.name} size={20} roomOnly={layout.roomOnly} />)}</span> : reaction.count}
         </button>
       })}{inlineMeta && meta}</div>}
@@ -459,28 +545,36 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
 })
 
 export const LocalMessageView = memo(function LocalMessageView({ accountUid, item, layout, onMenu, reply }: { accountUid: string; item: LocalOutgoing; layout: MessageLayout; onMenu(item: LocalOutgoing, point: { x: number; y: number }): void; reply?: ReplyPreview }) {
-  const failed = item.state === 'failed' || item.state === 'upload-failed'
+  const failed = deliveryFailed(item.state)
   // B269: a medium on its way is drawn as the message the server's copy will be (local-media.ts), the ring over it while
   // it goes up (tdesktop draws the local message with its media — api_sending.cpp:1227-1240; history_view_photo.cpp:366-373).
   const media = localMediaMessage(item)
   const caption = media?.caption?.trim() ? media.caption : ''
   const round = media !== null && (media.kind === 'sticker' || (media.kind === 'video' && media.circular))
+  // A message on its way takes the shape its server copy will (B317): a lone photo or video with no caption, reply or
+  // forward has no bubble, and the time sits on a picture, a video or a sticker.
+  const overMedia = media !== null && !caption && infoOverMedia(media.kind)
+  const bare = overMedia && !round && media.kind !== 'sticker' && !item.replyToId && !item.forwarded && !item.storyReply
   const going = !failed && item.state !== 'sent' && (item.state === 'uploading' || Boolean(item.progress))
   const local = { progress: sendingProgress(item.progress), going }
+  const localMeta = <span className="bubble-meta">
+    <time>{messageTime(item.createdAt)}</time>
+    {failed ? <CircleAlert size={14} aria-label={tr('전송 실패')} /> : item.state === 'sent' ? <Check size={15} aria-label={tr('보냄')} /> : <Clock3 size={13} aria-label={item.state === 'uploading' ? tr('업로드 중') : tr('보내는 중')} />}
+  </span>
   return <div className={rowClass(true, layout, failed ? ' failed' : '')} onContextMenu={event => { event.preventDefault(); onMenu(item, pointFor(event, event.currentTarget)) }}>
     {failed && <button type="button" className="history-failed" aria-label={tr('보내지 못한 메시지 메뉴')} onClick={event => onMenu(item, pointFor(event, event.currentTarget))}><CircleAlert size={22} /></button>}
-    <div className={`bubble${media && !caption ? ' media-only' : ''}${round ? ' round' : ''}`}>
-      {(item.forwarded || item.storyReply) && <div className="bubble-label">{item.forwarded ? tr('전달된 메시지') : tr('스토리 답장')}</div>}
+    <div className={`bubble${media && !caption ? ' media-only' : ''}${overMedia ? ' info-over' : ''}${bare ? ' bare' : ''}${round ? ' round' : ''}`}>
+      {/* B263: the server names the original's sender by their privacy (forwardInfo); until it has, the header says only
+          that it is a forward, in the place and look the confirmed one takes. */}
+      {item.forwarded ? <div className="bubble-forward ellipsis">{tr('전달된 메시지')}</div> : item.storyReply && <div className="bubble-label">{tr('스토리 답장')}</div>}
       {item.replyToId && reply && <ReplyQuote preview={reply} />}
-      {media ? <Attachments accountUid={accountUid} chatId={item.chatId} message={media} own onOpen={() => {}} local={local} />
+      {media ? (overMedia ? <div className="bubble-media"><Attachments accountUid={accountUid} chatId={item.chatId} message={media} own onOpen={() => {}} local={local} />{localMeta}</div>
+        : <Attachments accountUid={accountUid} chatId={item.chatId} message={media} own onOpen={() => {}} local={local} />)
         : item.voicePreview ? <div className="voice-message own local"><QueuedVoicePlay accountUid={accountUid} item={item} /><span className="voice-message-body"><small>{tr('음성 메시지 · {0}', [formatDuration(item.voicePreview.duration)])}</small></span></div>
         : <div className="bubble-text selectable">{item.text || tr('첨부')}<span className="bubble-meta-space own" /></div>}
       {media && caption && <div className="bubble-text selectable">{caption}<span className="bubble-meta-space own" /></div>}
       {!media && item.progress && <div className="bubble-progress" role="progressbar" aria-valuenow={Math.round(100 * (sendingProgress(item.progress) ?? 0))} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${Math.round(100 * (sendingProgress(item.progress) ?? 0))}%` }} /></div>}
-      <span className="bubble-meta">
-        <time>{messageTime(item.createdAt)}</time>
-        {failed ? <CircleAlert size={14} aria-label={tr('전송 실패')} /> : item.state === 'sent' ? <Check size={15} aria-label={tr('보냄')} /> : <Clock3 size={13} aria-label={item.state === 'uploading' ? tr('업로드 중') : tr('보내는 중')} />}
-      </span>
+      {!overMedia && localMeta}
     </div>
     {failed && item.reason && <div className="history-failed-reason">{item.reason}</div>}
   </div>

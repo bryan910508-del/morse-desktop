@@ -1,10 +1,10 @@
 // Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { autoDownloadChoiceLabel, autoDownloadChoices, autoDownloadSourceLabel } from '../../../shared/auto-download'
-import { changeBackupCode, deleteAccount, showBlockedUsersBox, showLastSeenBox, showSessionsBox } from './security-boxes'
+import { changeBackupCode, deleteAccount, showBlockedUsersBox, showPrivacyRuleBox, showSessionsBox } from './security-boxes'
 import { TwoStepEntry } from './two-step-box'
 import { useEffect, useState, type ReactNode } from 'react'
-import { ArrowLeft, AtSign, Bell, Camera, ChevronRight, FileText, FolderOpen, HardDrive, Image as ImageIcon, Info, LogOut, Megaphone, MessageSquare, Palette, Shield, Star, Trash2, User, X, Clock3, KeyRound, ShieldOff, Timer, Lock, BatteryLow, Download, Lightbulb, CircleHelp, ShieldCheck, Users, QrCode as QrCodeIcon, Crown, CircleCheck, Globe, History, ImagePlus, Keyboard } from 'lucide-react'
+import { ArrowLeft, AtSign, Forward, Bell, Camera, ChevronRight, FileText, FolderOpen, HardDrive, Image as ImageIcon, Info, LogOut, Megaphone, MessageSquare, Palette, Shield, Star, Trash2, User, X, Clock3, KeyRound, ShieldOff, Timer, Lock, BatteryLow, Download, Lightbulb, CircleHelp, ShieldCheck, Users, QrCode as QrCodeIcon, Crown, CircleCheck, Globe, History, ImagePlus, Keyboard } from 'lucide-react'
 import type { Preferences, ThemePreference } from '../../../shared/model'
 import type { BackgroundStorageSnapshot } from '../../../shared/background-storage'
 import type { ContactPhotoStorage } from '../../../shared/contact-photo'
@@ -507,7 +507,9 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
         <div className="section-divider" />
         <Toggle label={tr('스토리 몰래 보기')} detail={tr('켜면 연락처의 스토리를 볼 때 열람 기록을 남기지 않습니다')} checked={preferences.storyStealth} onChange={value => update({ storyStealth: value })} />
         <div className="section-divider" />
-        <Entry icon={<Clock3 size={20} />} label={tr('마지막 접속')} detail={tr('내 마지막 접속 시간을 볼 수 있는 사람')} onClick={() => showLastSeenBox(accountUid)} />
+        <Entry icon={<Clock3 size={20} />} label={tr('마지막 접속')} detail={tr('내 마지막 접속 시간을 볼 수 있는 사람')} onClick={() => showPrivacyRuleBox(accountUid, 'lastSeen')} />
+        {/* B263 §4: tdesktop lists «Forwarded messages» among the privacy keys (lng_settings_forwards_privacy). */}
+        <Entry icon={<Forward size={20} />} label={tr('전달된 메시지')} detail={tr('내 메시지를 전달할 때 내 계정을 연결할 수 있는 사람')} onClick={() => showPrivacyRuleBox(accountUid, 'forwards')} />
         <Entry icon={<ShieldOff size={20} />} label={tr('차단한 사용자')} detail={tr('차단 목록 보기와 해제')} onClick={() => showBlockedUsersBox(accountUid)} />
         <div className="section-divider" />
         <div className="section-label">{tr('보안')}</div>

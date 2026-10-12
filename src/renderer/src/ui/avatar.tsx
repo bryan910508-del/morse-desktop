@@ -6,6 +6,10 @@ import { tr } from '../../../shared/i18n'
 
 export type AvatarKind = 'secret' | 'saved' | 'deleted' | 'channel'
 
+// F6 — Ui::EmptyUserpic::paint (ui/empty_userpic.cpp:300): the letters of a picture-less photo are 13/33 of its size, in
+// every place it is drawn.
+export const initialsSize = (size: number): number => Math.round(size * 13 / 33)
+
 // PeerData::paintUserpic draws the empty userpic until the picture is loaded, never an empty circle. A picture the window
 // already holds under the same address is drawn in the same frame; a changed picture replaces the one on screen when ready.
 export function Avatar({ name, url, size = 46, kind, ref, onOpen }: { name: string; url?: string | null; size?: number; kind?: AvatarKind; ref?: Ref<HTMLSpanElement>
@@ -21,7 +25,7 @@ export function Avatar({ name, url, size = 46, kind, ref, onOpen }: { name: stri
     const node = image.current
     if (node?.complete && node.naturalWidth > 0) setDrawn(true)
   }, [show, url])
-  const picture = <span ref={ref} className={`avatar${kind ? ` ${kind}` : ''}`} style={{ width: size, height: size, fontSize: Math.round(size * .38) }} aria-hidden="true">
+  const picture = <span ref={ref} className={`avatar${kind ? ` ${kind}` : ''}`} style={{ width: size, height: size, fontSize: initialsSize(size) }} aria-hidden="true">
     {!(show && drawn) && <span className="avatar-initials">{initials(name)}</span>}
     {show && <img ref={image} src={url!} alt="" draggable={false} decoding="async" className={drawn ? undefined : 'pending'}
       onLoad={() => setDrawn(true)} onError={() => { setFailed(url!); setDrawn(false) }} />}

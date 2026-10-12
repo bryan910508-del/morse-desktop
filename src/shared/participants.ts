@@ -8,7 +8,6 @@ export interface ParticipantSummary {
   self: boolean
   owner: boolean
   withdrawn: boolean
-  canOpenContact: boolean
   canAddContact: boolean
 }
 export interface ParticipantsSnapshot {

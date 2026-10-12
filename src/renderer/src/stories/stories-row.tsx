@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import type { ContactSummary } from '../../../shared/contacts'
-import { maxStoryBarPeers, mergeStoryBar, type StoryBarEntry } from '../../../shared/story-bar'
+import { maxStoryBarPeers, mergeStoryBar, type StoryBarEntry, type StoryBarResult } from '../../../shared/story-bar'
 import { useDesktop } from '../app/store'
 import { Avatar, AvatarScope } from '../ui/avatar'
 import { ContactAvatar } from '../boxes/peer-picker'
@@ -32,19 +32,16 @@ export function StoriesRow({ accountUid }: { accountUid: string }) {
   const key = peers.join(',')
   const [entries, setEntries] = useState<StoryBarEntry[]>([])
   const [reload, setReload] = useState(0)
+  // B277 ②: main listens to the row's people and says when it changes; asking only names them (and listens again to
+  // a list the server refused, after a press or the connection back).
   useEffect(() => {
     let alive = true
-    const load = (force: boolean): void => {
-      if (document.hidden) return
-      void window.morse.storyBar(accountUid, peers, force).then(result => { if (alive) setEntries(previous => mergeStoryBar(previous, result)) }).catch(() => {})
-    }
-    load(reload > 0)
-    const timer = setInterval(() => load(false), 60000)
-    const visibility = (): void => { if (!document.hidden) load(false) }
-    document.addEventListener('visibilitychange', visibility)
-    return () => { alive = false; clearInterval(timer); document.removeEventListener('visibilitychange', visibility) }
+    const apply = (result: StoryBarResult): void => { if (alive) setEntries(previous => mergeStoryBar(previous, result)) }
+    const stop = window.morse.onEvent(event => { if (event.type === 'story-bar-changed' && event.accountUid === accountUid) apply(event.result) })
+    void window.morse.storyBar(accountUid, peers, reload > 0).then(apply).catch(() => {})
+    return () => { alive = false; stop() }
   }, [accountUid, key, reload])
-  // The connection is back: read again at once rather than at the next minute.
+  // The connection is back: a list the server refused while it was gone is listened to again.
   const connection = useDesktop(snapshot => snapshot?.connection ?? 'offline')
   const wasReady = useRef(connection === 'ready')
   useEffect(() => {

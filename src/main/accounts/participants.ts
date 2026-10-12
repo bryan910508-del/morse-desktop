@@ -23,7 +23,6 @@ export function participantSnapshot(requestId: string, doc: FirestoreDocument, d
     const shown = discussion && uid === owner && summary.title ? summary.title : name || tr('참여자')
     return { uid, displayName: withdrawn ? tr('탈퇴한 계정') : shown, withdrawn,
       self: !discussion && uid === accountUid, owner: !discussion && summary.kind === 'group' && uid === owner,
-      canOpenContact: !discussion && uid !== accountUid && !withdrawn && Boolean(name) && hasContact(uid),
       canAddContact: contactsReady && !discussion && uid !== accountUid && !withdrawn && Boolean(name) && !hasContact(uid) }
   })
   // Stable sort retains the authoritative participant order after the owner.

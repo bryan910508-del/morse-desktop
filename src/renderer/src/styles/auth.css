@@ -27,6 +27,10 @@
 .intro-step .button.intro-apple:hover:not(:disabled) { background: var(--card-pressed) }
 .intro-link { padding: 6px; font-size: var(--t-caption); color: var(--text-weak) }
 .intro-link:hover { color: var(--danger) }
+/* B324 (iOS·Android the same): signing in with a recovery code is a way in like Apple's or Google's, drawn in their
+   colour and weight — not as the grey small print of «도움» or «업데이트». Its place stays. */
+.intro-link.recovery { color: var(--text); font-weight: 600 }
+.intro-link.recovery:hover { color: var(--accent) }
 .intro-status { margin: 4px 0 0; font-size: var(--t-caption); line-height: 1.5; color: var(--text-weak) }
 .intro-status.error { color: var(--danger) }
 

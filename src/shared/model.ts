@@ -22,7 +22,7 @@ import type { ReplyBinding, ReplyDraftSnapshot } from './reply-draft'
 import type { ForwardProgress, ForwardRequest, ForwardSource, ForwardTarget } from './forward'
 import type { MediaMetadata } from './media-metadata'
 import type { ForwardBatchRequest } from './forward-batch'
-import type { ParticipantAddRequest, ParticipantAddResult, ParticipantContactRequest, ParticipantsSnapshot } from './participants'
+import type { ParticipantAddRequest, ParticipantAddResult, ParticipantsSnapshot } from './participants'
 import type { DialogPinRequest, DialogPinSnapshot } from './dialog-pins'
 import type { ManualUnreadRequest, ManualUnreadSnapshot } from './manual-unread'
 import { defaultChatBackground, type BackgroundPhotoScope, type ChatBackground, type ChatBackgroundEdit, type ChatBackgroundRecord } from './chat-background'
@@ -187,6 +187,11 @@ export interface DialogSummary {
   // Topics this device is deleting; `failed` once it stopped and waits to be asked again.
   forumDeleting?: { id: string; failed: boolean }[]
   top: MessagePosition | null
+  // B291: the row's newest message is this account's (chats.lastSenderId, and not a channel post's mirror —
+  // lastSenderType 'channel_post'), and its id (lastMessageId); what the row's send state is drawn from
+  // (row-send-state.ts). Absent on a line the server wrote before it kept them.
+  topFromMe?: true
+  topMessageId?: string
 }
 
 export type MessageKind = 'text' | 'image' | 'video' | 'voice' | 'file' | 'sticker' | 'channelPost' | 'location' | 'event'
@@ -230,6 +235,8 @@ export interface ChatMessage {
   // B195: the server's sticker document this sticker names (stickerId·stickerKind·stickerSetId), when the sender sent a
   // reference; an older sticker has only its bytes.
   sticker?: { id: string; kind: 'png' | 'gif' | 'mp4'; setId?: string }
+  // B263: the «Forwarded from» header the server wrote from the original (forwardInfo) — tdesktop HistoryMessageForwarded.
+  forward?: ForwardInfo
   mediaMetadata?: MediaMetadata | null
   readEligible: boolean
   state: 'pending' | 'sent' | 'failed'
@@ -262,6 +269,9 @@ export interface TextSendWire extends StoryReplyWireFields {
   // B253: a forwarded copy says so (server canonical keeps only true); the server then leaves it out of the sender's
   // Recents, as Telegram puts only stickers that were sent there (forwardMessages does not).
   isForwarded?: true
+  // B263 (contracts/B263-forwarded-from.md §2-1): the forward's original, read by the server to write forwardInfo (the
+  // «Forwarded from» header) — in the digest, never stored, sent only with isForwarded.
+  forwardSource?: ForwardWireSource
   replyToId?: string
   // iOS stampOutgoingCategoryIfNeeded: a message sent into a group with topics carries one.
   categoryId?: string
@@ -434,6 +444,8 @@ export type DesktopEvent =
   | { type: 'scroll-phase'; phase: 'momentum' }
   | { type: 'chat-background-changed'; accountUid: string; chatId: string; background: ChatBackgroundRecord }
   | { type: 'forward-progress'; accountUid: string; progress: ForwardProgress }
+  // B277 ②: the stories row as main listens to it.
+  | { type: 'story-bar-changed'; accountUid: string; result: import('./story-bar').StoryBarResult }
   | { type: 'snapshot'; snapshot: DesktopSnapshot }
   | { type: 'messages-changed'; accountUid: string; chatId: string }
   | { type: 'history-changed'; accountUid: string; chatId: string; history: HistorySnapshot }
@@ -442,6 +454,7 @@ export type DesktopEvent =
   | { type: 'reply-draft-changed'; accountUid: string; chatId: string; reply: ReplyDraftSnapshot }
   | { type: 'actions-changed'; accountUid: string; chatId: string; actions: MessageActionsSnapshot }
   | { type: 'media-progress'; accountUid: string; requestId: string; loaded: number; total: number | null }
+  | { type: 'file-state'; accountUid: string; chatId: string; messageId: string; index: number; state: import('./media').FileState }
   | { type: 'shortcut'; command: ShortcutCommand }
   | { type: 'open-notification-chat'; accountUid: string; chatId: string }
   | { type: 'open-notification-inquiry'; accountUid: string; channelId: string; inquiryId: string }
@@ -503,8 +516,8 @@ export interface DesktopBridge {
   // A13-2 ③: the account's two-step password — its state, and setting, changing, turning off or resetting it.
   twoStepSettings(accountUid: string): Promise<import('./two-step').TwoStepSettings>
   updateTwoStep(accountUid: string, request: import('./two-step').TwoStepRequest): Promise<import('./two-step').TwoStepOutcome>
-  lastSeenPrivacy(accountUid: string): Promise<import('./account-tools').LastSeenPrivacy>
-  setLastSeenPrivacy(accountUid: string, value: import('./account-tools').LastSeenPrivacy): Promise<void>
+  privacyRule(accountUid: string, key: import('./account-tools').PrivacyKey): Promise<import('./account-tools').PrivacyRule>
+  setPrivacyRule(accountUid: string, key: import('./account-tools').PrivacyKey, value: import('./account-tools').PrivacyRule): Promise<void>
   report(accountUid: string, request: import('./reports').ReportRequest): Promise<void>
   accountPrivacy(accountUid: string): Promise<import('./account-tools').AccountPrivacy>
   setPrivateMode(accountUid: string, value: boolean): Promise<'done' | 'unconfirmed'>
@@ -592,7 +605,6 @@ export interface DesktopBridge {
   checkDialogPin(accountUid: string, chatId: string): Promise<void>
   openParticipants(accountUid: string, chatId: string, requestId: string): Promise<void>
   closeParticipants(accountUid: string, requestId: string): Promise<void>
-  participantContact(accountUid: string, request: ParticipantContactRequest): Promise<string>
   addParticipantContact(accountUid: string, request: ParticipantAddRequest): Promise<ParticipantAddResult>
   addChatContact(accountUid: string, request: import('./participants').ChatContactRequest): Promise<import('./participants').ParticipantAddResult>
   addInquiryContact(accountUid: string, request: import('./channel-inquiries').InquiryContactRequest): Promise<import('./participants').ParticipantAddResult>
@@ -814,6 +826,8 @@ export interface DesktopBridge {
   // The version gate's page (app_config/desktop storeUrl or the release page), and quitting from its screen.
   openUpdatePage(): Promise<void>
   quitApp(): Promise<void>
+  // B301: a media viewer is open (its zoom keys are its own), and whether it fills the screen.
+  viewerState(open: boolean, fullScreen: boolean): Promise<void>
   // The server turned this version away: update now (tdesktop Core::UpdateApplication).
   updateApplication(): Promise<void>
   closeChannelHome(accountUid: string): Promise<void>
@@ -872,7 +886,9 @@ export interface DesktopBridge {
   contactPhotoStorage(accountUid: string): Promise<ContactPhotoStorage>
   removeStoredContactPhoto(accountUid: string, removal: ContactPhotoRemoval): Promise<void>
   copyProfileId(accountUid: string): Promise<void>
-  openContactProfile(accountUid: string, uid: string, requestId: string): Promise<void>
+  // B266: anyone this account meets; hint is the name the opening screen shows, for when no public profile can be read.
+  openContactProfile(accountUid: string, uid: string, requestId: string, hint?: string): Promise<void>
+  addProfileContact(accountUid: string, requestId: string): Promise<import('./participants').ParticipantAddResult>
   closeContactProfile(accountUid: string, requestId: string): Promise<void>
   copyContactId(accountUid: string, requestId: string): Promise<void>
   saveContactDetails(accountUid: string, requestId: string, edit: ContactDetailsEdit): Promise<void>
@@ -908,10 +924,23 @@ export interface DesktopBridge {
   photoPreview(accountUid: string, chatId: string, request: import('./media').MediaRequest, asked: boolean): Promise<string | null>
   photoThumb(accountUid: string, chatId: string, request: import('./media').MediaRequest): Promise<string | null>
   saveMedia(accountUid: string, requestId: string): Promise<boolean>
+  // B323-a·b: a picture or a video the window chose, held by main and shown from the address it answers.
+  holdLocalPreview(bytes: Uint8Array): Promise<string>
+  releaseLocalPreview(url: string): Promise<void>
+  // F2: a file bubble's own fetching and opening (tdesktop Document _savel/_cancell/_openl).
+  fileState(accountUid: string, chatId: string, request: import('./media').MediaRequest): Promise<import('./media').FileState>
+  fetchFile(accountUid: string, chatId: string, request: import('./media').MediaRequest): Promise<void>
+  cancelFile(accountUid: string, chatId: string, request: import('./media').MediaRequest): Promise<void>
+  openFile(accountUid: string, chatId: string, request: import('./media').MediaRequest): Promise<'opened' | 'shown' | 'cancelled'>
+  showFileInFolder(accountUid: string, chatId: string, request: import('./media').MediaRequest): Promise<void>
   pickAttachment(accountUid: string, chatId: string, mode: AttachmentMode): Promise<AttachmentDraft | null>
   dropAttachments(accountUid: string, chatId: string, files: File[], mode: AttachmentDropMode): Promise<AttachmentDraft | null>
   pasteAttachments(accountUid: string, chatId: string, files: File[]): Promise<AttachmentDraft>
   discardAttachment(accountUid: string, id: string): Promise<void>
+  // B311: the next item of a picked selection that is sent one at a time, or null.
+  nextAttachment(accountUid: string, chatId: string): Promise<AttachmentDraft | null>
+  // B280 ③: «보내기» was pressed: from here the selection is that send's, whichever chat is on screen.
+  pressAttachment(accountUid: string, chatId: string, id: string): Promise<void>
   replaceAttachmentImage(accountUid: string, chatId: string, id: string, itemId: string, bytes: Uint8Array): Promise<AttachmentDraft>
   editAttachmentVideo(accountUid: string, chatId: string, id: string, itemId: string, edit: { start: number; end: number; preset: import('./photo-quality').VideoSendPreset; overlay?: Uint8Array }): Promise<AttachmentDraft>
   cacheUsage(): Promise<number>
@@ -1000,3 +1029,8 @@ export function versionNewer(a: string, b: string): boolean {
   const [aSeconds = 0, aNanos = 0] = a.split(':').map(Number), [bSeconds = 0, bNanos = 0] = b.split(':').map(Number)
   return aSeconds > bSeconds || (aSeconds === bSeconds && aNanos > bNanos)
 }
+// B263: where a forward's original is — a chat's message or an inquiry room's (channelInquiries/{roomId}/messages).
+export interface ForwardWireSource { kind: 'chat' | 'inquiry'; roomId: string; messageId: string }
+// B263 §2-2: who a forward came from, as the server wrote it (messageFwdHeader's from_id / from_name / channel_post / date).
+// fromUid only when the original sender lets forwards link to them; hidden: their name only (or none — a deleted account).
+export interface ForwardInfo { fromUid?: string; fromName: string; fromChannelId?: string; channelPostId?: string; date: number | null; hidden: boolean }

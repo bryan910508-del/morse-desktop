@@ -8,7 +8,7 @@ import { bannedNotice, rejectionCode, rejectionUntil, restrictedNotice } from '.
 // IDs and transport flags are excluded.
 const stringFields = ['stickerId', 'stickerKind', 'stickerSetId', 'encryptedMediaMetadata', 'fileName', 'mediaUrl', 'thumbnailUrl', 'thumbData', 'videoCaption', 'imageCaption', 'categoryId', 'replyToId',
   'replyStoryOwnerName', 'replyStoryThumbData', 'replyStoryOwnerType', 'replyStoryId', 'replyStoryOwnerId', 'replyStoryThumbnailUrl', 'replyStoryMediaType',
-  'replyStoryText', 'replyStoryChannelId', 'iv', 'pollQuestion'] as const
+  'replyStoryText', 'replyStoryChannelId', 'iv', 'contactShareId', 'pollQuestion'] as const
 const numberFields = ['replyStoryExpiresAt', 'fileSize', 'videoDuration', 'videoWidthPx', 'videoHeightPx', 'mediaWidthPx', 'mediaHeightPx', 'voiceDuration'] as const
 const arrayFields = ['mediaKeys', 'imageWidthsPx', 'imageHeightsPx', 'voiceWaveform'] as const
 
@@ -17,12 +17,20 @@ export function textDigest(wire: SendWire): string {
   // 서버처럼 payload 에서 종류를 읽는다. 보내는 쪽 타입 합집합이 아직 모르는 종류(연락처·투표)도
   // digest 는 맞게 계산해야 한다 — 서버는 data.type 을 본다.
   const type = typeof source.type === 'string' ? source.type : 'text'
-  const canonical: Record<string, unknown> = { type: wire.type, text: wire.text, isSilent: wire.isSilent === true, isEncrypted: false }
+  const canonical: Record<string, unknown> = { type: wire.type, text: wire.text, isSilent: wire.isSilent === true, isEncrypted: source.isEncrypted === true }
   for (const key of stringFields) if (typeof source[key] === 'string') canonical[key] = source[key]
   // 서버는 옛 이름 reply_to 도 아직 받는다. 이 자리에서, 글자열들 뒤에 넣는다.
   if (!canonical.replyToId && typeof source.reply_to === 'string') canonical.replyToId = source.reply_to
   for (const key of numberFields) if (source[key] !== undefined && source[key] !== null) canonical[key] = source[key]
   for (const key of arrayFields) if (Array.isArray(source[key])) canonical[key] = source[key]
+  // B310ⓑ: the server puts an album's thumbDatas right after the arrays (morse-message-authority.js canonical, albumThumbs).
+  if (Array.isArray(source.thumbDatas)) canonical.thumbDatas = source.thumbDatas
+  // F3 (server broad check 10-11): what the server's canonical does next, in its order — a contact share's id is kept
+  // only on a contact; the sticker fields only on a sticker, and a sticker sent as a reference has no text and no
+  // mediaKeys (stickerReferenceShape).
+  if (type !== 'contact') delete canonical.contactShareId
+  if (type !== 'sticker' || canonical.stickerId === undefined) { delete canonical.stickerId; delete canonical.stickerKind; delete canonical.stickerSetId }
+  else { canonical.text = ''; delete canonical.mediaKeys }
   // 투표. 서버 canonical() 이 이 자리에서 하는 것을 그대로 한다 — 선택지를 다듬어 넣고, 다섯 설정을
   // 서버와 같은 기본값으로 굳히고, 집계를 0 에서 시작시킨다. 키가 들어가는 **차례**까지 같아야 한다:
   // JSON.stringify 는 넣은 순서대로 적고, 그 글자열의 해시가 payloadDigest 다.
@@ -49,15 +57,36 @@ export function textDigest(wire: SendWire): string {
   } else delete canonical.pollQuestion
   if (source.isCircleVideo === true) canonical.isCircleVideo = true
   // B253: kept by the server's canonical only when true, after isCircleVideo (placement to confirm with the server).
-  if (source.isForwarded === true) canonical.isForwarded = true
+  if (source.isForwarded === true) {
+    canonical.isForwarded = true
+    // B263 §2-1: the original, right after isForwarded, its keys in the server's order (kind, roomId, messageId); a
+    // malformed one is dropped whole, as the server's canonical drops it.
+    const forward = forwardSourceShape(source.forwardSource)
+    if (forward) canonical.forwardSource = forward
+  }
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex')
 }
-// The digest the server stored for this message: a server older than isForwarded drops the field before it hashes,
-// so a forwarded copy matches either way (B253, until every server keeps it).
+const forwardId = /^[A-Za-z0-9_-]{1,160}$/
+export function forwardSourceShape(raw: unknown): { kind: string; roomId: string; messageId: string } | null {
+  const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null
+  if (!value || (value.kind !== 'chat' && value.kind !== 'inquiry') || typeof value.roomId !== 'string' || !forwardId.test(value.roomId) ||
+      typeof value.messageId !== 'string' || !forwardId.test(value.messageId)) return null
+  return { kind: value.kind, roomId: value.roomId, messageId: value.messageId }
+}
+// A wire's forwardSource is either absent or exactly the server's shape, and only beside isForwarded (B263 §2-1).
+export function forwardSourceValid(wire: { isForwarded?: unknown; forwardSource?: unknown }): boolean {
+  if (wire.forwardSource === undefined) return true
+  const shape = forwardSourceShape(wire.forwardSource)
+  return wire.isForwarded === true && shape !== null && JSON.stringify(shape) === JSON.stringify(wire.forwardSource)
+}
+// The digest the server stored for this message: a server older than forwardSource drops it (B263), one older than
+// isForwarded drops both before it hashes, so a forwarded copy matches whichever server took it (B253, B263).
 export function textDigestMatches(wire: SendWire, stored: string): boolean {
   if (stored === textDigest(wire)) return true
   if (!wire.isForwarded) return false
-  const { isForwarded: _forwarded, ...plain } = wire
+  const { forwardSource: _source, ...withoutSource } = wire
+  if (wire.forwardSource && stored === textDigest(withoutSource as SendWire)) return true
+  const { isForwarded: _forwarded, ...plain } = withoutSource
   return stored === textDigest(plain as SendWire)
 }
 // A10 §4: an operator's restriction ends by itself, so its message can go again then; a ban and a closed room do not.

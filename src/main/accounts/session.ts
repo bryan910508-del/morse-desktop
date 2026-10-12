@@ -71,6 +71,7 @@ import { CloseFriendsApi } from '../api/close-friends'
 import { ChannelMembershipApi } from '../api/channel-membership'
 import { ChannelDeletionApi, firestoreChannelDeletion } from '../api/channel-deletion'
 import { StoryBarApi } from '../api/story-bar'
+import type { StoryBarResult } from '../../shared/story-bar'
 import type { GroupCreateRequest } from '../../shared/group-create'
 import type { GroupMembersRequest } from '../../shared/group-members'
 import type { GroupRemovalRequest } from '../../shared/group-removal'
@@ -81,7 +82,7 @@ import type { GroupAnnouncementEdit, GroupAnnouncementResult } from '../../share
 import type { TextForwardBatchRequest } from '../../shared/forward-text-batch'
 import type { ForwardBatchRequest } from '../../shared/forward-batch'
 import { prepareForwardBatch } from '../media/forward-batch'
-import type { ParticipantAddRequest, ParticipantAddResult, ParticipantContactRequest, ParticipantsSnapshot } from '../../shared/participants'
+import type { ParticipantAddRequest, ParticipantAddResult, ParticipantsSnapshot } from '../../shared/participants'
 import { participantSnapshot, roomContactFields } from './participants'
 import { ParticipantContactAdd, type ChatContactTarget } from './participant-contact-add'
 import { DialogPins } from './dialog-pins'
@@ -99,6 +100,9 @@ import { canApplyAction, MessageActions } from '../messaging/message-actions'
 import type { MessageActionRequest, MessageActionsSnapshot } from '../../shared/message-actions'
 import type { MediaRequest } from '../../shared/media'
 import { MediaSession } from '../media/media-session'
+import { OpenedFiles, type OpenedFileSystem } from '../media/opened-files'
+import type { FileState } from '../../shared/media'
+import { join } from 'node:path'
 import type { AttachmentMode, AttachmentDropMode } from '../../shared/uploads'
 import { AccountNotifications, type NotificationHost } from '../messaging/notifications'
 import { ChannelInquiries } from './channel-inquiries'
@@ -157,10 +161,12 @@ import { freePinLimit, premiumPinLimit, type PinMessageRequest, type PinnedMessa
 import { canReply, type ReplyBinding, type ReplyDraftSnapshot } from '../../shared/reply-draft'
 import { canForwardMessage, canForwardMedia, canForwardText, savedMessagesFirst, type ForwardProgress, type ForwardRequest, type ForwardSource, type ForwardTarget } from '../../shared/forward'
 import { prepareForwardMedia, type ForwardMediaSource } from '../media/forward-media'
-import { inquiryIdentifier, inquiryOfQueueChatId, inquiryQueueChatId, type InquiryContactRequest, type InquiryForwardRequest, type InquiryForwardRoom } from '../../shared/channel-inquiries'
+import { inquiryIdentifier, inquiryOfQueueChatId, inquiryQueueChatId, type InquiryContactRequest, type InquiryForwardRequest, type InquiryForwardRoom, forwardWireSource } from '../../shared/channel-inquiries'
 import { outgoingText, trimChatInput } from '../../shared/validation'
 import { tr } from '../../shared/i18n'
 import type { VideoEdit } from '../media/attachment-staging'
+import { restorePictures } from './userpic-images'
+import { avatarDisplayLimits } from './profile-photo'
 import { registerUserpicCache, UserpicCache } from './userpic-cache'
 import { MediaCache, registerMediaCache } from './media-cache'
 import { InquiryNotifications } from './inquiry-notifications'
@@ -186,7 +192,12 @@ export interface AccountEvents {
   reply(chatId: string, snapshot: ReplyDraftSnapshot): void
   actions(chatId: string, snapshot: MessageActionsSnapshot): void
   mediaProgress(requestId: string, loaded: number, total: number | null): void
+  // F2: a file bubble's fetching, and the system that opens what it fetched.
+  fileState(chatId: string, messageId: string, index: number, state: FileState): void
+  files: OpenedFileSystem
   forwardProgress(progress: ForwardProgress): void
+  // B277 ②: the stories row changed (story-bar.ts listens to it).
+  storyBar?(result: StoryBarResult): void
 }
 
 // Authentication alone owns Socket.IO registration. Server history remains
@@ -301,7 +312,6 @@ export class AccountSession {
   readonly inquiryRows: InquiryRows
   // Messages sent into inquiry rooms that the server has not accepted yet, kept on the device (inquiry-sends.ts).
   readonly inquirySends: InquirySends
-  // B264: the picture each sticker this device sent is drawn from, by message id (messaging/sticker-draws.ts).
   // B269: what each message this device sends is drawn from, and its server copy after it (B264's stickers among them).
   private readonly sendingMedia = new SendingMedia()
   // Likes, new words and deletes of channel posts and comments, kept until the server shows them (channel-operations.ts).
@@ -320,6 +330,7 @@ export class AccountSession {
   private readonly notifications: AccountNotifications
   private readonly channelPosts: ChannelPostNotices
   readonly media: MediaSession
+  readonly files: OpenedFiles
   readonly selfProfile: SelfProfileSession
   readonly contacts: ContactsSession
   private readonly discussionHistory: ChannelDiscussionHistory
@@ -372,7 +383,7 @@ export class AccountSession {
     this.discussionHistory = new ChannelDiscussionHistory(profile.uid, credentials.signal, () => { if (!this.closed && this.chatsCurrent && this.pinsCurrent) this.rebuild() })
     this.selfProfile = new SelfProfileSession(profile.uid, credentials, () => { if (!this.closed) events.changed() }, (command, validate) => this.delivery.profilePhotoState(command, validate),
       (peer, raw) => this.peerPhotos.remember(peer, raw))
-    this.contacts = new ContactsSession(profile.uid, credentials, () => { if (!this.closed) { this.renameDialogs(); this.dialogAvatars?.prune(); this.contactPublicStories?.prune(); this.contactStoryAudience?.prune(); this.contactAudienceStories?.prune(); this.contactAudienceStoryPhoto?.prune(); this.contactAudienceStoryVideo?.prune(); this.contactStoryPhotoAudio?.prune(); this.contactStoryReaction?.prune(); this.storyReactionChange?.prune(); this.storyViewReceipt?.prune(); this.contactPublicStoryPhoto?.prune(); this.contactPublicStoryVideo?.prune(); events.changed() } }, (command, validate) => this.delivery.contactState(command, validate), (peer, raw) => this.peerPhotos.remember(peer, raw))
+    this.contacts = new ContactsSession(profile.uid, credentials, () => { if (!this.closed) { this.renameDialogs(); this.dialogAvatars?.prune(); this.contactPublicStories?.prune(); this.contactStoryAudience?.prune(); this.contactAudienceStories?.prune(); this.contactAudienceStoryPhoto?.prune(); this.contactAudienceStoryVideo?.prune(); this.contactStoryPhotoAudio?.prune(); this.contactStoryReaction?.prune(); this.storyReactionChange?.prune(); this.storyViewReceipt?.prune(); this.contactPublicStoryPhoto?.prune(); this.contactPublicStoryVideo?.prune(); this.storyBarApi?.recheck(); events.changed() } }, (command, validate) => this.delivery.contactState(command, validate), (peer, raw) => this.peerPhotos.remember(peer, raw))
     this.channels = new ChannelsSession(profile.uid, credentials, () => { this.channelJoinDecisions?.prune(); this.channelAccess?.prune(); this.channelPhotoUpload?.prune(); this.channelHome?.listChanged(); if (!this.closed) events.changed() })
     this.ownStories = new OwnStories(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
     this.spaceNotes = new SpaceNotesReader(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
@@ -611,6 +622,8 @@ export class AccountSession {
       (chatId, snapshot) => { if (!this.closed) events.actions(chatId, snapshot) })
     this.media = new MediaSession(credentials, (chatId, request) => this.mediaResourceFor(chatId, request),
       (requestId, loaded, total) => { if (!this.closed) events.mediaProgress(requestId, loaded, total) })
+    this.files = new OpenedFiles(credentials, (chatId, request) => this.mediaResourceFor(chatId, request), join(directory, 'opened-files'),
+      (chatId, messageId, index, state) => { if (!this.closed) events.fileState(chatId, messageId, index, state) }, events.files)
     this.photoPreviews = new PhotoPreviews(credentials, (chatId, request) => this.mediaResourceFor(chatId, request))
     this.hiddenChats = new HiddenChats(<T,>(command: HiddenChatCommand) => this.delivery.hiddenChatState<T>(command),
       () => { if (!this.closed && this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() } })
@@ -631,6 +644,7 @@ export class AccountSession {
       () => { const own = this.selfProfile.snapshot.profile; return own ? Boolean(own.premium) : null },
       { list: () => this.delivery.stickerState<{ id: string; kind: StickerKind }[]>({ kind: 'stickers-list' }),
         read: id => this.delivery.stickerState<{ kind: StickerKind; data: Uint8Array } | null>({ kind: 'sticker-read', id }),
+        remove: id => this.delivery.stickerState({ kind: 'sticker-remove', id }),
         clear: () => this.delivery.stickerState({ kind: 'stickers-clear' }) })
     this.delivery.stickerRefused = (chatId, id, reason, ref) => { void this.stickerReferenceRefused(chatId, id, reason, ref).catch(() => {}) }
     this.delivery.sendingMedia = this.sendingMedia
@@ -645,7 +659,8 @@ export class AccountSession {
       uid => { try { return this.contacts.has(uid) ? this.contacts.closeFriendCandidate(uid).displayName : null } catch { return null } })
     this.channelMembershipApi = new ChannelMembershipApi(profile.uid, credentials, connected)
     this.channelDeletionApi = new ChannelDeletionApi(connected, () => firestoreChannelDeletion(credentials, connected))
-    this.storyBarApi = new StoryBarApi(profile.uid, credentials, () => { if (this.closed || this.locked) throw new Error(tr('계정 연결을 확인해 주세요.')) }, uid => this.contacts.has(uid))
+    this.storyBarApi = new StoryBarApi(profile.uid, credentials, () => { if (this.closed || this.locked) throw new Error(tr('계정 연결을 확인해 주세요.')) }, uid => this.contacts.has(uid),
+      uid => this.contacts.keepsMe(uid), result => { if (!this.closed && !this.locked) this.events.storyBar?.(result) })
     this.accountTools = new AccountToolsApi(profile.uid, credentials, connected)
     this.twoStep = new TwoStepSettingsApi(profile.uid, credentials, connected)
     this.inquirySends = new InquirySends(profile.uid, credentials, connected, command => this.delivery.inquirySendState(command), () => { if (!this.closed) events.changed() })
@@ -699,6 +714,8 @@ export class AccountSession {
     const people = (uid: string, raw: string | null) => this.channelPeople.image(uid, raw)
     this.channels.admins.people = people; this.channels.subscribers.people = people; this.channels.posts.comments.people = people; this.channels.joinRequests.people = people
     this.channelPublicPreview.comments.people = people; this.channelInquiries.people = people
+    const contactPhoto = (uid: string) => this.contacts.contactPhoto(uid)
+    this.channels.posts.comments.authors.contactPhoto = contactPhoto; this.channelPublicPreview.comments.authors.contactPhoto = contactPhoto
   }
   get state(): ConnectionState { return this.connection }
   get socketState(): ConnectionState { return this.socket }
@@ -721,12 +738,15 @@ export class AccountSession {
     if (this.locked === locked) return
     this.locked = locked
     if (locked) this.keptHistories.clear()
+    // A locked app holds no selection, not even one being sent (it is refused at its next check).
+    if (locked) this.delivery.discardAttachment(undefined, true)
     this.syncPresence()
     if (locked) this.channelPeople.clear()
     this.channels.setLocked(locked)
     if (!locked) this.topicDeletions.connectionChanged()
     if (locked) this.channelHome.pause(true); else this.channelHome.resume()
     this.channelStories.setLocked(locked)
+    this.storyBarApi.setLocked(locked)
     this.channelInquiries.setLocked(locked)
     this.inquiryRows.setLocked(locked)
     if (locked) this.inquiryNotifications.pause()
@@ -736,13 +756,23 @@ export class AccountSession {
     this.personalChannels.setLocked(locked)
     if (locked) this.photoPreviews.clear()
     if (this.chatsCurrent && this.pinsCurrent) this.rebuild()
-    if (locked) { this.dialogAvatars.clear(); this.storyMedia.clear() }
+    if (locked) { this.lockedPictures = this.dialogAvatars.drawnPictures(); this.dialogAvatars.clear(); this.storyMedia.clear() }
     this.voiceDraftStorage.invalidate();this.backgroundStorage.invalidate()
     if (locked) { this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); this.groupName.pause(); this.groupAnnouncement.pause(); this.groupPhoto.clear(); this.groupPhotoEditor.pause(); this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause() }
     if (locked) { this.ownStories.pause(); this.spaceNotes.pause(); this.channelPublicPreview.pause(); this.channelPublicPreview.comments.forget(); this.channelDiscovery.pause(); this.contactDiscovery.pause(); this.participantAdd.pause(); this.dialogPins.pause(); this.manualUnread.pause(); this.draftReply.clear(); this.cancelForwardPreparation() }
     else if (this.selected && this.reader) this.draftReply.bind(this.selected.dialog, this.reader)
     // A post or a comment on its way goes on once the screen is open again.
     if (!locked) { this.postCreation.resume(); this.commentCreation.resume(); this.inquirySends.resume(); this.channelOperations.resume(); this.historyClears.resume() }
+  }
+  // B288: tdesktop's passcode lock only covers the window (MainWindow::setupPasscodeLock hides _main, mainwindow.cpp:182-204),
+  // so its list comes back as it was. Morse takes every picture out of memory while locked (userpic-images forgetImages)
+  // and keeps only the addresses of those the list was drawing; unlocked, they are read back from this account's cache
+  // file — only what is already there, nothing new is stored — so the rows draw them in their first frame.
+  private lockedPictures: string[] = []
+  async restoreLockedPictures(): Promise<void> {
+    const raws = this.lockedPictures
+    this.lockedPictures = []
+    await restorePictures(raws, raw => this.userpics.read(raw, avatarDisplayLimits.maxBytes), () => !this.closed && !this.locked)
   }
   pendingDirects() { return this.delivery.pendingDirects() }
   // The account's default for new chats, as iOS reads it from users/{uid}/private/chatSettings and Telegram reads
@@ -762,9 +792,11 @@ export class AccountSession {
         this.events.notifications.preferences().autoDeleteDefaultSeconds)
     } catch { /* the device value stands until a later read succeeds */ }
   }
+  // B266: the open profile's person, contact or not — iOS and Android open a 1:1 with anyone from a profile, the server
+  // making the room with its first message (peerUid, chatType 'direct'); the window refuses a person it blocked first.
   async startContactChat(requestId: string): Promise<string> {
     if (this.closed || this.locked || this.connection !== 'ready' || this.status !== 'ready') throw new Error(tr('대화 목록과 연결을 확인해 주세요.'))
-    const peer = this.contacts.directPeer(requestId)
+    const peer = this.contacts.chatPeer(requestId)
     // Any dialog with the peer, listed or not: one that is out of the list ("나에게만 삭제", or nothing left after a
     // delete for everyone) opens as the empty chat it is (openUnlisted). B88 §28: which one is the pair document's
     // word (findDirect); a new room is made only when it names none.
@@ -979,12 +1011,6 @@ export class AccountSession {
     if (!doc || !doc.updateTime || (exact && (documentVersion(doc) !== request.version || current.groupName === request.name))) throw new Error(tr('그룹 정보가 변경되었습니다. 최신 정보에서 다시 편집해 주세요.'))
     return doc
   }
-  participantContact(request: ParticipantContactRequest): string {
-    const current = this.participants
-    if (!current || current.status !== 'ready' || current.requestId !== request.requestId || current.chatId !== request.chatId || current.version !== request.version ||
-      current.discussion || !current.members.some(member => member.uid === request.uid && member.canOpenContact)) throw new Error(tr('참여자 또는 연락처 정보가 변경되었습니다. 최신 목록에서 다시 선택해 주세요.'))
-    return request.uid
-  }
   addParticipantContact(request: ParticipantAddRequest): Promise<ParticipantAddResult> {
     return this.addChatContact({ id: request.id, chatId: request.chatId, uid: request.uid })
   }
@@ -1111,7 +1137,7 @@ export class AccountSession {
     this.cancelForwardPreparation()
     this.draftReply.clear()
     this.cancelSearch()
-    this.delivery.discardAttachment()
+    this.delivery.discardAttachment(); this.delivery.historyClosed()
     this.media.clear()
     const old = this.selected
     this.selected = null
@@ -1543,9 +1569,12 @@ export class AccountSession {
     return { message, forward: !this.locked && !dialog.summary.service && canForwardMessage(message), reply: !this.locked && dialog.summary.composeAccess !== false && canReply(message), edit: canApplyAction({ kind: 'edit' }, message, dialog),
       delete: canApplyAction({ kind: 'delete' }, message, dialog), reaction: canApplyAction({ kind: 'reaction' }, message, dialog) }
   }
-  private forwardDestination(chatId: string, sourceChatId: string): ForwardTarget | null {
+  // B282: every room this account may send to is a target, the message's own room too — tdesktop's recipient list skips
+  // only rooms it cannot send to (ChooseRecipientBoxController::createRow, peer_list_controllers.cpp:1042-1054), and
+  // Telegram Android opens its forward list without leaving the open chat out (ChatActivity.java:12315-12324).
+  private forwardDestination(chatId: string): ForwardTarget | null {
     const dialog = this.contextDialog(chatId), row = this.chatRows.get(`${documents}/chats/${chatId}`)
-    if (!dialog || dialog.composeAccess === false || !row || chatId === sourceChatId || dialog.kind === 'secret' || !dialog.participantUids.includes(this.profile.uid)) return null
+    if (!dialog || dialog.composeAccess === false || !row || dialog.kind === 'secret' || !dialog.participantUids.includes(this.profile.uid)) return null
     // Saved Messages is the first place a message can be forwarded to. Telegram adds it to the
     // recipient list before the chats and then puts it at the top
     // (ChatsListBoxController::rebuildRows: appendRow(history(session().user())), then
@@ -1560,13 +1589,13 @@ export class AccountSession {
   }
   forwardTargets(source: ForwardSource): ForwardTarget[] {
     if (!this.contextMessage(source.chatId, source.messageId, source.version)?.forward) throw new Error(tr('전달할 최신 메시지를 다시 선택해 주세요.'))
-    return this.savedFirst(this.list.flatMap(dialog => { const target = this.forwardDestination(dialog.id, source.chatId); return target ? [target] : [] }), source.chatId)
+    return this.savedFirst(this.list.flatMap(dialog => { const target = this.forwardDestination(dialog.id); return target ? [target] : [] }))
   }
   // peerListPartitionRows(isSelf): Saved Messages leads the list. It is not in the chat list any more,
   // so it is offered here on its own rather than taken from that list.
-  private savedFirst(targets: ForwardTarget[], sourceChatId: string): ForwardTarget[] {
+  private savedFirst(targets: ForwardTarget[]): ForwardTarget[] {
     const savedId = `memo_${this.profile.uid}`
-    return savedMessagesFirst(targets, savedId, sourceChatId, this.forwardDestination(savedId, sourceChatId), Boolean(this.contextDialog(savedId)))
+    return savedMessagesFirst(targets, savedId, this.forwardDestination(savedId), Boolean(this.contextDialog(savedId)))
   }
   // A message of an open inquiry room forwarded into chats. The room is named by its client id (sub_inq_<id>), so
   // the queue keeps it apart from any chat, and the content is re-sent exactly as a chat's forward is.
@@ -1578,14 +1607,14 @@ export class AccountSession {
   inquiryForwardTargets(source: ForwardSource): ForwardTarget[] {
     const message = this.inquiryForwardSource(source).message
     if (this.locked || !canForwardMessage(message)) throw new Error(tr('전달할 최신 메시지를 다시 선택해 주세요.'))
-    return this.savedFirst(this.list.flatMap(dialog => { const target = this.forwardDestination(dialog.id, source.chatId); return target ? [target] : [] }), source.chatId)
+    return this.savedFirst(this.list.flatMap(dialog => { const target = this.forwardDestination(dialog.id); return target ? [target] : [] }))
   }
   forwardInquiryText(request: ForwardRequest): Promise<void> {
     if (this.closed || this.locked) throw new Error(tr('계정과 화면 잠금 상태를 확인해 주세요.'))
     return this.delivery.enqueueForward(request, () => {
       const message = this.inquiryForwardSource(request.source).message
       if (!canForwardText(message)) throw new Error(tr('원본이 변경되었거나 만료되었습니다. 최신 텍스트를 다시 선택해 주세요.'))
-      if (request.targets.some(target => !this.forwardDestination(target.chatId, request.source.chatId))) throw new Error(tr('전달할 수 없는 대화가 있습니다. 대상을 다시 선택해 주세요.'))
+      if (request.targets.some(target => !this.forwardDestination(target.chatId))) throw new Error(tr('전달할 수 없는 대화가 있습니다. 대상을 다시 선택해 주세요.'))
       return { text: message.text, isSilent: false }
     })
   }
@@ -1599,7 +1628,7 @@ export class AccountSession {
     const resolve = (): ForwardMediaSource => {
       const source = this.inquiryForwardSource(request.source)
       if (!canForwardMedia(source.message)) throw new Error(tr('원본이 변경되었거나 만료되었습니다. 최신 첨부를 다시 선택해 주세요.'))
-      if (request.targets.some(target => !this.forwardDestination(target.chatId, request.source.chatId))) throw new Error(tr('전달 대상이 변경되었습니다. 대화를 다시 확인해 주세요.'))
+      if (request.targets.some(target => !this.forwardDestination(target.chatId))) throw new Error(tr('전달 대상이 변경되었습니다. 대화를 다시 확인해 주세요.'))
       return source
     }
     const owner = { request, validate: () => { resolve() }, abort: new AbortController(), committing: false, task: null as Promise<void> | null }
@@ -1620,7 +1649,7 @@ export class AccountSession {
     return this.delivery.enqueueForward(request, () => {
       const source = this.contextMessage(request.source.chatId, request.source.messageId, request.source.version)
       if (!source?.forward || !canForwardText(source.message)) throw new Error(tr('원본이 변경되었거나 만료되었습니다. 최신 텍스트를 다시 선택해 주세요.'))
-      if (request.targets.some(target => !this.forwardDestination(target.chatId, request.source.chatId))) throw new Error(tr('전달할 수 없는 대화가 있습니다. 대상을 다시 선택해 주세요.'))
+      if (request.targets.some(target => !this.forwardDestination(target.chatId))) throw new Error(tr('전달할 수 없는 대화가 있습니다. 대상을 다시 선택해 주세요.'))
       return { text: source.message.text, isSilent: Boolean(source.message.silent) }
     })
   }
@@ -1633,17 +1662,48 @@ export class AccountSession {
         return current.message
       })
       if (messages.some((message, index) => index > 0 && comparePosition(messages[index - 1]!.position, message.position) >= 0)) throw new Error(tr('메시지 순서가 변경되었습니다. 원래 대화 순서로 다시 선택해 주세요.'))
-      if (request.targets.some(target => !this.forwardDestination(target.chatId, request.sources[0]!.chatId))) throw new Error(tr('전달 대상이 변경되었습니다.'))
+      if (request.targets.some(target => !this.forwardDestination(target.chatId))) throw new Error(tr('전달 대상이 변경되었습니다.'))
       return messages.map(message => ({ text: message.text, isSilent: Boolean(message.silent) }))
     })
   }
   // B246: a forwarded sticker reference goes as that reference while sticker_reference_send is on and the server holds
   // the copy (StickerLibrary.route), else by its bytes.
+  // B263 observation 3 (as B264 for a sticker sent): a forwarded sticker is drawn as that sticker from the moment it is
+  // queued, from the picture its original is drawn from — tdesktop's forward holds the original's document
+  // (history_item.cpp:723-736 copies the media). The library's or an installed set's copy is named by its address; any
+  // other is drawn from a copy of the bytes its bubble shows now. Nothing on this device yet: the label, as before.
+  private forwardedStickerDraw(source: ForwardSource, messageIds: readonly string[]): StickerDraw | null {
+    let message: ForwardMediaSource['message'] | null = null
+    try { message = inquiryOfQueueChatId(source.chatId) ? this.inquiryForwardSource(source).message : this.contextMessage(source.chatId, source.messageId, source.version)?.message ?? null }
+    catch { return null }
+    if (!message || message.kind !== 'sticker' || message.encrypted) return null
+    const sent = this.sendingMedia.sticker(message.id)
+    if (sent) return sent
+    const reference = message.sticker
+    if (reference) {
+      const kind = this.stickerLibrary.kindOf(reference.id)
+      if (kind) return { url: stickerLibraryURL(reference.id), video: kind === 'mp4' }
+      const packKind = reference.setId ? this.stickerPacks.itemKind(reference.setId, reference.id) : null
+      if (packKind) return { url: stickerPackItemURL(reference.setId!, reference.id), video: packKind === 'mp4' }
+    }
+    const shown = this.photoPreviews.stickerBytes(source.chatId, message.id, message.version)
+    return shown ? this.sendingMedia.holdSticker(messageIds, shown.bytes, shown.mime) : null
+  }
+  private drawForwardedStickers(forwards: readonly { source: ForwardSource; messageIds: string[] }[]): string[] {
+    const drawn: string[] = []
+    for (const { source, messageIds } of forwards) {
+      const draw = this.forwardedStickerDraw(source, messageIds)
+      if (!draw) continue
+      for (const id of messageIds) { this.sendingMedia.noteSticker(id, draw); drawn.push(id) }
+    }
+    return drawn
+  }
+  private forgetStickerDraws(ids: readonly string[]): void { for (const id of ids) this.sendingMedia.forget(id) }
   private readonly forwardStickerReference = async (sticker: { id: string }): Promise<boolean> => await this.stickerLibrary.route(sticker.id) === 'reference'
   private forwardMediaSource(request: ForwardRequest): ForwardMediaSource {
     const source = this.contextMessage(request.source.chatId, request.source.messageId, request.source.version)
     if (!source?.forward || !canForwardMedia(source.message) || !this.selected) throw new Error(tr('원본이 변경되었거나 만료되었습니다. 최신 첨부를 다시 선택해 주세요.'))
-    if (request.targets.some(target => !this.forwardDestination(target.chatId, request.source.chatId))) throw new Error(tr('전달 대상이 변경되었습니다. 대화를 다시 확인해 주세요.'))
+    if (request.targets.some(target => !this.forwardDestination(target.chatId))) throw new Error(tr('전달 대상이 변경되었습니다. 대화를 다시 확인해 주세요.'))
     const resources = source.message.attachments!.map(part => {
       const resource = this.selected!.mediaResource({ requestId: request.id, messageId: source.message.id, version: source.message.version, index: part.index })
       if (!resource?.path || !resource.summary.available) throw new Error(tr('첨부 원본을 확인하지 못했습니다.'))
@@ -1679,9 +1739,11 @@ export class AccountSession {
     const progress = (value: Omit<ForwardProgress, 'operationId'>): void => {
       if (!this.closed && !this.locked && this.forwardPreparation === owner) this.events.forwardProgress({ operationId: request.id, ...value })
     }
+    const drawn = this.drawForwardedStickers([{ source: request.source, messageIds: request.targets.map(target => target.messageId) }])
     owner.task = this.delivery.enqueueForwardMedia(request,
       () => prepareForwardMedia(this.credentials, () => this.forwardMediaSource(request), request.targets.length, signal, progress, 0, this.forwardStickerReference), validate,
       () => { owner.committing = true; progress({ phase: 'saving', current: 0, count: 0, loaded: 0, total: null }) })
+      .catch(error => { this.forgetStickerDraws(drawn); throw error })
       .finally(() => { if (this.forwardPreparation === owner) this.forwardPreparation = null })
     return owner.task
   }
@@ -1693,7 +1755,7 @@ export class AccountSession {
       return this.forwardMediaSource({ id: request.id, source, targets: request.targets.map(target => ({ chatId: target.chatId, messageId: target.messageIds[index]! })) })
     })
     if (sources.some((source, index) => index > 0 && comparePosition(sources[index - 1]!.message.position, source.message.position) >= 0)) throw new Error(tr('메시지 순서가 변경되었습니다. 원래 대화 순서로 다시 선택해 주세요.'))
-    if (request.targets.some(target => !this.forwardDestination(target.chatId, request.sources[0]!.chatId))) throw new Error(tr('전달 대상이 변경되었습니다.'))
+    if (request.targets.some(target => !this.forwardDestination(target.chatId))) throw new Error(tr('전달 대상이 변경되었습니다.'))
     return sources
   }
   forwardBatch(request: ForwardBatchRequest): Promise<void> {
@@ -1710,9 +1772,11 @@ export class AccountSession {
     const progress = (value: Omit<ForwardProgress, 'operationId'>): void => {
       if (!this.closed && !this.locked && this.forwardPreparation === owner) this.events.forwardProgress({ operationId: request.id, ...value })
     }
+    const drawn = this.drawForwardedStickers(batchStickerTargets(request))
     owner.task = this.delivery.enqueueForwardBatch(request,
       () => prepareForwardBatch(this.credentials, () => this.forwardBatchSources(request), request.targets.length, signal, progress, this.forwardStickerReference), validate,
       () => { owner.committing = true; progress({ phase: 'saving', current: 0, count: 0, loaded: 0, total: null }) })
+      .catch(error => { this.forgetStickerDraws(drawn); throw error })
       .finally(() => { if (this.forwardPreparation === owner) this.forwardPreparation = null })
     return owner.task
   }
@@ -1754,13 +1818,13 @@ export class AccountSession {
     const task = (async () => {
       const source = resolve()
       if (canForwardText(source.message)) {
-        for (const inquiryId of request.inquiryIds) await this.channelInquiries.deliverForward(inquiryId, { kind: 'text', text: source.message.text }, validate)
+        for (const inquiryId of request.inquiryIds) await this.channelInquiries.deliverForward(inquiryId, { kind: 'text', text: source.message.text }, validate, forwardWireSource(request.source))
         return
       }
       const media = await prepareForwardMedia(this.credentials, resolve, request.inquiryIds.length, signal, progress)
       try {
         progress({ phase: 'saving', current: 0, count: 0, loaded: 0, total: null })
-        for (const inquiryId of request.inquiryIds) await this.channelInquiries.deliverForward(inquiryId, { kind: 'media', media }, validate)
+        for (const inquiryId of request.inquiryIds) await this.channelInquiries.deliverForward(inquiryId, { kind: 'media', media }, validate, forwardWireSource(request.source))
       } finally { for (const part of media.parts) part.bytes.fill(0) }
     })()
     this.inquiryForward = task
@@ -1775,7 +1839,7 @@ export class AccountSession {
       return canForwardText(current.message) ? { message: current.message, resources: [] } : current
     })
     if (sources.some((source, index) => index > 0 && comparePosition(sources[index - 1]!.message.position, source.message.position) >= 0)) throw new Error(tr('메시지 순서가 변경되었습니다. 원래 대화 순서로 다시 선택해 주세요.'))
-    if (request.targets.some(target => !this.forwardDestination(target.chatId, request.sources[0]!.chatId))) throw new Error(tr('전달 대상이 변경되었습니다.'))
+    if (request.targets.some(target => !this.forwardDestination(target.chatId))) throw new Error(tr('전달 대상이 변경되었습니다.'))
     return sources
   }
   forwardInquiryBatch(request: ForwardBatchRequest): Promise<void> {
@@ -1792,9 +1856,11 @@ export class AccountSession {
     const progress = (value: Omit<ForwardProgress, 'operationId'>): void => {
       if (!this.closed && !this.locked && this.forwardPreparation === owner) this.events.forwardProgress({ operationId: request.id, ...value })
     }
+    const drawn = this.drawForwardedStickers(batchStickerTargets(request))
     owner.task = this.delivery.enqueueForwardBatch(request,
       () => prepareForwardBatch(this.credentials, () => this.inquiryForwardBatchSources(request), request.targets.length, signal, progress), validate,
       () => { owner.committing = true; progress({ phase: 'saving', current: 0, count: 0, loaded: 0, total: null }) })
+      .catch(error => { this.forgetStickerDraws(drawn); throw error })
       .finally(() => { if (this.forwardPreparation === owner) this.forwardPreparation = null })
     return owner.task
   }
@@ -2210,7 +2276,8 @@ export class AccountSession {
     const history = this.selected
     if (!history || history.dialog.summary.id !== chatId) return null
     const snapshot = history.snapshot
-    return { messages: snapshot.messages, newerAvailable: snapshot.newerAvailable, ready: snapshot.status === 'ready', preview: index => messageListPreview(snapshot.messages[index]!) }
+    return { messages: snapshot.messages, newerAvailable: snapshot.newerAvailable, ready: snapshot.status === 'ready', preview: index => messageListPreview(snapshot.messages[index]!),
+      mine: index => snapshot.messages[index]!.senderId === this.profile.uid }
   }
   // One timer for the account: the list is drawn again just after the soonest row's message expires — a second after,
   // so the open history has dropped it from its own copy first (history-reader.ts publish).
@@ -2362,6 +2429,10 @@ export class AccountSession {
     return this.delivery.pickAttachment(chatId, mode, choose)
   }
   discardAttachment(id: string) { this.delivery.discardAttachment(id) }
+  nextAttachment(chatId: string) {
+    if (this.closed || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    return this.delivery.nextAttachment(chatId)
+  }
   // «캐시 정리»: pictures kept in memory for bubbles go; they are fetched again when shown.
   // The pictures of one person, newest first: the one on screen now, then the ones this device remembers.
   openProfilePhotos(peerUid: string): Promise<{ count: number }> {
@@ -2372,7 +2443,7 @@ export class AccountSession {
   }
   clearMediaCaches(): void { if (!this.closed) this.photoPreviews.clear() }
   replaceAttachmentImage(chatId: string, id: string, itemId: string, bytes: Uint8Array) {
-    if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    if (this.closed || this.locked || (this.selected?.dialog.summary.id !== chatId && this.delivery.pressedAttachmentChat() !== chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
     return this.delivery.replaceAttachmentImage(chatId, id, itemId, bytes)
   }
   editAttachmentVideo(chatId: string, id: string, itemId: string, edit: VideoEdit) {
@@ -2391,29 +2462,37 @@ export class AccountSession {
     return this.closed ? new Response(null, { status: 403 }) : this.channelInquiries.attachmentPreview(path, request)
   }
   attachmentPreview(path: string, request: Request): Response {
-    if (this.closed || !this.selected) return new Response(null, { status: 403 })
-    return this.delivery.attachmentPreview(this.selected.dialog.summary.id, path, request)
+    // A pressed send's selection is read in its own chat (B280 ③), the screen meanwhile showing another.
+    const chatId = this.delivery.pressedAttachmentChat() ?? this.selected?.dialog.summary.id
+    if (this.closed || !chatId) return new Response(null, { status: 403 })
+    return this.delivery.attachmentPreview(chatId, path, request)
+  }
+  pressAttachment(chatId: string, id: string): void {
+    if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    this.delivery.pressAttachment(id)
   }
   async sendVoice(request:import('../../shared/voice-send').VoiceSendRequest,source:()=>Uint8Array):Promise<void>{
     this.voiceCaptureAccess(request.chatId)
     try{await this.delivery.enqueueVoice(request,source,()=>{this.voiceCaptureAccess(request.chatId);if(request.reply)this.draftReply.validate(request.chatId,request.reply)})}finally{this.voiceDraftStorage.invalidate()}
     await this.draftReply.refresh(request.chatId)
   }
+  // B280 ③: a send is bound to the chat it was pressed in, as tdesktop's is to its history (Api::SendAction(_history),
+  // history_widget.cpp:5748-5750; the files box is made for its peer, :7999-8005). It checks that the chat is there and
+  // the account may send — not that the chat is still the one on screen. The reply was taken at the press, and is checked
+  // again only while its chat is still open (its draft is cleared when the chat closes).
+  private pressedSend(chatId: string, reply: ReplyBinding | null): void {
+    if (this.closed || this.locked || !this.index.has(chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    if (reply && this.selected?.dialog.summary.id === chatId) this.draftReply.validate(chatId, reply)
+  }
   async sendRoundVideo(request: RoundVideoSendRequest, bytes: Uint8Array): Promise<void> {
     const { chatId, reply } = request
     if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
-    await this.delivery.enqueueRoundVideo(chatId, bytes, { duration: request.duration, width: roundVideoSide, height: roundVideoSide, thumb: request.thumb }, reply, () => {
-      if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
-      if (reply) this.draftReply.validate(chatId, reply)
-    })
+    await this.delivery.enqueueRoundVideo(chatId, bytes, { duration: request.duration, width: roundVideoSide, height: roundVideoSide, thumb: request.thumb }, reply, () => this.pressedSend(chatId, reply))
     await this.draftReply.refresh(chatId)
   }
   async sendAttachment(chatId: string, id: string, caption: string, itemIds: string[], reply: ReplyBinding | null, video: import('../../shared/uploads').VideoFacts | null = null): Promise<void> {
-    if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId || caption.length > 3000) throw new Error(tr('대화와 첨부 내용을 확인해 주세요.'))
-    await this.delivery.enqueueAttachment(chatId, id, trimChatInput(caption), itemIds, reply, () => {
-      if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
-      if (reply) this.draftReply.validate(chatId, reply)
-    }, video)
+    if (this.closed || this.locked || !this.index.has(chatId) || caption.length > 3000) throw new Error(tr('대화와 첨부 내용을 확인해 주세요.'))
+    await this.delivery.enqueueAttachment(chatId, id, trimChatInput(caption), itemIds, reply, () => this.pressedSend(chatId, reply), video)
     await this.draftReply.refresh(chatId)
   }
   async mutateMessage(chatId: string, request: MessageActionRequest): Promise<void> {
@@ -2437,7 +2516,7 @@ export class AccountSession {
     if (last?.id !== messageId) return
     const next = messages[messages.length - 2]
     if (!next && snapshot.hasMore) return
-    if (!this.chatListTops.replace(chatId, next ? { preview: messageListPreview(next), position: next.position } : null)) return
+    if (!this.chatListTops.replace(chatId, next ? { preview: messageListPreview(next), position: next.position, fromMe: next.senderId === this.profile.uid, messageId: next.id } : null)) return
     if (this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() }
   }
   checkMessageAction(chatId: string, id: string) { return this.actions.inspect(chatId, id) }
@@ -2789,7 +2868,7 @@ export class AccountSession {
   async close(purge: boolean): Promise<void> {
     if (this.closed) return
     this.keptHistories.clear(); this.settleListed(false)
-    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.sendingMedia.clear(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stickerLibrary.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
+    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.sendingMedia.clear(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stickerLibrary.close(); this.storyBarApi.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
     this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); 
     await storyClose
     await noteClose
@@ -2843,6 +2922,7 @@ export class AccountSession {
     await this.selfProfile.close()
     await this.notifications.close()
     await this.media.close()
+    await this.files.close(purge)
     await this.reads.close()
     await this.actions.close()
     await this.delivery.close(purge)
@@ -2859,4 +2939,9 @@ function forumCategoriesValue(categories: ForumCategory[]): WireObject {
 // A room's last message time as the list showed it (lastMessageAt): the A4 boundary is found at or before it.
 function seenTop(top: MessagePosition | null | undefined): { seconds: number; nanoseconds: number } | null {
   return top && (top.seconds > 0 || top.nanoseconds > 0) ? { seconds: top.seconds, nanoseconds: top.nanoseconds } : null
+}
+
+// Each source of a batch with the message it becomes in every target, in the batch's order.
+function batchStickerTargets(request: ForwardBatchRequest): { source: ForwardSource; messageIds: string[] }[] {
+  return request.sources.map((source, index) => ({ source, messageIds: request.targets.map(target => target.messageIds[index]!) }))
 }

@@ -53,15 +53,19 @@ test('the same forwarded reference, refused, goes again by bytes still saying it
   insertForwardMedia(value, me, request as never, { kind: 'sticker', metadata: {}, caption: '', isSilent: false, blind: false,
     parts: [{ name: '스티커', contentType: 'image/png', extension: 'png', sha256: sha(bytes), md5: md5(bytes), bytes }], sticker: { id: sha(bytes), kind: 'png' } })
   value.prepare("UPDATE intents SET state='failed',reason='STICKER_REFERENCE_OFF'").run()
-  const command = (isForwarded: boolean) => {
+  // B263: the resend names the same original as the reference did (outbox.ts B246 bytes resend carries forwardSource).
+  const original = { kind: 'chat' as const, roomId: 'src', messageId: 's1' }
+  const command = (isForwarded: boolean, forwardSource: typeof original | null = original) => {
     const wire: MediaSendWire = { id: 'F1', chatId: chat, senderId: me, type: 'sticker', text: '', mediaUrl: '', isSilent: false, isEncrypted: false, protocolVersion: 3,
-      mediaWidthPx: 512, mediaHeightPx: 512, ...(isForwarded ? { isForwarded: true as const } : {}) }
+      mediaWidthPx: 512, mediaHeightPx: 512, ...(isForwarded ? { isForwarded: true as const, ...(forwardSource ? { forwardSource } : {}) } : {}) }
     const upload = { id: 'F1', chatId: chat, name: '스티커.png', kind: 'sticker' as const, size: bytes.byteLength, contentType: 'image/png', path: `chat_media/${chat}/F1.png`, sha256: sha(bytes), md5: md5(bytes), session: null }
     return { kind: 'enqueue-attachment' as const, request: { id: 'F1', chatId: chat, senderId: me, caption: '', itemIds: ['F1'], reply: null, sticker: sha(bytes) }, wire, parts: [{ upload, bytes }], replacesReference: true as const }
   }
   assert.throws(() => executeUpload(value, me, command(false)), 'the flag may not be dropped on the way')
+  assert.throws(() => executeUpload(value, me, command(true, null)), 'nor the original it names')
+  assert.throws(() => executeUpload(value, me, command(true, { ...original, messageId: 's2' })), 'nor changed')
   executeUpload(value, me, command(true))
-  assert.deepEqual([wires(value)[0]!.isForwarded, wires(value)[0]!.stickerId], [true, undefined])
+  assert.deepEqual([wires(value)[0]!.isForwarded, wires(value)[0]!.stickerId, wires(value)[0]!.forwardSource], [true, undefined, original])
 })
 
 test('the digest keeps the flag last when true, and a forwarded copy matches a server that does not know the field yet', () => {

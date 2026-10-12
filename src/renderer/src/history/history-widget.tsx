@@ -2,9 +2,10 @@
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowLeft, Bookmark, Check, Copy, Download, EllipsisVertical, File as FileIcon, Flag, Forward, Images, Info, Languages, Link, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Star, StarOff, Timer, Trash2, X } from 'lucide-react'
+import { ArrowDown, ArrowLeft, Bookmark, Check, ChevronDown, Copy, Download, FolderOpen, EllipsisVertical, File as FileIcon, Flag, Forward, Images, Info, Languages, Link, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Star, StarOff, Timer, Trash2, X } from 'lucide-react'
+import { fileReady } from './file-states'
 import type { ChatMessage, DialogSummary, HistorySnapshot } from '../../../shared/model'
-import type { LocalOutgoing, OutgoingSnapshot } from '../../../shared/delivery'
+import { deliveryFailed, type LocalOutgoing, type OutgoingSnapshot } from '../../../shared/delivery'
 import type { ReplyDraftSnapshot } from '../../../shared/reply-draft'
 import type { MessageActionsSnapshot } from '../../../shared/message-actions'
 import type { ChatBackgroundRecord } from '../../../shared/chat-background'
@@ -44,10 +45,12 @@ import { showDateJumpBox } from './date-jump-box'
 import { CategoryBar } from './category-bar'
 import { inCategory } from '../../../shared/forum'
 import { LocalMessageView, MessageView, type MessageLayout, type MessageMenuTarget } from './message'
+import { isPressedItem, stillPressed, withPressed, type PressedSend } from './pressed-sends'
+import { appendedCount, reveal, revealAllowed } from './item-reveal'
 import { deleteMessage, overlayMessage, reconcileActions, reconcileMessages, toggleReaction, useMessageOverlay } from './message-overlay'
 import { useVisibleRead } from './visible-read'
 import { useScrollDate } from './scroll-date'
-import { followsBottom, keepBottomOnResize } from './keep-bottom'
+import { followsBottom, keepBottomOnResize, keepsBottomOnChange } from './keep-bottom'
 import { autoTranslate, offerTranslation, toggleTranslation, translationShown } from '../app/translations'
 import { usePresence } from '../app/presence'
 import { useTyping } from '../app/typing'
@@ -55,10 +58,11 @@ import { PinnedBar, togglePin } from './pinned-bar'
 import { DeferredBar } from './deferred-send'
 import { linkLabel, useShownConnection } from '../app/connection'
 import { tr } from '../../../shared/i18n'
-import { reactionStrip, readRecentReactions, recordReaction } from './recent-reactions'
+import { expandedReactions, reactionStrip, readRecentReactions, recordReaction } from './recent-reactions'
+import emojiList from './emoji-data.json'
 import { chatRestrictedNotice } from '../../../shared/sanctions'
 import { PeerBar } from './peer-bar'
-import { SwipeBackPlate, SwipeReplyIcon, useSwipe } from './use-swipe'
+import { SwipeBack, SwipeReply, useSwipe } from './use-swipe'
 import { swipeAllowed } from './swipe-gesture'
 import { historyEntries, type Entry } from './history-entries'
 import { messageReportAllowed } from '../../../shared/reports'
@@ -89,10 +93,24 @@ function attachable(entry: Entry): boolean {
 // The strip a message's menu carries. What was reacted with lately comes first, as Telegram's own strip
 // follows the server's recent list and iOS follows its stored one; `mine` are the reactions this account
 // has already left on the message, which are not recorded again.
+// B285: its last button expands it, in the menu's place, into every reaction this account may leave (ReactionPanel).
 export function ReactionStrip({ accountUid, mine = [], onPick }: { accountUid: string; mine?: readonly string[]; onPick(emoji: string): void }) {
   return <div className="reaction-strip">{reactionStrip(readRecentReactions(accountUid)).map(emoji =>
     <button key={emoji} type="button" aria-label={tr('{0} 반응', [emoji])}
-      onClick={() => { recordReaction(accountUid, emoji, mine.includes(emoji)); onPick(emoji) }}>{emoji}</button>)}</div>
+      onClick={() => { recordReaction(accountUid, emoji, mine.includes(emoji)); onPick(emoji) }}>{emoji}</button>)}
+    <button type="button" className="reaction-expand" aria-label={tr('반응 더 보기')}
+      onClick={() => popupMenu.expand(<ReactionPanel accountUid={accountUid} mine={mine} onPick={onPick} />)}><ChevronDown size={18} /></button></div>
+}
+function ReactionPanel({ accountUid, mine, onPick }: { accountUid: string; mine: readonly string[]; onPick(emoji: string): void }) {
+  // Read once, so nothing moves under the pointer while it is open (as the emoji panel's recent row, B57).
+  const [sections] = useState(() => expandedReactions(readRecentReactions(accountUid), emojiList as string[]))
+  const button = (emoji: string, key: string) => <button key={key} type="button" aria-label={tr('{0} 반응', [emoji])} aria-pressed={mine.includes(emoji)}
+    onClick={() => { recordReaction(accountUid, emoji, mine.includes(emoji)); onPick(emoji) }}>{emoji}</button>
+  return <div className="reaction-panel entity-emoji" role="group" aria-label={tr('반응 더 보기')}>
+    {sections.recent.length > 0 && <><div className="entity-emoji-label">{tr('최근 반응')}</div>{sections.recent.map(emoji => button(emoji, `recent-${emoji}`))}</>}
+    <div className="entity-emoji-label">{tr('이모지')}</div>
+    {sections.all.map(emoji => button(emoji, emoji))}
+  </div>
 }
 
 // HistoryWidget: top bar, virtualized history over the chat background, and
@@ -122,10 +140,14 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   const revisions = useRef({ history: -1, outgoing: -1, reply: -1, actions: -1 })
   const current = useRef(history)
   const outgoingRef = useRef(outgoing); outgoingRef.current = outgoing
+  // B306: texts drawn as the composer empties, until the queue's item or the history's message takes their place.
+  const [pressed, setPressed] = useState<readonly PressedSend[]>([])
+  useEffect(() => { setPressed([]) }, [chatId])
   const dialogRef = useRef(dialog); dialogRef.current = dialog
   const bottom = useRef(true), pagingRef = useRef(false)
   const pendingScroll = useRef<null | 'bottom' | { key: string; align: 'start' | 'center' }>('bottom')
   const anchor = useRef<{ key: string; offset: number } | null>(null)
+  const revealKeys = useRef<readonly string[]>([])
   const firstUnread = useRef<string | null | undefined>(undefined)
   const virtualRef = useRef<Virtualizer<HTMLDivElement, Element> | null>(null)
 
@@ -212,11 +234,23 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
 
   // iOS MorseGroupCategorySelection.messageMatchesFilter: with a topic chosen, the history shows that topic only.
   const forum = dialog?.forum ?? null, forumSelected = dialog?.forumSelected ?? null
-  const entries = useMemo<Entry[]>(() => historyEntries(history.messages, outgoing.items, raw => {
+  useEffect(() => { setPressed(list => stillPressed(list, outgoing.items, new Set(history.messages.map(message => message.id)))) }, [outgoing.items, history.messages])
+  const pressedSend = useCallback((send: PressedSend): void => {
+    bottom.current = true
+    if (!current.current.newerAvailable) pendingScroll.current = 'bottom'
+    setPressed(list => [...list, send])
+  }, [])
+  // A refused send leaves at once (its text is back in the field); a stored one leaves when its item shows, or after a
+  // moment if the window never lists it (its chat was left meanwhile).
+  const pressSettled = useCallback((id: string, stored: boolean): void => {
+    const drop = (): void => setPressed(list => list.some(send => send.id === id) ? list.filter(send => send.id !== id) : list)
+    if (stored) setTimeout(drop, 2000); else drop()
+  }, [])
+  const entries = useMemo<Entry[]>(() => historyEntries(history.messages, withPressed(outgoing.items, pressed), raw => {
     if (forum && !raw.system && !inCategory(raw, forum, forumSelected)) return null
     const message = overlayMessage(raw)
     return message ? { kind: 'message', key: message.id, message, own: message.senderId === accountUid, time: positionMilliseconds(message.position) } : null
-  }), [history.messages, outgoing.items, overlayRevision, accountUid, forum, forumSelected])
+  }), [history.messages, outgoing.items, pressed, overlayRevision, accountUid, forum, forumSelected])
   const currentEntries = useRef(entries); currentEntries.current = entries
   const entryTimes = useMemo(() => entries.map(entry => entry.time), [entries])
   const group = dialog?.kind === 'group'
@@ -277,6 +311,15 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     observer.observe(element); setViewport(height)
     return () => observer.disconnect()
   }, [])
+  // B307: the list's height follows a message's new size a render or a layout later (a reaction's chip, a picture
+  // measured); a history at its bottom follows it there too (keepsBottomOnChange, tdesktop updateListSize).
+  useLayoutEffect(() => {
+    const element = scroll.current, inner = element?.querySelector<HTMLElement>('.history-inner')
+    if (!element || !inner || !settled) return
+    const observer = new ResizeObserver(() => { if (keepsBottomOnChange(false, bottom.current, true)) element.scrollTop = element.scrollHeight })
+    observer.observe(inner)
+    return () => observer.disconnect()
+  }, [settled])
   useLayoutEffect(() => {
     if (settled || history.status === 'loading') return
     if (!entries.length) { setSettled(true); return }
@@ -294,6 +337,15 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     if (!element || !entries.length) return
     for (const row of element.querySelectorAll<HTMLElement>('[data-index]')) virtual.measureElement(row)
     const target = pendingScroll.current
+    // B306 ②: what joined the bottom of a history followed at its bottom rises into place (item-reveal.ts).
+    const keys = entries.map(entry => entry.key), added = appendedCount(revealKeys.current, keys)
+    revealKeys.current = keys
+    if (added && settled && revealAllowed(target === 'bottom', document.visibilityState === 'visible', document.documentElement.classList.contains('reduce-motion'))) {
+      let height = 0
+      for (let index = entries.length - added; index < entries.length; index++) height += element.querySelector<HTMLElement>(`[data-index="${index}"]`)?.getBoundingClientRect().height ?? 0
+      const inner = element.querySelector<HTMLElement>('.history-inner')
+      if (inner && height > 0) reveal(element, inner, height)
+    }
     if (target === 'bottom') { virtual.scrollToIndex(entries.length - 1, { align: 'end' }); pendingScroll.current = null }
     else if (target) {
       const index = entries.findIndex(entry => entry.key === target.key)
@@ -304,6 +356,10 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       const index = entries.findIndex(entry => entry.key === saved.key)
       const offset = index >= 0 ? virtual.getOffsetForIndex(index, 'start') : undefined
       if (offset) virtual.scrollToOffset(offset[0] + saved.offset)
+    } else if (keepsBottomOnChange(false, bottom.current, settled)) {
+      // B307: a reaction shown at once (message-overlay.ts) grows its bubble in this pass, so the bottom follows now, not
+      // when the server's copy of the message arrives.
+      virtual.scrollToIndex(entries.length - 1, { align: 'end' })
     }
   }, [entries])
 
@@ -416,7 +472,6 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     },
     row: () => swipeTarget.current?.row ?? null
   })
-  const swipe = swipeFrame()
   // B53: the chosen messages as one text — the author's name, «나»'s own for this account (shared/message-copy.ts).
   const copyMessages = useCallback((messages: ChatMessage[]) => {
     const self = desktop.value?.selfProfile
@@ -481,6 +536,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
           ? { label: tr('즐겨찾기에서 삭제'), icon: <StarOff size={18} />, onSelect: () => { void window.morse.removeSticker(accountUid, favourite.id).then(() => controller.toast(tr('즐겨찾기에서 삭제했어요')), reason => controller.toast(errorText(reason, tr('처리하지 못했습니다. 다시 시도해 주세요.')), 'error')) } }
           : { label: tr('즐겨찾기에 추가'), icon: <Star size={18} />, onSelect: () => { void saveSticker(accountUid, chatId, message) } }) : null,
         savable && message.kind !== 'sticker' ? { label: message.kind === 'voice' ? tr('파일로 저장') : tr('저장'), icon: <Download size={18} />, onSelect: () => { void saveAttachment(accountUid, chatId, message, savable.index) } } : null,
+        savable ? showInFolderItem(accountUid, chatId, message, savable.index) : null,
         // AddPhotoActions: «Copy Image» beside the save, under the same restriction.
         savable?.kind === 'image' ? { label: tr('이미지 복사'), icon: <Copy size={18} />, onSelect: () => { void copyAttachmentImage(accountUid, chatId, message, savable.index) } } : null,
         canForwardMessage(message) ? { label: tr('전달'), icon: <Forward size={18} />, onSelect: () => showShareBox(accountUid, [message]) } : null,
@@ -508,7 +564,9 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       .then(state => { faved = state; proceed() })
   }, [accountUid, chatId, selectReply, removeMessages, copyMessages])
   const openLocalMenu = useCallback((item: LocalOutgoing, point: { x: number; y: number }) => {
-    const failed = item.state === 'failed' || item.state === 'upload-failed'
+    // Pressed a moment ago and not yet in the queue: nothing to retry or cancel there yet.
+    if (isPressedItem(item)) return
+    const failed = deliveryFailed(item.state)
     popupMenu.open(point, [
       item.retryable ? { label: tr('다시 보내기'), icon: <RotateCcw size={18} />, onSelect: () => { void window.morse.retryMessage(accountUid, chatId, item.id).catch(reason => controller.toast(errorText(reason, tr('다시 보내지 못했습니다.')), 'error')) } } : null,
       // B269: a medium's file name is not its text; its caption is.
@@ -653,7 +711,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
           onClick={() => { if (dialog && !secret && historyReady) showDateJumpBox(accountUid, chatId, scrollDate.value!.time) }}>{serviceDate(scrollDate.value.time)}</button>
       </div>}
       <div ref={scroll} className={`history-scroll${selection !== null ? ' selecting' : ''}`} onScroll={onScroll} tabIndex={-1} data-region-focus aria-busy={paging || history.status === 'loading'}>
-        <div className={`history-inner${settled ? '' : ' settling'}`} style={{ height: virtual.getTotalSize(), marginTop: Math.max(0, viewport - virtual.getTotalSize()) }}>
+        <div className={`history-inner${settled ? '' : ' settling'}`} style={{ height: `calc(${virtual.getTotalSize()}px - var(--reveal, 0px))`, marginTop: Math.max(0, viewport - virtual.getTotalSize()) }}>
           {!closed && virtual.getVirtualItems().map(item => {
             const entry = entries[item.index]!, layout = layouts[item.index]!
             return <div key={item.key} data-index={item.index} ref={virtual.measureElement} className="history-row" style={{ transform: `translateY(${item.start}px)` }}>
@@ -671,8 +729,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
         </div>
         {paging && <div className="history-paging"><Spinner size={18} /></div>}
       </div>
-      <SwipeBackPlate frame={swipe} />
-      <SwipeReplyIcon frame={swipe} row={swipeTarget.current?.row ?? null} host={historyBox.current} />
+      <SwipeBack frames={swipeFrame} />
+      <SwipeReply frames={swipeFrame} row={() => swipeTarget.current?.row ?? null} host={() => historyBox.current} />
       {/* B103: a chat this session has not read yet shows its background and the composer while its first messages come,
           as tdesktop's paintEvent does with no history yet (history_widget.cpp:11398) — no spinner. */}
       {bodyNotice && <div className="history-notice" role="status">
@@ -699,7 +757,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
         const last = [...entries].reverse().find(entry => entry.kind === 'message' && entry.own && entry.message.kind === 'text' && canMutate(entry.message, dialog))
         if (last?.kind === 'message') setEditing(last.message)
       }}
-      onSent={() => { bottom.current = true; if (current.current.newerAvailable) void jumpLatest() }} />}
+      onSent={() => { bottom.current = true; if (current.current.newerAvailable) void jumpLatest() }}
+      onPressed={pressedSend} onPressSettled={pressSettled} />}
   </section>
 }
 
@@ -729,6 +788,15 @@ export function chooseDeletion(count: number, forEveryone: boolean, direct: bool
 
 // A secret room's media is never saved (iOS hides «저장» there).
 function mediaSavable(dialog: DialogSummary | null): boolean { return Boolean(dialog && dialog.kind !== 'secret') }
+
+// F2: «폴더에서 보기» for a file that is here (tdesktop lng_context_show_in_folder, shown for a loaded document only).
+export function showInFolderItem(accountUid: string, chatId: string, message: ChatMessage, index: number) {
+  if (message.kind !== 'file' || !fileReady(chatId, message.id, index)) return null
+  return { label: tr('폴더에서 보기'), icon: <FolderOpen size={18} />, onSelect: () => {
+    void window.morse.showFileInFolder(accountUid, chatId, { requestId: crypto.randomUUID(), messageId: message.id, version: message.version, index })
+      .catch(reason => controller.toast(errorText(reason, tr('파일을 열지 못했습니다.')), 'error'))
+  } }
+}
 
 export async function saveAttachment(accountUid: string, chatId: string, message: ChatMessage, index: number): Promise<void> {
   const requestId = crypto.randomUUID()

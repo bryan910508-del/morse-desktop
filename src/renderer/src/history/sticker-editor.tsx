@@ -78,10 +78,11 @@ function StickerEditor({ accountUid, close, done }: { accountUid: string; close(
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
   const input = useRef<HTMLInputElement>(null)
   useEffect(() => { input.current?.click() }, [])
-  // Every preview address stays until the editor closes, so «원본 복원» can show the original again.
+  // Every preview address stays until the editor closes, so «원본 복원» can show the original again. B323-b: main holds
+  // the picture and answers its address — the page's policy allows no blob: copy, and the frame stayed empty.
   const urls = useRef<string[]>([])
-  useEffect(() => () => { for (const url of urls.current) URL.revokeObjectURL(url) }, [])
-  const objectURL = (blob: Blob): string => { const url = URL.createObjectURL(blob); urls.current.push(url); return url }
+  useEffect(() => () => { for (const url of urls.current) void window.morse.releaseLocalPreview(url).catch(() => {}) }, [])
+  const previewURL = async (bytes: Uint8Array): Promise<string> => { const url = await window.morse.holdLocalPreview(bytes); urls.current.push(url); return url }
   async function pick(file: File | undefined): Promise<void> {
     if (!file) { if (!source) close(); return }
     setError('')
@@ -90,14 +91,14 @@ function StickerEditor({ accountUid, close, done }: { accountUid: string; close(
     try {
       if (kind === 'gif' || kind === 'mp4') {
         if (bytes.length > maxStickerBytes) { setError(tr('10MB 이하 파일을 선택해 주세요.')); return }
-        const url = objectURL(new Blob([bytes], { type: kind === 'gif' ? 'image/gif' : 'video/mp4' }))
+        const url = await previewURL(bytes)
         let size: { width: number; height: number }
         if (kind === 'gif') { const first = await createImageBitmap(new Blob([bytes], { type: 'image/gif' })); size = { width: first.width, height: first.height }; first.close() }
         else size = await videoSize(url)
         setSource({ kind: 'animated', bytes, url, video: kind === 'mp4', ...size })
       } else {
         const bitmap = await createImageBitmap(new Blob([bytes]), { imageOrientation: 'from-image' })
-        const next: Source = { kind: 'still', bitmap, url: objectURL(new Blob([bytes])), original: bytes, cut: false, width: bitmap.width, height: bitmap.height }
+        const next: Source = { kind: 'still', bitmap, url: await previewURL(bytes), original: bytes, cut: false, width: bitmap.width, height: bitmap.height }
         setSource(next); setStill(next)
       }
       setZoom(1); setX(50); setY(50)
@@ -110,7 +111,7 @@ function StickerEditor({ accountUid, close, done }: { accountUid: string; close(
       const png = await window.morse.stickerCutout(accountUid, source.original)
       const copy = new Uint8Array(png)
       const bitmap = await createImageBitmap(new Blob([copy], { type: 'image/png' }))
-      setSource({ kind: 'still', bitmap, url: objectURL(new Blob([copy], { type: 'image/png' })), original: source.original, cut: true, width: bitmap.width, height: bitmap.height })
+      setSource({ kind: 'still', bitmap, url: await previewURL(copy), original: source.original, cut: true, width: bitmap.width, height: bitmap.height })
     } catch (reason) { setError(errorText(reason, tr('처리하지 못했습니다. 다시 시도해 주세요.'))) }
     finally { setBusy(false) }
   }

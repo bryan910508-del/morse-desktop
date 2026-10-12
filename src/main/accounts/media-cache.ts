@@ -22,6 +22,10 @@ export class MediaCache {
       return Buffer.from(data.buffer, data.byteOffset, data.byteLength)
     } catch { return null }
   }
+  async has(path: string): Promise<boolean> {
+    if (this.closed || !path) return false
+    return this.store<boolean>({ kind: 'media-cache-has', key: MediaCache.key(path) }).catch(() => false)
+  }
   write(path: string, bytes: Buffer): void {
     if (this.closed || !path || !bytes.length || bytes.length > maxMediaEntryBytes) return
     void this.store({ kind: 'media-cache-write', key: MediaCache.key(path), data: new Uint8Array(bytes) }).catch(() => {})

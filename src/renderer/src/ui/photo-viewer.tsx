@@ -1,4 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { useViewerWindow } from '../media/viewer-window'
+import { ViewerFullScreenButton } from '../media/viewer-full-screen-button'
+import { ZoomImage, type ZoomImageHandle } from '../media/zoom-image'
 import { ChevronLeft, ChevronRight, X } from 'lucide-react'
 import { controller } from '../app/ui'
 import { useShortcut } from '../app/shortcuts'
@@ -18,6 +21,8 @@ function PhotoViewer({ url, title, album, close }: { url: string; title: string;
   const [shown, setShown] = useState(url)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const zoom = useRef<ZoomImageHandle>(null)
+  const viewerWindow = useViewerWindow()
   useEffect(() => {
     if (!album) return
     let alive = true
@@ -44,16 +49,17 @@ function PhotoViewer({ url, title, album, close }: { url: string; title: string;
     if (command === 'next-dialog') { void go(1); return true }
     return false
   })
-  return <div className="media-viewer photo-viewer" role="dialog" aria-modal="true" aria-label={title || tr('프로필 사진')} tabIndex={-1}
-    onKeyDown={event => { if (event.key === 'ArrowLeft') void go(-1); else if (event.key === 'ArrowRight') void go(1) }}
+  return <div className={`media-viewer photo-viewer${viewerWindow.fullScreen ? ' full' : ''}`} role="dialog" aria-modal="true" aria-label={title || tr('프로필 사진')} tabIndex={-1}
+    onKeyDown={event => { if (zoom.current?.key(event)) return; if (event.key === 'ArrowLeft') void go(-1); else if (event.key === 'ArrowRight') void go(1) }}
     onMouseDown={event => { if (event.target === event.currentTarget) close() }}>
     <header className="media-viewer-top">
       <div className="media-viewer-meta"><strong className="ellipsis">{title}</strong>{count > 1 && <span>{index + 1} / {count}</span>}</div>
+      <ViewerFullScreenButton fullScreen={viewerWindow.fullScreen} onToggle={viewerWindow.toggleFullScreen} />
       <button className="media-viewer-button" aria-label={tr('닫기')} data-autofocus onClick={close}><X size={22} /></button>
     </header>
     <div className="media-viewer-stage" onMouseDown={event => { if (event.target === event.currentTarget) close() }}>
       {failed || error ? <div className="media-viewer-loading" role="alert"><p>{error || tr('사진을 표시하지 못했습니다.')}</p></div>
-        : <img src={shown} alt={title || tr('프로필 사진')} draggable={false} onError={() => setFailed(true)} />}
+        : <ZoomImage ref={zoom} key={shown} src={shown} alt={title || tr('프로필 사진')} onError={() => setFailed(true)} onBackground={close} />}
       {loading && <div className="media-viewer-loading" role="status"><Spinner size={30} /></div>}
     </div>
     {index > 0 && <button className="media-viewer-nav previous" aria-label={tr('이전')} disabled={loading} onClick={() => { void go(-1) }}><ChevronLeft size={32} /></button>}

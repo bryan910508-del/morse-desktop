@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { fieldHeight } from '../history/field-height'
 import { Copy, Flag, Reply, Send, Trash2, X } from 'lucide-react'
 import { showReportBox } from '../boxes/report-box'
 import type { ChannelCommentItem } from '../../../shared/channel-comments'
@@ -66,8 +67,9 @@ function CommentComposer({ accountUid, channelId, postId, surface, reply, author
   useLayoutEffect(() => {
     const element = field.current
     if (!element) return
-    element.style.height = 'auto'
-    element.style.height = `${Math.min(160, element.scrollHeight)}px`
+    // B286: measured on a copy, so the field never collapses to one line on the way (field-height.ts).
+    const height = `${fieldHeight(element, 160)}px`
+    if (element.style.height !== height) element.style.height = height
   }, [text])
   function change(next: string): void {
     latest.current = next; dirty.current = true; setText(next)
@@ -171,9 +173,13 @@ export function CommentsThread({ accountUid, channelId, requestId, post, surface
           : rows.map(({ item, depth }) => {
             const time = positionTime(item.position)
             return <div key={item.id} className={`channel-comment${depth ? ' reply' : ''}`} onContextMenu={event => { event.preventDefault(); openMenu(item, pointFor(event, event.currentTarget)) }}>
-              <UserAvatar uid={item.authorId} name={item.authorName} size={depth ? 28 : 34} image={item.photo} />
+              {/* B266: a comment's author opens as a person, as a discussion member does in tdesktop (fromLink). */}
+              {item.own ? <UserAvatar uid={item.authorId} name={item.authorName} size={depth ? 28 : 34} image={item.photo} />
+                : <button type="button" className="channel-comment-author-photo" aria-label={item.authorName} onClick={() => controller.openPersonInfo(item.authorId, item.authorName)}>
+                  <UserAvatar uid={item.authorId} name={item.authorName} size={depth ? 28 : 34} image={item.photo} /></button>}
               <div className="channel-comment-body">
-                <div className="channel-comment-head"><strong className="ellipsis">{item.authorName}</strong>{item.own && <span className="channel-comment-own">{tr('나')}</span>}
+                <div className="channel-comment-head">{item.own ? <strong className="ellipsis">{item.authorName}</strong>
+                  : <button type="button" className="channel-comment-author ellipsis" onClick={() => controller.openPersonInfo(item.authorId, item.authorName)}>{item.authorName}</button>}{item.own && <span className="channel-comment-own">{tr('나')}</span>}
                   {time !== null && <time dateTime={new Date(time).toISOString()} title={serviceDate(time)}>{messageTime(time)}</time>}</div>
                 {depth === 0 && item.parent !== 'none' && item.parentAuthorName && <span className="channel-comment-parent">{tr('{0}에게 답글', [item.parentAuthorName])}</span>}
                 <p className="channel-comment-text selectable">{item.text}</p>

@@ -15,7 +15,8 @@
 
 .info-cover { display: grid; justify-items: center; gap: 6px; padding: 24px 20px 18px; text-align: center }
 .info-cover h2 { margin: 8px 0 0; font-size: var(--t-title3); font-weight: 600; line-height: 1.3; word-break: break-word }
-.info-cover span { font-size: var(--t-caption); color: var(--text-weak) }
+/* F6: the lines under the name — not the letters inside a picture-less photo (.avatar-initials), which keep the photo's size. */
+.info-cover > span:not(.avatar) { font-size: var(--t-caption); color: var(--text-weak) }
 .info-actions { display: flex; justify-content: center; gap: 8px; padding: 0 16px 14px }
 .info-section { padding: 6px 0; border-top: 1px solid var(--divider) }
 .info-row { display: flex; align-items: flex-start; gap: 16px; width: 100%; padding: 10px 20px; color: var(--text); text-align: left }
@@ -41,6 +42,8 @@ button.info-row:hover { background: var(--card-pressed) }
 .external-contact .peer-row-text { flex: 1; min-width: 0 }
 .external-contact .button { flex: none }
 .peer-row:hover:not(:disabled) { background: var(--card-pressed) }
+/* B266: a row whose person opens, beside the row's own buttons. */
+.peer-row-open { display: flex; flex: 1; align-items: center; gap: 12px; min-width: 0; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: pointer }
 .peer-row-text { flex: 1; min-width: 0; display: grid; gap: 2px }
 .peer-row-text strong { font-size: var(--t-body); font-weight: 500 }
 /* B111: a contact's name gives way when long; its «공식» mark stays after it. */
@@ -144,6 +147,12 @@ button.info-row:hover { background: var(--card-pressed) }
 .media-viewer-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 0 72px 24px; overflow: hidden }
 .media-viewer-stage img, .media-viewer-stage video { max-width: 100%; max-height: 100%; width: auto; height: auto; min-width: 0; min-height: 0; object-fit: contain; border-radius: 4px }
 .media-viewer-stage audio { width: min(420px, 90%) }
+/* B301: a picture that zooms and pans (zoom-image.tsx) is placed by its own size and position inside the stage. */
+.media-viewer-canvas { position: relative; width: 100%; height: 100% }
+.media-viewer-stage img.media-viewer-zoom, .photo-viewer .media-viewer-stage img.media-viewer-zoom { position: absolute; max-width: none; max-height: none; min-width: 0; min-height: 0; object-fit: fill; user-select: none; touch-action: none }
+.photo-viewer .media-viewer-stage img.media-viewer-zoom { border-radius: 12px }
+/* Filling the screen, the picture takes the stage up to its edges (tdesktop's full-screen viewer). */
+.media-viewer.full .media-viewer-stage { padding: 0 }
 .media-viewer-loading, .media-viewer-file { display: grid; justify-items: center; gap: 12px; text-align: center; font-size: var(--t-caption) }
 .media-viewer-file strong { font-size: var(--t-body) }
 .media-viewer-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 56px; height: 96px; display: grid; place-items: center; color: #fff; opacity: .6 }

@@ -114,6 +114,18 @@ export class DialogAvatars {
     }
     return new Response(null, { status: 403 })
   }
+  // B288: the pictures the rows on screen draw now, by their addresses — what the app locking takes out of memory and the
+  // app unlocking puts back from the account's cache file before the list is drawn again.
+  drawnPictures(): string[] {
+    const raws = new Set<string>()
+    for (const id of this.wanted) {
+      const entry = this.entries.get(id)
+      if (entry && entry.photo.snapshot.status === 'ready') raws.add(entry.raw)
+      const raw = this.direct.get(id)?.drawnRaw
+      if (raw) raws.add(raw)
+    }
+    return [...raws]
+  }
   clear(): void {
     this.wanted = []; this.retained = []
     for (const entry of this.entries.values()) void entry.photo.close()

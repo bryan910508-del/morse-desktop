@@ -7,6 +7,7 @@ import { mediaType } from '../media/media-type'
 import { channelMediaResponse } from '../media/channel-media-response'
 import { mediaCacheFor } from './media-cache'
 import { tr } from '../../shared/i18n'
+import { maxReceivedMediaBytes } from '../../shared/media-limits'
 
 interface Selection { request: ChannelPostMediaRequest; path: string; abort: AbortController; token: string; bytes: Buffer | null; mime: string; deadline: number }
 export class ChannelPostMediaSession {
@@ -51,7 +52,7 @@ export class ChannelPostMediaSession {
     this.job = task; this.changed(); await task
   }
   private async download(media: Selection, signal: AbortSignal): Promise<void> {
-    const video = media.request.presentation === 'video', maxBytes = video ? 50 * 1024 * 1024 - 1 : 8 * 1024 * 1024
+    const video = media.request.presentation === 'video', maxBytes = video ? maxReceivedMediaBytes - 1 : 8 * 1024 * 1024
     // FileLoader::start() asks tryLoadLocal() first: media this account already fetched is shown from the account's
     // cache file, with no grant, no metadata read and no download. Opening the same post picture or video again is
     // then immediate, as it is in Telegram.

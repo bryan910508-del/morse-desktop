@@ -26,6 +26,14 @@ export function readRecentReactions(accountUid: string): string[] {
     return Array.isArray(raw) ? raw.filter((value): value is string => typeof value === 'string' && Boolean(value) && value.length <= 32).slice(0, maxStoredReactions) : []
   } catch { return [] }
 }
+// B285: the choice the strip expands into — what was reacted with lately (all of it, not only the strip's slots), then
+// every emoji, as tdesktop's expanded selector lists the recent reactions before the full emoji list
+// (history_view_reactions_selector.cpp:1082-1138). The server takes any string of 32 characters or less, and iOS and
+// Android draw any of them.
+export function expandedReactions(recent: readonly string[], all: readonly string[]): { recent: string[]; all: string[] } {
+  const valid = (emoji: string): boolean => Boolean(emoji) && emoji.length <= 32
+  return { recent: [...new Set(recent.filter(valid))].slice(0, maxStoredReactions), all: [...new Set(all.filter(valid))] }
+}
 // Taking a reaction back says nothing about what this person reaches for, as iOS's recordIfAdding says.
 export function recordReaction(accountUid: string, emoji: string, alreadySelected: boolean): void {
   if (alreadySelected || !emoji || emoji.length > 32) return

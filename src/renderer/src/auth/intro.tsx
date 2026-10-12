@@ -159,7 +159,7 @@ export function Intro() {
       <p className="intro-description">{tr('이 기기에 저장된 계정을 연결하고 있어요.')}</p>
       <Spinner size={22} />
       {savedList}
-      {!full && <button className="intro-link" type="button" onClick={() => setManual(true)}>{tr('복구 코드로 연결하기')}</button>}
+      {!full && <button className="intro-link recovery" type="button" onClick={() => setManual(true)}>{tr('복구 코드로 연결하기')}</button>}
     </div>
   </div>
   if (full && !busy) return <div className="intro">
@@ -185,7 +185,7 @@ export function Intro() {
       {googleButton(tr('Google로 계정 만들기'))}
       {busy
         ? <button className="button flat block" type="button" onClick={() => { void run(() => window.morse.authentication.cancelSignIn(), false) }}>{tr('취소')}</button>
-        : <button className="intro-link" type="button" onClick={() => { setMode('connect'); setError('') }}>{tr('이미 계정이 있어요 · 복구 코드로 연결')}</button>}
+        : <button className="intro-link recovery" type="button" onClick={() => { setMode('connect'); setError('') }}>{tr('이미 계정이 있어요 · 복구 코드로 연결')}</button>}
       {status && <p className={`intro-status${failed ? ' error' : ''}`} role={failed ? 'alert' : 'status'}>{status}</p>}
       {tryNow}
       {auth.banned && !error && <button className="intro-link" type="button" onClick={() => { void window.morse.operatorMail(auth.account?.uid ?? '', 'banned').catch(() => {}) }}>{tr('도움')}</button>}

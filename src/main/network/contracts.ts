@@ -3,6 +3,7 @@ import { positionAt } from '../../shared/model'
 import { historyPosition, identifier, object } from '../../shared/validation'
 import { compareReadCursor, readCursor, type ReadAcknowledgement } from '../../shared/read-receipts'
 import { tr } from '../../shared/i18n'
+import { forwardInfoFrom } from '../../shared/forward'
 
 export const serverContract = Object.freeze({
   socketURL: 'https://talky-server-production.up.railway.app',
@@ -23,6 +24,18 @@ export class ServerRejection extends Error {
   // existingChatId: with DIRECT_CHAT_EXISTS, the pair's 1:1 the server already holds (morse-message-authority.js,
   // index.js `{ok:false, error, existingChatId}`); B88 §28 moves the refused message there.
   constructor(readonly reason: string, readonly until?: number, readonly existingChatId?: string) { super(tr('서버에서 요청을 처리하지 못했습니다.')) }
+}
+
+// B309 (contracts/B309-flood-wait.md; tdesktop MTP::Instance FLOOD_WAIT_X, mtproto/mtp_instance.cpp:1585-1640: the same
+// request goes again `secs * 1000 + 10` ms later, with nothing said on screen): talky's rate limit answers
+// {ok:false, error:'FLOOD_WAIT', retryAfterMs}. How long to wait before asking again, or null for any other answer;
+// a missing or odd wait is a second, and none is waited past a day.
+export function floodWaitDelay(raw: unknown): number | null {
+  if (!raw || typeof raw !== 'object') return null
+  const body = raw as Record<string, unknown>
+  if (body.ok === true || (body.error !== 'FLOOD_WAIT' && body.reason !== 'FLOOD_WAIT')) return null
+  const wait = typeof body.retryAfterMs === 'number' && Number.isFinite(body.retryAfterMs) && body.retryAfterMs > 0 ? Math.min(body.retryAfterMs, 86_400_000) : 1000
+  return Math.ceil(wait) + 10
 }
 
 export function committedReadAck(raw: unknown, chatId: string, readerId: string, target: MessagePosition): ReadAcknowledgement {
@@ -79,6 +92,8 @@ export function incomingMessage(raw: unknown, exactPosition?: MessagePosition): 
     text: typeof body.text === 'string' ? body.text : '', position,
     serverConfirmed: true, encrypted: body.isEncrypted === true, state: 'sent', readEligible: false,
     replyToId: typeof body.replyToId === 'string' ? identifier(body.replyToId) : undefined,
-    edited: body.isEdited === true, version: '', system: body.isSystem === true, reactions: []
+    edited: body.isEdited === true, version: '', system: body.isSystem === true, reactions: [],
+    // B263 §4-5: newMessage carries the server's forwardInfo as written, its date in ms.
+    ...(body.isEncrypted !== true && body.isSystem !== true && forwardInfoFrom(body.forwardInfo) ? { forward: forwardInfoFrom(body.forwardInfo)! } : {})
   }
 }

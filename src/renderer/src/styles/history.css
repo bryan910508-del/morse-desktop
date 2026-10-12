@@ -74,7 +74,18 @@
 @keyframes history-highlight { 0%, 40% { box-shadow: 0 0 0 3px var(--accent-border) } 100% { box-shadow: 0 1px 1px rgb(0 0 0 / .06) } }
 .bubble.encrypted { color: var(--text-weak); font-style: italic }
 .bubble-name { margin-bottom: 2px; font-size: var(--t-caption); font-weight: 600; color: var(--accent) }
+/* B266: the sender's name and picture open them as a person. */
+button.bubble-name { display: block; max-width: 100%; padding: 0; border: 0; background: none; text-align: left; cursor: pointer }
+button.bubble-name:hover { text-decoration: underline }
+.history-photo-button { display: block; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer }
 .bubble-label { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; font-size: 12px; opacity: .8 }
+/* B263: «Forwarded from» (tdesktop fwdTextStyle: the sender's colour, one line). A sticker has no bubble, so it sits on a
+   chip over the picture's top as tdesktop's drawSurrounding puts it on a service background. */
+.bubble-forward { display: block; max-width: 100%; margin-bottom: 2px; padding: 0; border: 0; background: none; color: var(--accent); font-size: var(--t-caption); font-weight: 500; text-align: left }
+button.bubble-forward { cursor: pointer }
+button.bubble-forward:hover { text-decoration: underline }
+.history-message.own .bubble-forward { color: inherit; opacity: .9 }
+.history-message .bubble.round .bubble-forward { width: fit-content; margin-bottom: 4px; padding: 2px 8px; border-radius: 10px; background: rgb(0 0 0 / .45); color: #fff; opacity: 1 }
 .bubble-text { white-space: pre-wrap }
 /* A note kept in the memo room's own messages (MorseChatUIKitNativeBubbleRow memoContentRow): a title
    behind a small note mark, then the body, both inside the ordinary bubble. */
@@ -123,7 +134,15 @@
 .bubble-meta .read-mark, .history-message.own .bubble-meta .read-mark { color: var(--read-check); flex: none }
 .bubble.media-only { padding: 4px }
 .bubble.media-only .media-grid { margin: 0 }
-.bubble.media-only .bubble-meta { right: 12px; bottom: 12px; padding: 4px 7px; border-radius: 10px; background: rgb(0 0 0 / .45); color: #fff }
+/* F1·F3 (tdesktop Media::customInfoLayout): the time of a photo, a video or a sticker shown alone is on the picture itself —
+   it belongs to the media, so reactions under it do not move it; a file's or a voice message's is the bubble's own. */
+.bubble-media { position: relative }
+.bubble.info-over .bubble-meta { right: 8px; bottom: 8px; padding: 4px 7px; border-radius: 10px; background: rgb(0 0 0 / .45); color: #fff }
+.bubble.info-over .bubble-reactions { margin-bottom: 0 }
+/* B310 (tdesktop Photo::needsBubble false): a photo or video alone is its own bubble — no frame around it, its corners the
+   bubble's, the time over it. */
+.bubble.bare, .history-message.own .bubble.bare { padding: 0; background: transparent; box-shadow: none }
+.bubble.bare .media-grid { margin: 0; border-radius: var(--r-bubble-standalone) }
 /* A round video message stands on its own, without a bubble, as in Telegram. */
 .history-message .bubble.round { padding: 0; background: transparent; box-shadow: none }
 .bubble.round .bubble-meta { right: 4px; bottom: 4px; padding: 4px 7px; border-radius: 10px; background: rgb(0 0 0 / .45); color: #fff }
@@ -156,6 +175,10 @@ button.bubble-quote:hover { background: var(--accent-border) }
 .media-grid.count-2, .media-grid.count-3, .media-grid.count-4 { grid-template-columns: 1fr 1fr }
 .media-tile { display: grid; place-content: center; justify-items: center; gap: 6px; aspect-ratio: 4 / 3; background: rgb(0 0 0 / .08); color: inherit; font-size: 12px }
 .media-grid.count-1 .media-tile { aspect-ratio: 16 / 10 }
+/* B310 (Ui::LayoutMediaGroup, shared/grouped-layout.ts): an album is a mosaic — the group keeps its computed shape and each
+   photo its place in it, so none runs past the bubble. */
+.media-grid.mosaic { display: block; position: relative; gap: 0 }
+.media-grid.mosaic .media-tile, .media-grid.mosaic .media-tile.previewed { position: absolute; aspect-ratio: auto; overflow: hidden }
 .media-tile:hover:not(:disabled) { background: rgb(0 0 0 / .15) }
 /* Telegram's stripped placeholder: the tiny picture that came with the message, blurred, until the
    picture itself is fetched - or for as long as automatic download stays off. */
@@ -204,6 +227,10 @@ button.bubble-quote:hover { background: var(--accent-border) }
 .local-media .media-tile:disabled, .local-media .round-video:disabled { opacity: 1; cursor: default }
 .local-media:has(> .sending-ring) .media-tile > svg, .local-media:has(> .sending-ring) .round-video-icon { visibility: hidden }
 .file-message-icon .sending-ring { width: 36px; height: 36px }
+/* F2: a file coming in — the ring of how far it has come, and the cross that stops it (tdesktop historyFileInCancel). */
+.file-message-icon { position: relative }
+.file-message-icon .sending-ring:not(.over-media) { position: absolute; inset: 4px; width: auto; height: auto }
+.file-message-stop { position: relative }
 
 .bubble-reactions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 14px }
 /* The date as the reaction rows' last item (iOS 4d764434 / Telegram): on the last row when it fits, below otherwise. */
@@ -278,6 +305,12 @@ button.bubble-quote:hover { background: var(--accent-border) }
 .reaction-strip { display: flex; gap: 2px }
 .reaction-strip button { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; font-size: 20px; transition: transform .1s, background-color .1s }
 .reaction-strip button:hover { background: var(--card-pressed); transform: scale(1.12) }
+/* B285: the strip's last button, and the choice it expands into in the menu's place (tdesktop Selector::expand). */
+.reaction-strip .reaction-expand { color: var(--icon-muted); font-size: 0 }
+.reaction-strip .reaction-expand:hover { transform: none }
+/* Inside the menu's own width (320px, less the header's 8px sides), its scroll bar too. */
+.reaction-panel { width: 304px; max-height: min(360px, 70vh); padding: 2px 0 }
+.reaction-panel button[aria-pressed=true] { background: var(--accent-soft) }
 
 /* Voice preview (ListenWrap) and kept voice draft. */
 .voice-record-bar.preview { padding-left: 8px }
@@ -349,11 +382,14 @@ button.voice-message-play:disabled { opacity: .7 }
 .playback-bar-rate { min-width: 36px; height: 28px; border-radius: 8px; font-size: 12px; font-weight: 600; color: var(--text-medium) }
 .playback-bar-rate:hover { background: var(--card-pressed) }
 .bubble-reaction-faces { display: inline-flex; margin-left: 2px }
-.bubble-reaction-faces .avatar { border: 1.5px solid var(--bubble-in); font-size: 9px !important }
+/* B312: the Morse apps' rim — 1 px of white at 75% (iOS MorseReactionParticipants.swift:28-29, Android MessageReactionUi.kt:55-56). */
+.bubble-reaction-faces .avatar { border: 1px solid rgb(255 255 255 / .75); font-size: 9px !important }
 .bubble-reaction-faces .avatar + .avatar { margin-left: -6px }
 .reaction-people { display: grid; gap: 2px; max-height: 360px; overflow-y: auto }
 .reaction-people-row { display: flex; align-items: center; gap: 12px; padding: 6px 2px; font-size: 15px }
 .reaction-people-row .ellipsis { flex: 1; min-width: 0 }
+button.reaction-people-row { width: 100%; border: 0; border-radius: 8px; background: none; color: inherit; text-align: left; cursor: pointer }
+button.reaction-people-row:hover { background: var(--card-pressed) }
 .reaction-people-emoji { font-size: 18px }
 button.service-pill { cursor: pointer }
 .date-jump-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px }

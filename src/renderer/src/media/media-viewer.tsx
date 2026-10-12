@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { useViewerWindow } from './viewer-window'
+import { ViewerFullScreenButton } from './viewer-full-screen-button'
 import { ChevronLeft, ChevronRight, Copy, Download, File as FileIcon, X } from 'lucide-react'
 import type { ChatMessage } from '../../../shared/model'
 import type { MediaReady } from '../../../shared/media'
@@ -9,6 +11,8 @@ import { useShortcut } from '../app/shortcuts'
 import { bytes, errorText, fullTime } from '../app/format'
 import { Spinner } from '../ui/controls'
 import { copyImage } from '../app/copy-image'
+import { leaveFullScreenOnEscape, useFocusAfterFullScreen, toggleVideoFullScreen, videoFullScreenKey } from './viewer-keys'
+import { ZoomImage, type ZoomImageHandle } from './zoom-image'
 import { tr } from '../../../shared/i18n'
 
 // Media::View::OverlayWidget: full-window viewer with save and album paging.
@@ -21,6 +25,10 @@ function MediaViewer({ accountUid, chatId, message, initialIndex, senderName, cl
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const player = useRef<HTMLMediaElement | null>(null)
+  const zoom = useRef<ZoomImageHandle>(null)
+  const viewerWindow = useViewerWindow()
+  const root = useRef<HTMLDivElement>(null)
+  useFocusAfterFullScreen(root)
   const position = available.findIndex(item => item.index === index)
   const attachment = available[position]
   useDesktopEvent(event => { if (event.type === 'media-progress' && event.accountUid === accountUid && event.requestId === requestId) setProgress({ loaded: event.loaded, total: event.total }) })
@@ -41,6 +49,9 @@ function MediaViewer({ accountUid, chatId, message, initialIndex, senderName, cl
     if (next) { setIndex(next.index); setRequestId(crypto.randomUUID()) }
   }
   useShortcut(120, command => {
+    // Esc reaches the window's shortcuts, not the viewer's own keys, once Chromium has ended a video's full screen with
+    // it: above the layers (100), the viewer takes it then rather than close.
+    if (command === 'back' && leaveFullScreenOnEscape('Escape')) return true
     if (command === 'previous-dialog') { go(-1); return true }
     if (command === 'next-dialog') { go(1); return true }
     return false
@@ -60,8 +71,11 @@ function MediaViewer({ accountUid, chatId, message, initialIndex, senderName, cl
     else void copyImage(ready.url)
   }
   const percent = progress.total ? Math.round(100 * progress.loaded / Math.max(1, progress.total)) : null
-  return <div className="media-viewer" role="dialog" aria-modal="true" aria-label={tr('첨부 보기')} tabIndex={-1}
+  return <div ref={root} className={`media-viewer${viewerWindow.fullScreen ? ' full' : ''}`} role="dialog" aria-modal="true" aria-label={tr('첨부 보기')} tabIndex={-1}
     onKeyDown={event => {
+      if (leaveFullScreenOnEscape(event.key)) { event.preventDefault(); event.stopPropagation(); return }
+      if (zoom.current?.key(event)) return
+      if (ready?.presentation === 'video' && videoFullScreenKey(event)) { event.preventDefault(); event.stopPropagation(); toggleVideoFullScreen(player.current); return }
       if (event.key === 'ArrowLeft') go(-1); else if (event.key === 'ArrowRight') go(1)
       else if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'c' && !window.getSelection()?.toString()) { event.preventDefault(); copy() }
     }}
@@ -70,12 +84,13 @@ function MediaViewer({ accountUid, chatId, message, initialIndex, senderName, cl
       <div className="media-viewer-meta"><strong className="ellipsis">{senderName}</strong><span>{fullTime(positionMilliseconds(message.position))}{available.length > 1 ? ` · ${position + 1} / ${available.length}` : ''}</span></div>
       {copyable && <button className="media-viewer-button" aria-label={ready?.presentation === 'video' ? tr('프레임 복사') : tr('복사')} title={ready?.presentation === 'video' ? tr('프레임 복사') : tr('복사')} onClick={copy}><Copy size={20} /></button>}
       <button className="media-viewer-button" aria-label={tr('저장')} disabled={!ready || saving} onClick={() => { void save() }}>{saving ? <Spinner size={18} /> : <Download size={20} />}</button>
+      <ViewerFullScreenButton fullScreen={viewerWindow.fullScreen} onToggle={viewerWindow.toggleFullScreen} />
       <button className="media-viewer-button" aria-label={tr('닫기')} data-autofocus onClick={close}><X size={22} /></button>
     </header>
     <div className="media-viewer-stage" onMouseDown={event => { if (event.target === event.currentTarget) close() }}>
       {!ready && !error && <div className="media-viewer-loading" role="status"><Spinner size={34} /><span>{percent !== null ? `${percent}%` : progress.loaded ? bytes(progress.loaded) : tr('불러오는 중')}</span></div>}
       {error && <div className="media-viewer-loading" role="alert"><p>{error}</p><button className="button secondary" onClick={() => setRequestId(crypto.randomUUID())}>{tr('다시 시도')}</button></div>}
-      {ready?.url && ready.presentation === 'image' && <img src={ready.url} alt={message.caption || attachment?.name || tr('사진')} draggable={false} />}
+      {ready?.url && ready.presentation === 'image' && <ZoomImage ref={zoom} key={ready.url} src={ready.url} alt={message.caption || attachment?.name || tr('사진')} onBackground={close} />}
       {ready?.url && ready.presentation === 'video' && <video ref={element => { player.current = element }} src={ready.url} controls autoPlay controlsList="nodownload noremoteplayback" disablePictureInPicture onError={() => setError(tr('이 동영상 형식은 재생할 수 없습니다. 저장해서 확인해 주세요.'))} />}
       {ready?.url && ready.presentation === 'audio' && <audio ref={element => { player.current = element }} src={ready.url} controls autoPlay controlsList="nodownload noremoteplayback" />}
       {ready?.presentation === 'file' && <div className="media-viewer-file"><FileIcon size={48} /><strong>{ready.name}</strong><span>{bytes(ready.size)}</span><button className="button primary" disabled={saving} onClick={() => { void save() }}>{tr('저장')}</button></div>}

@@ -9,6 +9,12 @@ export interface MediaResource { summary: AttachmentSummary; path: string | null
   grantPostId?: string }
 const labels: Record<AttachmentKind, string> = { image: tr('사진'), video: tr('동영상'), voice: tr('음성 메시지'), file: tr('파일'), sticker: tr('스티커') }
 
+// fileSize as iOS and Android write it (an integer of bytes); none when it is missing or out of range.
+function fileSize(doc: FirestoreDocument): number | undefined {
+  const field = doc.fields.fileSize as { integerValue?: unknown; doubleValue?: unknown } | undefined
+  const size = Number(typeof field?.integerValue === 'string' ? field.integerValue : field?.doubleValue)
+  return Number.isSafeInteger(size) && size > 0 && size < 4 * 1024 * 1024 * 1024 ? size : undefined
+}
 function value(doc: FirestoreDocument, key: string): string {
   const input = doc.fields[key]?.stringValue
   return typeof input === 'string' && input.length <= 10000 ? input.trim() : ''
@@ -81,7 +87,8 @@ export function mediaResources(doc: FirestoreDocument, chatId: string | readonly
   return candidates.map((raw, index) => ({
     path: raw.length <= 10000 ? storagePath(raw, chatId, kind, scope) : null,
     summary: { index, kind, name: kind === 'file' ? safeFileName(value(doc, 'fileName') || (/^(https?:|gs:)/.test(text) ? '' : text)) : `${labels[kind]}${candidates.length > 1 ? ` ${index + 1}` : ''}`,
-      available: raw.length <= 10000 && storagePath(raw, chatId, kind, scope) !== null, blind: value(doc, 'thumbnailUrl') === '__blind__' },
+      available: raw.length <= 10000 && storagePath(raw, chatId, kind, scope) !== null, blind: value(doc, 'thumbnailUrl') === '__blind__',
+      ...(kind === 'file' && fileSize(doc) ? { size: fileSize(doc) } : {}) },
   }))
 }
 export function mediaCaption(doc: FirestoreDocument, kind: string): string {

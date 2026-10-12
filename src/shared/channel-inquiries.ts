@@ -26,7 +26,9 @@ export interface InquiryMessageItem { id: string; own: boolean; senderType: Inqu
   // A video's size, length and placeholder, a voice message's length and waveform - read as a chat message's.
   mediaMetadata?: import('./media-metadata').MediaMetadata; circular?: true
   // The room's reactions, kept on the message as a chat's are (setMorseMessageReaction with the inquiry).
-  reactions?: import('./model').ChatMessage['reactions'] }
+  reactions?: import('./model').ChatMessage['reactions']
+  // B263: «Forwarded from», as the server wrote it on the room's message (sendMorseInquiryMessage).
+  forward?: import('./model').ForwardInfo }
 export interface InquiryListSnapshot { requestId: string; channelId: string; status: 'loading' | 'ready' | 'error'; items: InquirySummary[]; message: string }
 export interface InquiryThreadSnapshot {
   requestId: string; inquiryId: string; channelId: string; role: InquiryRole; title: string; channelName: string
@@ -124,7 +126,7 @@ export function inquiryChatMessage(item: InquiryMessageItem, inquiryId: string):
   return { id: item.id, chatId: inquiryId, senderId: item.own ? 'me' : 'peer', kind: plain ? 'text' : item.kind,
     text: item.kind === 'text' ? item.text : plain ? [item.label, item.text].filter(Boolean).join('\n') : '', caption: media ? item.text : '',
     attachments: item.attachments, mediaMetadata: item.mediaMetadata ?? null, circular: item.circular ?? false, position: positionAt(item.createdAt ?? 0, item.id), version: item.version,
-    ...(item.replyToId ? { replyToId: item.replyToId } : {}), ...(item.reply ? { reply: item.reply } : {}),
+    ...(item.replyToId ? { replyToId: item.replyToId } : {}), ...(item.reply ? { reply: item.reply } : {}), ...(item.forward ? { forward: item.forward } : {}),
     serverConfirmed: true, encrypted: false, silent: false, state: 'sent', readEligible: true, edited: item.edited, system: item.system === true, reactions: item.reactions ?? [] } as ChatMessage
 }
 
@@ -163,6 +165,12 @@ export function inquiryPreviewText(raw: string): string {
 export function inquiryOfQueueChatId(chatId: unknown): string {
   const raw = typeof chatId === 'string' && chatId.startsWith('sub_inq_') ? chatId.slice('sub_inq_'.length) : ''
   return raw ? inquiryIdentifier(raw) : ''
+}
+// B263 §2-1: the original a forward names to the server — an inquiry room by its id when the queue names it by its
+// client id (sub_inq_<id>), a chat otherwise.
+export function forwardWireSource(source: { chatId: string; messageId: string }): import('./model').ForwardWireSource {
+  const inquiry = inquiryOfQueueChatId(source.chatId)
+  return inquiry ? { kind: 'inquiry', roomId: inquiry, messageId: source.messageId } : { kind: 'chat', roomId: source.chatId, messageId: source.messageId }
 }
 export interface InquiryScheduleRequest extends InquiryTextRequest { scheduledAt: number }
 export function inquiryScheduleRequest(raw: unknown): InquiryScheduleRequest {

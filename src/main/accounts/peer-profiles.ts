@@ -49,25 +49,55 @@ export function contactNames(item: ContactSummary, label: string | undefined, cu
 interface Group { uids: string[]; failed: boolean; answered: boolean; stop(): void }
 // Whose profiles are read: this account's contacts (with whether each still has this account as a contact, which the
 // picture waits on), or the authors of the comments on screen (A8 §4, Telegram R-41: a comment shows its author as
-// they are now, their public name and picture, whoever they are to this account).
+// they are now, their public name and picture). B266/B153 §4: an author's picture follows the same rule as anywhere —
+// read here without the reciprocal entry, so as someone not mutual (only a picture shown to everyone); an author who
+// is this account's contact is drawn with the contacts' own read (ChannelComments.contactPhoto).
 export type PeerProfileKind = 'contacts' | 'authors'
 export class PeerProfiles {
   private reader: FirestoreReader | null = null
   private groups: Group[] = []
-  private profiles = new Map<string, PeerProfile | null>()
+  // B266 ⑥ (B153 §4 «서로 연락처를 아직 모를 때»): the last answer for each person — their public profile and whether they
+  // keep this account — and the picture decided from it when it is read, with whether they are this account's contact
+  // then: mutual = this account's contact ∧ kept by them. A person joining or leaving the contacts needs no new read.
+  private answers = new Map<string, { doc: FirestoreDocument | undefined; reciprocal: boolean }>()
   private answered = new Set<string>()
   private gone = new Set<string>()
   private closed = false
   private readonly cache: UserpicCache | null
   constructor(private readonly uid: string, auth: object, private readonly signal: AbortSignal, private readonly changed: () => void,
     // ProfilePhotoHistory.save: the address of a picture this device has just seen of this person.
-    private readonly seen?: (uid: string, raw: string) => void, private readonly kind: PeerProfileKind = 'contacts') {
-    // A contact's picture as this account may see it is what a row draws first next time; an author's is not that.
-    this.cache = kind === 'contacts' ? userpicCacheFor(auth) : null
+    private readonly seen?: (uid: string, raw: string) => void, private readonly kind: PeerProfileKind = 'contacts',
+    // Whether a person is this account's contact now (ContactsSession.has; an author's reader asks the contacts' own). A
+    // contacts' reader given none reads only contacts.
+    private readonly isContact: (uid: string) => boolean = () => kind === 'contacts') {
+    // The picture this account may see of a person is what is drawn first next time — remembered per account
+    // (UserpicCache 'user:<uid>'), the «last answer» of B153 §4.
+    this.cache = userpicCacheFor(auth)
+  }
+  private decide(uid: string): PeerProfile | null {
+    const answer = this.answers.get(uid)
+    return answer ? decodePeerProfile(answer.doc, this.kind === 'contacts' && answer.reciprocal && this.isContact(uid)) : null
+  }
+  // The picture remembered as the last answer: an author's reader leaves a contact's to the contacts' own read.
+  private remember(uid: string): void {
+    if (this.kind === 'authors' && this.isContact(uid)) return
+    this.cache?.confirm(`user:${uid}`, this.decide(uid)?.photo || null)
+  }
+  // The contacts changed: the same answers, decided again — and remembered as such.
+  recheck(): void {
+    if (this.closed) return
+    for (const uid of this.answered) this.remember(uid)
+    this.changed()
   }
 
   // What this account knows about the person now, or null while nothing has been read.
-  profile(uid: string): PeerProfile | null { return this.closed ? null : this.profiles.get(uid) ?? null }
+  profile(uid: string): PeerProfile | null { return this.closed ? null : this.decide(uid) }
+  // B277: whether the person lists this account as a contact (users/{X}/contacts/{me}), from the last answer; null
+  // while none has come. A contacts' reader only — an author's reads no such entry.
+  keeps(uid: string): boolean | null {
+    if (this.closed || this.kind !== 'contacts' || !this.answered.has(uid)) return null
+    return this.answers.get(uid)?.reciprocal ?? null
+  }
   // Whether the read for this person has answered at all: until it has, a row draws the picture last confirmed.
   hasAnswer(uid: string): boolean { return !this.closed && this.answered.has(uid) }
   name(uid: string): string { return this.profile(uid)?.name ?? '' }
@@ -89,7 +119,7 @@ export class PeerProfiles {
       // contact list would only be refused again.
       if (group.uids.every(uid => wanted.has(uid))) return true
       group.stop()
-      for (const uid of group.uids) if (!wanted.has(uid)) { this.profiles.delete(uid); this.answered.delete(uid); this.gone.delete(uid) }
+      for (const uid of group.uids) if (!wanted.has(uid)) { this.answers.delete(uid); this.answered.delete(uid); this.gone.delete(uid) }
       return false
     })
     const assigned = new Set(this.groups.flatMap(group => group.uids))
@@ -110,16 +140,17 @@ export class PeerProfiles {
         group.answered = true
         let changed = false
         for (const [root, entry] of names) {
-          const doc = rows.get(root), next = decodePeerProfile(doc, this.kind === 'authors' || rows.has(entry.reciprocal))
-          const previous = this.profiles.get(entry.uid) ?? null, wasGone = this.gone.has(entry.uid)
+          const doc = rows.get(root), previous = this.decide(entry.uid), wasGone = this.gone.has(entry.uid)
+          this.answers.set(entry.uid, { doc, reciprocal: this.kind === 'contacts' && rows.has(entry.reciprocal) })
+          const next = this.decide(entry.uid)
           if (doc && boolField(doc.fields, 'accountDeleted')) this.gone.add(entry.uid); else this.gone.delete(entry.uid)
-          this.cache?.confirm(`user:${entry.uid}`, next?.photo || null)
+          this.remember(entry.uid)
           if (next?.photo && this.kind === 'contacts') this.seen?.(entry.uid, next.photo)
           if (!this.answered.has(entry.uid)) { this.answered.add(entry.uid); changed = true }
           if (wasGone !== this.gone.has(entry.uid)) changed = true
           // B178 §2-5: a mark that comes or goes alone is drawn again too.
           if (previous?.name === next?.name && previous?.photo === next?.photo && previous?.mutual === next?.mutual && previous?.official === next?.official && previous?.photoEveryone === next?.photoEveryone) continue
-          this.profiles.set(entry.uid, next); changed = true
+          changed = true
           recordAvatarStep(this.kind, entry.uid, !next ? 'profile-not-usable' : next.photo ? 'photo-address-found' : !next.mutual ? 'not-mutual-contact' : 'no-photo-address')
         }
         if (changed) this.changed()
@@ -142,7 +173,7 @@ export class PeerProfiles {
     let changed = false
     for (const uid of group.uids) {
       recordAvatarStep(this.kind, uid, step)
-      const hadProfile = this.profiles.delete(uid), hadAnswer = this.answered.delete(uid), wasGone = this.gone.delete(uid)
+      const hadProfile = this.answers.delete(uid), hadAnswer = this.answered.delete(uid), wasGone = this.gone.delete(uid)
       changed = hadProfile || hadAnswer || wasGone || changed
     }
     if (changed) this.changed()
@@ -151,7 +182,9 @@ export class PeerProfiles {
     for (const group of this.groups) group.stop()
     this.groups = []
   }
-  clear(): void { this.stopAll(); this.reader = null; this.profiles.clear(); this.answered.clear(); this.gone.clear() }
+  clear(): void { this.stopAll(); this.reader = null; this.answers.clear(); this.answered.clear(); this.gone.clear() }
+  // The picture remembered for a person from the last answer this account had (B153 §4), '' when there was none.
+  remembered(uid: string): string { return this.closed ? '' : this.cache?.known(`user:${uid}`) ?? '' }
   close(): void { this.closed = true; this.clear() }
 }
 

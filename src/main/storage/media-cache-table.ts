@@ -3,6 +3,7 @@
 import type Database from 'better-sqlite3-multiple-ciphers'
 import { chmodSync, existsSync, rmSync } from 'node:fs'
 import { openEncryptedDatabase } from './encrypted-database'
+import { maxReceivedMediaBytes } from '../../shared/media-limits'
 
 // The account's file cache (tdesktop Main::Account::cachePath / cacheSettings, Storage::Cache::Database). A picture,
 // video or file already fetched is kept here, sealed with the same local key, so opening it again draws it without
@@ -11,6 +12,7 @@ import { openEncryptedDatabase } from './encrypted-database'
 // only copies of objects the server already sent to this account.
 export type MediaCacheCommand =
   | { kind: 'media-cache-read'; key: string }
+  | { kind: 'media-cache-has'; key: string }
   | { kind: 'media-cache-write'; key: string; data: Uint8Array }
   | { kind: 'media-cache-usage' }
   | { kind: 'media-cache-clear' }
@@ -18,7 +20,8 @@ export type MediaCacheCommand =
 export const maxMediaCacheBytes = 1024 * 1024 * 1024
 export const maxMediaCacheEntries = 20000
 export const maxMediaCacheAge = 31 * 24 * 60 * 60 * 1000
-export const maxMediaEntryBytes = 50 * 1024 * 1024
+// B308: a received video of up to 200 MiB is kept like any other (shared/media-limits.ts).
+export const maxMediaEntryBytes = maxReceivedMediaBytes
 
 const validKey = (key: unknown): string => {
   if (typeof key !== 'string' || !/^[a-f0-9]{64}$/.test(key)) throw new Error('Invalid media cache key')
@@ -64,6 +67,11 @@ export class MediaCacheStore {
         if (row.used_at < stale) { db.prepare('DELETE FROM media_files WHERE key=?').run(key); return null }
         db.prepare('UPDATE media_files SET used_at=? WHERE key=?').run(this.now(), key)
         return new Uint8Array(row.data)
+      }
+      // F2: a file's bubble asks whether it is here without the bytes coming over (tdesktop DocumentMedia::loaded).
+      case 'media-cache-has': {
+        const row = db.prepare('SELECT used_at FROM media_files WHERE key=?').get(validKey(command.key)) as { used_at: number } | undefined
+        return Boolean(row && row.used_at >= this.now() - this.limits.age)
       }
       case 'media-cache-write': {
         const key = validKey(command.key), data = Buffer.from(command.data)

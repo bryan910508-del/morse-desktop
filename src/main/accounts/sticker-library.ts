@@ -18,6 +18,7 @@ import { tr } from '../../shared/i18n'
 export interface LegacyStickers {
   list(): Promise<{ id: string; kind: StickerKind }[]>
   read(id: string): Promise<{ kind: StickerKind; data: Uint8Array } | null>
+  remove(id: string): Promise<unknown>
   clear(): Promise<void>
 }
 type Call = (name: string, data: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -141,9 +142,15 @@ export class StickerLibrary {
 
   // faveSticker: in (to the front; the oldest leaves past the limit) or out. A sticker the server holds no copy of is
   // registered from its bytes first (registerStickerFile), as Telegram uploads a document before it can be faved.
+  // B304 (tdesktop ToggleFavedSticker → Stickers::setIsNotFaved, api_toggling_media.cpp:69-71, data_stickers.cpp:665-669:
+  // the faved set and the copy kept on the device both lose it): one taken out is taken out of the device's old list
+  // too, so a move not yet finished (migrate) does not fave it again.
   async fave(ref: StickerRef, unfave = false, bytes?: () => Promise<Uint8Array>): Promise<void> {
     this.validate()
-    try { await this.call('faveSticker', { stickerId: ref.id, stickerKind: ref.kind, ...(unfave ? { unfave: true } : {}) }) }
+    try {
+      await this.call('faveSticker', { stickerId: ref.id, stickerKind: ref.kind, ...(unfave ? { unfave: true } : {}) })
+      if (unfave) await this.legacy.remove(ref.id)
+    }
     catch (error) {
       if (unfave || !bytes || !(error instanceof MorseCallableFailure && error.reason === 'STICKER_NOT_FOUND')) throw failure(error)
       const registered = await this.register(await bytes())

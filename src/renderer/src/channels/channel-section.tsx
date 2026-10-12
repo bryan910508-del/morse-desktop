@@ -1,4 +1,5 @@
 import { showPostLikers } from './post-likers-box'
+import { fieldHeight } from '../history/field-height'
 import { showReportBox } from '../boxes/report-box'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { AlignLeft, ArrowLeft, ChevronLeft, ChevronRight, Copy, Film, Globe, Heart, Image as ImageIcon, Images, Info, Layers, Link, Lock, MessageCircle, Pencil, Pin, PinOff, Plus, Send, ShieldOff, Trash2, Users, X, Flag } from 'lucide-react'
@@ -98,8 +99,9 @@ function ChannelComposer({ accountUid, channelId, onSent }: { accountUid: string
   useLayoutEffect(() => {
     const element = field.current
     if (!element) return
-    element.style.height = 'auto'
-    element.style.height = `${Math.min(224, element.scrollHeight)}px`
+    // B286: measured on a copy, so the field never collapses to one line on the way (field-height.ts).
+    const height = `${fieldHeight(element, 224)}px`
+    if (element.style.height !== height) element.style.height = height
   }, [text])
   function change(next: { text: string; visibility: PostDraftVisibility }): void {
     latest.current = next; dirty.current = true; setText(next.text); setVisibility(next.visibility)

@@ -1,4 +1,8 @@
 export type DeliveryState = 'queued' | 'uncertain' | 'failed' | 'uploading' | 'upload-failed'
+// B280: whether a message on its way shows the failed mark, from the state it is shown in — one judgment for its bubble
+// and its room's row in the chat list, as tdesktop draws both from the message's own flags (history_item.h:340-344
+// isSending / hasFailed). Anything else shows the clock.
+export function deliveryFailed(state: DeliveryState | 'sent'): boolean { return state === 'failed' || state === 'upload-failed' }
 export interface LocalOutgoing {
   id: string
   chatId: string

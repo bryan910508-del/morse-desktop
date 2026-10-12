@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { Check, File as FileIcon, Image as ImageIcon, Images, Mic, Pencil, Reply, Send, X, Languages, Plus, BellOff, Wifi, Clock, CalendarPlus, Smile } from 'lucide-react'
+import { fieldHeight } from './field-height'
+import { Check, File as FileIcon, Image as ImageIcon, Mic, Pencil, Reply, Send, X, Languages, Plus, BellOff, Wifi, Clock, CalendarPlus, Smile } from 'lucide-react'
 import type { ChatMessage, DialogSummary } from '../../../shared/model'
 import type { OutgoingSnapshot } from '../../../shared/delivery'
 import type { ReplyDraftSnapshot } from '../../../shared/reply-draft'
 import type { VoiceDraftRecord } from '../../../shared/voice-draft'
 import { sendsOnEnter } from '../../../shared/shortcuts'
 import { outgoingText } from '../../../shared/validation'
+import type { PressedSend } from './pressed-sends'
 import { maxAlbumPhotos } from '../../../shared/uploads'
 import { useDesktop } from '../app/store'
 import { translationUnavailableNote } from '../../../shared/translation'
@@ -29,9 +31,11 @@ import { tr } from '../../../shared/i18n'
 
 // HistoryView::ComposeControls: local draft saved on every change, immediate
 // send into the durable outbox, reply/edit bars and the voice record bar.
-export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, onCancelEdit, onEditLast, onSent }: {
+export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, onCancelEdit, onEditLast, onSent, onPressed, onPressSettled }: {
   accountUid: string; chatId: string; dialog: DialogSummary | null; outgoing: OutgoingSnapshot; reply: ReplyDraftSnapshot
   editing: ChatMessage | null; onCancelEdit(): void; onEditLast(): void; onSent(): void
+  // B306: the text is drawn in the history as the field empties (pressed-sends.ts); settled once the queue has answered.
+  onPressed?(send: PressedSend): void; onPressSettled?(id: string, stored: boolean): void
 }) {
   const platform = useDesktop(snapshot => snapshot?.platform ?? 'unsupported')
   const enterToSend = useDesktop(snapshot => snapshot?.preferences.enterToSend ?? true)
@@ -111,11 +115,12 @@ export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, 
   const value = editing ? editText : text
   useTypingReport(accountUid, chatId, focused && loaded && value.trim() !== '', value)
   const savedVoice = !editing && voiceDraft?.voice ? voiceDraft : null
+  // B286: measured on a copy (field-height.ts), so the field never collapses to one line on the way.
   useLayoutEffect(() => {
     const element = field.current
     if (!element) return
-    element.style.height = 'auto'
-    element.style.height = `${Math.min(224, element.scrollHeight)}px`
+    const height = `${fieldHeight(element, 224)}px`
+    if (element.style.height !== height) element.style.height = height
   }, [value, recording, savedVoice])
 
   useShortcut(20, command => {
@@ -156,12 +161,15 @@ export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, 
     const binding = replyRef.current.selection, id = crypto.randomUUID()
     clearTimeout(timer.current)
     latest.current = ''; dirty.current = false; setText('')
+    onPressed?.({ id, chatId, text: outgoingText(raw), ...(binding ? { replyToId: binding.messageId } : {}), createdAt: Date.now() })
     try {
       // The outbox clears the stored draft only when it still equals the sent text.
       await trackWrite(window.morse.saveDraft(accountUid, chatId, raw))
       await trackWrite(window.morse.sendText(accountUid, chatId, raw, id, binding, options.silent === true))
+      onPressSettled?.(id, true)
       onSent()
     } catch (reason) {
+      onPressSettled?.(id, false)
       if (!latest.current) { latest.current = raw; dirty.current = true; setText(raw) }
       controller.toast(errorText(reason, tr('메시지를 보내지 못했습니다.')), 'error')
     } finally { sending.current = false }
@@ -195,7 +203,6 @@ export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, 
   const hasText = value.trim().length > 0
   const openAttach = (point: { x: number; y: number }): void => popupMenu.open(point, [
     { label: tr('사진 또는 동영상'), icon: <ImageIcon size={18} />, onSelect: () => { void pickFiles(accountUid, chatId, 'media', () => replyRef.current.selection) } },
-    { label: tr('사진 여러 장'), icon: <Images size={18} />, onSelect: () => { void pickFiles(accountUid, chatId, 'album', () => replyRef.current.selection) } },
     { label: tr('파일'), icon: <FileIcon size={18} />, onSelect: () => { void pickFiles(accountUid, chatId, 'file', () => replyRef.current.selection) } },
     { label: tr('일정 만들기'), icon: <CalendarPlus size={18} />, onSelect: () => showEventBox(accountUid, chatId) },
     !chatId.startsWith('memo_') && 'separator',

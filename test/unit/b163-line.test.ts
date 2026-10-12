@@ -65,7 +65,7 @@ test('B163 ④: the row\'s message past its deleteAt gives way to the next one h
   assert.equal(expiredTop(summary, undefined, now, null), false, 'no lastMessageDeleteAt: as before')
   // Expired, the chat open with its newest page: the newest message it still holds.
   summary = row(at(100))
-  const open = { messages: [{ position: at(90, 'm1'), text: '앞 글' }], newerAvailable: false, ready: true, preview: () => '앞 글' }
+  const open = { messages: [{ position: at(90, 'm1'), text: '앞 글' }], newerAvailable: false, ready: true, preview: () => '앞 글', mine: () => false }
   assert.equal(expiredTop(summary, now - 1, now, open), true)
   assert.equal(summary.preview, '앞 글')
   assert.deepEqual(summary.top, at(90), 'sorted by that message, under the chat\'s own id')

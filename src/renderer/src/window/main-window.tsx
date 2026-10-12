@@ -12,6 +12,7 @@ import { DialogsWidget } from '../dialogs/dialogs-widget'
 import { HistoryWidget } from '../history/history-widget'
 import { ChatSearchPanel } from '../history/chat-search'
 import { InfoPanel } from '../info/info-panel'
+import { PersonPanel } from '../info/person-panel'
 import { ChannelSection } from '../channels/channel-section'
 import { ChannelsWidget } from '../channels/channels-widget'
 import { ChannelSidePanel } from '../channels/channel-info-panel'
@@ -84,6 +85,7 @@ function SessionWindow({ accountUid }: { accountUid: string }) {
   const noteId = useUi(state => state.noteId)
   const inquiry = useUi(state => state.inquiry)
   const right = useUi(state => state.right)
+  const person = useUi(state => state.person)
   const mainMenu = useUi(state => state.mainMenu)
   const notes = section === 'notes', channels = section === 'channels'
   // The open room became the pair's dialog under another id: show that dialog (a dialog is its peer).
@@ -106,7 +108,9 @@ function SessionWindow({ accountUid }: { accountUid: string }) {
   const hasMain = chatId !== null || channelId !== null || inquiryMain || (notes && noteId !== null)
   const left = oneColumn ? width : Math.round(Math.max(leftMin, Math.min(leftMax, width - mainMin, stored || width * defaultRatio)))
   const thirdSpace = width - left - mainMin
-  const panel = chatId ? right === 'search' ? <ChatSearchPanel key={chatId} accountUid={accountUid} chatId={chatId} /> : <InfoPanel key={chatId} accountUid={accountUid} chatId={chatId} />
+  // B266: a person opened from anywhere takes the third column over what is open there (tdesktop showPeerInfo).
+  const panel = right === 'person' && person ? <PersonPanel key={person.uid} accountUid={accountUid} person={person} />
+    : chatId ? right === 'search' ? <ChatSearchPanel key={chatId} accountUid={accountUid} chatId={chatId} /> : <InfoPanel key={chatId} accountUid={accountUid} chatId={chatId} />
     : channelId ? <ChannelSidePanel key={channelId} accountUid={accountUid} channelId={channelId} right={right} />
       // The person on the other side of a room, beside the room itself, as a chat's peer is.
       : inquiryMain && inquiry.thread ? <InquiryPeerPanel key={inquiry.thread} accountUid={accountUid} inquiryId={inquiry.thread} /> : null

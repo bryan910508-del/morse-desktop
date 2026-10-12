@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { fieldHeight } from '../history/field-height'
 import { ArrowLeft, CheckCheck, CircleAlert, Clock, Clock3, Copy, Download, EllipsisVertical, File as FileIcon, Film, Flag, Forward, Image as ImageIcon, Mic, Pencil, Pin, PinOff, Plus, Reply, RotateCcw, Send, Smile, Star, Timer, Trash2, UserPlus, X } from 'lucide-react'
 import { inquiryChatMessage, maxInquiryText, ownedChannelDiscussion, type InquiryMessageItem } from '../../../shared/channel-inquiries'
 import type { ChatMessage } from '../../../shared/model'
@@ -22,7 +23,7 @@ import { ActionRow, ContactProfile } from '../info/info-panel'
 import { showReportBox } from '../boxes/report-box'
 import { Avatar, PeerAvatar } from '../ui/avatar'
 import { LocalMessageView, MessageView, type MessageLayout } from '../history/message'
-import { chooseDeletion, ReactionStrip, saveAttachment, saveSticker } from '../history/history-widget'
+import { chooseDeletion, ReactionStrip, saveAttachment, saveSticker, showInFolderItem } from '../history/history-widget'
 import { EntityPanel } from '../history/entity-panel'
 import type { LocalOutgoing } from '../../../shared/delivery'
 import { showMediaViewer } from '../media/media-viewer'
@@ -138,8 +139,9 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
   useLayoutEffect(() => {
     const element = field.current
     if (!element) return
-    element.style.height = 'auto'
-    element.style.height = `${Math.min(224, element.scrollHeight)}px`
+    // B286: measured on a copy, so the field never collapses to one line on the way (field-height.ts).
+    const height = `${fieldHeight(element, 224)}px`
+    if (element.style.height !== height) element.style.height = height
   }, [text])
 
   // The composer empties in the frame the message leaves, reply and all (HistoryWidget::send → cancelReply), and the
@@ -353,6 +355,7 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
       // MorseStickerPreview: a sticker received here can be kept in this device's library, as in a chat.
       item.kind === 'sticker' && savable ? { label: tr('즐겨찾기에 추가'), icon: <Star size={18} />, onSelect: () => { void saveSticker(accountUid, inquiryId, message) } } : null,
       savable && item.kind !== 'sticker' ? { label: item.kind === 'voice' ? tr('파일로 저장') : tr('저장'), icon: <Download size={18} />, onSelect: () => { void saveAttachment(accountUid, inquiryId, message, savable.index) } } : null,
+      savable ? showInFolderItem(accountUid, inquiryId, message, savable.index) : null,
       // Telegram forwards by re-sending the content: a room's message goes into a chat the same way a chat's does.
       ready && canForwardMessage(message) ? { label: tr('전달'), icon: <Forward size={18} />, onSelect: () => showShareBox(accountUid, [message], { kind: 'inquiry', inquiryId }) } : null,
       !item.system && ready ? { label: tr('답장'), icon: <Reply size={18} />, onSelect: () => beginReply(item) } : null,

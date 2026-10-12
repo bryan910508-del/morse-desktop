@@ -9,7 +9,8 @@ import type { MediaMetadata } from '../../shared/media-metadata'
 // and that copy keeps the picture instead of loading it again. Here, by message id, what each one is drawn from:
 // - a picture (a photo or each photo of an album): a copy shrunk for the screen from the bytes being sent (tdesktop's
 //   'y' size), held in memory and served at morse://app/__sending-media/<token>;
-// - a sticker (B264): the address it was sent from — the library's or an installed set's.
+// - a sticker (B264): the address it was sent from — the library's or an installed set's — or, for a forward of one that
+//   is neither (B263), a copy of the bytes its original is drawn from, held here as a picture is.
 // A row read back after a restart, still uploading, has its pictures read again from what the queue keeps (`want`).
 // The newest few are kept; one let go is drawn from the placeholder the message carries and loaded as any other.
 export const sendingMediaRoute = '__sending-media'
@@ -17,7 +18,7 @@ const sendingMediaURL = (token: string): string => `morse://app/${sendingMediaRo
 const keepDraws = 300, maxPictures = 48, pictureBudget = 48 * 1024 * 1024, side = 1280
 interface Picture { bytes: Buffer; mime: string }
 export type Shrink = (bytes: Uint8Array, contentType: string) => Picture | null
-type Draw = { kind: 'sticker'; draw: StickerDraw } | { kind: 'pictures'; tokens: (string | null)[] }
+type Draw = { kind: 'sticker'; draw: StickerDraw; token?: string } | { kind: 'pictures'; tokens: (string | null)[] }
 type Read = (index: number) => Promise<{ bytes: Uint8Array; contentType: string } | null>
 
 // The screen's copy of a picture: no longer side than tdesktop's 'y' (1280), PNG kept as PNG for its transparency, a GIF
@@ -44,6 +45,7 @@ export function mediaOfFields(fields: Record<string, unknown>, parts: readonly {
   const widths = fields.imageWidthsPx, heights = fields.imageHeightsPx
   if (Array.isArray(widths) && Array.isArray(heights) && widths.every(Number.isFinite) && heights.every(Number.isFinite)) { metadata.imageWidthsPx = [...widths]; metadata.imageHeightsPx = [...heights] }
   if (text('thumbData')) metadata.thumbData = text('thumbData')
+  if (Array.isArray(fields.thumbDatas) && fields.thumbDatas.every(item => typeof item === 'string')) metadata.thumbDatas = [...fields.thumbDatas as string[]]
   const circular = type === 'video' && fields.isCircleVideo === true
   if (circular) metadata.isCircleVideo = true
   const file = type === 'file' ? { index: 0, name: text('fileName') || parts[0]?.name || '', size: number('fileSize') ?? parts[0]?.size ?? 0 } : null
@@ -62,6 +64,16 @@ export class SendingMedia {
   // B264: the sticker a message is sent as.
   noteSticker(messageId: string, draw: StickerDraw): void { this.wanted.delete(messageId); this.put(messageId, { kind: 'sticker', draw }) }
   sticker(messageId: string): StickerDraw | null { const draw = this.draws.get(messageId); return draw?.kind === 'sticker' ? draw.draw : null }
+  // B263: the same sticker for every message of one forward, from bytes of its original (copied as they are: a sticker is
+  // small and drawn whole), held once.
+  holdSticker(messageIds: readonly string[], bytes: Uint8Array, mime: string): StickerDraw | null {
+    if (!messageIds.length || !bytes.byteLength || bytes.byteLength > 10 * 1024 * 1024) return null
+    const token = randomUUID()
+    this.pictures.set(token, { bytes: Buffer.from(bytes), mime })
+    const draw = { url: sendingMediaURL(token), video: mime === 'video/mp4' }
+    for (const id of messageIds) { this.wanted.delete(id); this.put(id, { kind: 'sticker', draw, token }) }
+    return draw
+  }
 
   // The pictures of a message, from the bytes in hand when it is queued (the caller keeps and clears its own).
   keepPictures(messageId: string, parts: readonly { bytes: Uint8Array; contentType: string }[]): void {
@@ -125,13 +137,18 @@ export class SendingMedia {
   // any other.
   private release(): void {
     const named = new Set<string>()
-    for (const draw of this.draws.values()) if (draw.kind === 'pictures') for (const token of draw.tokens) if (token) named.add(token)
+    for (const draw of this.draws.values()) {
+      if (draw.kind === 'pictures') { for (const token of draw.tokens) if (token) named.add(token) }
+      else if (draw.token) named.add(draw.token)
+    }
     for (const [token, picture] of this.pictures) if (!named.has(token)) { picture.bytes.fill(0); this.pictures.delete(token) }
     let total = [...this.pictures.values()].reduce((sum, picture) => sum + picture.bytes.length, 0)
     while (this.pictures.size > maxPictures || total > pictureBudget) {
       const [token, picture] = this.pictures.entries().next().value!
       total -= picture.bytes.length; picture.bytes.fill(0); this.pictures.delete(token)
-      for (const [id, draw] of this.draws) if (draw.kind === 'pictures' && draw.tokens.includes(token)) {
+      for (const [id, draw] of this.draws) {
+        if (draw.kind === 'sticker') { if (draw.token === token) this.draws.delete(id); continue }
+        if (!draw.tokens.includes(token)) continue
         const tokens = draw.tokens.map(item => item === token ? null : item)
         if (tokens.some(Boolean)) this.draws.set(id, { kind: 'pictures', tokens }); else this.draws.delete(id)
       }

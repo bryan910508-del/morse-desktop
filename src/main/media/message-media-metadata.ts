@@ -1,4 +1,4 @@
-import { mediaArrayFields, mediaMetadata, mediaNumberFields, maxThumbDataChars, type MediaMetadata } from '../../shared/media-metadata'
+import { albumThumbs, mediaArrayFields, mediaMetadata, mediaNumberFields, maxThumbDataChars, type MediaMetadata } from '../../shared/media-metadata'
 import type { FirestoreDocument } from '../network/firestore-values'
 
 // Malformed optional metadata does not hide readable media. It prevents a
@@ -30,6 +30,12 @@ export function messageMediaMetadata(doc: FirestoreDocument, kind: string, count
     // the rest of the picture's information survives.
     const thumb = doc.fields.thumbData?.stringValue
     if (typeof thumb === 'string' && thumb && thumb.length <= maxThumbDataChars && /^[A-Za-z0-9+/]+={0,2}$/.test(thumb)) raw.thumbData = thumb
+    // B310ⓑ: an album's placeholders, read as leniently — a malformed list is left out and the photos keep the rest.
+    const thumbs = (doc.fields.thumbDatas?.arrayValue as { values?: Record<string, unknown>[] } | undefined)?.values
+    if (kind === 'image' && Array.isArray(thumbs)) {
+      const list = albumThumbs(thumbs.map(item => typeof item.stringValue === 'string' ? item.stringValue : null), count)
+      if (list) raw.thumbDatas = list
+    }
     if (circular) raw.isCircleVideo = true
     return mediaMetadata(raw, kind, count)
   } catch { return null }

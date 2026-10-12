@@ -13,3 +13,9 @@ export function keepBottomOnResize(box: ScrollBox, previousHeight: number, atBot
 export function followsBottom(distance: number, newerAvailable: boolean): boolean {
   return distance < 80 && !newerAvailable
 }
+// B307 (tdesktop HistoryWidget::updateListSize, history_widget.cpp:8661-8713): when the list changes with nothing asked
+// of the scroll — a message grows by a reaction shown at once, shrinks by one taken back — a history followed at its
+// bottom is put at its bottom in the same pass; one read away from it keeps its place.
+export function keepsBottomOnChange(asked: boolean, atBottom: boolean, settled: boolean): boolean {
+  return !asked && atBottom && settled
+}

@@ -4,7 +4,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { PeerRowName } from '../ui/official-mark'
 import { useOfficialMarks } from '../app/official-marks'
 import { Hand, KeyRound, Laptop, Monitor, Smartphone, X } from 'lucide-react'
-import { lastSeenModes, sessionQrLine, sessionTtlDayOptions, type BlockedUser, type LastSeenMode, type LastSeenPrivacy, type SignInSession, type SignInSessions } from '../../../shared/account-tools'
+import { privacyModes, sessionQrLine, sessionTtlDayOptions, type BlockedUser, type PrivacyKey, type PrivacyMode, type PrivacyRule, type SignInSession, type SignInSessions } from '../../../shared/account-tools'
 import { controller } from '../app/ui'
 import { errorText, fullTime, sessionActiveTime } from '../app/format'
 import { trackWrite } from '../app/drafts'
@@ -16,31 +16,43 @@ import { UserAvatar } from '../ui/user-avatar'
 import { tr } from '../../../shared/i18n'
 import type { BackupCodeChange } from '../../../shared/model'
 
-// PrivacyLastSeenSettingsView: who can see the last seen time. Exceptions set on iPhone are kept.
-function LastSeenBox({ accountUid, close }: { accountUid: string; close(): void }) {
-  const [value, setValue] = useState<LastSeenPrivacy | null>(null), [mode, setMode] = useState<LastSeenMode>('everybody')
+// One privacy rule's box, as tdesktop's EditPrivacyBox serves every key through its controller (edit_privacy_box.cpp,
+// settings_privacy_controllers.cpp): the title, the question over the options and the note under them are the key's.
+// Exceptions set on iPhone are kept.
+const privacyWords: Record<PrivacyKey, { title: string; header: string; saved: string; warning?: string }> = {
+  // PrivacyLastSeenSettingsView.
+  lastSeen: { title: tr('마지막 접속'), header: tr('내 마지막 접속 시간을 볼 수 있는 사람'), saved: tr('마지막 접속 공개 범위를 저장했습니다.') },
+  // B263 §4, ForwardsPrivacyController (settings_privacy_controllers.cpp:977-988; lng_edit_privacy_forwards_title,
+  // _header, _warning — the warning sits under the options whatever is chosen, edit_privacy_box.cpp:888).
+  forwards: { title: tr('전달된 메시지'), header: tr('내 메시지를 전달할 때 내 계정을 연결할 수 있는 사람'), saved: tr('전달된 메시지 설정을 저장했습니다.'),
+    warning: tr('다른 사람이 내 메시지를 전달해도 내 계정으로 연결되지 않아요.') }
+}
+function PrivacyRuleBox({ accountUid, privacyKey, close }: { accountUid: string; privacyKey: PrivacyKey; close(): void }) {
+  const words = privacyWords[privacyKey]
+  const [value, setValue] = useState<PrivacyRule | null>(null), [mode, setMode] = useState<PrivacyMode>('everybody')
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
   useEffect(() => {
     let alive = true
-    void window.morse.lastSeenPrivacy(accountUid).then(next => { if (alive) { setValue(next); setMode(next.mode) } })
+    void window.morse.privacyRule(accountUid, privacyKey).then(next => { if (alive) { setValue(next); setMode(next.mode) } })
       .catch(reason => { if (alive) setError(errorText(reason, tr('공개 범위를 불러오지 못했습니다.'))) })
     return () => { alive = false }
-  }, [accountUid])
+  }, [accountUid, privacyKey])
   async function save(): Promise<void> {
     if (!value || busy) return
     setBusy(true); setError('')
-    try { await trackWrite(window.morse.setLastSeenPrivacy(accountUid, { ...value, mode })); controller.toast(tr('마지막 접속 공개 범위를 저장했습니다.')); close() }
+    try { await trackWrite(window.morse.setPrivacyRule(accountUid, privacyKey, { ...value, mode })); controller.toast(words.saved); close() }
     catch (reason) { setError(errorText(reason, tr('공개 범위를 저장하지 못했습니다.'))); setBusy(false) }
   }
-  return <Box title={tr('마지막 접속')} width={400} className="settings-list-box" buttons={<>
+  return <Box title={words.title} width={400} className="settings-list-box" buttons={<>
     <button className="button flat" disabled={busy} onClick={close}>{tr('취소')}</button>
     <button className="button flat" disabled={!value || busy || mode === value.mode} onClick={() => { void save() }}>{busy && <Spinner size={14} />}{tr('저장')}</button>
   </>}>
     {!value ? !error && <div className="empty-state"><Spinner size={22} /></div> : <>
-      <div className="section-label">{tr('내 마지막 접속 시간을 볼 수 있는 사람')}</div>
-      {(Object.keys(lastSeenModes) as LastSeenMode[]).map(key => <label key={key} className="settings-radio">
-        <input type="radio" name="last-seen" checked={mode === key} disabled={busy} onChange={() => setMode(key)} /><span>{lastSeenModes[key]}</span>
+      <div className="section-label">{words.header}</div>
+      {(Object.keys(privacyModes) as PrivacyMode[]).map(key => <label key={key} className="settings-radio">
+        <input type="radio" name={`privacy-${privacyKey}`} checked={mode === key} disabled={busy} onChange={() => setMode(key)} /><span>{privacyModes[key]}</span>
       </label>)}
+      {words.warning && <p className="box-note">{words.warning}</p>}
       {(value.alwaysShareWith.length > 0 || value.neverShareWith.length > 0) && <p className="box-note">{tr('예외 설정(항상 공개 {0}명 · 항상 숨김 {1}명)은 그대로 유지됩니다.', [value.alwaysShareWith.length, value.neverShareWith.length])}</p>}
     </>}
     {error && <p className="box-error" role="alert">{error}</p>}
@@ -193,7 +205,7 @@ function SessionsBox({ accountUid, close }: { accountUid: string; close(): void 
   </Box>
 }
 
-export function showLastSeenBox(accountUid: string): void { controller.showLayer(close => <LastSeenBox accountUid={accountUid} close={close} />) }
+export function showPrivacyRuleBox(accountUid: string, privacyKey: PrivacyKey): void { controller.showLayer(close => <PrivacyRuleBox accountUid={accountUid} privacyKey={privacyKey} close={close} />) }
 export function showBlockedUsersBox(accountUid: string): void { controller.showLayer(close => <BlockedUsersBox accountUid={accountUid} close={close} />) }
 export function showSessionsBox(accountUid: string): void { controller.showLayer(close => <SessionsBox accountUid={accountUid} close={close} />) }
 

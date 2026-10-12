@@ -23,11 +23,22 @@ export interface VideoEdit { start: number; end: number; preset: VideoSendPreset
 export type VideoCompressor = (path: string, edit?: VideoEdit) => Promise<VideoCompression>
 let videoCompressor: VideoCompressor | null = null
 export function setVideoCompressor(value: VideoCompressor | null): void { videoCompressor = value }
+// What a picked file is by its first bytes (the kind detection reads no more): a picture, a video, or neither.
+async function pickedKind(path: string): Promise<'image' | 'video' | null> {
+  const source = await open(path, constants.O_RDONLY | constants.O_NONBLOCK)
+  try {
+    const header = Buffer.alloc(16)
+    if ((await source.read(header, 0, 16, 0)).bytesRead !== 16) return null
+    const kind = mediaType(header).kind
+    return kind === 'image' || kind === 'video' ? kind : null
+  } catch { return null } finally { await source.close() }
+}
 
 // source: a video prepared by the compressor keeps where it came from, and the first prepared copy is what the
 // editor plays, so a second edit still starts from the whole video.
 interface VideoSource { path: string; size: number; mtimeMs: number; original: Buffer; contentType: string }
-interface StagedPart { item: AttachmentFile; upload: UploadDescriptor; bytes: Buffer; extension: string; source?: VideoSource }
+// edits: how many times the box's photo editor replaced this picture (B323) — its address names the newest.
+interface StagedPart { item: AttachmentFile; upload: UploadDescriptor; bytes: Buffer; extension: string; source?: VideoSource; edits?: number }
 interface StagedAttachment { draft: AttachmentDraft; parts: StagedPart[] }
 export interface TakenAttachment { kind: AttachmentFile['kind']; name: string; size: number; contentType: string; extension: string; bytes: Buffer }
 export class AttachmentStaging {
@@ -42,10 +53,36 @@ export class AttachmentStaging {
   drop(chatId: string, paths: string[], mode: AttachmentDropMode, allowed: () => boolean): Promise<AttachmentDraft | null> {
     if (this.pending || this.selected) throw new Error(tr('현재 첨부를 보내거나 선택을 취소한 뒤 다시 놓아 주세요.'))
     if (mode === 'file' && paths.length !== 1) throw new Error(tr('일반 파일은 한 번에 한 개씩 놓아 주세요.'))
-    return this.pick(chatId, mode === 'file' ? 'file' : paths.length > 1 ? 'album' : 'media', allowed, async () => paths)
+    return this.pick(chatId, mode === 'file' ? 'file' : 'media', allowed, async () => paths)
   }
-  clear(id?: string): void {
+  // B311 (iOS MorseMediaSelectionSession, Android AccountMediaSelection.kt: «Photos alone keep the photo editor's album
+  // selection … A selection with a video opens one editor at a time»): what is still to be shown, in the picked order,
+  // after the selection on screen. Sending that one opens the next (next()); letting it go without sending drops the rest.
+  private queue: { chatId: string; paths: string[] } | null = null
+  // The next picked item, staged as a selection of its own; null when there is none for this chat or one is still open.
+  next(chatId: string, allowed: () => boolean): Promise<AttachmentDraft | null> {
+    const queue = this.queue
+    if (!queue || queue.chatId !== chatId || this.pending || this.selected) return Promise.resolve(null)
+    const path = queue.paths.shift()!
+    if (!queue.paths.length) this.queue = null
+    return this.stage(chatId, 'media', allowed, async () => [path], false)
+  }
+  // The selection let go by the person (or the chat, the account): the items still to come go with it.
+  discard(id?: string, all = false): void {
+    if (!id || this.selected?.draft.id === id || !this.selected) this.queue = null
+    this.clear(id, all)
+  }
+  // B280 ③: the selection whose send was pressed is that send's until it is queued or refused — a chat changed or a
+  // connection paused meanwhile does not let it go, as tdesktop's confirmed send no longer depends on the chat shown
+  // (Api::SendAction(_history), history_widget.cpp:5748-5750). The send lets it go itself, by its id.
+  private sending: string | null = null
+  pressed(id: string): () => void { this.sending = id; return () => { if (this.sending === id) this.sending = null } }
+  // The chat of the selection whose send was pressed, while it is still selected.
+  pressedChat(): string | null { return this.sending !== null && this.selected?.draft.id === this.sending ? this.selected.draft.chatId : null }
+  // Without an id: whatever is selected, except a pressed send (`all`: that too — the account closing or locking).
+  clear(id?: string, all = false): void {
     if (id && this.selected?.draft.id !== id) return
+    if (!id && !all && this.sending !== null && this.selected?.draft.id === this.sending) return
     this.generation++
     for (const part of this.selected?.parts ?? []) { if (part.source && part.source.original !== part.bytes) part.source.original.fill(0); part.bytes.fill(0) }
     this.selected = null
@@ -70,13 +107,16 @@ export class AttachmentStaging {
     // The placeholder the photo travels with, made by the ladder iOS and Android both walk
     // (outgoing-placeholder.ts). It follows the LONG side, so a tall photo is not shrunk twice over,
     // and a picture that cannot be read simply travels without one.
-    const placeholder = first.item.kind !== 'image' ? '' : outgoingPhotoPlaceholder((side, quality) => {
-      const image = nativeImage.createFromBuffer(first.bytes)
+    const placeholderOf = (bytes: Buffer): string => outgoingPhotoPlaceholder((side, quality) => {
+      const image = nativeImage.createFromBuffer(bytes)
       const { width, height } = image.getSize()
       if (!width || !height) return null
       const fit = width >= height ? { width: Math.max(1, Math.min(width, side)) } : { height: Math.max(1, Math.min(height, side)) }
       return image.resize({ ...fit, quality: 'good' }).toJPEG(quality)
     })
+    // B310ⓑ: an album carries one for each photo the same way (thumbDatas), the first being thumbData itself.
+    const thumbs = first.item.kind !== 'image' ? [] : selected.map(part => placeholderOf(part.bytes))
+    const placeholder = thumbs[0] ?? ''
     const wire: MediaSendWire = { id, chatId, senderId: uid, type: first.item.kind,
       text: first.item.kind === 'file' ? first.item.name : '', mediaUrl: '', isSilent: false, isEncrypted: false, protocolVersion: 3,
       ...(measured.length ? { mediaWidthPx: measured[0]!.width, mediaHeightPx: measured[0]!.height } : {}),
@@ -87,6 +127,7 @@ export class AttachmentStaging {
       // A video message, which every client draws as a circle; its size must be a square.
       ...(first.item.kind === 'video' && circular && video && video.width === video.height ? { isCircleVideo: true as const } : {}),
       ...(measured.length > 1 ? { imageWidthsPx: measured.map(size => size.width), imageHeightsPx: measured.map(size => size.height) } : {}),
+      ...(thumbs.length > 1 && thumbs.some(Boolean) ? { thumbDatas: thumbs } : {}),
       ...(first.item.kind === 'file' ? { fileName: first.item.name, fileSize: first.item.size } :
         caption ? first.item.kind === 'image' ? { imageCaption: caption } : { videoCaption: caption } : {}) }
     // Freeze a copy before the async storage boundary. Closing a view may clear
@@ -108,7 +149,13 @@ export class AttachmentStaging {
       part.bytes.fill(0)
       part.bytes = bytes; part.extension = 'jpg'; part.item.size = bytes.length
       part.upload = { ...part.upload, size: bytes.length, contentType: 'image/jpeg', sha256: createHash('sha256').update(bytes).digest('hex'), md5: createHash('md5').update(bytes).digest('base64') }
-      selected.draft = { ...selected.draft, size: selected.parts.reduce((sum, value) => sum + value.item.size, 0), items: selected.draft.items.map(item => item.id === itemId ? { ...item, size: bytes.length } : item) }
+      // B323 (tdesktop SendFilesBox: the edited image takes the item's place and its preview is drawn from it): the box and
+      // its editor read the edited picture from here, at an address of its own so the window's image cache cannot hand
+      // back the one it replaced. The window keeps no copy of its own — the page allows no blob: images.
+      part.edits = (part.edits ?? 0) + 1
+      const previewUrl = `morse://app/${this.previewRoute}/${id}/${itemId}/e${part.edits}`
+      selected.draft = { ...selected.draft, size: selected.parts.reduce((sum, value) => sum + value.item.size, 0),
+        items: selected.draft.items.map(item => item.id === itemId ? { ...item, size: bytes.length, previewUrl } : item) }
       return selected.draft
     } catch (error) { bytes.fill(0); throw error }
   }
@@ -135,7 +182,12 @@ export class AttachmentStaging {
       if (part.bytes !== source.original) part.bytes.fill(0)
       part.bytes = bytes; part.extension = 'mp4'; part.item.size = bytes.length
       part.upload = { ...part.upload, size: bytes.length, contentType: 'video/mp4', sha256: createHash('sha256').update(bytes).digest('hex'), md5: createHash('md5').update(bytes).digest('base64') }
-      selected.draft = { ...selected.draft, size: selected.parts.reduce((sum, value) => sum + value.item.size, 0), items: selected.draft.items.map(item => item.id === itemId ? { ...item, size: bytes.length } : item) }
+      // B323-c: the edited video at an address of its own, as an edited photo's (replaceImage), so the box reads its
+      // frame and length from it past the window's media cache, without a blob: copy the page refuses.
+      part.edits = (part.edits ?? 0) + 1
+      const previewUrl = `morse://app/${this.previewRoute}/${id}/${itemId}/e${part.edits}`
+      selected.draft = { ...selected.draft, size: selected.parts.reduce((sum, value) => sum + value.item.size, 0),
+        items: selected.draft.items.map(item => item.id === itemId ? { ...item, size: bytes.length, previewUrl } : item) }
       return selected.draft
     } finally { this.editing = false }
   }
@@ -196,8 +248,10 @@ export class AttachmentStaging {
   response(chatId: string, path: string, request: Request): Response {
     const keys = path.split('/'), [id, itemId] = keys
     const selected = this.selected
-    const part = selected && selected.draft.chatId === chatId && selected.draft.id === id && keys.length === 2
-      ? selected.parts.find(part => part.item.id === itemId && (part.item.kind === 'image' || part.item.kind === 'video')) : undefined
+    // A picture or a video is read at its first address or at the one its newest edit gave it (B323); an older edit's is gone.
+    const part = selected && selected.draft.chatId === chatId && selected.draft.id === id && (keys.length === 2 || /^e\d{1,4}$/.test(keys[2] ?? ''))
+      ? selected.parts.find(part => part.item.id === itemId && (part.item.kind === 'image' || part.item.kind === 'video') &&
+        (keys.length === 2 || (keys.length === 3 && keys[2] === `e${part.edits ?? 0}`))) : undefined
     if (part?.item.kind === 'video') return rangeResponse(part.bytes, part.upload.contentType, request)
     const original = selected && selected.draft.chatId === chatId && selected.draft.id === id && keys.length === 3 && keys[2] === 'original'
       ? selected.parts.find(part => part.item.id === itemId && part.item.kind === 'video')?.source : undefined
@@ -206,15 +260,29 @@ export class AttachmentStaging {
     return new Response(new Uint8Array(part.bytes), { headers: { 'Content-Type': part.upload.contentType,
       'Content-Length': String(part.bytes.length), 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } })
   }
-  async pick(chatId: string, mode: AttachmentMode, allowed: () => boolean, choose: () => Promise<string[] | null>): Promise<AttachmentDraft | null> {
+  pick(chatId: string, mode: AttachmentMode, allowed: () => boolean, choose: () => Promise<string[] | null>): Promise<AttachmentDraft | null> {
+    if (this.pending) return Promise.reject(new Error(tr('파일을 선택 중입니다.')))
+    this.queue = null
+    return this.stage(chatId, mode, allowed, choose, true)
+  }
+  private async stage(chatId: string, mode: AttachmentMode, allowed: () => boolean, choose: () => Promise<string[] | null>, fresh: boolean): Promise<AttachmentDraft | null> {
     if (this.pending) throw new Error(tr('파일을 선택 중입니다.'))
     this.clear(); this.pending = true
     const generation = this.generation, id = randomUUID(), parts: StagedPart[] = []
     let bytes: Buffer | null = null, retained = false
     try {
       if (!allowed()) throw new Error(tr('대화와 연결을 확인해 주세요.'))
-      const paths = await choose()
+      let paths = await choose()
       if (!paths?.length) return null
+      // B311: «사진 또는 동영상» picks up to ten — photos alone are one album; with a video among them, each goes on its
+      // own, in the picked order (tdesktop chooseAttach PhotoVideoFilesFilter, history_widget.cpp:6462-6464).
+      if (fresh && mode === 'media' && paths.length > 1) {
+        if (paths.length > maxAlbumPhotos) throw new Error(tr('사진과 동영상은 최대 {0}개까지 선택해 주세요.', [maxAlbumPhotos]))
+        const kinds = await Promise.all(paths.map(pickedKind))
+        if (generation !== this.generation || !allowed()) throw new Error(tr('첨부 선택이 취소되었습니다.'))
+        if (kinds.every(kind => kind === 'image')) mode = 'album'
+        else { this.queue = { chatId, paths: paths.slice(1) }; paths = paths.slice(0, 1) }
+      }
       if (paths.length > (mode === 'album' ? maxAlbumPhotos : 1)) throw new Error(tr('사진은 최대 {0}장까지 선택해 주세요.', [maxAlbumPhotos]))
       for (const path of paths) {
         if (generation !== this.generation || !allowed()) throw new Error(tr('계정 또는 대화가 변경되었습니다.'))

@@ -14,7 +14,7 @@ import { positionMilliseconds, type ReplyPreview } from '../../shared/model'
 import { mediaResources, type MediaResource } from '../media/media-document'
 import { messageMediaMetadata } from '../media/message-media-metadata'
 import { DocumentWriteFailure, FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
-import { autoDeleteLineText, autoDeleteNoticeFields, boolField, documents, documentVersion, mapField, messageReactions, numberField, pinnedMessageIds, ReadFailure, stringField, timestamp, type FirestoreDocument, type WireObject } from '../network/firestore-values'
+import { autoDeleteLineText, autoDeleteNoticeFields, boolField, documents, documentVersion, mapField, messageForward, messageReactions, numberField, pinnedMessageIds, ReadFailure, stringField, timestamp, type FirestoreDocument, type WireObject } from '../network/firestore-values'
 import { autoDeleteNoticeText, autoDeleteWirePrefix } from '../../shared/auto-delete-notice'
 import { setMessageReaction } from '../network/message-reaction-api'
 import { autoDeleteSecondsValue } from '../../shared/chat-auto-delete'
@@ -130,7 +130,7 @@ export function decodeInquiryMessage(doc: FirestoreDocument, inquiry: Pick<Inqui
     text: kind === 'text' ? stringField(f, 'text', 30000) : caption, label, createdAt, edited: boolField(f, 'isEdited'),
     version: documentVersion(doc), ...(attachments.length ? { attachments } : {}),
     ...(metadata && Object.keys(metadata).length ? { mediaMetadata: metadata } : {}), ...(circular && kind === 'video' ? { circular: true as const } : {}),
-    ...(reactions.length ? { reactions } : {}) }
+    ...(reactions.length ? { reactions } : {}), ...messageForward(f) }
 }
 
 // HistoryMessageReply: the answered message as the bubble quotes it. A room holds its latest messages, so the
@@ -590,14 +590,18 @@ export class ChannelInquiries {
   // through the room's own send (sendMorseInquiryMessage) — the room does not have to be open, and the server decides
   // the sender's side from the room document, as it does for every message of a room. Each part is handed to the queue
   // under an id of its own, which it keeps however many times it has to go.
-  async deliverForward(inquiryId: string, content: { kind: 'text'; text: string } | { kind: 'media'; media: PreparedForwardMedia }, validate: () => void): Promise<void> {
+  // B263 §2-1: a forward into a room says so and names its original, as a chat's does (sendMorseInquiryMessage builds
+  // the room message's forwardInfo from it).
+  async deliverForward(inquiryId: string, content: { kind: 'text'; text: string } | { kind: 'media'; media: PreparedForwardMedia }, validate: () => void,
+    original: import('../../shared/model').ForwardWireSource): Promise<void> {
+    const forwarded = { isForwarded: true as const, forwardSource: original }
     this.allowed(); validate()
     const doc = await this.source.getDocument(`${documents}/channelInquiries/${inquiryId}`, this.signal())
     if (!doc) throw new Error(tr('문의를 찾을 수 없습니다.'))
     const inquiry = decodeInquiry(doc, this.uid)
     validate()
     if (content.kind === 'text') {
-      await this.enqueue({ id: randomUUID().toUpperCase(), inquiryId, message: { senderType: inquiry.role, type: 'text', text: content.text }, preview: { kind: 'text', text: content.text } })
+      await this.enqueue({ id: randomUUID().toUpperCase(), inquiryId, message: { senderType: inquiry.role, type: 'text', text: content.text, ...forwarded }, preview: { kind: 'text', text: content.text } })
       return
     }
     const media = content.media
@@ -614,7 +618,7 @@ export class ChannelInquiries {
         : voice ?? inquiryAttachmentFields(media.kind === 'video' ? 'video' : 'file', part.name, part.bytes.length, caption,
           media.kind === 'video' ? { duration: media.metadata.videoDuration ?? 0, width: media.metadata.videoWidthPx ?? 0, height: media.metadata.videoHeightPx ?? 0, thumb: media.metadata.thumbData ?? '' } : null)
       const kind = media.kind === 'image' ? 'image' : media.kind === 'voice' ? 'voice' : media.kind === 'video' ? 'video' : 'file'
-      await this.enqueue({ id: messageId, inquiryId, message: { senderType: inquiry.role, ...message },
+      await this.enqueue({ id: messageId, inquiryId, message: { senderType: inquiry.role, ...message, ...forwarded },
         preview: { kind, text: kind === 'file' ? part.name : noun }, media: { bytes: part.bytes, extension, noun, urlInText: media.kind === 'image' } })
     }
   }

@@ -21,10 +21,14 @@ function PostLikersBox({ accountUid, channelId, postId, close }: { accountUid: s
   return <Box title={tr('좋아요 {0}', [value?.items.length ?? '']).trim()} width={380} onClose={close} buttons={<button className="button flat" onClick={close}>{tr('닫기')}</button>}>
     <label className="search-field"><Search size={16} /><input value={query} maxLength={100} placeholder={tr('검색')} onChange={event => setQuery(event.target.value)} /></label>
     {error ? <p className="box-error" role="alert">{error}</p> : !value || value.status === 'loading' ? <div className="empty-state"><Spinner size={20} /></div>
-      : <div className="peer-list">{items.map(item => <div key={item.uid} className="peer-row static">
-        <Avatar name={item.name} url={item.photo?.status === 'ready' ? item.photo.url : null} size={40} />
-        <span className="peer-row-text"><strong className="ellipsis">{item.name}</strong>{item.handle && <small>@{item.handle}</small>}</span>
-      </div>)}</div>}
+      : <div className="peer-list">{items.map(item => {
+        const row = <><Avatar name={item.name} url={item.photo?.status === 'ready' ? item.photo.url : null} size={40} />
+          <span className="peer-row-text"><strong className="ellipsis">{item.name}</strong>{item.handle && <small>@{item.handle}</small>}</span></>
+        // B266: each one who liked the post opens as a person, over the channel — not this account, and not a person in
+        // private mode, whom this list shows as «비공개 사용자» (session postLikers: isPrivate, not a contact).
+        return item.uid !== accountUid && !item.private ? <button key={item.uid} type="button" className="peer-row" onClick={() => { close(); controller.openPersonInfo(item.uid, item.name) }}>{row}</button>
+          : <div key={item.uid} className="peer-row static">{row}</div>
+      })}</div>}
     {value?.partial && <p className="box-note">{tr('일부 사용자 정보를 불러오지 못했어요.')}</p>}
   </Box>
 }

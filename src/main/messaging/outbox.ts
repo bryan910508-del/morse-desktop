@@ -63,7 +63,7 @@ import type { ContactPhotoCommand } from '../storage/contact-photo-table'
 import type { GroupPhotoUploadCommand } from '../storage/group-photo-upload-table'
 import type { ChatBackgroundCommand } from '../storage/chat-background-table'
 import type { ProfileUploadCommand } from '../storage/profile-photo-upload-table'
-import { maxQueuedMessages } from '../../shared/delivery'
+import { deliveryFailed, maxQueuedMessages } from '../../shared/delivery'
 import { outgoingText } from '../../shared/validation'
 import { DeliveryCommandFailure, DeliveryRepository, LocalDataKeyUnavailable } from '../storage/delivery-client'
 import { recordDeliveryStep } from '../platform/delivery-diagnostics'
@@ -80,6 +80,7 @@ import { directPairPath, isPairDialog, pairCorrection, pairLookup, pairReadFaile
 import type { DirectMove } from '../storage/pending-direct-table'
 import { tr } from '../../shared/i18n'
 import { rejectionCode, rejectionUntil, sanctionOf, storedRejection } from '../../shared/sanctions'
+import { mediaCacheFor } from '../accounts/media-cache'
 
 // The delivery worker words a waiting attachment in Korean («사진 3장», «음성 메시지.m4a», «스티커.png»); the chat shows it in
 // the app's language.
@@ -114,6 +115,19 @@ export function resumableIntent(row: StoredIntent): boolean {
 // An upload the connection cut off resumes by itself: it is shown waiting, with the clock, and offers no «다시 전송».
 export const waitingUpload = (row: Pick<StoredIntent, 'state' | 'reason'>): boolean => row.state === 'upload-failed' && row.reason === 'upload-network'
 export const shownState = (row: Pick<StoredIntent, 'state' | 'reason'>): StoredIntent['state'] => waitingUpload(row) ? 'uploading' : row.state
+// iOS MorseChatListRowDisplay hasFailedOutgoing / hasSendingOutgoing: a room's row marks a message of mine that did not
+// go, and a clock while the newest of mine is still on its way — each as its bubble shows it (B280: an upload the
+// connection cut off is the clock in both, not the clock in the chat and the failed mark in the list).
+export function chatSendsOf(rows: readonly Pick<StoredIntent, 'chatId' | 'state' | 'reason' | 'createdAt'>[]): Map<string, { failed: boolean; newest: number }> {
+  const result = new Map<string, { failed: boolean; newest: number }>()
+  for (const row of rows) {
+    const entry = result.get(row.chatId) ?? { failed: false, newest: 0 }
+    if (deliveryFailed(shownState(row))) entry.failed = true
+    else entry.newest = Math.max(entry.newest, row.createdAt)
+    result.set(row.chatId, entry)
+  }
+  return result
+}
 // What the queue sends next: the first message that may go now. A room's messages go in the order they were written
 // (Telegram R-54, tdesktop data_histories.cpp sendPreparedMessage .afterRequest(history->sendRequestId)): one waits
 // while an earlier one of its room is still on its way — not sent yet, or its answer not known — and goes once that
@@ -168,6 +182,22 @@ export function outgoingOrder(chatId: string, rows: readonly StoredIntent[], sen
   const taken = sent.filter(row => row.chatId === chatId && !rows.some(other => other.id === row.id))
   return [...waiting.map(row => ({ row, sent: false })), ...taken.map(row => ({ row, sent: true }))].sort((a, b) => a.row.sequence - b.row.sequence)
 }
+// B303 (tdesktop Api::Updates updateMessageID, api/api_updates.cpp:1704-1711: when the answer comes and the server's
+// message is already there, the local item is destroyed — one message is one item, whichever arrives first): a sent
+// message is kept as a «sent» item only while the open history does not show it yet. A sticker sent by reference is
+// often shown by the history before the server's answer comes back; kept then, the item stayed hidden behind the
+// history's copy for a minute and came back the moment that copy was deleted or hidden.
+// B303b: what the open chat's history has shown since it opened, a new snapshot adding to it — a message the history
+// showed and then lost (deleted or hidden a few seconds after it was sent) still counts as shown when the late answer
+// comes. Another chat starts afresh.
+export function shownSince(last: { chatId: string; ids: Set<string> } | null, chatId: string, ids: Iterable<string>): { chatId: string; ids: Set<string> } {
+  const next = last?.chatId === chatId ? last : { chatId, ids: new Set<string>() }
+  for (const id of ids) next.ids.add(id)
+  return next
+}
+export function keepsSent(shown: { chatId: string; ids: ReadonlySet<string> } | null, row: Pick<StoredIntent, 'chatId' | 'id'>): boolean {
+  return !(shown?.chatId === row.chatId && shown.ids.has(row.id))
+}
 export class OutboxPump {
   private repository: DeliveryRepository | null = null
   private readonly opening: Promise<void>
@@ -189,9 +219,13 @@ export class OutboxPump {
   private retryAt = new Map<string, { at: number; attempts: number }>()
   // Telegram never takes a sent message off the screen: the local item stays and only takes its server id
   // (Api::Updates updateMessageID → HistoryItem::setRealId). Morse's message is written under the id it was sent
-  // with, but the history learns of it a moment after the server's answer; until then the sent item is kept here,
-  // so the bubble does not leave and come back. The history showing the id, or a minute, ends it.
+  // with, and the history may learn of it after the server's answer or before it. Until the history shows it the sent
+  // item is kept here, so the bubble does not leave and come back; the history showing the id, or a minute, ends it,
+  // and one the history already showed is not kept at all (B303, keepsSent).
   private sent = new Map<string, { row: StoredIntent; timer: ReturnType<typeof setTimeout> }>()
+  // Every id the open chat's history has shown since it opened (B303b: a snapshot without a message deleted meanwhile
+  // must not make it unseen); forgotten when the chat closes.
+  private shownLast: { chatId: string; ids: Set<string> } | null = null
   private busyId: string | null = null
   // Rows cancelled while their send was on its way: an answer that comes back afterwards does not show them again as
   // «sent»; the server's copy, if it kept one, comes as the server's message.
@@ -463,17 +497,19 @@ export class OutboxPump {
     return { media }
   }
   private keepSent(row: StoredIntent): void {
-    if (this.closed) return
+    if (this.closed || !keepsSent(this.shownLast, row)) return
     clearTimeout(this.sent.get(row.id)?.timer)
     const timer = setTimeout(() => { if (this.sent.get(row.id)?.timer === timer) { this.sent.delete(row.id); void this.publish() } }, 60000)
     this.sent.set(row.id, { row, timer })
   }
   // The open history now shows these messages: their sent items have handed over.
   shown(chatId: string, ids: ReadonlySet<string>): void {
+    this.shownLast = shownSince(this.shownLast, chatId, ids)
     let changed = false
     for (const [id, entry] of this.sent) if (entry.row.chatId === chatId && ids.has(id)) { clearTimeout(entry.timer); this.sent.delete(id); changed = true }
     if (changed) void this.publish()
   }
+  historyClosed(): void { this.shownLast = null }
   async snapshot(chatId: string): Promise<OutgoingSnapshot> {
     this.views.add(chatId)
     if (this.targetExists(chatId)) this.known.add(chatId)
@@ -493,17 +529,9 @@ export class OutboxPump {
     this.noteChatDrafts(drafts)
     for (const chatId of this.views) this.changed(chatId, this.frame(chatId, rows, revision))
   }
-  // iOS MorseChatListRowDisplay hasFailedOutgoing / hasSendingOutgoing: a room's row marks a message of mine that
-  // did not go, and a clock while the newest of mine is still on its way.
   private chatSends = new Map<string, { failed: boolean; newest: number }>()
   private noteChatSends(rows: StoredIntent[]): void {
-    const next = new Map<string, { failed: boolean; newest: number }>()
-    for (const row of rows) {
-      const entry = next.get(row.chatId) ?? { failed: false, newest: 0 }
-      if (row.state === 'failed' || row.state === 'upload-failed') entry.failed = true
-      else entry.newest = Math.max(entry.newest, row.createdAt)
-      next.set(row.chatId, entry)
-    }
+    const next = chatSendsOf(rows)
     const same = next.size === this.chatSends.size && [...next].every(([id, value]) => {
       const old = this.chatSends.get(id); return old?.failed === value.failed && old.newest === value.newest
     })
@@ -767,7 +795,14 @@ export class OutboxPump {
   pickAttachment(chatId: string, mode: AttachmentMode, choose: () => Promise<string[] | null>) {
     return this.staging.pick(chatId, mode, () => this.context().dialogs.has(chatId) && this.eligible(chatId), choose)
   }
-  discardAttachment(id?: string): void { this.staging.clear(id) }
+  discardAttachment(id?: string, all = false): void { this.staging.discard(id, all) }
+  // B311: the next item of a picked selection that had a video among its photos.
+  nextAttachment(chatId: string) {
+    return this.staging.next(chatId, () => this.context().dialogs.has(chatId) && this.eligible(chatId))
+  }
+  // B280 ③: «보내기» was pressed — the selection is that send's from here (the photos are made smaller first).
+  pressAttachment(id: string): void { this.staging.pressed(id) }
+  pressedAttachmentChat(): string | null { return this.staging.pressedChat() }
   replaceAttachmentImage(chatId: string, id: string, itemId: string, bytes: Uint8Array) {
     if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('대화와 연결을 확인해 주세요.'))
     return this.staging.replaceImage(chatId, id, itemId, bytes)
@@ -840,7 +875,7 @@ export class OutboxPump {
       // The same message: silent if it was sent silently (Telegram resends with its flags).
       const wire: MediaSendWire = { id, chatId, senderId: this.uid, type: 'sticker', text: '', mediaUrl: '', isSilent: row.wire.isSilent === true, isEncrypted: false, protocolVersion: 3,
         mediaWidthPx: stickerSidePx, mediaHeightPx: stickerSidePx, ...(row.wire.replyToId ? { replyToId: row.wire.replyToId } : {}), ...(row.wire.categoryId ? { categoryId: row.wire.categoryId } : {}),
-        ...(row.wire.isForwarded ? { isForwarded: true as const } : {}) }
+        ...(row.wire.isForwarded ? { isForwarded: true as const, ...(row.wire.forwardSource ? { forwardSource: row.wire.forwardSource } : {}) } : {}) }
       const root = source.kind === 'mp4' ? 'chat_videos' : 'chat_media'
       const upload = { id, chatId, name: `스티커.${source.kind}`, kind: 'sticker' as const, size: bytes.byteLength, contentType: stickerContentType[source.kind],
         path: `${root}/${chatId}/${id}.${source.kind}`, sha256: stickerId, md5: createHash('md5').update(bytes).digest('base64'), session: null }
@@ -882,7 +917,13 @@ export class OutboxPump {
     try { await this.enqueueAttachment(chatId, draft.id, '', [draft.items[0]!.id], reply, validate, video, true) }
     catch (error) { this.staging.clear(draft.id); throw error }
   }
+  // B280 ③: from the press on, the selection is this send's (AttachmentStaging.pressed).
   async enqueueAttachment(chatId: string, id: string, caption: string, itemIds: string[], reply: ReplyBinding | null, validate: () => void, video: VideoFacts | null = null, circular = false): Promise<void> {
+    const release = this.staging.pressed(id)
+    try { await this.enqueuePressed(chatId, id, caption, itemIds, reply, validate, video, circular) }
+    finally { release() }
+  }
+  private async enqueuePressed(chatId: string, id: string, caption: string, itemIds: string[], reply: ReplyBinding | null, validate: () => void, video: VideoFacts | null, circular: boolean): Promise<void> {
     await this.opening
     if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('첫 텍스트 메시지를 보낸 뒤 첨부할 수 있습니다.'))
     const request = { id, chatId, senderId: this.uid, caption, itemIds, reply }
@@ -1081,6 +1122,9 @@ export class OutboxPump {
           }, signal, Boolean(part.url))
         if (!this.active(signal) || !this.eligible(intent.chatId)) return
         await this.store({ kind: 'upload-complete', id: intent.id, index: part.index, url })
+        // F2: what this device sent is here. tdesktop keeps a sent document's own file, so it is loaded in the sender's
+        // bubble and opens without coming back; the account's cache keeps the bytes under the object they now are.
+        mediaCacheFor(this.auth)?.write(part.upload.path, bytes)
         completed += part.upload.size
         bytes.fill(0); bytes = null
       }
@@ -1161,9 +1205,9 @@ export class OutboxPump {
   }
   async close(purge: boolean): Promise<void> {
     if (this.closed) return
-    this.closed = true; this.pause(); this.known.clear()
+    this.closed = true; this.pause(); this.staging.clear(undefined, true); this.known.clear()
     for (const entry of this.sent.values()) clearTimeout(entry.timer)
-    this.sent.clear()
+    this.sent.clear(); this.shownLast = null
     await this.opening; await this.task?.catch(() => {}); await this.uploadTask?.catch(() => {})
     if (this.repository) await this.repository.close(purge)
     this.views.clear(); this.pending.clear(); this.commentDraftsKnown.clear(); this.postDraftsKnown.clear(); this.noteDraftsKnown.clear(); this.storyComposerDraftsKnown.clear(); this.noteEditDraftsKnown.clear(); this.storyCaptionDraftsKnown.clear()

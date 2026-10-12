@@ -13,7 +13,7 @@ import { requireReply } from './reply-draft-table'
 import { maxAlbumPhotos } from '../../shared/uploads'
 import { maxQueuedMessages } from '../../shared/delivery'
 import { storageBucket } from '../media/media-document'
-import { textDigest } from '../messaging/text-identity'
+import { textDigest, forwardSourceValid } from '../messaging/text-identity'
 
 export function listUploadParts(db: Database.Database, id: string): UploadPart[] {
   const rows = db.prepare('SELECT part_index,descriptor,url FROM upload_parts WHERE intent_id=? ORDER BY part_index').all(id) as
@@ -75,8 +75,8 @@ export function executeUpload(db: Database.Database, uid: string, command: Uploa
       const part = parts[0]!
       if (request.caption !== '' || parts.length !== 1 || request.itemIds[0] !== wire.id || wire.text !== '' || wire.mediaWidthPx !== 512 || wire.mediaHeightPx !== 512 ||
         createHash('sha256').update(part.bytes).digest('hex') !== request.sticker ||
-        (wire.isForwarded !== undefined && (!replacing || wire.isForwarded !== true)) ||
-        Object.keys(wire).some(k => !['id', 'chatId', 'senderId', 'type', 'text', 'mediaUrl', 'isSilent', 'isEncrypted', 'protocolVersion', 'mediaWidthPx', 'mediaHeightPx', 'replyToId', 'categoryId', 'isForwarded'].includes(k))) throw new Error('Invalid sticker preparation')
+        (wire.isForwarded !== undefined && (!replacing || wire.isForwarded !== true)) || (wire.forwardSource !== undefined && !replacing) || !forwardSourceValid(wire) ||
+        Object.keys(wire).some(k => !['id', 'chatId', 'senderId', 'type', 'text', 'mediaUrl', 'isSilent', 'isEncrypted', 'protocolVersion', 'mediaWidthPx', 'mediaHeightPx', 'replyToId', 'categoryId', 'isForwarded', 'forwardSource'].includes(k))) throw new Error('Invalid sticker preparation')
     }
     let size = 0
     for (const [index, { upload, bytes }] of parts.entries()) {
@@ -104,7 +104,7 @@ export function executeUpload(db: Database.Database, uid: string, command: Uploa
       if (old.source_digest === digest && old.upload_request_digest === receipt) return
       const before = row.wire ? JSON.parse(row.wire) as MediaSendWire : null
       if (old.chat_id !== wire.chatId || row.upload !== null || !before || before.type !== 'sticker' || before.stickerId !== request.sticker ||
-          before.replyToId !== wire.replyToId || before.categoryId !== wire.categoryId || before.isSilent !== wire.isSilent || before.isForwarded !== wire.isForwarded || !['failed', 'queued'].includes(row.state)) throw Object.assign(new Error('Sticker reference replacement conflict'), { deliveryCode: 'conflict' })
+          before.replyToId !== wire.replyToId || before.categoryId !== wire.categoryId || before.isSilent !== wire.isSilent || before.isForwarded !== wire.isForwarded || JSON.stringify(before.forwardSource ?? null) !== JSON.stringify(wire.forwardSource ?? null) || !['failed', 'queued'].includes(row.state)) throw Object.assign(new Error('Sticker reference replacement conflict'), { deliveryCode: 'conflict' })
       const originals = db.prepare('SELECT COALESCE(SUM(length(source)),0) AS size FROM upload_parts').get() as { size: number }
       if (originals.size + size > 250 * 1024 * 1024) throw Object.assign(new Error('Upload capacity exceeded'), { deliveryCode: 'capacity' })
       db.prepare("UPDATE intents SET wire=?,digest='',state='uploading',reason='',upload=?,source_digest=?,upload_request_digest=? WHERE id=?")

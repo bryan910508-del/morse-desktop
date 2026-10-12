@@ -28,84 +28,83 @@ function Preview({ item, kind, video, edited }: { item: AttachmentDraft['items']
 }
 
 // What the box sends through: a chat's outbox, or an inquiry room's own send.
-// editImage: Editor::PhotoEditor's result replaces the staged picture (a chat's send box only).
+// editImage: Editor::PhotoEditor's result replaces the staged picture (a chat's send box only), and answers the address the
+// edited picture is read at.
 // editVideo: Editor::VideoEditor's part and quality, cut again from the picked file by the Mac helper.
-export interface AttachmentSender { send(caption: string, itemIds: string[], video: VideoFacts | null): Promise<void>; discard(): void; editImage?(itemId: string, bytes: Uint8Array): Promise<void>; editVideo?(itemId: string, value: VideoEditValue, overlay: Uint8Array | null): Promise<void> }
+export interface AttachmentSender { send(caption: string, itemIds: string[], video: VideoFacts | null): Promise<void>; discard(): void; editImage?(itemId: string, bytes: Uint8Array): Promise<string>; editVideo?(itemId: string, value: VideoEditValue, overlay: Uint8Array | null): Promise<string> }
 
-function SendFilesBox({ draft, sender, close, sent }: { draft: AttachmentDraft; sender: AttachmentSender; close(): void; sent(): void }) {
-  const [items, setItems] = useState(draft.items)
-  const [caption, setCaption] = useState('')
+// What a box opened again after its send failed starts from: the same text, the same pictures, and why it failed.
+export interface SendFilesRetry { caption: string; itemIds: string[]; error: string }
+
+function SendFilesBox({ draft, sender, close, sent, retry }: { draft: AttachmentDraft; sender: AttachmentSender; close(): void; sent(): void; retry?: SendFilesRetry }) {
+  const [items, setItems] = useState(retry ? draft.items.filter(item => retry.itemIds.includes(item.id)) : draft.items)
+  const [caption, setCaption] = useState(retry?.caption ?? '')
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  // Pictures edited here show from their new bytes; the staged file behind previewUrl is replaced too.
+  const [error, setError] = useState(retry?.error ?? '')
+  // B323: a picture edited here is shown, and edited again, from the staged file that replaced it (its address after the
+  // edit). The window made a blob: copy before, which the page's policy refuses to draw or read: the tile went blank and
+  // a second edit failed to load.
   const [edited, setEdited] = useState<Record<string, string>>({})
-  const editedUrls = useRef(edited); editedUrls.current = edited
-  useEffect(() => () => { for (const url of Object.values(editedUrls.current)) URL.revokeObjectURL(url) }, [])
   // The picked video is read once; sending waits for it, and sends without it if it cannot be read.
   const [video, setVideo] = useState<VideoFacts | null>(null)
   const reading = useRef<Promise<VideoFacts | null>>(Promise.resolve(null))
   const [videoEdit, setVideoEdit] = useState<VideoEditValue | null>(null)
-  const [videoRevision, setVideoRevision] = useState(0)
+  // B323-c: after an edit the video is read at the address the edit gave it (past the media cache), not from a blob:
+  // copy the page refuses — which left the tile without its frame and length, and sent the video without them.
+  const [editedVideo, setEditedVideo] = useState<string | null>(null)
   useEffect(() => {
-    const url = draft.kind === 'video' ? draft.items[0]?.previewUrl : undefined
+    const url = draft.kind === 'video' ? editedVideo ?? draft.items[0]?.previewUrl : undefined
     if (!url) return
     let alive = true
-    // After an edit the same address serves new bytes, so they are read past the media cache.
-    reading.current = videoRevision ? readEditedVideoFacts(url) : readVideoFacts(url)
+    reading.current = readVideoFacts(url)
     void reading.current.then(facts => { if (alive) setVideo(facts) })
     return () => { alive = false }
-  }, [draft, videoRevision])
+  }, [draft, editedVideo])
   const title = draft.kind === 'file' ? tr('파일 보내기') : draft.kind === 'video' ? tr('동영상 보내기') : items.length > 1 ? tr('사진 {0}장 보내기', [items.length]) : tr('사진 보내기')
-  async function send(): Promise<void> {
+  // B295: tdesktop's box hands the send over and closes at once (SendFilesBox::send → _confirmedCallback, then closeBox,
+  // send_files_box.cpp:2704-2706). Kept open while the send went on, this box could be closed by Esc or a click beside it,
+  // and closing it let the selection go — before it was queued, the message was lost and nothing said so. From the press
+  // the send is the account's: the box closes, the send runs as a tracked write (quitting waits for it, drafts.ts), and
+  // a send refused before it is queued opens the box again as it was, with why.
+  function send(): void {
     if (busy || !items.length) return
-    setBusy(true); setError('')
-    try {
-      const facts = draft.kind === 'video' ? await reading.current : null
-      await sender.send(caption, items.map(item => item.id), facts)
-      sent(); close()
-    } catch (reason) { setError(errorText(reason, tr('첨부를 보내지 못했습니다.'))) }
-    finally { setBusy(false) }
+    setBusy(true)
+    const text = caption, itemIds = items.map(item => item.id), facts = reading.current
+    sent(); close()
+    void trackWrite((async () => sender.send(text, itemIds, draft.kind === 'video' ? await facts : null))())
+      .catch(reason => showAttachmentBox(draft, sender, { caption: text, itemIds, error: errorText(reason, tr('첨부를 보내지 못했습니다.')) }))
   }
   return <Box title={title} width={420} onClose={busy ? undefined : close} buttons={<>
     <button className="button flat" disabled={busy} onClick={close}>{tr('취소')}</button>
-    <button className="button flat" data-autofocus disabled={busy || !items.length} onClick={() => { void send() }}>{busy ? <Spinner size={14} /> : null}{tr('보내기')}</button>
+    <button className="button flat" data-autofocus disabled={busy || !items.length} onClick={send}>{busy ? <Spinner size={14} /> : null}{tr('보내기')}</button>
   </>}>
     <div className={`send-files-grid${draft.kind === 'file' ? ' files' : ''}`}>
       {items.map(item => <div key={item.id} className="send-files-item">
         <Preview key={edited[item.id] ?? 'staged'} item={item} kind={draft.kind} video={video} edited={edited[item.id]} />
         {draft.kind === 'video' && sender.editVideo && item.originalUrl && <button className="send-files-edit" aria-label={tr('{0} 편집', [item.name])} disabled={busy}
           onClick={() => showVideoEditor(item.originalUrl!, videoEdit, videoSendPreset(desktop.value?.preferences.videoSendQuality ?? 'auto', effectivePowerSaving('compressMediaUploads')), async (value, overlay) => {
-            await sender.editVideo!(item.id, value, overlay)
-            setVideoEdit(value); setVideo(null); setVideoRevision(revision => revision + 1)
+            const url = await sender.editVideo!(item.id, value, overlay)
+            setVideoEdit(value); setVideo(null); setEditedVideo(url)
           })}><Scissors size={13} /></button>}
         {draft.kind === 'image' && sender.editImage && item.previewUrl && !/\.gif$/i.test(item.name) && <button className="send-files-edit" aria-label={tr('{0} 편집', [item.name])} disabled={busy}
           onClick={() => showPhotoEditor(edited[item.id] ?? item.previewUrl!, async bytes => {
-            await sender.editImage!(item.id, bytes)
-            const url = URL.createObjectURL(new Blob([bytes.slice()], { type: 'image/jpeg' }))
-            setEdited(current => { if (current[item.id]) URL.revokeObjectURL(current[item.id]!); return { ...current, [item.id]: url } })
+            const url = await sender.editImage!(item.id, bytes)
+            setEdited(current => ({ ...current, [item.id]: url }))
           })}><Pencil size={13} /></button>}
         {draft.kind === 'file' && <span className="send-files-name"><strong className="ellipsis">{item.name}</strong><small>{bytes(item.size)}</small></span>}
         {items.length > 1 && <button className="send-files-remove" aria-label={tr('{0} 빼기', [item.name])} disabled={busy} onClick={() => setItems(current => current.filter(value => value.id !== item.id))}><X size={14} /></button>}
       </div>)}
     </div>
     {draft.kind !== 'file' && <label className="field"><span>{tr('설명')}</span><textarea rows={2} maxLength={3000} value={caption} disabled={busy} placeholder={tr('설명 추가')} onChange={event => setCaption(event.target.value)}
-      onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }} /></label>}
+      onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send() } }} /></label>}
     {error && <p className="box-error" role="alert">{error}</p>}
   </Box>
 }
 
-async function readEditedVideoFacts(url: string): Promise<VideoFacts | null> {
-  try {
-    const response = await fetch(url, { cache: 'no-store' })
-    if (!response.ok) return null
-    const local = URL.createObjectURL(await response.blob())
-    try { return await readVideoFacts(local) } finally { URL.revokeObjectURL(local) }
-  } catch { return null }
-}
-
-export function showAttachmentBox(draft: AttachmentDraft, sender: AttachmentSender): void {
+export function showAttachmentBox(draft: AttachmentDraft, sender: AttachmentSender, retry?: SendFilesRetry): void {
+  // Closing the box lets the selection go only if «보내기» was not pressed: a pressed one belongs to its send.
   let delivered = false
-  controller.showLayer(close => <SendFilesBox draft={draft} sender={sender} close={close} sent={() => { delivered = true }} />, {
+  controller.showLayer(close => <SendFilesBox draft={draft} sender={sender} close={close} sent={() => { delivered = true }} retry={retry} />, {
     onClose: () => { if (!delivered) sender.discard() }
   })
 }
@@ -113,13 +112,25 @@ export function showAttachmentBox(draft: AttachmentDraft, sender: AttachmentSend
 export function showSendFilesBox(accountUid: string, chatId: string, draft: AttachmentDraft, reply: () => ReplyBinding | null): void {
   showAttachmentBox(draft, {
     send: async (caption, itemIds, video) => {
+      await window.morse.pressAttachment(accountUid, chatId, draft.id)
       if (draft.kind === 'image') await reencodePhotos(accountUid, chatId, draft, itemIds)
       await trackWrite(window.morse.sendAttachment(accountUid, chatId, draft.id, caption, itemIds, reply(), video))
+      // B311: a selection with a video goes one item at a time — the next opens once this one is queued.
+      void window.morse.nextAttachment(accountUid, chatId).then(next => { if (next) showSendFilesBox(accountUid, chatId, next, reply) })
+        .catch(reason => controller.toast(errorText(reason, tr('첨부를 준비하지 못했습니다.')), 'error'))
     },
     discard: () => { void window.morse.discardAttachment(accountUid, draft.id).catch(() => {}) },
-    editImage: async (itemId, bytes) => { await window.morse.replaceAttachmentImage(accountUid, chatId, draft.id, itemId, bytes) },
+    editImage: async (itemId, bytes) => {
+      const next = await window.morse.replaceAttachmentImage(accountUid, chatId, draft.id, itemId, bytes)
+      const url = next.items.find(item => item.id === itemId)?.previewUrl
+      if (!url) throw new Error(tr('첨부 선택이 해제되었습니다. 파일을 다시 선택해 주세요.'))
+      return url
+    },
     editVideo: async (itemId, value, overlay) => {
-      await window.morse.editAttachmentVideo(accountUid, chatId, draft.id, itemId, { start: value.start, end: value.end, preset: value.preset, ...(overlay ? { overlay } : {}) })
+      const next = await window.morse.editAttachmentVideo(accountUid, chatId, draft.id, itemId, { start: value.start, end: value.end, preset: value.preset, ...(overlay ? { overlay } : {}) })
+      const url = next.items.find(item => item.id === itemId)?.previewUrl
+      if (!url) throw new Error(tr('첨부 선택이 해제되었습니다. 파일을 다시 선택해 주세요.'))
+      return url
     }
   })
 }

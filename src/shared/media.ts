@@ -8,7 +8,11 @@ export interface AttachmentSummary {
   name: string
   available: boolean
   blind: boolean
+  // A file's own size as its sender recorded it (fileSize), drawn under its name (tdesktop Document's status line).
+  size?: number
 }
+// A file bubble (tdesktop HistoryView::Document): not here and pressed to fetch it, coming, or here and pressed to open it.
+export type FileState = { state: 'remote'; error?: string } | { state: 'loading'; loaded: number; total: number | null } | { state: 'ready' }
 export interface MediaRequest {
   requestId: string
   messageId: string

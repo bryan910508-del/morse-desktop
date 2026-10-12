@@ -41,6 +41,39 @@ export function shortcutFor(input: ShortcutInput, platform: ShortcutPlatform): S
   }
   return null
 }
+// B283: Windows and Linux have no menu bar in the window, as tdesktop builds a menu only on macOS (core/sandbox.cpp:119-121
+// → platform/mac/global_menu_mac.mm). What the menu's roles gave there — closing, minimizing and quitting, zoom and full
+// screen — is kept as shortcuts of the window itself, as tdesktop's Close (Ctrl+W, Ctrl+F4), Minimize (Ctrl+M) and
+// Quit (Ctrl+Q) are (core/shortcuts.cpp:481-485). macOS keeps its menu, and these keys with it.
+export function applicationMenuShown(platform: ShortcutPlatform): boolean { return platform === 'macOS' }
+export type WindowCommand = 'close-window' | 'minimize-window' | 'quit' | 'zoom-in' | 'zoom-out' | 'zoom-reset' | 'toggle-full-screen'
+// B301: while a media viewer is open its zoom keys are the viewer's (viewerZoomKey), not the window's.
+export function windowShortcutFor(input: ShortcutInput, platform: ShortcutPlatform, viewerOpen = false): WindowCommand | null {
+  if (platform !== 'Windows' || input.altKey || input.metaKey || composingKey(input)) return null
+  if (viewerOpen && viewerZoomKey(input)) return null
+  if (!input.ctrlKey) return input.key === 'F11' && !input.shiftKey ? 'toggle-full-screen' : null
+  // A letter by its place on the keyboard as well, so a Hangul input source keeps it (shortcutFor does the same).
+  const letter = (code: string, key: string): boolean => input.code === code || input.key.toLowerCase() === key
+  if (!input.shiftKey) {
+    if (letter('KeyW', 'w') || input.key === 'F4') return 'close-window'
+    if (letter('KeyM', 'm')) return 'minimize-window'
+    if (letter('KeyQ', 'q')) return 'quit'
+    if (input.key === '0' || input.code === 'Digit0' || input.code === 'Numpad0') return 'zoom-reset'
+  }
+  if (input.key === '=' || input.key === '+' || input.code === 'Equal' || input.code === 'NumpadAdd') return 'zoom-in'
+  if (input.key === '-' || input.code === 'Minus' || input.code === 'NumpadSubtract') return 'zoom-out'
+  return null
+}
+// B301: the keys tdesktop's media viewer zooms a picture with — Ctrl (⌘ on macOS) with + = * ] in, − _ out, and 0 between
+// its own size and the fit (media_view_overlay_widget.cpp:7459-7467, 8742-8744). The viewer takes them while it is open.
+export type ViewerZoomKey = 'in' | 'out' | 'reset'
+export function viewerZoomKey(input: ShortcutInput): ViewerZoomKey | null {
+  if ((!input.ctrlKey && !input.metaKey) || input.altKey || composingKey(input)) return null
+  if (['+', '=', '*', ']'].includes(input.key) || ['Equal', 'NumpadAdd', 'NumpadMultiply', 'BracketRight'].includes(input.code ?? '')) return 'in'
+  if (['-', '_'].includes(input.key) || ['Minus', 'NumpadSubtract'].includes(input.code ?? '')) return 'out'
+  if (!input.shiftKey && (input.key === '0' || input.code === 'Digit0' || input.code === 'Numpad0')) return 'reset'
+  return null
+}
 export function shortcutAccelerator(command: ShortcutCommand, platform: ShortcutPlatform): string {
   const binding: Binding = shortcuts[command].binding
   return [binding.primary ? platform === 'macOS' ? 'Command' : 'Control' : '', binding.shift ? 'Shift' : '', binding.key].filter(Boolean).join('+')

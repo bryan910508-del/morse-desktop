@@ -1,6 +1,6 @@
 // Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
-import { autoDeleteMonthOptions, blockTarget, inviteToken, lastSeenPrivacy, sessionTtlDays, signInSessionId } from '../shared/account-tools'
+import { autoDeleteMonthOptions, blockTarget, inviteToken, privacyKey, privacyRule, sessionTtlDays, signInSessionId } from '../shared/account-tools'
 import { roundVideoFacts, roundVideoSendRequest, roundVideoSide } from '../shared/round-video'
 import type { CaptureMedia } from './platform/voice-captures'
 import { recordRendererVoiceStep, recordVoiceStep, voiceErrorCode } from './platform/voice-diagnostics'
@@ -132,6 +132,8 @@ import { randomUUID } from 'node:crypto'
 import type { IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron'
 import { extname, isAbsolute, join, resolve, sep } from 'node:path'
 import { SettingsStore } from './platform/settings'
+import type { OpenedFileSystem } from './media/opened-files'
+import { LocalPreviews, localPreviewRoute } from './platform/local-previews'
 import { AccountRegistry } from './accounts/registry'
 import { AuthenticationDomain } from './auth/domain'
 import { CredentialVault } from './auth/credential-vault'
@@ -147,7 +149,7 @@ import { draftText, historyPosition, identifier, preferencePatch } from '../shar
 import { actionRequest } from '../shared/message-actions'
 import { forwardRequest, forwardSource } from '../shared/forward'
 import { forwardBatchRequest } from '../shared/forward-batch'
-import { participantAddRequest, participantContactRequest, chatContactRequest } from '../shared/participants'
+import { participantAddRequest, chatContactRequest } from '../shared/participants'
 import { dialogPinRequest } from '../shared/dialog-pins'
 import { manualUnreadRequest } from '../shared/manual-unread'
 import { mediaRequest } from '../shared/media'
@@ -167,7 +169,8 @@ import { peopleSurfaces, type PeopleSurface } from './accounts/contacts'
 import { contactDetailsEdit } from '../shared/contact-details'
 import { contactPhotoBinding, contactPhotoEdit, contactPhotoRemoval } from '../shared/contact-photo'
 import { replyBinding } from '../shared/reply-draft'
-import { composingKey, shortcutAccelerator, shortcutFor, shortcuts, type ShortcutCommand } from '../shared/shortcuts'
+import { fullscreenAllowed } from './platform/fullscreen-permission'
+import { applicationMenuShown, composingKey, shortcutAccelerator, shortcutFor, shortcuts, viewerZoomKey, windowShortcutFor, type ShortcutCommand, type WindowCommand } from '../shared/shortcuts'
 import { NativeContextMenus, type ContextMenuItem } from './platform/context-menus'
 import { WindowState } from './platform/window-state'
 import { DesktopShell } from './platform/desktop-shell'
@@ -204,6 +207,22 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'morse', privileges: {
   standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true
 } }])
 
+// F2: tdesktop File::Launch and File::ShowInFolder, and its ConfirmDontWarnBox before a file it would warn about
+// (data_document_resolver.cpp:78-150; lng_launch_exe_warning, lng_launch_svg_warning, lng_launch_other_warning).
+const openedFileSystem: OpenedFileSystem = {
+  open: path => shell.openPath(path),
+  show: path => shell.showItemInFolder(path),
+  confirm: async (warning, extension) => {
+    if (!mainWindow || mainWindow.isDestroyed() || screenLocked) return false
+    const message = warning === 'program' ? tr('이 파일의 확장자는 .{0} 입니다.\n컴퓨터에 해를 끼칠 수 있습니다.\n실행할까요?', [extension])
+      : warning === 'address' ? tr('이 파일을 열면 파일을 만든 사람에게 내 IP 주소가 드러날 수 있습니다. 계속할까요?')
+        : tr('이 파일의 확장자는 .{0} 입니다.\n열까요?', [extension])
+    const result = await dialog.showMessageBox(mainWindow, { type: 'warning', message, noLink: true, defaultId: 1, cancelId: 1,
+      buttons: [warning === 'program' ? tr('실행') : tr('열기'), tr('취소')] })
+    return result.response === 0
+  },
+}
+
 const accounts = new AccountRegistry(uid => ({
   storyStealth: () => settings.preferences.storyStealth,
   canRead: () => canReadWindow() && accounts.active?.profile.uid === uid,
@@ -217,7 +236,10 @@ const accounts = new AccountRegistry(uid => ({
     report: message => notifications.report(message)
   },
   mediaProgress: (requestId, loaded, total) => emit({ type: 'media-progress', accountUid: uid, requestId, loaded, total }),
+  fileState: (chatId, messageId, index, state) => emit({ type: 'file-state', accountUid: uid, chatId, messageId, index, state }),
+  files: openedFileSystem,
   forwardProgress: progress => emit({ type: 'forward-progress', accountUid: uid, progress }),
+  storyBar: result => { if (!screenLocked) emit({ type: 'story-bar-changed', accountUid: uid, result }) },
   actions: (chatId, actions) => emit({ type: 'actions-changed', accountUid: uid, chatId, actions }),
   changed: () => { contextMenus.prune(); void publish() },
   history: (chatId, history) => { contextMenus.prune(); emit({ type: 'history-changed', accountUid: uid, chatId, history }) },
@@ -314,6 +336,7 @@ const storySavedAudio = new StorySavedAudio()
 const voiceQueuePreviews=new VoiceQueuePreviews(requestId=>emit({type:'queued-voice-revoked',requestId}))
 const voiceCaptures=new VoiceCaptures(id=>emit({type:'voice-capture-revoked',id}),error=>recordVoiceStep('grant-ended',error instanceof Error && error.message==='expired'?'expired':voiceErrorCode(error)))
 const backgroundPhotos = new BackgroundPhotos()
+const localPreviews = new LocalPreviews()
 const publisher = new DataPublisher()
 const contextMenus = new NativeContextMenus(() => accounts.active?.readingActivityChanged())
 const developmentURL = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined
@@ -478,6 +501,7 @@ function registerIPC(): void {
   // The page the version gate names (its storeUrl, an https address, or the release page) — never one the window sends.
   handle('open-update-page', () => shell.openExternal(versionGate.snapshot(language()).storeUrl))
   handle('quit-app', () => { app.quit() })
+  handle('viewer-state', (open, fullScreen) => { setViewerState(open === true, fullScreen === true) })
   // «업데이트» where the server turned this version away — tdesktop Core::UpdateApplication: a downloaded update restarts
   // into the new version; otherwise the updater checks now and Settings shows its progress; with no updater, the page.
   handle('update-application', () => {
@@ -664,13 +688,13 @@ function registerIPC(): void {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return backupRotations.changeByProvider(account, proof)
   })
-  handle('last-seen-privacy', uid => {
+  handle('privacy-rule', (uid, key) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).accountTools.lastSeenPrivacy()
+    return accounts.requireActive(identifier(uid)).accountTools.privacyRule(privacyKey(key))
   })
-  handle('set-last-seen-privacy', (uid, raw) => {
+  handle('set-privacy-rule', (uid, key, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).accountTools.setLastSeenPrivacy(lastSeenPrivacy(raw))
+    return accounts.requireActive(identifier(uid)).accountTools.setPrivacyRule(privacyKey(key), privacyRule(raw))
   })
   handle('peer-bar-hidden', (uid, peerUid) => accounts.requireActive(identifier(uid)).accountTools.peerBarHidden(identifier(peerUid)))
   handle('hide-peer-bar', (uid, peerUid) => {
@@ -1023,6 +1047,12 @@ function registerIPC(): void {
   })
   handle('prepare-background-photo', (id, bytes) => backgroundPhotos.prepare(backgroundPhotoId(id), bytes))
   handle('release-background-photo', id => backgroundPhotos.release(backgroundPhotoId(id)), true)
+  // B323-a·b: a picture or a video the window chose itself, shown from here instead of a blob: copy.
+  handle('hold-local-preview', bytes => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return localPreviews.hold(bytes)
+  })
+  handle('release-local-preview', url => { localPreviews.release(url) }, true)
   handle('background-photo-url', (scope, id) => backgroundPhotos.url(backgroundPhotoOwner(backgroundPhotoScope(scope)), backgroundPhotoId(id)))
   handle('release-background-photo-url', token => backgroundPhotos.revoke(backgroundPhotoId(token)), true)
   handle('chat-background', (uid, chatId) => accounts.requireActive(identifier(uid)).chatBackground(identifier(chatId)))
@@ -2331,9 +2361,10 @@ function registerIPC(): void {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 다시 시도해 주세요.'))
     return accounts.requireActive(identifier(uid)).discardDirectDraft(identifier(chatId))
   })
-  handle('open-contact-profile', (uid, peerUid, requestId) => {
+  handle('open-contact-profile', (uid, peerUid, requestId, hint) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
-    accounts.requireActive(identifier(uid)).contacts.open(identifier(peerUid), identifier(requestId))
+    if (hint !== undefined && (typeof hint !== 'string' || hint.length > 512)) throw new Error(tr('사용자를 다시 선택해 주세요.'))
+    accounts.requireActive(identifier(uid)).contacts.open(identifier(peerUid), identifier(requestId), hint ?? '')
     accounts.requireActive(identifier(uid)).presence.setPeers('profile', [identifier(peerUid)])
   })
   handle('open-participants', (uid, chatId, requestId) => {
@@ -2342,10 +2373,6 @@ function registerIPC(): void {
   })
   handle('close-participants', (uid, requestId) => {
     if (accounts.active?.profile.uid === identifier(uid)) accounts.active.closeParticipants(identifier(requestId))
-  })
-  handle('participant-contact', (uid, request) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
-    return accounts.requireActive(identifier(uid)).participantContact(participantContactRequest(request))
   })
   handle('visible-dialog-photos', (uid, ids) => {
     try {
@@ -2375,6 +2402,10 @@ function registerIPC(): void {
   handle('add-participant-contact', (uid, request) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
     return accounts.requireActive(identifier(uid)).addParticipantContact(participantAddRequest(request))
+  })
+  handle('add-profile-contact', (uid, requestId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).contacts.addFromProfile(identifier(requestId))
   })
   handle('add-chat-contact', (uid, request) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
@@ -2572,6 +2603,18 @@ function registerIPC(): void {
   })
   handle('refresh-dialogs', uid => accounts.requireActive(identifier(uid)).refresh())
   handle('open-media', (uid, chatId, request) => accounts.requireActive(identifier(uid)).openMedia(identifier(chatId), mediaRequest(request)))
+  // F2: a file bubble fetches its file, stops it, and hands it to the system (tdesktop HistoryView::Document).
+  handle('file-state', (uid, chatId, request) => accounts.requireActive(identifier(uid)).files.state(identifier(chatId), mediaRequest(request)))
+  handle('fetch-file', (uid, chatId, request) => accounts.requireActive(identifier(uid)).files.fetch(identifier(chatId), mediaRequest(request)))
+  handle('cancel-file', (uid, chatId, request) => { accounts.get(identifier(uid))?.files.cancel(identifier(chatId), mediaRequest(request)) })
+  handle('open-file', (uid, chatId, request) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).files.open(identifier(chatId), mediaRequest(request))
+  })
+  handle('show-file-in-folder', (uid, chatId, request) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).files.show(identifier(chatId), mediaRequest(request))
+  })
   // Telegram's automatic media download: the renderer asks for every photo, and the limit kept for that
   // kind of peer decides whether it is fetched (Data::AutoDownload). `asked` is the person pressing the
   // picture themselves, which passes no limit. A picture that cannot be previewed answers with nothing.
@@ -2595,7 +2638,7 @@ function registerIPC(): void {
     return accounts.requireActive(identifier(uid)).pickAttachment(identifier(chatId), mode, async () => {
       if (!mainWindow || mainWindow.isDestroyed()) return null
       const result = await dialog.showOpenDialog(mainWindow, { title: mode === 'album' ? tr('사진 선택 (최대 10장)') : mode === 'media' ? tr('사진·동영상 선택') : tr('파일 선택'),
-        properties: mode === 'album' ? ['openFile', 'multiSelections'] : ['openFile'],
+        properties: mode === 'file' ? ['openFile'] : ['openFile', 'multiSelections'],
         ...(mode === 'album' ? { filters: [{ name: tr('사진'), extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp'] }] } :
           mode === 'media' ? { filters: [{ name: tr('사진·동영상'), extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'm4v', 'mov'] }] } : {}) })
       return result.canceled ? null : result.filePaths
@@ -2629,6 +2672,7 @@ function registerIPC(): void {
     for (const session of accounts.all) session.clearMediaCaches()
     await Promise.all(accounts.all.map(session => session.userpics.clear()))
     await Promise.all(accounts.all.map(session => session.mediaFiles.clear()))
+    await Promise.all(accounts.all.map(session => session.files.clear()))
     return 'done'
   })
   handle('replace-attachment-image', (uid, chatId, id, itemId, bytes) => {
@@ -2645,7 +2689,12 @@ function registerIPC(): void {
       || (preset !== '960x540' && preset !== '1280x720' && preset !== 'medium') || (overlay !== undefined && !png)) throw new Error(tr('동영상 편집 내용을 확인해 주세요.'))
     return accounts.requireActive(identifier(uid)).editAttachmentVideo(identifier(chatId), identifier(id), identifier(itemId), { start, end, preset, ...(png ? { overlay: overlay as Uint8Array } : {}) })
   })
+  handle('press-attachment', (uid, chatId, id) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    accounts.requireActive(identifier(uid)).pressAttachment(identifier(chatId), identifier(id))
+  })
   handle('discard-attachment', (uid, id) => { if (accounts.active?.profile.uid === identifier(uid)) accounts.active.discardAttachment(identifier(id)) })
+  handle('next-attachment', (uid, chatId) => accounts.requireActive(identifier(uid)).nextAttachment(identifier(chatId)))
   handle('drop-attachments', (uid, chatId, paths, mode) => {
     if (mode !== 'media' && mode !== 'file') throw new Error(tr('첨부 종류를 확인해 주세요.'))
     if (!Array.isArray(paths) || !paths.length || paths.length > maxAlbumPhotos ||
@@ -2811,6 +2860,7 @@ function updateDesktopShell(): void {
     .map(session => ({ uid: session.profile.uid, dialogs: session.dialogs() })), shutdown === 'running' && !screenLocked)
 }
 function updateScreenProtection(): void {
+  const wasLocked = screenLocked
   screenLocked = screenIsLocked || systemSuspended || userInactive || Boolean(appLock?.locked)
   if (screenLocked) { voiceQueuePreviews.clear();voiceCaptures.clear();storySavedAudio.clear(); storyAudioInputs.clear(); storySavedVideos.clear(); storyVideoInputs.clear(); backgroundPhotos.clear() }
   emit({ type: 'background-photo-availability', available: !screenLocked })
@@ -2823,7 +2873,10 @@ function updateScreenProtection(): void {
     session.notificationPreferencesChanged(); session.readingActivityChanged()
   }
   updatePresence()
-  void publish()
+  // B288: unlocked — the window shows the list once the pictures it was drawing are back from the cache file (a short wait
+  // at most), so the list does not come back blank.
+  if (wasLocked && !screenLocked) void Promise.race([Promise.all(accounts.all.map(session => session.restoreLockedPictures())), new Promise(resolve => setTimeout(resolve, 300))]).finally(() => { void publish() })
+  else void publish()
 }
 function appLockSnapshot(): AppLockSnapshot {
   return appLock?.snapshot(touchIdAvailable) ?? { enabled: false, locked: false, autoLock: 3600, systemUnlock: 'none', systemUnlockEnabled: false, systemUnlockAllowed: false }
@@ -2906,6 +2959,8 @@ function openNotificationInquiry(uid: string, channelId: string, inquiryId: stri
 }
 function createMenu(): void {
   const platform = process.platform === 'darwin' ? 'macOS' : 'Windows'
+  // B283: no menu bar in the window on Windows and Linux (null also takes the bar off every window there).
+  if (!applicationMenuShown(platform)) { Menu.setApplicationMenu(null); return }
   const item = (command: ShortcutCommand): MenuItemConstructorOptions => ({
     label: shortcuts[command].label, accelerator: shortcutAccelerator(command, platform), click: () => shortcut(command)
   })
@@ -2934,6 +2989,34 @@ function createMenu(): void {
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
 }
+// B301: a media viewer is open — its zoom keys are the viewer's, not the page's — and whether it asked for the whole screen.
+// tdesktop's viewer fills the screen, a choice it keeps (mediaViewPosition, media_view_overlay_widget.cpp:1137-1182); on
+// macOS without the full-screen animation or a new Space (a borderless window over everything,
+// platform/mac/overlay_widget_mac.mm:82-153), which is the window's «simple» full screen here. What the viewer put full
+// screen it puts back when it closes; a window the person made full screen stays so.
+let viewerOpen = false, viewerFullScreen = false
+function setViewerState(open: boolean, fullScreen: boolean): void {
+  viewerOpen = open
+  const window = mainWindow
+  if (!window || window.isDestroyed()) return
+  const wanted = open && fullScreen
+  if (wanted === viewerFullScreen) return
+  if (wanted && (window.isFullScreen() || (process.platform === 'darwin' && window.isSimpleFullScreen()))) return
+  viewerFullScreen = wanted
+  if (process.platform === 'darwin') window.setSimpleFullScreen(wanted)
+  else window.setFullScreen(wanted)
+}
+// B283: what the menu's roles do on macOS, for the window's own keys elsewhere (Electron's zoomIn/zoomOut step 0.5).
+function windowCommand(window: BrowserWindow, command: WindowCommand): void {
+  const contents = window.webContents
+  if (command === 'close-window') window.close()
+  else if (command === 'minimize-window') window.minimize()
+  else if (command === 'quit') app.quit()
+  else if (command === 'zoom-in') contents.setZoomLevel(Math.min(9, contents.getZoomLevel() + 0.5))
+  else if (command === 'zoom-out') contents.setZoomLevel(Math.max(-8, contents.getZoomLevel() - 0.5))
+  else if (command === 'zoom-reset') contents.setZoomLevel(0)
+  else window.setFullScreen(!window.isFullScreen())
+}
 function createWindow(): void {
   if (shutdown !== 'running') return
   mainWindow = new BrowserWindow({
@@ -2948,12 +3031,14 @@ function createWindow(): void {
   windowState.attach(window)
   window.webContents.session.setSpellCheckerEnabled(settings.preferences.spellCheck)
   window.setContentProtection(contentProtected)
-  window.webContents.on('before-input-event', (_event, input) => {
+  window.webContents.on('before-input-event', (event, input) => {
     const normalized = { key: input.key, code: input.code, ctrlKey: input.control, metaKey: input.meta,
       altKey: input.alt, shiftKey: input.shift, isComposing: input.isComposing }
+    const command = windowShortcutFor(normalized, process.platform === 'darwin' ? 'macOS' : 'Windows', viewerOpen)
+    if (command) { event.preventDefault(); if (input.type === 'keyDown' && !input.isAutoRepeat) windowCommand(window, command); return }
     // Keep the DOM key event for focused controls and scoped dispatch. Prevent
     // Electron from invoking the same custom command again via its menu.
-    window.webContents.setIgnoreMenuShortcuts(composingKey(normalized) || Boolean(shortcutFor(normalized, process.platform === 'darwin' ? 'macOS' : 'Windows')))
+    window.webContents.setIgnoreMenuShortcuts(composingKey(normalized) || Boolean(shortcutFor(normalized, process.platform === 'darwin' ? 'macOS' : 'Windows')) || (viewerOpen && Boolean(viewerZoomKey(normalized))))
   })
   window.on('blur', () => { contextMenus.close(); if (!window.webContents.isDestroyed()) window.webContents.setIgnoreMenuShortcuts(false) })
   window.on('hide', () => contextMenus.close()); window.on('minimize', () => contextMenus.close())
@@ -3191,6 +3276,10 @@ async function configureRenderer(): Promise<void> {
       if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
       return accounts.active?.inquiryAttachmentPreview(url.pathname.slice('/__inquiry-draft/'.length), request) ?? new Response(null, { status: 403 })
     }
+    if (url.hostname === 'app' && url.pathname.startsWith(`/${localPreviewRoute}/`)) {
+      if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
+      return localPreviews.response(url.pathname.slice(localPreviewRoute.length + 2), request)
+    }
     if (url.hostname === 'app' && url.pathname.startsWith('/__draft-media/')) {
       if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
       return accounts.active?.attachmentPreview(url.pathname.slice('/__draft-media/'.length), request) ?? new Response(null, { status: 403 })
@@ -3239,8 +3328,8 @@ async function configureRenderer(): Promise<void> {
     recordVoiceStep(media==='video'?'camera-request':'microphone-request',refusal || 'allowed')
     return !refusal
   }
-  session.defaultSession.setPermissionRequestHandler((contents,permission,callback,details)=>{const types='mediaTypes' in details?details.mediaTypes:undefined;const media:CaptureMedia|null=!Array.isArray(types) || !types.length || types.some(type=>type!=='audio' && type!=='video')?null:types.includes('video')?'video':'audio';if(permission==='media' && !media)recordVoiceStep('microphone-request','not-audio-or-video');callback(permission==='media' && media!==null && audioRequestPermission(contents,details.isMainFrame,details.requestingUrl,media))})
-  session.defaultSession.setPermissionCheckHandler((contents,permission,_origin,details)=>permission==='media' && (details.mediaType==='audio' || details.mediaType==='video') && audioPermission(contents,details.isMainFrame,details.requestingUrl,details.mediaType==='video'?'video':'audio'))
+  session.defaultSession.setPermissionRequestHandler((contents,permission,callback,details)=>{if(permission==='fullscreen'){callback(fullscreenAllowed(Boolean(mainWindow && !mainWindow.isDestroyed() && contents===mainWindow.webContents),details.isMainFrame,details.requestingUrl,trustedURL));return}const types='mediaTypes' in details?details.mediaTypes:undefined;const media:CaptureMedia|null=!Array.isArray(types) || !types.length || types.some(type=>type!=='audio' && type!=='video')?null:types.includes('video')?'video':'audio';if(permission==='media' && !media)recordVoiceStep('microphone-request','not-audio-or-video');callback(permission==='media' && media!==null && audioRequestPermission(contents,details.isMainFrame,details.requestingUrl,media))})
+  session.defaultSession.setPermissionCheckHandler((contents,permission,_origin,details)=>permission==='fullscreen'?fullscreenAllowed(Boolean(contents && mainWindow && !mainWindow.isDestroyed() && contents===mainWindow.webContents),details.isMainFrame,details.requestingUrl ?? '',trustedURL):permission==='media' && (details.mediaType==='audio' || details.mediaType==='video') && audioPermission(contents,details.isMainFrame,details.requestingUrl,details.mediaType==='video'?'video':'audio'))
   session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
     const url = new URL(details.url)
     const local = (url.protocol === 'morse:' && url.hostname === 'app') || url.protocol === 'data:' || url.protocol === 'blob:'

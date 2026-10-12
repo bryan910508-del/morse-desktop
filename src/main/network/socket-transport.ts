@@ -1,7 +1,7 @@
 import { io, type Socket } from 'socket.io-client'
 import type { ChatMessage, ConnectionState, MessagePosition, SendAcknowledgement, SendWire } from '../../shared/model'
 import type { ReadAcknowledgement } from '../../shared/read-receipts'
-import { committedReadAck, committedSendAck, incomingMessage, NotEmitted, ProtocolFailure, serverContract } from './contracts'
+import { committedReadAck, committedSendAck, floodWaitDelay, incomingMessage, NotEmitted, ProtocolFailure, serverContract } from './contracts'
 import { registrationDelay, registrationOutcome } from './registration-outcome'
 import { tr } from '../../shared/i18n'
 import { reachability } from './reachability'
@@ -279,15 +279,7 @@ export class SocketMessageTransport {
         wire.senderId !== this.credentials?.uid) throw new NotEmitted(tr('연결을 기다리고 있습니다.'))
     // SQLite owns replay. Socket.IO must not silently buffer this across a new
     // connection before that connection has completed application registration.
-    const pending = socket.volatile.timeout(15000).emitWithAck('sendMessage', wire)
-    let cancel!: () => void
-    const body: unknown = await new Promise((resolve, reject) => {
-      cancel = () => reject(new ProtocolFailure(tr('전송 결과를 확인해야 합니다.')))
-      signal.addEventListener('abort', cancel, { once: true })
-      pending.then(resolve, reject)
-      if (signal.aborted) cancel()
-    }).finally(() => signal.removeEventListener('abort', cancel))
-    if (signal.aborted || generation !== this.generation || socket !== this.socket) throw new ProtocolFailure(tr('연결이 변경되었습니다.'))
+    const body = await this.ask(socket, generation, 'sendMessage', wire, signal, tr('전송 결과를 확인해야 합니다.'))
     return committedSendAck(body, wire)
   }
 
@@ -296,15 +288,7 @@ export class SocketMessageTransport {
     if (signal.aborted || !socket?.connected || !socket.io.engine?.transport?.writable || !this.ready || this.renewing ||
         readerId !== this.credentials?.uid) throw new NotEmitted(tr('연결을 기다리고 있습니다.'))
     // Existing contract: the server derives identity and timestamp itself.
-    const pending = socket.volatile.timeout(15000).emitWithAck('markRead', { chatId, messageId: target.id })
-    let cancel!: () => void
-    const body: unknown = await new Promise((resolve, reject) => {
-      cancel = () => reject(new ProtocolFailure(tr('읽음 응답을 다시 확인해야 합니다.')))
-      signal.addEventListener('abort', cancel, { once: true })
-      pending.then(resolve, reject)
-      if (signal.aborted) cancel()
-    }).finally(() => signal.removeEventListener('abort', cancel))
-    if (signal.aborted || generation !== this.generation || socket !== this.socket) throw new ProtocolFailure(tr('연결이 변경되었습니다.'))
+    const body = await this.ask(socket, generation, 'markRead', { chatId, messageId: target.id }, signal, tr('읽음 응답을 다시 확인해야 합니다.'))
     return committedReadAck(body, chatId, readerId, target)
   }
 
@@ -315,16 +299,36 @@ export class SocketMessageTransport {
   async setReaction(payload: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
     const socket = this.socket, generation = this.generation
     if (signal.aborted || !socket?.connected || !socket.io.engine?.transport?.writable || !this.reactionsReady) throw new NotEmitted(tr('연결을 기다리고 있습니다.'))
-    const pending = socket.volatile.timeout(15000).emitWithAck('setReaction', payload)
-    let cancel!: () => void
-    const body: unknown = await new Promise((resolve, reject) => {
-      cancel = () => reject(new ProtocolFailure(tr('반응 결과를 확인해야 합니다.')))
-      signal.addEventListener('abort', cancel, { once: true })
-      pending.then(resolve, reject)
-      if (signal.aborted) cancel()
-    }).finally(() => signal.removeEventListener('abort', cancel))
-    if (signal.aborted || generation !== this.generation || socket !== this.socket) throw new ProtocolFailure(tr('연결이 변경되었습니다.'))
-    return body
+    return this.ask(socket, generation, 'setReaction', payload, signal, tr('반응 결과를 확인해야 합니다.'))
+  }
+  // One request answered within 15 s. B309: a FLOOD_WAIT answer is never the caller's — the same event with the same
+  // payload (the server keeps an id once) goes again after the wait it names (floodWaitDelay), on the same connection;
+  // a message waiting so stays on its way, its room's later ones behind it. The connection changing meanwhile, or the
+  // caller giving up, ends it as any unanswered request does (for the caller to settle as now).
+  private async ask(socket: Socket, generation: number, event: string, payload: unknown, signal: AbortSignal, unanswered: string): Promise<unknown> {
+    for (;;) {
+      const pending = socket.volatile.timeout(15000).emitWithAck(event, payload)
+      let cancel!: () => void
+      const body: unknown = await new Promise((resolve, reject) => {
+        cancel = () => reject(new ProtocolFailure(unanswered))
+        signal.addEventListener('abort', cancel, { once: true })
+        pending.then(resolve, reject)
+        if (signal.aborted) cancel()
+      }).finally(() => signal.removeEventListener('abort', cancel))
+      if (signal.aborted || generation !== this.generation || socket !== this.socket) throw new ProtocolFailure(tr('연결이 변경되었습니다.'))
+      const wait = floodWaitDelay(body)
+      if (wait === null) return body
+      this.events.step?.('flood-wait', `${event}:${wait}`)
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => { signal.removeEventListener('abort', stop); resolve() }, wait)
+        const stop = (): void => { clearTimeout(timer); reject(new ProtocolFailure(unanswered)) }
+        signal.addEventListener('abort', stop, { once: true })
+        if (signal.aborted) stop()
+      })
+      // A FLOOD_WAIT answer applied nothing, so a connection lost meanwhile leaves a request that never went.
+      if (generation !== this.generation || socket !== this.socket || !socket.connected || !socket.io.engine?.transport?.writable || !this.ready || this.renewing)
+        throw new NotEmitted(tr('연결을 기다리고 있습니다.'))
+    }
   }
   suspend(): void { this.stop('suspended') }
   resume(): void {

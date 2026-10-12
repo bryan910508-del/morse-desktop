@@ -97,6 +97,15 @@ export function useSwipe(target: RefObject<HTMLElement | null>, options: SwipeOp
   return frames.use
 }
 
+// B284: the swipe is drawn by components that read its frames themselves, so a wheel event draws the plate or the icon
+// again — not the chat or the panel they sit in. Read in the chat's own body, every wheel event (60–120 a second) drew
+// the whole history again, virtualizer and all; tdesktop moves only the plate (swipe_handler.cpp:513-533).
+export type SwipeFrames = () => SwipeFrame | null
+export function SwipeBack({ frames }: { frames: SwipeFrames }) { return <SwipeBackPlate frame={frames()} /> }
+export function SwipeReply({ frames, row, host }: { frames: SwipeFrames; row: () => HTMLElement | null; host: () => HTMLElement | null }) {
+  const frame = frames()
+  return <SwipeReplyIcon frame={frame} row={frame ? row() : null} host={frame ? host() : null} />
+}
 // The swipe back: a round plate with an arrow coming in from the left edge (SetupSwipeBack, swipe_handler.cpp:395-534),
 // the chat's service colours, fading in with the ratio and bouncing once it is reached.
 export function SwipeBackPlate({ frame }: { frame: SwipeFrame | null }) {

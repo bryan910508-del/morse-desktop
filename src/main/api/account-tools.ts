@@ -1,5 +1,5 @@
 import type { ReportRequest } from '../../shared/reports'
-import { autoDeleteMonthsOf, defaultSessionTtlDays, sessionTtlDayOptions, type AccountPrivacy, type BlockTarget, type BlockedUser, type DataExport, type LastSeenPrivacy, type SessionPlatform, type SignInSession, type SignInSessions } from '../../shared/account-tools'
+import { autoDeleteMonthsOf, defaultSessionTtlDays, sessionTtlDayOptions, type AccountPrivacy, type BlockTarget, type BlockedUser, type DataExport, type PrivacyKey, type PrivacyRule, type SessionPlatform, type SignInSession, type SignInSessions } from '../../shared/account-tools'
 import { normalizeBackupCode } from '../../shared/auth'
 import type { AccountAuthorization } from '../messaging/outbox'
 import type { ProviderKind, ProviderProof } from '../auth/backup-code-rotation'
@@ -179,19 +179,19 @@ export class AccountToolsApi {
     await this.call('updateBackupCode', { newBackupCode: newCode,
       provider: proof.kind === 'apple' ? { type: 'apple', idToken: proof.idToken, nonce: proof.nonce ?? '' } : { type: 'google', idToken: proof.idToken } })
   }
-  lastSeenPrivacy(): Promise<LastSeenPrivacy> {
+  privacyRule(key: PrivacyKey): Promise<PrivacyRule> {
     return this.read(async (reader, signal) => {
       const doc = await reader.getDocument(`${documents}/users/${this.uid}`, signal)
-      const lastSeen = doc ? fieldsOf(doc).privacy?.mapValue?.fields?.lastSeen?.mapValue?.fields : undefined
+      const rule = doc ? fieldsOf(doc).privacy?.mapValue?.fields?.[key]?.mapValue?.fields : undefined
       const ids = (value: Value | undefined): string[] => (value?.arrayValue?.values ?? []).map(item => item.stringValue).filter((item): item is string => typeof item === 'string').slice(0, 200)
-      const mode = text(lastSeen?.mode, 16)
-      // MorseLastSeenPrivacySettings.default: everybody when nothing is stored.
-      return { mode: mode === 'contacts' || mode === 'nobody' ? mode : 'everybody', alwaysShareWith: ids(lastSeen?.alwaysShareWith), neverShareWith: ids(lastSeen?.neverShareWith) }
+      const mode = text(rule?.mode, 16)
+      // MorseLastSeenPrivacySettings.default, and B263 §4 for forwards (Telegram's default): everybody when nothing is stored.
+      return { mode: mode === 'contacts' || mode === 'nobody' ? mode : 'everybody', alwaysShareWith: ids(rule?.alwaysShareWith), neverShareWith: ids(rule?.neverShareWith) }
     })
   }
-  async setLastSeenPrivacy(value: LastSeenPrivacy): Promise<void> {
-    try { await this.call('syncPrivacySettings', { lastSeenPrivacy: { mode: value.mode, alwaysShareWith: value.alwaysShareWith, neverShareWith: value.neverShareWith } }) }
-    catch { throw new Error(tr('마지막 접속 공개 범위를 저장하지 못했습니다.')) }
+  async setPrivacyRule(key: PrivacyKey, value: PrivacyRule): Promise<void> {
+    try { await this.call('syncPrivacySettings', { [`${key}Privacy`]: { mode: value.mode, alwaysShareWith: value.alwaysShareWith, neverShareWith: value.neverShareWith } }) }
+    catch { throw new Error(key === 'forwards' ? tr('전달된 메시지 설정을 저장하지 못했습니다.') : tr('마지막 접속 공개 범위를 저장하지 못했습니다.')) }
   }
   // AppState folder listener: users/{uid}/folders sorted by order. Unreadable documents are skipped.
   chatFolders(): Promise<ChatFolder[]> {

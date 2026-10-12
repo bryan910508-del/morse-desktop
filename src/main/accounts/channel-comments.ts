@@ -23,12 +23,6 @@ function decode(doc: FirestoreDocument, request: ChannelCommentsRequest, uid: st
   }
   return { revision: channelPostRevision(doc), id, authorId, authorName: stringField(f, 'authorName', 512).trim() || tr('이름 정보 없음'), own: authorId === uid, text: f.text.stringValue, position, parent, parentId, parentAuthorName: stringField(f, 'parentAuthorName', 512).trim() }
 }
-// Comment id -> the author photo address the comment keeps (authorPhotoURL).
-export function commentPhotoSources(docs: Iterable<FirestoreDocument>): Map<string, string> {
-  const photos = new Map<string, string>()
-  for (const doc of docs) { try { const photo = stringField(doc.fields, 'authorPhotoURL', 10000); if (photo) photos.set(doc.name.slice(doc.name.lastIndexOf('/') + 1), photo) } catch { /* No photo. */ } }
-  return photos
-}
 export function decodeChannelComments(docs: Iterable<FirestoreDocument>, request: ChannelCommentsRequest, uid: string): ChannelCommentItem[] {
   const items = [...docs].map(doc => decode(doc, request, uid)), byId = new Map(items.map(item => [item.id, item]))
   for (const item of items) if (item.parent === 'unavailable' && item.parentId) {
@@ -64,30 +58,44 @@ export class ReceivedComments {
   drop(channelId: string, postId: string): void { this.posts.delete(`${channelId}/${postId}`) }
   forget(): void { this.posts.clear() }
 }
+// A8 §4 (Telegram R-41): a comment shows its author as they are now — the name and picture of their public profile
+// (publicProfiles/{authorId}, A7), read five people a target. The name the comment was written with stands in while
+// that is unknown (not made yet, refused); a deleted account shows as one. B266/B153 §4: the picture follows the
+// person's rule as anywhere — a contact's by the mutual rule, anyone else's only when shown to everyone — so the copy
+// the comment keeps (authorPhotoURL, which no rule has looked at) is never drawn; older builds and Android read it.
+// One rule for every list of comments: a channel this account follows, and one it looks at before following.
+export class CommentAuthors {
+  // The picture of an author who is this account's contact, by the contacts' mutual rule; undefined for anyone else
+  // (ContactsSession.contactPhoto).
+  contactPhoto: ((uid: string) => string | undefined) | null = null
+  private readonly profiles: PeerProfiles
+  constructor(uid: string, auth: ReadCredentials, changed: () => void) {
+    this.profiles = new PeerProfiles(uid, auth, auth.signal, changed, undefined, 'authors', person => this.contactPhoto?.(person) !== undefined)
+  }
+  bind(reader: FirestoreReader | null, uids: Iterable<string>): void { this.profiles.bind(reader, uids) }
+  name(uid: string, written: string): string { return this.profiles.withdrawn(uid) ? tr('탈퇴한 계정') : this.profiles.name(uid) || written }
+  photo(uid: string): string | null {
+    if (this.profiles.withdrawn(uid)) return null
+    const contact = this.contactPhoto?.(uid)
+    if (contact !== undefined) return contact || null
+    // B153 §4: before an answer (or with the read refused, or offline), the last answer remembered for this account.
+    return (this.profiles.hasAnswer(uid) ? this.profiles.profile(uid)?.photo : this.profiles.remembered(uid)) || null
+  }
+  clear(): void { this.profiles.clear() }
+}
 export class ChannelComments {
   // Photos of the people listed, from the photo address this record keeps (see ChannelPeoplePhotos).
   people: PeoplePhotoResolver | null = null
-  private photos = new Map<string, string>()
   private rows = new Map<string, FirestoreDocument>()
   private value: ChannelCommentsSnapshot | null = null
   private reader: FirestoreReader | null = null
   private stop: (() => void) | null = null
   private generation = 0
   private readonly received = new ReceivedComments()
-  // A8 §4 (Telegram R-41): a comment shows its author as they are now — the name and picture of their public profile
-  // (publicProfiles/{authorId}, A7), read five people a target. The name and picture the comment was written with
-  // stand in while that is unknown (not made yet, refused); a deleted account shows as one. The comment keeps them as
-  // written: older builds show those, and Android compares them.
-  private readonly authors: PeerProfiles
+  readonly authors: CommentAuthors
   constructor(private readonly uid: string, private readonly auth: ReadCredentials,
     private readonly source: (request: ChannelCommentsRequest, exact: boolean) => { reader: FirestoreReader; post: FirestoreDocument }, private readonly changed: () => void) {
-    this.authors = new PeerProfiles(uid, auth, auth.signal, () => { if (this.value) this.changed() }, undefined, 'authors')
-  }
-  private author(uid: string, written: string): string { return this.authors.withdrawn(uid) ? tr('탈퇴한 계정') : this.authors.name(uid) || written }
-  private authorPhoto(item: ChannelCommentItem): string | null {
-    if (this.authors.withdrawn(item.authorId)) return null
-    const known = this.authors.profile(item.authorId)
-    return known ? known.photo || null : this.photos.get(item.id) ?? null
+    this.authors = new CommentAuthors(uid, auth, () => { if (this.value) this.changed() })
   }
   forget(): void { this.received.forget() }
   private validate(request: ChannelCommentsRequest, exact = false): { reader: FirestoreReader; post: FirestoreDocument } {
@@ -110,9 +118,9 @@ export class ChannelComments {
       const byId = new Map(this.value.items.map(item => [item.id, item]))
       return { ...this.value, items: this.value.items.map(item => {
         const parent = item.parentId ? byId.get(item.parentId) : undefined
-        return { ...item, authorName: this.author(item.authorId, item.authorName),
-          parentAuthorName: parent && item.parentAuthorName ? this.author(parent.authorId, item.parentAuthorName) : item.parentAuthorName,
-          photo: this.people?.(item.authorId, this.authorPhoto(item)) ?? null, position: item.position ? { ...item.position } : null }
+        return { ...item, authorName: this.authors.name(item.authorId, item.authorName),
+          parentAuthorName: parent && item.parentAuthorName ? this.authors.name(parent.authorId, item.parentAuthorName) : item.parentAuthorName,
+          photo: this.people?.(item.authorId, this.authors.photo(item.authorId)) ?? null, position: item.position ? { ...item.position } : null }
       }) }
     }
     catch { return { ...this.value, status: 'blocked', items: [], message: tr('현재 게시물의 댓글 접근 범위를 확인할 수 없습니다.') } }
@@ -125,7 +133,6 @@ export class ChannelComments {
     const generation = this.generation, current = () => generation === this.generation && this.value?.selectionId === request.selectionId
     const show = (rows: Map<string, FirestoreDocument>): void => {
       const items = decodeChannelComments(rows.values(), request, this.uid)
-      this.photos = commentPhotoSources(rows.values())
       this.rows = new Map(rows); this.value!.items = items; this.value!.status = 'ready'; this.value!.message = ''; this.value!.waiting = false
       this.authors.bind(this.reader, new Set(items.map(item => item.authorId)))
     }

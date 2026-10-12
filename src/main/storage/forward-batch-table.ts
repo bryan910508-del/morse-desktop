@@ -8,6 +8,7 @@ import type { ForwardBatchCommand } from './forward-batch-protocol'
 import { clearForwardBatch } from './forward-batch-protocol'
 import { forwardMediaDigest, insertForwardMedia } from './forward-media-table'
 import { textDigest } from '../messaging/text-identity'
+import { forwardWireSource } from '../../shared/channel-inquiries'
 
 const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const conflict = (): Error => Object.assign(new Error('Forward batch identity conflict'), { deliveryCode: 'conflict' })
@@ -38,7 +39,7 @@ export function executeForwardBatch(db: Database.Database, uid: string, command:
           insertForwardMedia(db, uid, { id: request.id, source: request.sources[index]!, targets }, item.media)
         } else for (const target of targets) {
           const wire: TextSendWire = { id: target.messageId, chatId: target.chatId, senderId: uid, type: 'text',
-            text: item.text, isSilent: item.isSilent, isEncrypted: false, protocolVersion: 3, isForwarded: true }
+            text: item.text, isSilent: item.isSilent, isEncrypted: false, protocolVersion: 3, isForwarded: true, forwardSource: forwardWireSource(request.sources[index]!) }
           insert.run(wire.id, wire.chatId, JSON.stringify(wire), textDigest(wire), Date.now(), request.id)
         }
       }

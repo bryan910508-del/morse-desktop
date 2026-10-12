@@ -30,15 +30,20 @@ export function sessionTtlDays(raw: unknown): number {
   if (!sessionTtlDayOptions.includes(raw as typeof sessionTtlDayOptions[number])) throw new Error(tr('기간을 다시 선택해 주세요.'))
   return raw as number
 }
-export type LastSeenMode = 'everybody' | 'contacts' | 'nobody'
+// One account privacy rule, as Telegram keeps each key of Api::UserPrivacy (api_user_privacy.h) in the same shape: the
+// mode and the people made exceptions of. Stored at users/{uid}.privacy.<key> and saved through syncPrivacySettings'
+// <key>Privacy (B263 §4: «forwards» is lastSeen's twin).
+export type PrivacyMode = 'everybody' | 'contacts' | 'nobody'
+export type PrivacyKey = 'lastSeen' | 'forwards'
+export const privacyKeys: readonly PrivacyKey[] = ['lastSeen', 'forwards']
 // AccountSecurityView: «비공개 모드» (users.isPrivate) and «자동 회원 탈퇴» (privacy.autoDeleteAccountMonths).
 export interface AccountPrivacy { isPrivate: boolean; autoDeleteMonths: number }
 // Privacy policy v2 (D4): an account with no stored choice is not deleted for being away — «끔», not six months.
 export function autoDeleteMonthsOf(stored: number | undefined): number { return stored === undefined ? 0 : Math.trunc(stored) }
 export const autoDeleteMonthOptions = [0, 1, 3, 6, 12] as const
 export interface DataExport { downloadURL: string; expiresAt: number; fileSizeBytes: number }
-export interface LastSeenPrivacy { mode: LastSeenMode; alwaysShareWith: string[]; neverShareWith: string[] }
-export const lastSeenModes: Record<LastSeenMode, string> = { everybody: tr('모든 사람'), contacts: tr('내 연락처'), nobody: tr('아무도 없음') }
+export interface PrivacyRule { mode: PrivacyMode; alwaysShareWith: string[]; neverShareWith: string[] }
+export const privacyModes: Record<PrivacyMode, string> = { everybody: tr('모든 사람'), contacts: tr('내 연락처'), nobody: tr('아무도 없음') }
 
 export function blockTarget(raw: unknown): BlockTarget {
   const v = object(raw)
@@ -46,11 +51,15 @@ export function blockTarget(raw: unknown): BlockTarget {
     typeof v.displayName !== 'string' || v.displayName.length > 512) throw new Error(tr('차단할 사용자를 다시 선택해 주세요.'))
   return { uid: identifier(v.uid), userId: v.userId, displayName: v.displayName }
 }
-export function lastSeenPrivacy(raw: unknown): LastSeenPrivacy {
+export function privacyKey(raw: unknown): PrivacyKey {
+  if (!privacyKeys.includes(raw as PrivacyKey)) throw new Error(tr('공개 범위를 다시 선택해 주세요.'))
+  return raw as PrivacyKey
+}
+export function privacyRule(raw: unknown): PrivacyRule {
   const v = object(raw)
   const list = (value: unknown): string[] => { if (!Array.isArray(value) || value.length > 200) throw new Error(tr('예외 목록을 확인해 주세요.')); return value.map(item => identifier(item)) }
   if (Object.keys(v).some(key => !['mode', 'alwaysShareWith', 'neverShareWith'].includes(key)) || !['everybody', 'contacts', 'nobody'].includes(String(v.mode))) throw new Error(tr('공개 범위를 다시 선택해 주세요.'))
-  return { mode: v.mode as LastSeenMode, alwaysShareWith: list(v.alwaysShareWith), neverShareWith: list(v.neverShareWith) }
+  return { mode: v.mode as PrivacyMode, alwaysShareWith: list(v.alwaysShareWith), neverShareWith: list(v.neverShareWith) }
 }
 export function signInSessionId(raw: unknown): string | null {
   if (raw === null) return null

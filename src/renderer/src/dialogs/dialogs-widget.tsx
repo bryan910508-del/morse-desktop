@@ -2,7 +2,7 @@
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { memo, useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Archive, ArchiveRestore, ArrowLeft, ArrowUpDown, Bell, BellOff, CircleAlert, Clock3, FolderPlus, Lock, LogOut, Mail, MailOpen, Megaphone, Menu, Pencil, Pin, PinOff, Search, StickyNote, Trash2, Users, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowLeft, ArrowUpDown, Bell, BellOff, Check, CircleAlert, Clock3, FolderPlus, Lock, LogOut, Mail, MailOpen, Megaphone, Menu, Pencil, Pin, PinOff, Search, StickyNote, Trash2, Users, X } from 'lucide-react'
 import type { ContactSummary } from '../../../shared/contacts'
 import { folderContains, folderTitle, type ChatFolder } from '../../../shared/chat-folders'
 import type { DialogSummary } from '../../../shared/model'
@@ -25,6 +25,8 @@ import { popupMenu, pointFor } from '../ui/popup-menu'
 import { OfficialMark } from '../ui/official-mark'
 import { dialogFlags, reconcileDialogs, reconcilePin, reconcileUnread, setPinned, setUnread, useDialogOverrides } from './dialog-overrides'
 import { chatListDraft } from '../../../shared/chat-list-preview'
+import { rowSendState, type RowSendState } from '../../../shared/row-send-state'
+import { ReadMark } from '../history/message'
 import { loadChatFolders, receiveChatFolders, toggleChatPinnedInFolder, useChatFolders } from '../app/chat-folders'
 import { removeChatFolder, showFolderEditBox, showFolderPickerBox, showFoldersBox } from '../boxes/chat-folder-boxes'
 import { StoriesRow } from '../stories/stories-row'
@@ -99,19 +101,29 @@ function InquiryDialogRow({ accountUid, inquiry, style, index, onMenu }: { accou
         {owner ? <span className="dialog-row-channel">{tr('채널')}</span>
           : <Megaphone size={14} className="dialog-row-kind channel" aria-label={tr('채널')} />}
         <span className="dialog-row-name ellipsis">{inquiry.title}</span>
-        {sends.failed && <CircleAlert size={14} className="dialog-row-failed" aria-label={tr('보내지 못한 메시지가 있습니다')} />}
         {local.muted && <BellOff size={13} className="dialog-row-status" aria-label={tr('알림 꺼짐')} />}
+        <RowStateMark state={sends.sending ? 'sending' : sends.failed ? 'failed' : 'none'} />
         <span className="dialog-row-time">{dialogTime(inquiry.lastMessageAt)}</span>
       </span>
       <span className="dialog-row-line">
         <span className="dialog-row-preview ellipsis">{inquiry.preview || tr('메시지 없음')}</span>
-        {sends.sending && <Clock3 size={12} className="dialog-row-sending" aria-label={tr('보내는 중')} />}
         {inquiry.unread > 0 ? <span className={`dialog-row-badge${local.muted ? ' muted' : ''}`} aria-label={tr('읽지 않은 메시지 {0}개', [inquiry.unread])}>{inquiry.unread > 999 ? '999+' : inquiry.unread}</span>
           : local.unread ? <span className={`dialog-row-badge mark${local.muted ? ' muted' : ''}`} aria-label={tr('읽지 않음 표시')} />
             : local.pinned ? <Pin size={14} className="dialog-row-status" aria-label={tr('고정됨')} /> : null}
       </span>
     </span>
   </button>
+}
+
+// B291 (row-send-state.ts): the one place just left of the row's date — TI ChatListItem.swift:4627-4633, as iOS B300 put its
+// «!» there — for a message of mine on its way (the clock), one that did not go (the «!»), and the row's newest message
+// when it is mine: sent (a check) or read (the circled check the bubble shows).
+function RowStateMark({ state }: { state: RowSendState }) {
+  if (state === 'sending') return <Clock3 size={12} className="dialog-row-sending" aria-label={tr('보내는 중')} />
+  if (state === 'failed') return <CircleAlert size={14} className="dialog-row-failed" aria-label={tr('보내지 못한 메시지가 있습니다')} />
+  if (state === 'sent') return <Check size={14} className="dialog-row-sent" aria-label={tr('보냄')} />
+  if (state === 'read') return <span className="dialog-row-read"><ReadMark /></span>
+  return null
 }
 
 const DialogRow = memo(function DialogRow({ dialog, active, style, index, flags, onMenu }: {
@@ -137,9 +149,9 @@ const DialogRow = memo(function DialogRow({ dialog, active, style, index, flags,
         {secret && <Lock size={13} className="dialog-row-kind secret" aria-label={tr('비밀 대화')} />}
         <span className="dialog-row-name ellipsis">{dialog.title}</span>
         {dialog.official && <OfficialMark kind={dialog.official} className="dialog-row-official" />}
-        {/* iOS MorseChatListRowDisplay: a message of mine that did not go marks the row beside its name. */}
-        {!secret && dialog.sends?.failed && <CircleAlert size={14} className="dialog-row-failed" aria-label={tr('보내지 못한 메시지가 있습니다')} />}
         {dialog.muted && <BellOff size={13} className="dialog-row-status" aria-label={tr('알림 꺼짐')} />}
+        <RowStateMark state={rowSendState({ secret, draft: Boolean(draft), sending: dialog.sends?.sending, failed: dialog.sends?.failed,
+          topFromMe: dialog.topFromMe, top: dialog.top, topMessageId: dialog.topMessageId, outboxRead: dialog.outboxRead })} />
         <span className="dialog-row-time">{dialogTime(positionTime(dialog.top))}</span>
       </span>
       <span className="dialog-row-line">
@@ -147,8 +159,6 @@ const DialogRow = memo(function DialogRow({ dialog, active, style, index, flags,
           : draft ? <span className="dialog-row-preview draft ellipsis"><b>{tr('작성 중')}: </b>{draft}</span>
             : <span className="dialog-row-preview ellipsis">{secret ? tr('이 기기에서는 열 수 없는 비밀 대화') : dialog.preview}</span>}
         {/* iOS latestReactionEmoji: someone's newest reaction to my message, before the unread count. */}
-        {/* …and a clock under the time while the newest of mine is still on its way (iOS/Android sendingClock). */}
-        {!secret && dialog.sends?.sending && <Clock3 size={12} className="dialog-row-sending" aria-label={tr('보내는 중')} />}
         {!secret && dialog.unseenReaction && <span className="dialog-row-reaction" aria-label={tr('새 반응 {0}', [dialog.unseenReaction.emoji])}>{dialog.unseenReaction.emoji}</span>}
         {flags.unread > 0 ? <span className={`dialog-row-badge${dialog.muted ? ' muted' : ''}`} aria-label={tr('읽지 않은 메시지 {0}개', [flags.unread])}>{flags.unread > 999 ? '999+' : flags.unread}</span>
           : flags.marked ? <span className={`dialog-row-badge mark${dialog.muted ? ' muted' : ''}`} aria-label={tr('읽지 않음 표시')} />

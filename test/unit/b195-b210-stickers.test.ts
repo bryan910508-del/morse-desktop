@@ -75,7 +75,7 @@ test('the device\'s favourites that move: the newest five (ten with premium), th
 
 const png = (seed: number): Uint8Array => new Uint8Array(Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10]), Buffer.alloc(64, seed)]))
 function migrationRig(stored: Uint8Array[], refuse: (index: number) => boolean, offline = false) {
-  const calls: string[] = [], cleared: boolean[] = []
+  const calls: string[] = [], cleared: boolean[] = [], removed = new Set<string>()
   const ids = stored.map(bytes => createHash('sha256').update(bytes).digest('hex'))
   let last = ''
   globalThis.fetch = (async (_url: string, init?: { headers?: Record<string, string>; body?: unknown }) => {
@@ -96,12 +96,13 @@ function migrationRig(stored: Uint8Array[], refuse: (index: number) => boolean, 
     return { ok: true }
   }
   const legacy = {
-    list: async () => stored.map((_, i) => ({ id: ids[i]!, kind: 'png' as const })),
-    read: async (id: string) => ({ kind: 'png' as const, data: stored[ids.indexOf(id)]! }),
+    list: async () => stored.map((_, i) => ({ id: ids[i]!, kind: 'png' as const })).filter(row => !removed.has(row.id)),
+    read: async (id: string) => removed.has(id) ? null : ({ kind: 'png' as const, data: stored[ids.indexOf(id)]! }),
+    remove: async (id: string) => { removed.add(id) },
     clear: async () => { cleared.push(true) }
   }
   const library = new StickerLibrary(me, auth as never, call, () => {}, () => false, legacy)
-  return { library, calls, cleared }
+  return { library, calls, cleared, ids }
 }
 
 test('moving the favourites: each goes up and is faved, oldest first; a refused one is left out; the list then empties', async () => {
@@ -117,6 +118,14 @@ test('moving the favourites waits for the network: nothing is cleared when the u
   const { library, cleared } = migrationRig([png(1)], () => false, true)
   await (library as unknown as { migrate(): Promise<void> }).migrate()
   assert.deepEqual(cleared, [])
+  library.close()
+})
+
+test('B304: a favourite taken out leaves the device\'s old list too, so a move not yet finished does not fave it again', async () => {
+  const { library, calls, ids } = migrationRig([png(1), png(2)], () => false)
+  await library.fave({ id: ids[0]!, kind: 'png' }, true)
+  await (library as unknown as { migrate(): Promise<void> }).migrate()
+  assert.deepEqual(calls, ['faveSticker 0', 'register 1', 'faveSticker 1'])
   library.close()
 })
 

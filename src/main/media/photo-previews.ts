@@ -170,6 +170,11 @@ export class PhotoPreviews {
     preview.bytes.fill(0)
   }
 
+  // B263 observation 3: the bytes a sticker bubble is drawn from right now, for a forward of it to hold its own copy of.
+  stickerBytes(chatId: string, messageId: string, version: string): { bytes: Buffer; mime: string } | null {
+    const preview = this.ready.get(PhotoPreviews.key(chatId, { requestId: '', messageId, version, index: 0 }))
+    return preview && !this.closed ? { bytes: preview.bytes, mime: preview.mime } : null
+  }
   response(token: string, request: Request): Response {
     if (this.closed || !['GET', 'HEAD'].includes(request.method)) return new Response(null, { status: 403 })
     const preview = [...this.ready.values()].find(value => value.token === token)

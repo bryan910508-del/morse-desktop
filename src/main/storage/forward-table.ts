@@ -7,6 +7,7 @@ import { maxQueuedMessages } from '../../shared/delivery'
 import { textDigest } from '../messaging/text-identity'
 import type { PreparedForwardMedia } from './forward-media-protocol'
 import { forwardMediaDigest, insertForwardMedia } from './forward-media-table'
+import { forwardWireSource } from '../../shared/channel-inquiries'
 
 export type ForwardCommand =
   | { kind: 'forward-known'; request: ForwardRequest }
@@ -42,7 +43,7 @@ export function executeForward(db: Database.Database, uid: string, command: Forw
       // The existing server contract carries a new text message, with no
       // source-author identity, source reply, reactions or source attachment URL.
       const wire: TextSendWire = { id: target.messageId, chatId: target.chatId, senderId: uid, type: 'text', text: command.text,
-        isSilent: command.isSilent, isEncrypted: false, protocolVersion: 3, isForwarded: true }
+        isSilent: command.isSilent, isEncrypted: false, protocolVersion: 3, isForwarded: true, forwardSource: forwardWireSource(request.source) }
       insert.run(wire.id, wire.chatId, JSON.stringify(wire), textDigest(wire), createdAt, request.id)
     }
     db.prepare('INSERT INTO forward_receipts(operation_id,request_digest,content_digest) VALUES(?,?,?)').run(request.id, digest, content)

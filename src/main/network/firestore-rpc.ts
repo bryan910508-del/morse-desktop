@@ -97,6 +97,7 @@ import type { GroupAnnouncementEdit } from '../../shared/group-announcement'
 import { GroupAnnouncementWriteFailure, writeGroupAnnouncement } from './group-announcement-write'
 import { ProfileDisplayWriteFailure, writeProfileDisplay, type ProfileDisplayEdit } from './profile-display-write'
 import { tr } from '../../shared/i18n'
+import { ListenTargets } from './firestore-listen'
 export class ContactWriteFailure extends Error {
   constructor(readonly uncertain: boolean) { super(uncertain ? tr('연락처 저장 결과를 확인하지 못했습니다. 목록을 다시 확인해 주세요.') : tr('연락처를 저장하지 못했습니다. 연결과 권한을 확인해 주세요.')) }
 }
@@ -1228,6 +1229,28 @@ export class FirestoreReader {
     }
     if (!bounded.aborted) void run()
     return () => { local.abort(); bounded.removeEventListener('abort', cancel); cancel() }
+  }
+  // B277 ②: many targets over one Listen stream, each added and removed on its own (firestore-listen.ts). It rests,
+  // wakes and closes with this reader as its watches do.
+  listenTargets(signal: AbortSignal): ListenTargets {
+    return new ListenTargets({
+      bounded: signal => this.bounded(signal),
+      open: async (signal, force) => {
+        const authorization = await this.auth.authorize(signal, force)
+        signal.throwIfAborted()
+        const lifetime = authorization.expiresAt - Date.now() - 30000
+        if (lifetime < 1000) throw new ReadFailure('permission')
+        const renewAfter = Math.min(lifetime, 45 * 60000)
+        return { stream: this.client.listen(metadata(authorization), { deadline: new Date(Date.now() + renewAfter + 30000) }), renewAfter }
+      },
+      closed: () => this.closed,
+      resting: () => this.resting,
+      register: control => { this.watches.add(control); return () => { this.watches.delete(control) } },
+      waitFor: wake => { this.waiting.add(wake); return () => { this.waiting.delete(wake) } },
+      failure,
+      observe: error => observe(error as { code?: number; details?: string } | null),
+      where: () => this.where(),
+    }, signal)
   }
   close(): void { if (!this.closed) { this.closed = true; live.delete(this); this.waiting.clear(); this.watches.clear(); this.abort.abort(); this.client.close() } }
   // Which reader, how old, and its gRPC channel's state: numbers and a state name only.

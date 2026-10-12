@@ -1,4 +1,4 @@
-import { forwardSource, maxForwardTargets, type ForwardSource } from './forward'
+import { chatTarget, forwardSource, maxForwardTargets, type ForwardSource } from './forward'
 import { identifier, object } from './validation'
 import { tr } from './i18n'
 
@@ -18,9 +18,12 @@ export function forwardBatchRequest(raw: unknown): ForwardBatchRequest {
     const target = object(raw), chatId = identifier(target.chatId)
     // Saved Messages takes several messages at once like any other room; only the room they are already
     // in is refused.
-    if (chatId === sources[0]!.chatId || !Array.isArray(target.messageIds) || target.messageIds.length !== sources.length) throw new Error(tr('전달 대상과 메시지 수를 확인해 주세요.'))
+    if (!chatTarget(chatId) || !Array.isArray(target.messageIds) || target.messageIds.length !== sources.length) throw new Error(tr('전달 대상과 메시지 수를 확인해 주세요.'))
     return { chatId, messageIds: target.messageIds.map(identifier) }
   }).sort((a, b) => a.chatId.localeCompare(b.chatId, 'en'))
-  if (new Set(targets.map(target => target.chatId)).size !== targets.length || new Set(targets.flatMap(target => target.messageIds)).size !== sources.length * targets.length) throw new Error(tr('전달 식별자가 중복되었습니다.'))
+  // B282: the message's own room is a target too; a copy never takes an original's id.
+  const originals = new Set(sources.map(source => source.messageId))
+  if (new Set(targets.map(target => target.chatId)).size !== targets.length || new Set(targets.flatMap(target => target.messageIds)).size !== sources.length * targets.length ||
+      targets.some(target => target.messageIds.some(id => originals.has(id)))) throw new Error(tr('전달 식별자가 중복되었습니다.'))
   return { id: identifier(value.id), sources, targets }
 }

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Check, Shield, ShieldOff, SlidersHorizontal, X } from 'lucide-react'
+import { Check, Shield, ShieldOff, SlidersHorizontal, UserRound, X } from 'lucide-react'
 import type { ChannelSummary } from '../../../shared/channels'
 import { channelAdminPermissionLabels, type ChannelAdminPermissionKey, type ChannelAdminRow } from '../../../shared/channel-admins'
 import { emptyChannelAdminPermissions, type ChannelAdminPermissionValues } from '../../../shared/channel-admin-appointment'
@@ -24,7 +24,8 @@ const titles: Record<ChannelMembersKind, string> = { subscribers: tr('구독자'
 const permissionKeys = Object.keys(channelAdminPermissionLabels) as ChannelAdminPermissionKey[]
 type Result = { outcome: 'saved' | 'rejected' | 'uncertain'; message: string }
 
-interface MemberRow { uid: string; name: string; detail: string; photo?: GroupPhotoImage | null; trailing?: ReactNode; onClick?(point: { x: number; y: number }): void }
+// onClick: the row's menu; open: the person (B266), beside the row's own buttons.
+interface MemberRow { uid: string; name: string; detail: string; photo?: GroupPhotoImage | null; trailing?: ReactNode; onClick?(point: { x: number; y: number }): void; open?(): void }
 
 function since(position: MessagePosition | null, label: string): string {
   const time = positionTime(position)
@@ -90,8 +91,13 @@ function MemberList({ accountUid, status, message, rows, empty }: { accountUid: 
       <span className="peer-row-text"><PeerRowName name={row.name} official={marks[row.uid]} />{row.detail && <small className="ellipsis">{row.detail}</small>}</span>
       {row.trailing}
     </>
-    return row.onClick ? <button key={row.uid} data-uid={row.uid} type="button" className="peer-row" onClick={event => row.onClick!(pointFor(event, event.currentTarget))}>{content}</button>
-      : <div key={row.uid} data-uid={row.uid} className="peer-row">{content}</div>
+    if (row.onClick) return <button key={row.uid} data-uid={row.uid} type="button" className="peer-row" onClick={event => row.onClick!(pointFor(event, event.currentTarget))}>{content}</button>
+    if (row.open) return <div key={row.uid} data-uid={row.uid} className="peer-row opens">
+      <button type="button" className="peer-row-open" onClick={row.open}><UserAvatar uid={row.uid} name={row.name} size={42} image={row.photo} />
+        <span className="peer-row-text"><PeerRowName name={row.name} official={marks[row.uid]} />{row.detail && <small className="ellipsis">{row.detail}</small>}</span></button>
+      {row.trailing}
+    </div>
+    return <div key={row.uid} data-uid={row.uid} className="peer-row">{content}</div>
   })}</div>
 }
 
@@ -151,13 +157,18 @@ function ChannelMembersBox({ accountUid, channel, kind, close }: { accountUid: s
       void openAdmins().catch(() => {})
     }} />)
   }
+  // B266 — tdesktop's channel members list (ParticipantsBoxController, Role::Profile → showPeerInfo): a subscriber, an admin
+  // or someone asking to join opens as a person, over the channel; this account is not one to open.
+  const person = (uid: string, name: string): (() => void) | undefined => uid === accountUid ? undefined : () => { close(); controller.openPersonInfo(uid, name) }
   const editAdmin = (row: ChannelAdminRow, point: { x: number; y: number }): void => {
     const adminVersion = row.version
     if (!owner || !version || !adminVersion || !admins) return
     const name = row.name || tr('관리자'), listRequestId = admins.requestId
     const base = { listRequestId, channelId: channel.id, version, title: channel.name, userId: row.uid, adminVersion, label: name }
     const current = Object.fromEntries(permissionKeys.map(key => [key, row.permissions[key].value === true])) as ChannelAdminPermissionValues
+    const profile = person(row.uid, name)
     popupMenu.open(point, [
+      profile ? { label: tr('프로필 보기'), icon: <UserRound size={18} />, onSelect: profile } : null,
       { label: tr('권한 변경'), icon: <SlidersHorizontal size={18} />, onSelect: () => controller.showLayer(closeBox => <PermissionsBox title={tr('관리자 권한')} label={name} initial={current} submitLabel={tr('저장')} close={closeBox} submit={async values => {
         const changes = Object.fromEntries(permissionKeys.filter(key => values[key] !== current[key] || row.permissions[key].value === null).map(key => [key, values[key]]))
         const request = { ...base, id: crypto.randomUUID(), requestId: crypto.randomUUID(), changes }
@@ -184,15 +195,17 @@ function ChannelMembersBox({ accountUid, channel, kind, close }: { accountUid: s
   const list = kind === 'subscribers' ? subscribers ? { status: subscribers.status, message: subscribers.message, rows: subscribers.rows.map((row): MemberRow => {
     const name = row.name || tr('이름 없음'), canAppoint = owner && Boolean(row.version && row.name) && adminIds !== null && !adminIds.has(row.uid)
     return { uid: row.uid, name, photo: row.photo, detail: [adminIds?.has(row.uid) ? tr('관리자') : '', row.handle ? `@${row.handle}` : '', since(row.subscribed, tr('구독'))].filter(Boolean).join(' · '),
-      trailing: canAppoint ? <button type="button" className="icon-button small" aria-label={tr('{0}님을 관리자로 지정', [name])} onClick={() => appoint(row.uid, row.name!, row.version!)}><Shield size={18} /></button> : undefined }
+      trailing: canAppoint ? <button type="button" className="icon-button small" aria-label={tr('{0}님을 관리자로 지정', [name])} onClick={() => appoint(row.uid, row.name!, row.version!)}><Shield size={18} /></button> : undefined,
+      open: person(row.uid, name) }
   }) } : loading
     : kind === 'admins' ? admins ? { status: admins.status, message: admins.message, rows: admins.rows.map((row): MemberRow => ({ uid: row.uid, name: row.name || tr('이름 없음'), photo: row.photo, detail: adminDetail(row),
-      onClick: owner && row.version ? point => editAdmin(row, point) : undefined })) } : loading
+      onClick: owner && row.version ? point => editAdmin(row, point) : undefined, open: person(row.uid, row.name || tr('이름 없음')) })) } : loading
       // The request carries a copy of the requester's profile, because a channel's owner may not read their users
       // document; a request made before the server wrote copies falls back to this account's contacts, and a uid is
       // never shown as a name.
       : requests ? { status: requests.status, message: requests.message, rows: requests.rows.map((row): MemberRow => ({ uid: row.uid,
         name: row.name || contacts.find(item => item.uid === row.uid)?.displayName || tr('알 수 없음'), photo: row.photo,
+        open: person(row.uid, row.name || contacts.find(item => item.uid === row.uid)?.displayName || ''),
         detail: [row.handle ? `@${row.handle}` : '', since(row.requested, tr('요청'))].filter(Boolean).join(' · '),
         trailing: <span className="channel-request-actions">
           {deciding === row.uid ? <Spinner size={18} /> : <>

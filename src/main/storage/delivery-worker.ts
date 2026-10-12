@@ -277,7 +277,7 @@ function execute(command: DeliveryCommand): unknown {
     case 'stickers-list': case 'sticker-read': case 'sticker-add': case 'sticker-remove': case 'stickers-clear': return executeSticker(db, command)
     case 'enqueue-sticker-reference': return executeStickerReference(db, uid, command)
     case 'userpic-read': case 'userpic-write': case 'userpic-owners': case 'userpic-owner': case 'userpic-usage': case 'userpic-clear': return userpics.execute(command)
-    case 'media-cache-read': case 'media-cache-write': case 'media-cache-usage': case 'media-cache-clear': return mediaFiles.execute(command)
+    case 'media-cache-read': case 'media-cache-has': case 'media-cache-write': case 'media-cache-usage': case 'media-cache-clear': return mediaFiles.execute(command)
     case 'event-reminders': case 'event-reminder-add': case 'event-reminder-remove': return executeEventReminder(db, command)
     case 'text-known': {
       const wire = command.wire

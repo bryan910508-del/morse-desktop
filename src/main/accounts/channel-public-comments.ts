@@ -4,14 +4,15 @@ import type { FirestoreDocument } from '../network/firestore-values'
 import type { ChannelCommentsRequest, ChannelCommentsSnapshot } from '../../shared/channel-comments'
 import type { FirestoreReader, ReadCredentials } from '../network/firestore-rpc'
 import { documents, stringField, numberField } from '../network/firestore-values'
-import { channelCommentReplyName, commentPhotoSources, decodeChannelComments, ReceivedComments } from './channel-comments'
+import { channelCommentReplyName, CommentAuthors, decodeChannelComments, ReceivedComments } from './channel-comments'
 import type { PeoplePhotoResolver } from './channel-people-photos'
 import { tr } from '../../shared/i18n'
 // Public reads and explicit own-comment removal share the current parent lifetime.
 export class PublicChannelComments {
   // Photos of the people listed, from the photo address this record keeps (see ChannelPeoplePhotos).
   people: PeoplePhotoResolver | null = null
-  private photos = new Map<string, string>()
+  // B266/B153 §4: the authors as a followed channel's comments show them (one rule, ChannelComments' CommentAuthors).
+  readonly authors: CommentAuthors
   private rows = new Map<string, FirestoreDocument>()
   private value: ChannelCommentsSnapshot | null = null
   private reader: FirestoreReader | null = null
@@ -19,7 +20,9 @@ export class PublicChannelComments {
   private generation = 0
   private readonly received = new ReceivedComments()
   constructor(private readonly uid: string, private readonly auth: ReadCredentials,
-    private readonly source: (request: ChannelCommentsRequest, exact: boolean) => { reader: FirestoreReader; post: FirestoreDocument }, private readonly changed: () => void) { }
+    private readonly source: (request: ChannelCommentsRequest, exact: boolean) => { reader: FirestoreReader; post: FirestoreDocument }, private readonly changed: () => void) {
+    this.authors = new CommentAuthors(uid, auth, () => { if (this.value) this.changed() })
+  }
   forget(): void { this.received.forget() }
   private validate(request: ChannelCommentsRequest, exact = false): { reader: FirestoreReader; post: FirestoreDocument } {
     this.auth.signal.throwIfAborted()
@@ -36,7 +39,16 @@ export class PublicChannelComments {
   }
   get snapshot(): ChannelCommentsSnapshot | null {
     if (!this.value) return null
-    try { this.validate(this.value); return { ...this.value, items: this.value.items.map(item => ({ ...item, photo: this.people?.(item.authorId, this.photos.get(item.id) ?? null) ?? null, position: item.position ? { ...item.position } : null })) } }
+    try {
+      this.validate(this.value)
+      const byId = new Map(this.value.items.map(item => [item.id, item]))
+      return { ...this.value, items: this.value.items.map(item => {
+        const parent = item.parentId ? byId.get(item.parentId) : undefined
+        return { ...item, authorName: this.authors.name(item.authorId, item.authorName),
+          parentAuthorName: parent && item.parentAuthorName ? this.authors.name(parent.authorId, item.parentAuthorName) : item.parentAuthorName,
+          photo: this.people?.(item.authorId, this.authors.photo(item.authorId)) ?? null, position: item.position ? { ...item.position } : null }
+      }) }
+    }
     catch { return { ...this.value, status: 'blocked', items: [], message: tr('현재 공개 게시물의 댓글 접근을 확인할 수 없습니다.') } }
   }
   open(request: ChannelCommentsRequest): void {
@@ -47,7 +59,8 @@ export class PublicChannelComments {
     catch { this.value.status = 'blocked'; this.value.message = tr('현재 공개 게시물에서 댓글을 다시 선택해 주세요.'); this.changed(); return }
     const generation = this.generation, current = (): boolean => generation === this.generation && this.value?.selectionId === request.selectionId
     const show = (rows: Map<string, FirestoreDocument>): void => {
-      this.value!.items = decodeChannelComments(rows.values(), request, this.uid); this.photos = commentPhotoSources(rows.values()); this.rows = new Map(rows)
+      this.value!.items = decodeChannelComments(rows.values(), request, this.uid); this.rows = new Map(rows)
+      this.authors.bind(this.reader, new Set(this.value!.items.map(item => item.authorId)))
       this.value!.status = 'ready'; this.value!.message = ''; this.value!.waiting = false
     }
     // As ChannelComments: the comments last received for this post stay on screen until the first answer.
@@ -79,5 +92,5 @@ export class PublicChannelComments {
   prune(): void { if (!this.value) return; try { this.validate(this.value); } catch { this.clear() } }
   dismiss(selectionId: string): void { if (this.value?.selectionId === selectionId) { this.clear(); this.changed() } }
   async close(): Promise<void> { this.clear(); }
-  clear(): void { if (this.value) this.rows.clear(); this.generation++; this.stop?.(); this.stop = null; this.reader = null; this.value = null }
+  clear(): void { if (this.value) this.rows.clear(); this.generation++; this.stop?.(); this.stop = null; this.reader = null; this.value = null; this.authors.clear() }
 }

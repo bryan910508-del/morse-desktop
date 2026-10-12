@@ -10,11 +10,17 @@ import { comparePosition } from '../../shared/model'
 // (B165: 12 s); until it does, the row shows what this device knows. Whatever the server writes next is taken as
 // it comes — the line it had when the message went is what says it has not written yet — so nothing is taken away
 // twice (contract B163 §3-2).
-export interface ChatListTop { preview: string; top: MessagePosition | null }
+// B291: whose it is and its id come with it, so the row's send state follows the line it shows.
+export interface ChatListTop { preview: string; top: MessagePosition | null; fromMe?: boolean; messageId?: string }
 type Server = { preview: string; top: MessagePosition | null }
 
 const samePosition = (a: MessagePosition | null, b: MessagePosition | null): boolean =>
   a === null || b === null ? a === b : comparePosition(a, b) === 0
+
+function setTopSender(summary: DialogSummary, fromMe: boolean | undefined, messageId?: string): void {
+  if (fromMe) summary.topFromMe = true; else delete summary.topFromMe
+  if (messageId) summary.topMessageId = messageId; else delete summary.topMessageId
+}
 
 export class ChatListTops {
   private readonly server = new Map<string, Server>()
@@ -30,14 +36,16 @@ export class ChatListTops {
     if (local.from.preview !== server.preview || !samePosition(local.from.top, server.top)) { this.local.delete(summary.id); return false }
     summary.preview = local.next.preview
     summary.top = local.next.top
+    setTopSender(summary, local.next.fromMe, local.next.messageId)
     return true
   }
   // The row's message went from this device: `next` is the newest one it still holds, or null when the room has none.
-  replace(chatId: string, next: { preview: string; position: MessagePosition } | null): boolean {
+  replace(chatId: string, next: { preview: string; position: MessagePosition; fromMe: boolean; messageId: string } | null): boolean {
     const server = this.server.get(chatId)
     if (!server) return false
     // A row without a message keeps its place in the list (tdesktop leaves the chat where it was until it knows more).
-    this.local.set(chatId, { from: server, next: next ? { preview: next.preview, top: { ...next.position, id: server.top?.id ?? chatId } } : { preview: '', top: server.top } })
+    this.local.set(chatId, { from: server, next: next ? { preview: next.preview, top: { ...next.position, id: server.top?.id ?? chatId }, fromMe: next.fromMe, messageId: next.messageId }
+      : { preview: '', top: server.top, fromMe: false } })
     return true
   }
   // Rooms no longer in the list keep nothing.
@@ -51,13 +59,14 @@ export class ChatListTops {
 // history with its newest page read (its copy has already dropped what expired); otherwise the row shows no line until
 // the server writes the room again. tdesktop asks the server for that row then (requestChatListMessage) — Desktop waits.
 export function expiredTop(summary: DialogSummary, expiresAt: number | undefined, now: number,
-  open: { messages: readonly { position: MessagePosition; text: string }[]; newerAvailable: boolean; ready: boolean; preview(index: number): string } | null): boolean {
+  open: { messages: readonly { position: MessagePosition; text: string }[]; newerAvailable: boolean; ready: boolean; preview(index: number): string; mine(index: number): boolean } | null): boolean {
   if (expiresAt === undefined || expiresAt > now) return false
   const last = open && open.ready && !open.newerAvailable ? open.messages.length - 1 : -1
   const next = last >= 0 ? open!.messages[last]! : null
   if (next && summary.top && comparePosition({ ...next.position, id: summary.top.id }, summary.top) < 0) {
     summary.preview = open!.preview(last)
     summary.top = { ...next.position, id: summary.top.id }
-  } else summary.preview = ''
+    setTopSender(summary, open!.mine(last), next.position.id)
+  } else { summary.preview = ''; setTopSender(summary, false) }
   return true
 }

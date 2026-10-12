@@ -2,7 +2,8 @@ import { autoDeleteSecondsValue } from '../../shared/chat-auto-delete'
 import { autoDeleteNoticeText, autoDeleteWirePrefix, type AutoDeleteNotice } from '../../shared/auto-delete-notice'
 import { chatListPreviewText } from '../../shared/chat-list-preview'
 import { messageStorySource } from './message-story-source'
-import type { ChatMessage, DialogSummary, MessagePoll, MessagePosition } from '../../shared/model'
+import type { ChatMessage, DialogSummary, ForwardInfo, MessagePoll, MessagePosition } from '../../shared/model'
+import { forwardInfoFrom } from '../../shared/forward'
 import { positionMilliseconds, withinCutoff } from '../../shared/model'
 import { identifier, object } from '../../shared/validation'
 import { idleReadSync, outboxReadTill, readCursor } from '../../shared/read-receipts'
@@ -202,13 +203,20 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
     ...(kind === 'direct' && boolField(peer, 'accountDeleted') ? { peerDeleted: true } : {}),
     // B113: read-only — only the server writes there (rules, talky READ_ONLY_CHAT), so nothing is offered to send.
     ...(service ? { service: true as const, composeAccess: false } : {}),
-    preview: preview.slice(0, 300), top, unreadCount: Math.max(0, Math.trunc(numberField(mapField(f, 'unreadCounts'), uid))),
+    preview: preview.slice(0, 300), top, ...topSender(f, uid, kind), unreadCount: Math.max(0, Math.trunc(numberField(mapField(f, 'unreadCounts'), uid))),
     markedUnread: boolField(mapField(f, 'manualUnread'), uid), readPositions, outboxRead: outboxReadTill(readPositions, participants.filter(participant => participant !== uid)), readSync: idleReadSync,
     // isArchived / isMuted in the shared room document are another person's choice as often as this one's;
     // this device's own flags are applied by the session (ChatFlags).
     pinned: false, pinVersion: '', archived: false, muted: false,
     discussion: boolField(f, 'isChannelDiscussion'), channelId: stringField(f, 'channelId', 160) || undefined, autoDeleteSeconds: autoDeleteSecondsValue(numberField(f, 'autoDeleteSeconds')), autoDeleteMyOnly: boolField(f, 'autoDeleteMyOnly'), createdBy: stringField(f, 'createdBy', 160), pinnedForAll: pinnedMessageIds(f), unseenReaction: unseenReaction(f, uid), forum: kind === 'group' ? forumState(f) : undefined }, cutoff, participantNames, accountUid: uid, ...(noticeless ? { noticeless: true } : {}),
     ...(topExpiresAt !== null ? { topExpiresAt } : {}) }
+}
+// B291 (contract «서버 가지» 17:2x): a channel post's mirror is the channel's, not its writer's; then lastSenderId says
+// whether the row's message is this account's. A secret chat's row shows no state.
+function topSender(f: Record<string, WireObject>, uid: string, kind: string): Pick<DialogSummary, 'topFromMe' | 'topMessageId'> {
+  const messageId = stringField(f, 'lastMessageId', 160)
+  const mine = kind !== 'secret' && stringField(f, 'lastSenderType', 32) !== 'channel_post' && stringField(f, 'lastSenderId', 160) === uid
+  return { ...(mine ? { topFromMe: true as const } : {}), ...(messageId ? { topMessageId: messageId } : {}) }
 }
 // MorseChatForumFirestore.applyForumFields / parseCategories.
 function forumState(fields: Record<string, WireObject>): DialogSummary['forum'] {
@@ -340,8 +348,22 @@ function messagePoll(f: Record<string, WireObject>): MessagePoll | undefined {
     categoryId: encrypted || system ? undefined : stringField(f, 'categoryId', 160) || undefined,
     ...(kind === 'poll' ? { poll: messagePoll(f) } : {}),
     ...(kind === 'sticker' && !encrypted ? stickerReference(f) : {}),
+    ...(!encrypted && !system ? messageForward(f) : {}),
     readEligible: Boolean(senderId) && !encrypted && stringField(f, 'status', 32) !== 'failed' &&
       (!system || kind === 'channelPost') && (!declaredChat || roomNames(dialog).includes(declaredChat)) }
+}
+// B263: the «Forwarded from» header the server wrote (forwardInfo map; its date a Timestamp), as a ChatMessage carries it.
+export function messageForward(f: Record<string, WireObject>): { forward?: ForwardInfo } {
+  const map = mapField(f, 'forwardInfo')
+  if (!Object.keys(map).length) return {}
+  const plain: Record<string, unknown> = {}
+  for (const key of ['fromUid', 'fromName', 'fromChannelId', 'channelPostId']) { const value = field(map, key).stringValue; if (typeof value === 'string') plain[key] = value }
+  const hidden = field(map, 'hidden').booleanValue; if (hidden === true) plain.hidden = true
+  const version = field(map, 'v'); if (version.integerValue !== undefined) plain.v = Number(version.integerValue)
+  const at = field(map, 'date').timestampValue
+  if (at !== undefined) { try { const date = timestamp(at, ''); plain.date = date.seconds * 1000 + Math.floor(date.nanoseconds / 1e6) } catch { /* no date */ } }
+  const forward = forwardInfoFrom(plain)
+  return forward ? { forward } : {}
 }
 // B195: a sticker sent as a reference names the server's document of it (morse-message-authority stickerReferenceShape).
 export function stickerReference(f: Record<string, WireObject>): { sticker?: { id: string; kind: 'png' | 'gif' | 'mp4'; setId?: string } } {

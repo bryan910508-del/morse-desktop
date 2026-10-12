@@ -20,9 +20,13 @@ test('several messages can be forwarded to Saved Messages at once', () => {
   assert.deepEqual(request.targets, [{ chatId: me, messageIds: ['n1', 'n2'] }])
 })
 
-test('the room a message is already in is still refused, in both shapes', () => {
-  assert.throws(() => forwardRequest({ id: 'f3', source, targets: [{ chatId: source.chatId, messageId: 'n1' }] }), /전달할 다른 대화/)
-  assert.throws(() => forwardBatchRequest({ id: 'f4', sources: [source], targets: [{ chatId: source.chatId, messageIds: ['n1'] }] }), /전달 대상과 메시지 수/)
+// B282: the room a message is already in is a target too (tdesktop's recipient list keeps it); a copy never takes the
+// original's id.
+test('the room a message is already in is a target too, in both shapes', () => {
+  assert.deepEqual(forwardRequest({ id: 'f3', source, targets: [{ chatId: source.chatId, messageId: 'n1' }] }).targets, [{ chatId: source.chatId, messageId: 'n1' }])
+  assert.deepEqual(forwardBatchRequest({ id: 'f4', sources: [source], targets: [{ chatId: source.chatId, messageIds: ['n1'] }] }).targets, [{ chatId: source.chatId, messageIds: ['n1'] }])
+  assert.throws(() => forwardRequest({ id: 'f3b', source, targets: [{ chatId: source.chatId, messageId: source.messageId }] }), /전달할 다른 대화/)
+  assert.throws(() => forwardBatchRequest({ id: 'f4b', sources: [source], targets: [{ chatId: source.chatId, messageIds: [source.messageId] }] }), /전달 식별자가 중복/)
 })
 
 test('a target named twice is still refused', () => {
@@ -37,22 +41,23 @@ const chats = [room('chat-b', '상대'), room('chat-c', '동료')]
 
 test('Saved Messages leads the list, above every chat', () => {
   const offered = room(me, '저장한 메시지')
-  const list = savedMessagesFirst([...chats, offered], me, 'chat-a', offered, true)
+  const list = savedMessagesFirst([...chats, offered], me, offered, true)
   assert.deepEqual(list.map(target => target.chatId), [me, 'chat-b', 'chat-c'])
 })
 
 test('it is offered before its room exists, and the window makes the room before sending', () => {
-  const list = savedMessagesFirst(chats, me, 'chat-a', null, false)
+  const list = savedMessagesFirst(chats, me, null, false)
   assert.equal(list[0]!.chatId, me)
   assert.equal(list[0]!.title, '저장한 메시지')
   assert.equal(list.length, 3)
 })
 
-test('a message already in Saved Messages is not offered its own room', () => {
-  assert.deepEqual(savedMessagesFirst(chats, me, me, null, false).map(target => target.chatId), ['chat-b', 'chat-c'])
-  assert.deepEqual(savedMessagesFirst(chats, me, me, null, true).map(target => target.chatId), ['chat-b', 'chat-c'])
+test('a message already in Saved Messages is offered Saved Messages too (B282)', () => {
+  assert.deepEqual(savedMessagesFirst(chats, me, null, false).map(target => target.chatId), [me, 'chat-b', 'chat-c'])
+  const offered = room(me, '저장한 메시지')
+  assert.deepEqual(savedMessagesFirst([...chats, offered], me, offered, true).map(target => target.chatId), [me, 'chat-b', 'chat-c'])
 })
 
 test('a room that exists but refused the message is not replaced by an invented one', () => {
-  assert.deepEqual(savedMessagesFirst(chats, me, 'chat-a', null, true).map(target => target.chatId), ['chat-b', 'chat-c'])
+  assert.deepEqual(savedMessagesFirst(chats, me, null, true).map(target => target.chatId), ['chat-b', 'chat-c'])
 })

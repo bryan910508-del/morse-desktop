@@ -34,7 +34,7 @@ import { usePresence } from '../app/presence'
 import { openPersonalChannel, PersonalChannelSection, usePersonalChannelCard } from './personal-channel'
 import { tr } from '../../../shared/i18n'
 import { clampChatTitle, maxChatTitle } from '../../../shared/chat-title'
-import { SwipeBackPlate, useSwipe } from '../history/use-swipe'
+import { SwipeBack, useSwipe } from '../history/use-swipe'
 
 export function InfoRow({ icon, value, label, onClick }: { icon: ReactNode; value: string; label: string; onClick?(): void }) {
   const content = <><span className="info-row-icon">{icon}</span><span className="info-row-text"><span className="selectable">{value}</span><small>{label}</small></span></>
@@ -75,7 +75,9 @@ function ContactDetailsBox({ accountUid, requestId, profile, close }: { accountU
   </Box>
 }
 
-export function ContactProfile({ accountUid, uid, fromChat }: { accountUid: string; uid: string; fromChat: boolean }) {
+// B266: a person — a contact or anyone met (tdesktop Info::Profile for a user). What only a contact has follows
+// `inContacts` (tdesktop IsContactValue); a person who is not one is offered «연락처에 추가» (makeAddAsContact).
+export function ContactProfile({ accountUid, uid, fromChat, hint = '' }: { accountUid: string; uid: string; fromChat: boolean; hint?: string }) {
   const [requestId, setRequestId] = useState(() => crypto.randomUUID())
   const snapshot = useDesktop(state => state?.contacts?.profile ?? null)
   const inContacts = useDesktop(state => Boolean(state?.contacts?.items.some(item => item.uid === uid)))
@@ -86,16 +88,16 @@ export function ContactProfile({ accountUid, uid, fromChat }: { accountUid: stri
   const personalUrl = useDesktop(state => state?.contacts?.items.find(item => item.uid === uid)?.personalPhotoURL ?? null)
   // The list row's picture of this person (the same address) while the profile's own read finishes.
   const listUrl = useDesktop(state => { const avatar = state?.contacts?.items.find(item => item.uid === uid)?.avatar; return avatar?.status === 'ready' ? avatar.url : null })
-  const [photoBusy, setPhotoBusy] = useState(false)
+  const [photoBusy, setPhotoBusy] = useState(false), [adding, setAdding] = useState(false)
   const blockedUsers = useBlockedUsers(accountUid)
   useEffect(() => { void loadBlockedUsers(accountUid).catch(() => []) }, [accountUid])
   const last = useRef<ContactProfileSnapshot | null>(null)
   const own = snapshot?.requestId === requestId ? snapshot : null
   if (own?.status === 'ready') last.current = own
   useEffect(() => {
-    void window.morse.openContactProfile(accountUid, uid, requestId).catch(reason => controller.toast(errorText(reason, tr('프로필을 열지 못했습니다.')), 'error'))
+    void window.morse.openContactProfile(accountUid, uid, requestId, hint || undefined).catch(reason => controller.toast(errorText(reason, tr('프로필을 열지 못했습니다.')), 'error'))
     return () => { void window.morse.closeContactProfile(accountUid, requestId).catch(() => {}) }
-  }, [accountUid, uid, requestId])
+  }, [accountUid, uid, requestId, hint])
   // Another action borrowed main's single profile selection; select this peer again.
   useEffect(() => onContactProfileReleased(() => { if (desktop.value?.contacts?.profile?.requestId !== requestId) setRequestId(crypto.randomUUID()) }), [requestId])
   const profile = own && own.status !== 'loading' ? own : last.current?.uid === uid ? last.current : null
@@ -105,9 +107,20 @@ export function ContactProfile({ accountUid, uid, fromChat }: { accountUid: stri
   if (!profile) return <div className="empty-state"><Spinner size={22} /></div>
   if (profile.status !== 'ready') return <div className="empty-state">{profile.message || tr('프로필을 확인할 수 없습니다.')}</div>
   const live = own?.status === 'ready' ? own : null
+  // iOS ContactProfileView.openChat and Android prepareChat refuse a person this account blocked, before anything else.
   async function startChat(): Promise<void> {
+    if (blocked) { controller.toast(tr('차단한 사용자입니다. 차단을 해제한 뒤 메시지를 보낼 수 있어요.'), 'error'); return }
     try { controller.openChat(await window.morse.startContactChat(accountUid, requestId)) }
     catch (reason) { controller.toast(errorText(reason, tr('대화를 열지 못했습니다.')), 'error') }
+  }
+  async function addContact(target: ContactProfileSnapshot): Promise<void> {
+    if (adding) return
+    setAdding(true)
+    try {
+      const result = await trackWrite(window.morse.addProfileContact(accountUid, requestId))
+      controller.toast(result.outcome === 'added' ? tr('{0}님을 연락처에 추가했습니다.', [target.displayName]) : result.outcome === 'exists' ? tr('이미 연락처에 있습니다.') : result.message, result.outcome === 'rejected' ? 'error' : 'default')
+    } catch (reason) { controller.toast(errorText(reason, tr('연락처에 추가하지 못했습니다.')), 'error') }
+    finally { setAdding(false) }
   }
   async function copyId(): Promise<void> {
     try { await window.morse.copyContactId(accountUid, requestId); controller.toast(tr('Morse ID를 복사했습니다.')) }
@@ -170,11 +183,18 @@ export function ContactProfile({ accountUid, uid, fromChat }: { accountUid: stri
     </div>}
     <div className="info-section">
       {profile.visibility === 'visible' && profile.userId && <InfoRow icon={<AtSign size={20} />} value={`@${profile.userId}`} label={tr('Morse ID · 눌러서 복사')} onClick={() => { void copyId() }} />}
+      {/* B153 §4: to anyone but a mutual contact an ordinary account's @id line is there, masked (iOS UnknownProfileView,
+          Android ContactProfileView «@••••••»); an official account has none. */}
+      {profile.visibility === 'hidden' && !official && <InfoRow icon={<AtSign size={20} />} value="@••••••" label={tr('Morse ID')} />}
       {profile.visibility === 'visible' && profile.bio && <InfoRow icon={<FileText size={20} />} value={profile.bio} label={tr('소개')} />}
       {profile.local.status === 'ready' && profile.local.note && <InfoRow icon={<Pencil size={20} />} value={profile.local.note} label={tr('이 기기의 메모')} />}
       {/* B153: an official account offers nothing more to a contact — no note (Telegram has none). */}
       {profile.visibility === 'hidden' && !official && <p className="info-note">{tr('서로 연락처에 추가하면 Morse ID, 소개와 사진이 표시됩니다.')}</p>}
     </div>
+    {/* tdesktop makeAddAsContact (info_profile_actions.cpp:2340-2361): CanAddContactValue = not a contact. */}
+    {!inContacts && <div className="info-section">
+      <ActionRow icon={adding ? <Spinner size={20} /> : <UserPlus size={20} />} label={tr('연락처에 추가')} disabled={!live || adding} onClick={() => { if (live) void addContact(live) }} />
+    </div>}
     {inContacts && <div className="info-section">
       <ActionRow icon={<Pencil size={20} />} label={tr('연락처 편집')} disabled={!live || live.local.status !== 'ready'} onClick={() => {
         if (live) controller.showLayer(close => <ContactDetailsBox accountUid={accountUid} requestId={requestId} profile={live} close={close} />)
@@ -191,7 +211,7 @@ export function ContactProfile({ accountUid, uid, fromChat }: { accountUid: stri
   </>
 }
 
-function GroupInfo({ accountUid, dialog, onProfile }: { accountUid: string; dialog: DialogSummary; onProfile(uid: string): void }) {
+function GroupInfo({ accountUid, dialog }: { accountUid: string; dialog: DialogSummary }) {
   const [requestId] = useState(() => crypto.randomUUID())
   const snapshot = useDesktop(state => state?.participants ?? null)
   const current = snapshot?.requestId === requestId && snapshot.chatId === dialog.id ? snapshot : null
@@ -257,10 +277,9 @@ function GroupInfo({ accountUid, dialog, onProfile }: { accountUid: string; dial
   const openMember = (member: ParticipantSummary, point: { x: number; y: number }): void => {
     if (member.self) return
     popupMenu.open(point, [
-      !member.withdrawn && member.canOpenContact ? { label: tr('프로필 보기'), icon: <Users size={18} />, onSelect: () => {
-        void window.morse.participantContact(accountUid, { requestId, chatId: dialog.id, uid: member.uid, version }).then(onProfile)
-          .catch(reason => controller.toast(errorText(reason, tr('프로필을 열지 못했습니다.')), 'error'))
-      } } : null,
+      // B266 — tdesktop ParticipantsBoxController::rowClicked, Role::Profile → showPeerInfo (edit_participants_box.cpp:1943):
+      // any member, contact or not; not in a channel's discussion room (its people are the room's copies only).
+      !member.withdrawn && !current.discussion && member.uid !== accountUid ? { label: tr('프로필 보기'), icon: <Users size={18} />, onSelect: () => controller.openPersonInfo(member.uid, member.displayName) } : null,
       // B49: a member, contact or not, can be written to — the pair's 1:1, listed or not, else a new one (Telegram's
       // profile «Message» opens any peer).
       !member.withdrawn ? { label: tr('메시지 보내기'), icon: <MessageCircle size={18} />, onSelect: () => {
@@ -304,7 +323,7 @@ function GroupInfo({ accountUid, dialog, onProfile }: { accountUid: string; dial
     <div className="section-label">{tr('참여자 {0}명', [members.length])}</div>
     {plain && self && capacity > 0 && <ActionRow icon={<UserPlus size={20} />} label={tr('참여자 추가')} onClick={() => showAddMembersBox(accountUid, dialog)} />}
     <div className="info-members" ref={memberList}>{members.map(member => <button key={member.uid} type="button" data-uid={member.uid} className="member-row"
-      disabled={member.self || (!removable(member) && (member.withdrawn || (!member.canOpenContact && !member.canAddContact)))}
+      disabled={member.self || (!removable(member) && member.withdrawn)}
       onClick={event => openMember(member, pointFor(event, event.currentTarget))}>
       <UserAvatar uid={member.uid} name={member.displayName} size={40} kind={member.withdrawn ? 'deleted' : undefined} roomOnly={current.discussion} />
       <span className="member-row-text"><PeerRowName name={member.displayName} official={member.withdrawn ? null : marks[member.uid]} /><small>{member.withdrawn ? tr('탈퇴한 계정') : member.self ? tr('나') : ''}</small></span>
@@ -321,56 +340,34 @@ function GroupInfo({ accountUid, dialog, onProfile }: { accountUid: string; dial
 export function InfoPanel({ accountUid, chatId }: { accountUid: string; chatId: string }) {
   const dialog = useDesktop(state => dialogById(state, chatId))
   const pending = useDesktop(state => state?.pendingDirects.find(item => item.chatId === chatId) ?? null)
-  const [profile, setProfile] = useState<string | null>(null)
   const [media, setMedia] = useState(false)
-  const [adding, setAdding] = useState(false)
-  const blockedUsers = useBlockedUsers(accountUid)
   const peerUid = dialog?.kind === 'direct' ? dialog.participantUids.find(uid => uid !== accountUid) ?? null : !dialog ? pending?.peerUid ?? null : null
-  const inContacts = useDesktop(state => peerUid ? Boolean(state?.contacts?.items.some(item => item.uid === peerUid)) : false)
   // B178 §2-2: the chat's mark, or — before its first message — its peer's.
   const peerOfficial = dialog ? dialog.official : pending?.official
-  const heading = media ? tr('공유된 미디어') : profile ? tr('연락처 정보') : dialog?.kind === 'group' ? tr('그룹 정보') : tr('정보')
+  const heading = media ? tr('공유된 미디어') : dialog?.kind === 'group' ? tr('그룹 정보') : tr('정보')
   // B58 (Telegram info_content_widget.cpp:596-614): fingers right over the panel go back a step, or close it.
   const panel = useRef<HTMLElement>(null)
-  const steps = useRef({ media, profile }); steps.current = { media, profile }
+  const steps = useRef({ media }); steps.current = { media }
   const swipeFrame = useSwipe(panel, {
     enabled: () => true,
     resolve: direction => direction === 'right-to-left' ? 'back' : null,
-    finish: () => { if (steps.current.media) setMedia(false); else if (steps.current.profile) setProfile(null); else controller.setRight(null) }
+    finish: () => { if (steps.current.media) setMedia(false); else controller.setRight(null) }
   })
-  const swipe = swipeFrame()
-  useEffect(() => { setProfile(null); setMedia(false) }, [chatId])
-  const stranger = dialog?.kind === 'direct' && Boolean(peerUid) && !inContacts
-  useEffect(() => { if (stranger && blockedUsers === null) void loadBlockedUsers(accountUid).catch(() => []) }, [accountUid, stranger, blockedUsers])
-  const peerBlocked = blockedUsers?.some(user => user.uid === peerUid) ?? false
-  // B52: a person who is not a contact can be blocked and reported from here too, as from a contact's profile.
-  async function toggleStrangerBlock(): Promise<void> {
-    if (!dialog || !peerUid) return
-    if (!peerBlocked && !await confirmBox({ title: tr('사용자 차단'), text: tr('{0}님을 차단할까요? 설정 → 개인정보에서 언제든 해제할 수 있어요.', [dialog.title]), confirm: tr('차단'), danger: true })) return
-    try { await setBlocked(accountUid, { uid: peerUid, userId: '', displayName: dialog.title }, !peerBlocked); controller.toast(peerBlocked ? tr('차단을 해제했습니다.') : tr('차단했습니다.')) }
-    catch (reason) { controller.toast(errorText(reason, tr('차단 상태를 바꾸지 못했습니다.')), 'error') }
-  }
-  async function addPeer(): Promise<void> {
-    if (!dialog || !peerUid || adding) return
-    setAdding(true)
-    try {
-      const result = await trackWrite(window.morse.addChatContact(accountUid, { id: crypto.randomUUID(), chatId: dialog.id, uid: peerUid }))
-      controller.toast(result.outcome === 'added' ? tr('{0}님을 연락처에 추가했습니다.', [dialog.title]) : result.outcome === 'exists' ? tr('이미 연락처에 있습니다.') : result.message, result.outcome === 'rejected' ? 'error' : 'default')
-    } catch (reason) { controller.toast(errorText(reason, tr('연락처에 추가하지 못했습니다.')), 'error') }
-    finally { setAdding(false) }
-  }
+  useEffect(() => { setMedia(false) }, [chatId])
+  // B266: the person of a 1:1, contact or not, is the same person's profile (tdesktop's info panel for a user) — the
+  // official notice account excepted, which is no person to add, block or report (B113).
+  const person = peerUid && !dialog?.service && (dialog?.kind === 'direct' || (!dialog && pending)) ? peerUid : null
   return <section ref={panel} className="side-panel" aria-label={heading}>
-    <SwipeBackPlate frame={swipe} />
+    <SwipeBack frames={swipeFrame} />
     <header className="top-bar">
-      {(profile || media) && <button className="icon-button" aria-label={tr('뒤로')} onClick={() => { if (media) setMedia(false); else setProfile(null) }}><ArrowLeft size={20} /></button>}
+      {media && <button className="icon-button" aria-label={tr('뒤로')} onClick={() => setMedia(false)}><ArrowLeft size={20} /></button>}
       <strong className="side-title">{heading}</strong>
       <button className="icon-button" aria-label={tr('정보 닫기')} onClick={() => controller.setRight(null)}><X size={20} /></button>
     </header>
     <div className="side-panel-body">
       {media && dialog ? <SharedMedia accountUid={accountUid} chatId={dialog.id} /> : <>
-      {profile ? <ContactProfile key={profile} accountUid={accountUid} uid={profile} fromChat={false} />
-        : dialog?.kind === 'group' ? <GroupInfo key={dialog.id} accountUid={accountUid} dialog={dialog} onProfile={setProfile} />
-          : peerUid && inContacts ? <ContactProfile key={peerUid} accountUid={accountUid} uid={peerUid} fromChat />
+      {dialog?.kind === 'group' ? <GroupInfo key={dialog.id} accountUid={accountUid} dialog={dialog} />
+          : person ? <ContactProfile key={person} accountUid={accountUid} uid={person} fromChat hint={dialog?.title ?? pending?.displayName ?? ''} />
             : <div className="info-cover">
               {!dialog && pending ? <PeerAvatar id={pending.chatId} name={pending.displayName} image={pending.avatar ?? null} surface="dialogs" size={88} />
                 : dialog?.service ? <PeerAvatar id={dialog.id} name={dialog.title} image={dialog.avatar ?? null} surface="dialogs" size={88} />
@@ -380,24 +377,16 @@ export function InfoPanel({ accountUid, chatId }: { accountUid: string; chatId: 
               <h2 className="selectable">{dialog?.title ?? pending?.displayName ?? ''}{peerOfficial && <OfficialMark kind={peerOfficial} />}</h2>
               <span>{dialog?.kind === 'secret' ? tr('비밀 대화') : dialog?.service ? tr('서비스 알림') : peerOfficial ? officialLabel(peerOfficial) : tr('연락처에 없는 사용자')}</span>
             </div>}
-      {/* Telegram's profile of a non-contact offers "Add to contacts"; iOS UnknownProfileView the same. */}
-      {/* B113: the official notice account is no person to add, block or report (tdesktop isServiceUser, info_profile_top_bar.cpp:1188-1196). */}
-      {!profile && dialog?.kind === 'direct' && !dialog.service && peerUid && !inContacts && <div className="info-section">
-        <ActionRow icon={adding ? <Spinner size={20} /> : <UserPlus size={20} />} label={tr('연락처에 추가')} disabled={adding} onClick={() => { void addPeer() }} />
-        <ActionRow icon={<ShieldOff size={20} />} label={peerBlocked ? tr('차단 해제') : tr('사용자 차단')} danger={!peerBlocked} disabled={blockedUsers === null} onClick={() => { void toggleStrangerBlock() }} />
-        {/* iOS UnknownProfileView «사용자 신고» (UserReportView). */}
-        <ActionRow icon={<Flag size={20} />} label={tr('사용자 신고')} danger onClick={() => showReportBox(accountUid, { type: 'user', targetId: peerUid }, tr('사용자 신고'), { uid: peerUid, userId: '', displayName: dialog.title })} />
-      </div>}
       {/* Telegram's Shared Media entry; a secret room keeps nothing to list here. */}
-      {!profile && dialog && dialog.kind !== 'secret' && <div className="info-section">
+      {dialog && dialog.kind !== 'secret' && <div className="info-section">
         <ActionRow icon={<Images size={20} />} label={tr('공유된 미디어 · 파일 · 링크')} onClick={() => setMedia(true)} />
       </div>}
       {/* Telegram's info panel «Notifications» switch, kept on this device. */}
-      {!profile && dialog && dialog.kind !== 'secret' && <div className="info-section">
+      {dialog && dialog.kind !== 'secret' && <div className="info-section">
         <div className="info-row info-switch-row"><span className="info-row-icon"><Bell size={20} /></span><span className="info-row-text"><span>{tr('알림')}</span><small>{dialog.muted ? tr('꺼짐') : tr('켜짐')}</small></span>
           <Switch label={tr('알림')} checked={!dialog.muted} onChange={value => { void window.morse.setChatFlags(accountUid, dialog.id, { muted: !value }).catch(reason => controller.toast(errorText(reason, tr('변경하지 못했습니다.')), 'error')) }} /></div>
       </div>}
-      {!profile && dialog && !dialog.service && <div className="info-section">
+      {dialog && !dialog.service && <div className="info-section">
         <InfoRow icon={<MessageCircle size={20} />} value={dialog.kind === 'group' ? tr('그룹 대화') : dialog.kind === 'secret' ? tr('비밀 대화') : tr('개인 대화')} label={tr('대화 종류')} />
         {dialog.kind !== 'secret' && <InfoRow icon={<Timer size={20} />} value={autoDeleteSummary(dialog.autoDeleteSeconds ?? 0)}
           label={canChangeAutoDelete(dialog, accountUid) ? tr('자동 삭제 · 눌러서 변경') : tr('자동 삭제')} onClick={canChangeAutoDelete(dialog, accountUid) ? () => showChatAutoDeleteBox(accountUid, dialog) : undefined} />}

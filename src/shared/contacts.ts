@@ -36,6 +36,9 @@ export interface ContactProfileSnapshot {
   requestId: string
   uid: string
   status: 'loading' | 'ready' | 'unavailable' | 'error'
+  // B266: whether this person is one of this account's contacts. Anyone can be opened (tdesktop showPeerInfo); what
+  // only a contact has — the note, the personal photo, editing, deleting — follows this, as tdesktop's IsContactValue.
+  contact: boolean
   displayName: string
   originalName: string
   contactVersion: string

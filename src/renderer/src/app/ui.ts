@@ -8,7 +8,10 @@ export type Section = 'chats' | 'notes' | 'channels'
 export type Folder = 'all' | 'personal' | 'groups' | 'unread' | `folder:${string}`
 export interface LayerEntry { id: string; render(close: () => void): ReactNode; dismissible: boolean; onClose?: () => void }
 export interface ToastEntry { id: string; text: string; tone: 'default' | 'error'; action?: { label: string; run(): void } }
-export type RightPanel = null | 'info' | 'search' | 'comments' | 'inquiry'
+export type RightPanel = null | 'info' | 'search' | 'comments' | 'inquiry' | 'person'
+// B266: the person the 'person' panel shows, with the name the screen that opened them shows (for when no public profile
+// can be read), and the panel it opened over, which its back button returns to.
+export interface PersonTarget { uid: string; hint: string; back: RightPanel }
 // The 1:1 inquiry the third column holds: one room, or the owner's list of a channel's rooms
 // (`thread` null). It is opened from the channel screen and from the chat list, and a chat list row
 // opens the room alone — the channel itself is reached from the channels tab and from a profile.
@@ -26,6 +29,7 @@ export interface UiState {
   channelExplore: boolean
   noteId: string | null
   right: RightPanel
+  person: PersonTarget | null
   inquiry: InquiryTarget | null
   dialogsQuery: string
   mainMenu: boolean
@@ -44,7 +48,7 @@ function storedWidth(): number {
 }
 
 let state: UiState = {
-  section: 'chats', folder: 'all', archived: false, chatId: null, channelId: null, channelPostId: null, channelExplore: false, noteId: null, right: null, inquiry: null,
+  section: 'chats', folder: 'all', archived: false, chatId: null, channelId: null, channelPostId: null, channelExplore: false, noteId: null, right: null, person: null, inquiry: null,
   dialogsQuery: '', mainMenu: false, layers: [], toasts: [], composerFocus: 0, searchFocus: 0, dialogsWidth: storedWidth()
 }
 const listeners = new Set<() => void>()
@@ -102,6 +106,13 @@ export const controller = {
   },
   setInquiryThread(thread: string | null): void { if (state.inquiry) set({ inquiry: { ...state.inquiry, thread } }) },
   setRight(right: RightPanel): void { set({ right }) },
+  // B266 — tdesktop showPeerInfo: a person, from wherever they are met (a forward's header, a sender's name, a member,
+  // a comment's author…), in the third column beside what is open; back returns to the panel it opened over.
+  openPersonInfo(uid: string, hint = ''): void {
+    const back = state.right === 'person' ? state.person?.back ?? null : state.right
+    set({ right: 'person', person: { uid, hint, back }, mainMenu: false })
+  },
+  closePerson(back: boolean): void { set({ right: back ? state.person?.back ?? null : null, person: null }) },
   closeInquiry(): void { set({ right: null, inquiry: null }) },
   toggleRight(panel: Exclude<RightPanel, null>): void { set({ right: state.right === panel ? null : panel }) },
   setQuery(dialogsQuery: string): void { set({ dialogsQuery }) },

@@ -3,7 +3,7 @@ import type { MediaSendWire } from '../../shared/model'
 import type { ReplyBinding } from '../../shared/reply-draft'
 import { maxQueuedMessages } from '../../shared/delivery'
 import { identifier } from '../../shared/validation'
-import { textDigest } from '../messaging/text-identity'
+import { textDigest, forwardSourceValid } from '../messaging/text-identity'
 import { requireReply } from './reply-draft-table'
 
 // B195: a sticker queued as a reference to the server's copy (tdesktop SendExistingDocument → MTP_inputMediaDocument,
@@ -12,7 +12,7 @@ import { requireReply } from './reply-draft-table'
 export type StickerReferenceCommand = { kind: 'enqueue-sticker-reference'; wire: MediaSendWire; reply: ReplyBinding | null }
 
 const referenceKeys = new Set(['id', 'chatId', 'senderId', 'type', 'text', 'mediaUrl', 'isSilent', 'isEncrypted', 'protocolVersion',
-  'stickerId', 'stickerKind', 'stickerSetId', 'replyToId', 'categoryId', 'isForwarded'])
+  'stickerId', 'stickerKind', 'stickerSetId', 'replyToId', 'categoryId', 'isForwarded', 'forwardSource'])
 export function stickerReferenceWire(wire: MediaSendWire, uid: string): MediaSendWire {
   identifier(wire.id); identifier(wire.chatId)
   if (Object.keys(wire).some(key => !referenceKeys.has(key)) || wire.senderId !== uid || wire.type !== 'sticker' || wire.text !== '' ||
@@ -21,7 +21,7 @@ export function stickerReferenceWire(wire: MediaSendWire, uid: string): MediaSen
       (wire.stickerSetId !== undefined && !/^[A-Za-z0-9_-]{1,160}$/.test(wire.stickerSetId)) ||
       (wire.replyToId !== undefined && !/^[A-Za-z0-9_-]{1,160}$/.test(wire.replyToId)) ||
       (wire.categoryId !== undefined && (typeof wire.categoryId !== 'string' || wire.categoryId.length > 160)) ||
-      (wire.isForwarded !== undefined && wire.isForwarded !== true)) throw new Error('Invalid sticker reference')
+      (wire.isForwarded !== undefined && wire.isForwarded !== true) || !forwardSourceValid(wire)) throw new Error('Invalid sticker reference')
   return wire
 }
 
