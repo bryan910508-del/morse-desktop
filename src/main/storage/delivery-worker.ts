@@ -189,6 +189,11 @@ db.transaction(() => {
   if (version < 54) db.exec("INSERT OR IGNORE INTO story_reply_texts(draft_id,text,revision) SELECT id,'',id FROM story_reply_drafts WHERE payload IS NOT NULL")
   const draftColumns = new Set((db.pragma('table_info(channel_comment_drafts)') as { name: string }[]).map(column => column.name))
   if (!(db.pragma('table_info(chat_flags)') as { name: string }[]).some(column => column.name === 'category')) db.exec('ALTER TABLE chat_flags ADD COLUMN category TEXT')
+  // B327: whether a boundary kept here deletes the chat (the row goes) or clears its history, and whether it has been put
+  // in the queue to the server. Rows from before are deletions not yet sent.
+  const hiddenColumns = new Set((db.pragma('table_info(hidden_chats)') as { name: string }[]).map(column => column.name))
+  if (!hiddenColumns.has('remove_row')) db.exec('ALTER TABLE hidden_chats ADD COLUMN remove_row INTEGER NOT NULL DEFAULT 1')
+  if (!hiddenColumns.has('uploaded')) db.exec('ALTER TABLE hidden_chats ADD COLUMN uploaded INTEGER NOT NULL DEFAULT 0')
   for (const name of ['parent_id', 'parent_revision']) if (!draftColumns.has(name)) db.exec(`ALTER TABLE channel_comment_drafts ADD COLUMN ${name} TEXT`)
   const columns = new Set((db.pragma('table_info(intents)') as { name: string }[]).map(column => column.name))
   for (const [name, type] of [['upload', 'TEXT'], ['source', 'BLOB'], ['source_digest', 'TEXT'], ['upload_request_digest', 'TEXT'], ['forward_operation_id', 'TEXT']]) if (!columns.has(name!)) db.exec(`ALTER TABLE intents ADD COLUMN ${name} ${type}`)
@@ -269,7 +274,7 @@ function execute(command: DeliveryCommand): unknown {
     case 'contact-labels': case 'contact-details': case 'contact-details-save': case 'contact-name-pending': case 'contact-name-server': case 'contact-name-uploaded': case 'contact-name-refused': return executeContactDetails(db, command)
     case 'reply-draft': case 'reply-select': case 'reply-clear': return executeReplyDraft(db, command)
     case 'bookmarks-read': case 'bookmark-set': return executeMessageBookmark(db, command)
-    case 'hidden-chats-read': case 'hidden-chat-set': case 'cleared-chats-read': case 'cleared-chat-set': return executeHiddenChat(db, command)
+    case 'hidden-chats-read': case 'hidden-chat-set': case 'hidden-chat-uploaded': case 'cleared-chats-read': case 'cleared-chat-set': return executeHiddenChat(db, command)
     case 'hidden-messages-read': case 'hidden-messages-add': return executeHiddenMessage(db, command)
     case 'peer-photos-read': case 'peer-photo-seen': case 'peer-photo-forget': return executePeerPhoto(db, command)
     case 'chat-flags-read': case 'chat-flag-set': return executeChatFlag(db, command)

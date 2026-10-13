@@ -130,7 +130,8 @@ import { ChannelStories } from './channel-stories'
 import { DiscussionAvatars } from './discussion-avatars'
 import { PersonalChannels } from './personal-channel'
 import { PhotoPreviews } from '../media/photo-previews'
-import { HiddenChats, emptyRevokedDirect, withLocalDeletion } from './hidden-chats'
+import { HiddenChats, decodeHistoryClears, emptyRevokedDirect, withLocalDeletion } from './hidden-chats'
+import { millisDown } from '../../shared/history-clears'
 import { HiddenMessages } from './hidden-messages'
 import { ChatFlags } from './chat-flags'
 import { StickerPacks } from './sticker-packs'
@@ -628,7 +629,11 @@ export class AccountSession {
       (chatId, messageId, index, state) => { if (!this.closed) events.fileState(chatId, messageId, index, state) }, events.files)
     this.photoPreviews = new PhotoPreviews(credentials, (chatId, request) => this.mediaResourceFor(chatId, request))
     this.hiddenChats = new HiddenChats(<T,>(command: HiddenChatCommand) => this.delivery.hiddenChatState<T>(command),
-      () => { if (!this.closed && this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() } })
+      () => {
+        if (this.closed) return
+        void this.uploadLocalClears()
+        if (this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() }
+      })
     this.contactFlags = new ContactFlags(<T,>(command: ContactFlagCommand) => this.delivery.contactFlagState<T>(command), () => { if (!this.closed) this.events.changed() })
     this.chatFlags = new ChatFlags(<T,>(command: ChatFlagCommand) => this.delivery.chatFlagState<T>(command),
       () => { if (!this.closed && this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() } })
@@ -676,7 +681,10 @@ export class AccountSession {
     // A4: a history cleared for everyone goes with the boundary fixed when it was pressed, again until answered.
     this.historyClears = new HistoryClears(connected, command => this.delivery.historyClearState(command), () => this.historyClearSession(credentials),
       (request, cutoff, done) => {
-        if (this.closed || request.kind !== 'chat-clear') return
+        if (this.closed) return
+        // B327: a boundary kept here before goes up once; it counts as gone up only when the server has it.
+        if (request.kind === 'chat-clear-me' && done && request.upTo?.messageId === null) void this.hiddenChats.markUploaded(request.targetId)
+        if (request.kind !== 'chat-clear') return
         this.hiddenChats.endClear(request.targetId)
         // B154: an emptied official notice chat leaves the list (no mark that keeps a cleared chat listed).
         if (done && cutoff !== null && !this.index.get(request.targetId)?.summary.service) void this.hiddenChats.noteCleared(request.targetId, cutoff)
@@ -1258,6 +1266,20 @@ export class AccountSession {
         }, 10000)
       }
       observe('chats'); observe('pins')
+      // B327: this account's own boundaries (users/{uid}/historyClears), written by clearMorseHistoryForMe from any of
+      // its devices. The list does not wait for them, and a refusal (a server without them yet) leaves the list as it is.
+      reader.watch({ query: { parent: `${documents}/users/${this.profile.uid}`, structuredQuery: { from: [{ collectionId: 'historyClears' }] } } }, this.credentials.signal, {
+        snapshot: rows => {
+          if (!active()) return
+          const mine = decodeHistoryClears(rows.values(), this.profile.uid)
+          this.channelInquiries.setMine(mine.inquiries)
+          this.inquiryRows.setMine(mine.inquiries)
+          if (this.hiddenChats.setServer(mine.chats) && this.chatsCurrent && this.pinsCurrent) this.rebuild()
+          this.events.changed()
+        },
+        reconnecting: () => {},
+        state: () => {}
+      }, 5000, 4 * 1024 * 1024)
     } catch (error) { failed(error instanceof ReadFailure ? error : new ReadFailure('data')) }
   }
   // Telegram R-60 / A11 §4: a person's name is the same on every screen — the chat list, the chat's header and a
@@ -1923,12 +1945,7 @@ export class AccountSession {
     const route = chatDeleteRoute(dialog, forEveryone)
     // B113: cleared on the server for this account, without the mark that keeps a cleared chat listed (history-clears.ts).
     if (route === 'service-clear') return this.historyClears.enqueue({ id: randomUUID(), kind: 'chat-clear', targetId: chatId, seen: seenTop(dialog.top), upTo: null })
-    if (route === 'hide') {
-      await this.hiddenChats.hide(chatId, dialog.top)
-      if (this.chatsCurrent && this.pinsCurrent) this.rebuild()
-      this.events.changed()
-      return 'done'
-    }
+    if (route === 'hide') return this.clearForMe(chatId, true)
     // Telegram deletes a private chat as messages.deleteHistory(peer, max_id, revoke): the peer and its dialog stay,
     // the history up to the boundary goes, and the chat leaves the list because it has no last message
     // (ApiWrap::deleteHistory → Data::Session::deleteConversationLocally → History::clear(DeleteChat)). iOS does the
@@ -1959,10 +1976,42 @@ export class AccountSession {
     this.hiddenChats.beginClear(chatId)
     return this.historyClears.enqueue({ id: randomUUID(), kind: 'chat-clear', targetId: chatId, seen: seenTop(dialog.top), upTo: null })
   }
+  // B327 «기록 비우기 — 나에게만»: Telegram's «Clear history» without «also for everyone» (ClearHistoryHandler,
+  // window/window_peer_menu.cpp:862-880; boxes/delete_messages_box.cpp:157-163) — the row stays, without its messages.
+  async clearChatHistoryForMe(chatId: string): Promise<'done' | 'unconfirmed'> { return this.clearForMe(chatId, false) }
+  // B327: «나에게만» on every device of this account. It is drawn here at once from the last message the person saw, and
+  // goes to the server through the history-clear queue with that message as its boundary (clearMorseHistoryForMe), again
+  // until answered; the account's other devices take it from users/{uid}/historyClears. A secret chat stays on this
+  // device (its history lives on the two devices; the server refuses it).
+  private async clearForMe(chatId: string, removeRow: boolean): Promise<'done' | 'unconfirmed'> {
+    const dialog = this.index.get(chatId)?.summary
+    if (this.closed || this.locked || !dialog) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    const secret = dialog.kind === 'secret'
+    await this.hiddenChats.hide(chatId, dialog.top, removeRow, !secret)
+    if (this.chatsCurrent && this.pinsCurrent) this.rebuild()
+    this.events.changed()
+    if (!secret) {
+      const upTo = dialog.top && dialog.topMessageId ? { messageId: dialog.topMessageId, createdAtMillis: millisDown(dialog.top) } : null
+      void this.historyClears.enqueue({ id: randomUUID(), kind: 'chat-clear-me', targetId: chatId, seen: seenTop(dialog.top), upTo, removeRow }).catch(() => {})
+    }
+    return 'done'
+  }
+  // B327 §3-5: a boundary this device kept before the server had one goes there once, as its moment alone.
+  private async uploadLocalClears(): Promise<void> {
+    for (const pending of this.hiddenChats.pendingUploads()) {
+      if (this.closed) return
+      if (this.index.get(pending.chatId)?.summary.kind === 'secret') { await this.hiddenChats.markUploaded(pending.chatId); continue }
+      try {
+        // Marked as gone up when the server answers (the queue's settled), so a run that ends first puts it again.
+        await this.historyClears.put({ id: randomUUID(), kind: 'chat-clear-me', targetId: pending.chatId, seen: null,
+          upTo: { messageId: null, createdAtMillis: Math.floor(pending.at) }, removeRow: pending.removeRow })
+      } catch { return }
+    }
+  }
   // The newest message of a room at or before what the person saw, after the room's current boundary (A4 §3-1).
   private historyClearSession(credentials: AccountAuthorization): HistoryClearSession {
     return {
-      newest: async (chatId, seen, signal) => {
+      newest: async (chatId, seen, signal, mine) => {
         const reader = new FirestoreReader(credentials)
         try {
           const docs = await reader.query(`${documents}/chats/${chatId}`, { from: [{ collectionId: 'messages' }],
@@ -1971,7 +2020,8 @@ export class AccountSession {
           const doc = docs[0]
           if (!doc) return null
           const at = timestamp(doc.fields?.createdAt?.timestampValue, childId(doc.name, `${documents}/chats/${chatId}/messages`))
-          return withinCutoff(at, this.index.get(chatId)?.cutoff) ? null : { id: at.id, seconds: at.seconds, nanoseconds: at.nanoseconds }
+          // A clear for me looks past this account's own boundary, which it has drawn already; the server keeps the later.
+          return !mine && withinCutoff(at, this.index.get(chatId)?.cutoff) ? null : { id: at.id, seconds: at.seconds, nanoseconds: at.nanoseconds }
         } finally { reader.close() }
       },
       call: (name, data, signal) => callMorseFunction(credentials, name, data, AbortSignal.any([signal, AbortSignal.timeout(65000)]))

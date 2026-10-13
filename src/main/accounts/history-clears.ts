@@ -22,16 +22,27 @@ export function chatDeleteRoute(dialog: { kind: string; service?: true }, forEve
   if (!forEveryone) return 'hide'
   return dialog.kind === 'direct' ? 'direct-delete' : 'document'
 }
-export function historyClearRetryDelay(attempt: number): number { return Math.min(60000, 2000 * 2 ** Math.max(0, attempt - 1)) }
+export function historyClearRetryDelay(attempt: number, kind?: HistoryClearRequest['kind']): number {
+  // B327: a clear for me waits as Android's pending task does, 2 s doubling to five minutes (the account's hourly count).
+  return Math.min(kind === 'chat-clear-me' ? 300000 : 60000, 2000 * 2 ** Math.max(0, attempt - 1))
+}
+// B327, the same on the three apps (review 10-13 03:4x): a clear for me ends only when the server says the request itself
+// is wrong — a bad request, not this account's room, a secret chat, a room that does not exist. Anything else — no
+// answer, a server without the callable yet (NOT_FOUND with no reason), the hourly count — goes again.
+export function clearForMeRefused(error: MorseCallableFailure): boolean {
+  if (error.delivery !== 'answered') return false
+  return ['INVALID_ARGUMENT', 'PERMISSION_DENIED'].includes(error.status) || ['SECRET_CHAT', 'CHAT_MISSING', 'NOT_PARTICIPANT', 'INVALID_REQUEST', 'ACCOUNT_CHANGED'].includes(error.reason)
+}
 
 export interface HistoryClearSession {
   // The newest message of a chat at or before `seen` (the room's last message as the person saw it), after the room's
   // current boundary; null when there is none.
-  newest(chatId: string, seen: { seconds: number; nanoseconds: number }, signal: AbortSignal): Promise<{ id: string; seconds: number; nanoseconds: number } | null>
+  newest(chatId: string, seen: { seconds: number; nanoseconds: number }, signal: AbortSignal, mine?: boolean): Promise<{ id: string; seconds: number; nanoseconds: number } | null>
   call(name: string, data: Record<string, unknown>, signal: AbortSignal): Promise<Record<string, unknown>>
 }
 type Outcome = { done: number | null } | { refused: string } | { again: unknown; held: boolean }
-const callables: Record<HistoryClearRequest['kind'], string> = { 'chat-clear': 'clearMorseChatHistory', 'direct-delete': 'deleteDirectChatHistory', 'inquiry-clear': 'clearMorseInquiryHistory' }
+const callables: Record<HistoryClearRequest['kind'], string> = { 'chat-clear': 'clearMorseChatHistory', 'direct-delete': 'deleteDirectChatHistory',
+  'inquiry-clear': 'clearMorseInquiryHistory', 'chat-clear-me': 'clearMorseHistoryForMe' }
 const failure = (kind: HistoryClearRequest['kind']): string => kind === 'direct-delete' ? tr('대화를 삭제하지 못했습니다.') : tr('대화 기록을 삭제하지 못했습니다.')
 // Whether a request may go now: a held one only with its boundary, once the server is known to take one.
 const sendable = (row: StoredHistoryClear, applies: boolean): boolean => row.state === 'queued' || (applies && row.request.upTo !== null)
@@ -71,6 +82,15 @@ export class HistoryClears {
     // Not connected, or the screen locked: it is kept and goes when the queue can send.
     if (!this.active(this.generation.signal)) this.answer(request.id, 'unconfirmed')
     return first
+  }
+  // Kept and sent like enqueue, without waiting for the first try: B327's old local boundaries, put once each.
+  async put(request: HistoryClearRequest): Promise<void> {
+    if (this.closed) throw new Error(tr('계정이 변경되었습니다.'))
+    if (!this.loaded) await this.load()
+    const replaces = this.rows.filter(row => row.request.kind === request.kind && row.request.targetId === request.targetId).map(row => row.request.id)
+    await this.store({ kind: 'history-clear-put', request, replaces, createdAt: Date.now() })
+    for (const id of replaces) { this.retries.delete(id); this.answer(id, 'unconfirmed') }
+    await this.reload(); this.kick()
   }
   // The network is back: what waits goes now, its waits started over.
   retryNow(): void { this.retries.clear(); this.unschedule(); this.kick() }
@@ -139,9 +159,9 @@ export class HistoryClears {
       this.retries.delete(request.id); this.settled(sent, null, false); this.answer(request.id, new Error(outcome.refused))
     } else {
       const attempt = (this.retries.get(request.id)?.attempt ?? 0) + 1
-      recordRetry(`history-${request.kind}`, 'send', outcome.again, outcome.held ? undefined : historyClearRetryDelay(attempt))
+      recordRetry(`history-${request.kind}`, 'send', outcome.again, outcome.held ? undefined : historyClearRetryDelay(attempt, request.kind))
       if (outcome.held) await this.store({ kind: 'history-clear-update', request: sent, state: 'held' })
-      this.retries.set(request.id, { attempt, at: Date.now() + historyClearRetryDelay(attempt) })
+      this.retries.set(request.id, { attempt, at: Date.now() + historyClearRetryDelay(attempt, request.kind) })
       this.answer(request.id, 'unconfirmed')
     }
   }
@@ -149,25 +169,28 @@ export class HistoryClears {
     const session = this.open()
     let sent = request
     // The first send finds the message the person saw last and keeps it: every later send carries the same boundary.
+    // B327: a clear for me looks past this device's own boundary, which it has drawn already.
     if (!sent.upTo && sent.seen && sent.kind !== 'inquiry-clear') {
-      const newest = await session.newest(sent.targetId, sent.seen, signal)
+      const newest = await session.newest(sent.targetId, sent.seen, signal, sent.kind === 'chat-clear-me')
       // Nothing left at or before what the person saw: the room is already cleared that far.
       if (!newest) return { outcome: { done: null }, sent }
       const upTo: HistoryClearUpTo = { messageId: newest.id, createdAtMillis: millisDown(newest) }
       sent = { ...sent, upTo }
       await this.store({ kind: 'history-clear-update', request: sent, state: 'queued' })
     }
-    const data: Record<string, unknown> = sent.kind === 'inquiry-clear' ? { inquiryId: sent.targetId } : { chatId: sent.targetId }
-    if (sent.upTo) data.upTo = sent.upTo
+    const data: Record<string, unknown> = sent.kind === 'inquiry-clear' ? { inquiryId: sent.targetId }
+      : sent.kind === 'chat-clear-me' ? { kind: 'chat', roomId: sent.targetId, removeRow: sent.removeRow === true } : { chatId: sent.targetId }
+    if (sent.upTo) data.upTo = sent.upTo.messageId === null ? { createdAtMillis: sent.upTo.createdAtMillis } : sent.upTo
     try {
       const result = await session.call(callables[sent.kind], data, signal)
       if (typeof result.applied === 'boolean' && !this.applies) { this.applies = true; await this.store({ kind: 'history-clear-server-applies' }).catch(() => {}) }
       return { outcome: { done: typeof result.cutoff === 'number' && Number.isFinite(result.cutoff) ? result.cutoff : null }, sent }
     } catch (error) {
-      if (error instanceof MorseCallableFailure && error.delivery === 'answered') return { outcome: { refused: failure(sent.kind) }, sent }
-      // An answer lost: sent again only with a boundary, and only to a server known to take one.
+      if (error instanceof MorseCallableFailure && (sent.kind === 'chat-clear-me' ? clearForMeRefused(error) : error.delivery === 'answered')) return { outcome: { refused: failure(sent.kind) }, sent }
+      // An answer lost: sent again only with a boundary, and only to a server known to take one. A clear for me is never
+      // held: its server takes the same boundary twice as once (clearMorseHistoryForMe answers `applied: false`).
       const uncertain = error instanceof MorseCallableFailure && error.uncertain
-      return { outcome: { again: error, held: uncertain && !(this.applies && sent.upTo) }, sent }
+      return { outcome: { again: error, held: uncertain && sent.kind !== 'chat-clear-me' && !(this.applies && sent.upTo) }, sent }
     }
   }
 }

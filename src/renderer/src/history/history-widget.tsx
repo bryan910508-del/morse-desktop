@@ -25,6 +25,7 @@ import { selectionActions, selectionMenuRows } from '../../../shared/message-sel
 import { copyImage } from '../app/copy-image'
 import { hasFiles } from '../app/drop'
 import { trackWrite } from '../app/drafts'
+import { showClearHistoryBox } from '../dialogs/clear-history-box'
 import { useShortcut } from '../app/shortcuts'
 import { Avatar, PeerAvatar } from '../ui/avatar'
 import { Spinner } from '../ui/controls'
@@ -634,16 +635,9 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       .catch(reason => controller.toast(errorText(reason, tr('첨부를 준비하지 못했습니다.')), 'error'))
   }
 
-  // Deletes every message of the chat for all participants (clearMorseChatHistory).
-  async function clearHistory(): Promise<void> {
-    // B154 §2-2: the official notice chat's clear is for this account only, and its row goes until the next notice.
-    if (!await confirmBox({ title: tr('대화 기록 모두 삭제'), text: service ? tr('이 대화의 알림을 모두 지웁니다. 새 알림이 오면 대화가 다시 보여요.')
-      : tr('이 대화의 모든 메시지를 참여자 모두에게서 삭제합니다. 되돌릴 수 없어요.'), confirm: tr('모두 삭제'), danger: true })) return
-    try {
-      const result = await trackWrite(window.morse.clearChatHistory(accountUid, chatId))
-      controller.toast(result === 'done' ? tr('대화 기록을 삭제했습니다.') : tr('삭제 결과를 확인하고 있습니다. 잠시 후 대화를 확인해 주세요.'))
-    } catch (reason) { controller.toast(errorText(reason, tr('대화 기록을 삭제하지 못했습니다.')), 'error') }
-  }
+  // B327: «나에게만» (every device of this account) or «모두에게» (clear-history-box.tsx); the notice chat clears for this
+  // account only.
+  function clearHistory(): void { if (dialog) showClearHistoryBox(accountUid, dialog) }
   function openMore(point: { x: number; y: number }): void {
     popupMenu.open(point, [
       dialog && !secret ? { label: tr('대화 안 검색'), icon: <Search size={18} />, disabled: !historyReady, onSelect: () => controller.setRight('search') } : null,
@@ -651,7 +645,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       dialog && historyReady && !secret && !service ? { label: tr('메시지 선택'), icon: <Check size={18} />, onSelect: () => setSelection([]) } : null,
       dialog && !secret ? { label: tr('배경 설정'), icon: <Images size={18} />, onSelect: () => showChatBackgroundBox(accountUid, chatId) } : null,
       dialog && !secret && !service ? { label: tr('자동 삭제'), icon: <Timer size={18} />, disabled: !canChangeAutoDelete(dialog, accountUid), onSelect: () => showChatAutoDeleteBox(accountUid, dialog) } : null,
-      dialog && !secret && !chatId.startsWith('memo_') ? { label: tr('대화 기록 모두 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void clearHistory() } } : null,
+      dialog && !secret && !chatId.startsWith('memo_') ? { label: tr('대화 기록 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => clearHistory() } : null,
       !dialog && pending ? { label: tr('새 대화 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => {
         void window.morse.discardDirectDraft(accountUid, chatId).then(() => controller.closeChat()).catch(reason => controller.toast(errorText(reason, tr('새 대화를 삭제하지 못했습니다.')), 'error'))
       } } : null

@@ -1,3 +1,4 @@
+import type { MyHistoryClear } from './hidden-chats'
 import { inquiryPreviewText, ownerRowId, subscriberRowId, type InquiryForwardRoom, type InquiryRole, type InquiryRow } from '../../shared/channel-inquiries'
 import type { InquiryNotice } from './inquiry-notifications'
 import { positionMilliseconds } from '../../shared/model'
@@ -34,13 +35,23 @@ export function messageLine(fields: Record<string, WireObject>): string {
 // What a room's line shows in place of the room document's own when its newest messages are deleted here: the newest
 // message left, and when it was sent (null keeps the room's time), or nothing to say (null).
 export type RemainingLine = (inquiryId: string, roomAt: number | null) => { preview: string; lastMessageAt: number | null } | null
+// B327: this account's boundary for an inquiry room (users/{uid}/historyClears), in milliseconds, and whether it took the
+// room out of the list. A room whose newest message is at or before it shows no line, or none at all.
+export type MyInquiryClear = (inquiryId: string) => { cutoff: number; removeRow: boolean } | null
 // Messages this device deleted for itself in inquiry rooms (hidden-messages.ts, by the room's queue id).
 export interface HiddenInquiryMessages { count(inquiryId: string): number; has(inquiryId: string, messageId: string): boolean }
 
 // ChatListView's rows for these rooms: one per inquiry for a subscriber, one folder per channel for
 // an owner (ChannelInquirySummary gathers that channel's rooms). `addresses` keeps each channel's
 // cached picture address, taken from the newest room that carries one.
-export function buildInquiryRows(uid: string, subscriber: Iterable<FirestoreDocument>, owner: Iterable<FirestoreDocument>, remaining: RemainingLine = () => null): { rows: InquiryRow[]; addresses: Map<string, string> } {
+export function buildInquiryRows(uid: string, subscriber: Iterable<FirestoreDocument>, owner: Iterable<FirestoreDocument>, remaining: RemainingLine = () => null,
+  mine: MyInquiryClear = () => null): { rows: InquiryRow[]; addresses: Map<string, string> } {
+  // What a room shows after this account's boundary: its line, or nothing when the row goes.
+  const cleared = (id: string, at: number | null): 'row' | 'line' | null => {
+    const clear = mine(id)
+    if (!clear || (at !== null && at > clear.cutoff)) return null
+    return clear.removeRow ? 'row' : 'line'
+  }
   const addresses = new Map<string, string>(), rows: InquiryRow[] = []
   const remember = (channelId: string, fields: Record<string, WireObject>): void => {
     const raw = boolField(fields, 'channelDeleted') ? '' : stringField(fields, 'channelPhotoURL', 10000)
@@ -50,8 +61,9 @@ export function buildInquiryRows(uid: string, subscriber: Iterable<FirestoreDocu
     const f = doc.fields, channelId = stringField(f, 'channelId', 160), id = doc.name.slice(doc.name.lastIndexOf('/') + 1)
     if (!channelId || !id || stringField(f, 'subscriberId', 160) !== uid) continue
     remember(channelId, f)
-    const roomAt = time(f, 'lastMessageAt'), left = remaining(id, roomAt)
-    rows.push({ id: subscriberRowId(id), kind: 'subscriber', channelId, inquiryId: id, title: channelName(f), preview: left ? left.preview : preview(f),
+    const roomAt = time(f, 'lastMessageAt'), left = remaining(id, roomAt), mark = cleared(id, left?.lastMessageAt ?? roomAt)
+    if (mark === 'row') continue
+    rows.push({ id: subscriberRowId(id), kind: 'subscriber', channelId, inquiryId: id, title: channelName(f), preview: mark ? '' : left ? left.preview : preview(f),
       lastMessageAt: left?.lastMessageAt ?? roomAt, unread: Math.max(0, Math.trunc(numberField(f, 'unreadForSubscriber'))), rooms: 1 })
   }
   const folders = new Map<string, InquiryRow>()
@@ -60,7 +72,9 @@ export function buildInquiryRows(uid: string, subscriber: Iterable<FirestoreDocu
     if (!channelId || stringField(f, 'channelOwnerId', 160) !== uid) continue
     remember(channelId, f)
     const id = doc.name.slice(doc.name.lastIndexOf('/') + 1), roomAt = time(f, 'lastMessageAt'), left = id ? remaining(id, roomAt) : null
-    const at = left?.lastMessageAt ?? roomAt, line = left ? left.preview : preview(f), unread = Math.max(0, Math.trunc(numberField(f, 'unreadForOwner')))
+    const at = left?.lastMessageAt ?? roomAt, mark = id ? cleared(id, at) : null
+    if (mark === 'row') continue
+    const line = mark ? '' : left ? left.preview : preview(f), unread = Math.max(0, Math.trunc(numberField(f, 'unreadForOwner')))
     const current = folders.get(channelId)
     if (!current) {
       folders.set(channelId, { id: ownerRowId(channelId), kind: 'ownerFolder', channelId, inquiryId: null, title: channelName(f),
@@ -88,6 +102,7 @@ export class InquiryRows {
   private closed = false
   private subscriber = new Map<string, FirestoreDocument>()
   private owner = new Map<string, FirestoreDocument>()
+  private mine = new Map<string, { cutoff: number; removeRow: boolean }>()
   // A row shows the channel's own picture, which is public (storage.rules channel_photos).
   private readonly photos: ChannelImages
   private addresses = new Map<string, string>()
@@ -183,11 +198,15 @@ export class InquiryRows {
     } catch { /* The room's own line stays; the next change of the room asks again. */ }
     finally { this.reading.delete(key + inquiryId) }
   }
+  // B327: this account's inquiry boundaries as last received.
+  setMine(clears: Map<string, MyHistoryClear>): void {
+    this.mine = new Map([...clears].map(([id, value]) => [id, { cutoff: positionMilliseconds(value.cutoff), removeRow: value.removeRow }]))
+  }
   snapshot(): InquiryRow[] {
     if (this.closed || this.locked) return []
     // A fault here must not break the whole snapshot; the rows simply stay away until the next one.
     try {
-      const { rows } = buildInquiryRows(this.uid, this.subscriber.values(), this.owner.values(), (id, at) => this.remainingLine(id, at))
+      const { rows } = buildInquiryRows(this.uid, this.subscriber.values(), this.owner.values(), (id, at) => this.remainingLine(id, at), id => this.mine.get(id) ?? null)
       return rows.map(row => ({ ...row, photo: this.photos.snapshot(row.channelId) }))
     } catch { return [] }
   }

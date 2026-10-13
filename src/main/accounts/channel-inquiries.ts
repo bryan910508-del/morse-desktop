@@ -1,3 +1,4 @@
+import type { MyHistoryClear } from './hidden-chats'
 import { createHash, randomUUID } from 'node:crypto'
 import type { ChannelInquiriesSnapshot, InquiryAttachmentMode, InquiryAttachmentRequest, InquiryAutoDeleteRequest, InquiryVoiceRequest, InquiryListRequest, InquiryListSnapshot, InquiryMessageItem, InquiryMessageKind, InquiryPhotoRequest, InquiryReactionRequest, InquiryRole, InquirySummary,
   InquiryScheduleRequest, InquiryTargetRequest, InquiryTextRequest, InquiryThreadRequest, InquiryThreadSnapshot } from '../../shared/channel-inquiries'
@@ -70,7 +71,9 @@ function inquiryPeerRecord(doc: FirestoreDocument, uid: string): { photo: string
   const deleted = boolField(f, 'subscriberAccountDeleted')
   return { photo: deleted ? '' : stringField(f, 'subscriberPhotoURL', 10000), deleted }
 }
-export function decodeInquiry(doc: FirestoreDocument, uid: string): Inquiry {
+// `mine`: B327 — this account's own boundary for the room (users/{uid}/historyClears), in milliseconds. The room's is
+// historyRevokedAt; the later of the two is the one a message is held against.
+export function decodeInquiry(doc: FirestoreDocument, uid: string, mine: number | null = null): Inquiry {
   const prefix = `${documents}/channelInquiries/`, id = doc.name.slice(prefix.length), f = doc.fields
   if (!doc.name.startsWith(prefix) || id.includes('/')) throw new ReadFailure('data')
   const ownerId = stringField(f, 'channelOwnerId', 160), subscriberId = stringField(f, 'subscriberId', 160)
@@ -81,11 +84,12 @@ export function decodeInquiry(doc: FirestoreDocument, uid: string): Inquiry {
   return { id, role, peerUid: role === 'owner' ? subscriberId : '', channelId: stringField(f, 'channelId', 160), channelName, peerName: role === 'owner' ? subscriberName : channelName,
     // B163 ①: a room whose newest line is its auto-delete notice reads as that line.
     lastMessage: autoDeleteLineText(f) ?? inquiryPreviewText(stringField(f, 'lastMessage', 100000).slice(0, 300)), lastMessageAt: time(f, 'lastMessageAt'),
-    unread: Math.max(0, Math.trunc(numberField(f, role === 'owner' ? 'unreadForOwner' : 'unreadForSubscriber'))), cutoff: time(f, 'historyRevokedAt'),
+    unread: Math.max(0, Math.trunc(numberField(f, role === 'owner' ? 'unreadForOwner' : 'unreadForSubscriber'))), cutoff: laterMillis(time(f, 'historyRevokedAt'), mine),
     // The room's own auto-delete policy; the server stamps every accepted message with its deleteAt.
     autoDeleteSeconds: autoDeleteSecondsValue(Math.trunc(numberField(f, 'autoDeleteSeconds'))), autoDeleteMyOnly: boolField(f, 'autoDeleteMyOnly'),
     outboxRead: inquiryOutboxRead(f, role === 'owner' ? subscriberId : ownerId) }
 }
+const laterMillis = (a: number | null, b: number | null): number | null => a === null ? b : b === null ? a : Math.max(a, b)
 // B222: a picture's or a video's caption, the same on the three apps (contracts/B222-inquiry-video-caption.md §1,
 // iOS MorseInquiryMessageMapper.videoCaption c444f691). Telegram keeps a caption as the message's text, and an edit
 // on any app rewrites `text` only, so `text` comes first — unless it is the media itself: Android sends the uploaded
@@ -189,6 +193,8 @@ export class ChannelInquiries {
   // Photos of the people listed, from the photo address this record keeps (see ChannelPeoplePhotos).
   people: PeoplePhotoResolver | null = null
   private photos = new Map<string, string>()
+  // B327: this account's own boundaries for inquiry rooms, in milliseconds, and whether a room left the list.
+  private mine = new Map<string, { cutoff: number; removeRow: boolean }>()
   private reader: FirestoreReader | null = null
   private list: ListState | null = null
   private thread: ThreadState | null = null
@@ -278,6 +284,11 @@ export class ChannelInquiries {
         for (const doc of rows.values()) {
           try {
             const { role, cutoff: _cutoff, ...summary } = decodeInquiry(doc, this.uid)
+            const clear = this.mine.get(summary.id)
+            if (clear && (summary.lastMessageAt === null || summary.lastMessageAt <= clear.cutoff)) {
+              if (clear.removeRow) continue
+              summary.lastMessage = ''
+            }
             if (role === 'owner' && summary.channelId === state.request.channelId) {
               items.push(summary)
               const photo = boolField(doc.fields, 'subscriberAccountDeleted') ? '' : stringField(doc.fields, 'subscriberPhotoURL', 10000)
@@ -321,7 +332,7 @@ export class ChannelInquiries {
       const reader = this.source, doc = await reader.getDocument(`${documents}/channelInquiries/${state.request.inquiryId}`, this.signal())
       if (this.thread !== state || this.locked) return
       if (!doc) { state.value = { ...state.value, status: 'error', message: tr('문의를 찾을 수 없습니다.') }; this.changed(); return }
-      const inquiry = decodeInquiry(doc, this.uid)
+      const inquiry = decodeInquiry(doc, this.uid, this.mine.get(state.request.inquiryId)?.cutoff ?? null)
       state.inquiry = inquiry
       state.peer = inquiryPeerRecord(doc, this.uid)
       state.value = { ...state.value, channelId: inquiry.channelId, role: inquiry.role, title: inquiry.peerName, channelName: inquiry.channelName, peerUid: inquiry.peerUid, pinnedIds: pinnedMessageIds(doc.fields), outboxRead: inquiry.outboxRead }
@@ -337,7 +348,7 @@ export class ChannelInquiries {
           const room = rows.get(doc.name)
           if (this.thread !== state || !room) return
           try {
-            const current = decodeInquiry(room, this.uid)
+            const current = decodeInquiry(room, this.uid, this.mine.get(state.request.inquiryId)?.cutoff ?? null)
             state.inquiry = { ...current, cutoff: current.cutoff }
             state.peer = inquiryPeerRecord(room, this.uid)
             state.value = { ...state.value, title: current.peerName, channelName: current.channelName, peerUid: current.peerUid, pinnedIds: pinnedMessageIds(room.fields),
@@ -416,6 +427,16 @@ export class ChannelInquiries {
   }
 
   // A message hidden on this device leaves the open room at once, as it leaves a chat's history.
+  // B327: this account's inquiry boundaries as last received. The open room leaves out what is now at or before its
+  // boundary at once (a boundary only moves forward), and the list follows with its next snapshot.
+  setMine(clears: Map<string, MyHistoryClear>): void {
+    this.mine = new Map([...clears].map(([id, value]) => [id, { cutoff: positionMilliseconds(value.cutoff), removeRow: value.removeRow }]))
+    const state = this.thread, clear = state ? this.mine.get(state.request.inquiryId) : undefined
+    if (!state?.inquiry || !clear || (state.inquiry.cutoff !== null && state.inquiry.cutoff >= clear.cutoff)) return
+    state.inquiry = { ...state.inquiry, cutoff: clear.cutoff }
+    const items = state.value.items.filter(item => item.createdAt === null || item.createdAt > clear.cutoff)
+    if (items.length !== state.value.items.length) { state.value = { ...state.value, items }; this.changed() }
+  }
   refreshHidden(): void {
     const state = this.thread
     if (!state?.inquiry || state.value.status !== 'ready') return

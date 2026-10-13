@@ -488,6 +488,8 @@ export interface DesktopBridge {
   deleteChannel(accountUid: string, channelId: string): Promise<'done' | 'unconfirmed'>
   storyBar(accountUid: string, peers: string[], force: boolean): Promise<import('./story-bar').StoryBarResult>
   clearChatHistory(accountUid: string, chatId: string): Promise<'done' | 'unconfirmed'>
+  // B327: cleared for this account on all its devices; the row stays.
+  clearChatHistoryForMe(accountUid: string, chatId: string): Promise<'done' | 'unconfirmed'>
   // Telegram's "Delete chat": for me only hides the room here, for everyone removes it.
   deleteChat(accountUid: string, chatId: string, forEveryone: boolean): Promise<'done' | 'unconfirmed'>
   hideMessages(accountUid: string, chatId: string, messageIds: string[]): Promise<'done'>

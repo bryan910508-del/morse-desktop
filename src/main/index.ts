@@ -609,6 +609,10 @@ function registerIPC(): void {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).clearChatHistory(identifier(chatId))
   })
+  handle('clear-chat-history-for-me', (uid, chatId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).clearChatHistoryForMe(identifier(chatId))
+  })
   handle('prepare-memo-chat', uid => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).accountTools.prepareMemoChat()

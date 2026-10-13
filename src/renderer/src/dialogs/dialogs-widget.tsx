@@ -21,6 +21,7 @@ import { Avatar, PeerAvatar } from '../ui/avatar'
 import { Spinner } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
 import { trackWrite } from '../app/drafts'
+import { showClearHistoryBox } from './clear-history-box'
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { OfficialMark } from '../ui/official-mark'
 import { dialogFlags, reconcileDialogs, reconcilePin, reconcileUnread, setPinned, setUnread, useDialogOverrides } from './dialog-overrides'
@@ -69,7 +70,7 @@ function ChatDeleteBox({ close, onChoose, title, text, selfLabel }: {
 }) {
   const choose = (forEveryone: boolean): void => { close(); onChoose(forEveryone) }
   return <Box title={title ?? tr('대화 삭제')} width={360} onClose={close} buttons={<button className="button flat" onClick={close}>{tr('취소')}</button>}>
-    <p className="box-text">{text ?? tr('나에게만 지우면 이 기기에서 기록이 지워지고, 새 메시지가 오면 그 메시지부터 다시 보여요. 모두에게서 지우면 상대방 목록과 기록에서도 사라지고 되돌릴 수 없어요.')}</p>
+    <p className="box-text">{text ?? tr('나에게만 지우면 내 모든 기기에서 기록이 지워지고, 새 메시지가 오면 그 메시지부터 다시 보여요. 모두에게서 지우면 상대방 목록과 기록에서도 사라지고 되돌릴 수 없어요.')}</p>
     <div className="pin-type-actions">
       <button type="button" className="button secondary block" onClick={() => choose(false)}>{selfLabel ?? tr('나에게만 삭제')}</button>
       <button type="button" className="button primary block danger" onClick={() => choose(true)}>{tr('모두에게 삭제')}</button>
@@ -102,8 +103,10 @@ function InquiryDialogRow({ accountUid, inquiry, style, index, onMenu }: { accou
           : <Megaphone size={14} className="dialog-row-kind channel" aria-label={tr('채널')} />}
         <span className="dialog-row-name ellipsis">{inquiry.title}</span>
         {local.muted && <BellOff size={13} className="dialog-row-status" aria-label={tr('알림 꺼짐')} />}
-        <RowStateMark state={sends.sending ? 'sending' : sends.failed ? 'failed' : 'none'} />
-        <span className="dialog-row-time">{dialogTime(inquiry.lastMessageAt)}</span>
+        <span className="dialog-row-end">
+          <RowStateMark state={sends.sending ? 'sending' : sends.failed ? 'failed' : 'none'} />
+          <span className="dialog-row-time">{dialogTime(inquiry.lastMessageAt)}</span>
+        </span>
       </span>
       <span className="dialog-row-line">
         <span className="dialog-row-preview ellipsis">{inquiry.preview || tr('메시지 없음')}</span>
@@ -117,7 +120,9 @@ function InquiryDialogRow({ accountUid, inquiry, style, index, onMenu }: { accou
 
 // B291 (row-send-state.ts): the one place just left of the row's date — TI ChatListItem.swift:4627-4633, as iOS B300 put its
 // «!» there — for a message of mine on its way (the clock), one that did not go (the «!»), and the row's newest message
-// when it is mine: sent (a check) or read (the circled check the bubble shows).
+// when it is mine: sent (a check) or read (the circled check the bubble shows). B338: the mark and the date are one group
+// at the row's far end (.dialog-row-end), so the room left over sits between the name and the mark, as tdesktop paints
+// the send state at the end of the name's rectangle once the date's width is taken off (dialogs_layout.cpp:825-863).
 function RowStateMark({ state }: { state: RowSendState }) {
   if (state === 'sending') return <Clock3 size={12} className="dialog-row-sending" aria-label={tr('보내는 중')} />
   if (state === 'failed') return <CircleAlert size={14} className="dialog-row-failed" aria-label={tr('보내지 못한 메시지가 있습니다')} />
@@ -150,9 +155,11 @@ const DialogRow = memo(function DialogRow({ dialog, active, style, index, flags,
         <span className="dialog-row-name ellipsis">{dialog.title}</span>
         {dialog.official && <OfficialMark kind={dialog.official} className="dialog-row-official" />}
         {dialog.muted && <BellOff size={13} className="dialog-row-status" aria-label={tr('알림 꺼짐')} />}
-        <RowStateMark state={rowSendState({ secret, draft: Boolean(draft), sending: dialog.sends?.sending, failed: dialog.sends?.failed,
-          topFromMe: dialog.topFromMe, top: dialog.top, topMessageId: dialog.topMessageId, outboxRead: dialog.outboxRead })} />
-        <span className="dialog-row-time">{dialogTime(positionTime(dialog.top))}</span>
+        <span className="dialog-row-end">
+          <RowStateMark state={rowSendState({ secret, draft: Boolean(draft), sending: dialog.sends?.sending, failed: dialog.sends?.failed,
+            topFromMe: dialog.topFromMe, top: dialog.top, topMessageId: dialog.topMessageId, outboxRead: dialog.outboxRead })} />
+          <span className="dialog-row-time">{dialogTime(positionTime(dialog.top))}</span>
+        </span>
       </span>
       <span className="dialog-row-line">
         {typing ? <span className="dialog-row-preview typing ellipsis">{typing}</span>
@@ -332,7 +339,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       // Telegram's row menu keeps clearing the history and deleting the chat apart.
       status === 'ready' && !dialog.id.startsWith('memo_') ? 'separator' : null,
       status === 'ready' && !secret && !dialog.id.startsWith('memo_')
-        ? { label: tr('대화 기록 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void clearHistory(dialog) } } : null,
+        ? { label: tr('대화 기록 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => clearHistory(dialog) } : null,
       status === 'ready' && !dialog.id.startsWith('memo_')
         ? dialog.discussion && dialog.channelId
           ? { label: tr('토론방 나가기'), icon: <LogOut size={18} />, danger: true, onSelect: () => { void deleteChat(dialog) } }
@@ -407,15 +414,8 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
         : forEveryone ? tr('대화를 삭제했습니다.') : tr('대화를 목록에서 지웠습니다.'))
     } catch (reason) { controller.toast(errorText(reason, tr('대화를 삭제하지 못했습니다.')), 'error') }
   }
-  async function clearHistory(dialog: DialogSummary): Promise<void> {
-    // B154 §2-2: the official notice chat's clear is for this account only, and its row goes until the next notice.
-    if (!await confirmBox({ title: tr('대화 기록 삭제'), text: dialog.service ? tr('이 대화의 알림을 모두 지웁니다. 새 알림이 오면 대화가 다시 보여요.')
-      : tr('이 대화의 모든 메시지를 참여자 모두에게서 삭제합니다. 대화는 목록에 남아요. 되돌릴 수 없어요.'), confirm: tr('모두 삭제'), danger: true })) return
-    try {
-      const result = await trackWrite(window.morse.clearChatHistory(accountUid, dialog.id))
-      controller.toast(result === 'done' ? tr('대화 기록을 삭제했습니다.') : tr('삭제 결과를 확인하고 있습니다. 잠시 후 대화를 확인해 주세요.'))
-    } catch (reason) { controller.toast(errorText(reason, tr('대화 기록을 삭제하지 못했습니다.')), 'error') }
-  }
+  // B327: «나에게만» (every device of this account) or «모두에게» (clear-history-box.tsx).
+  function clearHistory(dialog: DialogSummary): void { showClearHistoryBox(accountUid, dialog) }
 
   // Folder tab menu: edit or delete a Morse folder, add one, or open the folder list.
   function folderMenu(item: ChatFolder | null, point: { x: number; y: number }): void {

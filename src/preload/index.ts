@@ -23,6 +23,7 @@ const bridge: DesktopBridge = {
   deleteChannel: (uid, channelId) => ipcRenderer.invoke('morse:delete-channel', uid, channelId),
   storyBar: (uid, peers, force) => ipcRenderer.invoke('morse:story-bar', uid, peers, force),
   clearChatHistory: (uid, chatId) => ipcRenderer.invoke('morse:clear-chat-history', uid, chatId),
+  clearChatHistoryForMe: (uid, chatId) => ipcRenderer.invoke('morse:clear-chat-history-for-me', uid, chatId),
   deleteChat: (uid, chatId, forEveryone) => ipcRenderer.invoke('morse:delete-chat', uid, chatId, forEveryone),
   hideMessages: (uid, chatId, messageIds) => ipcRenderer.invoke('morse:hide-messages', uid, chatId, messageIds),
   setChatFlags: (uid, chatId, patch) => ipcRenderer.invoke('morse:set-chat-flags', uid, chatId, patch),
