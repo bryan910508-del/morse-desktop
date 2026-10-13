@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { fieldHeight } from '../history/field-height'
 import { ArrowLeft, CheckCheck, CircleAlert, Clock, Clock3, Copy, Download, EllipsisVertical, File as FileIcon, Film, Flag, Forward, Image as ImageIcon, Mic, Pencil, Pin, PinOff, Plus, Reply, RotateCcw, Send, Smile, Star, Timer, Trash2, UserPlus, X } from 'lucide-react'
-import { inquiryChatMessage, maxInquiryText, ownedChannelDiscussion, type InquiryMessageItem } from '../../../shared/channel-inquiries'
+import { inquiryChatMessage, inquiryQueueChatId, maxInquiryText, ownedChannelDiscussion, type InquiryMessageItem } from '../../../shared/channel-inquiries'
 import type { ChatMessage } from '../../../shared/model'
 import { readCovers, readCursor } from '../../../shared/read-receipts'
 import { canForwardMessage } from '../../../shared/forward'
@@ -16,7 +16,8 @@ import { copyText } from '../app/clipboard'
 import { trackWrite } from '../app/drafts'
 import { Spinner, TextField } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
-import { popupMenu, pointFor } from '../ui/popup-menu'
+import { popupMenu, pointFor, type MenuEntry } from '../ui/popup-menu'
+import { translationMenuEntry } from '../app/translations'
 import { showInquiryThread } from './channel-ui'
 import { UserAvatar } from '../ui/user-avatar'
 import { ActionRow, ContactProfile } from '../info/info-panel'
@@ -344,13 +345,20 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
       controller.toast(pinned ? tr('메시지를 고정했습니다.') : tr('고정을 해제했습니다.'))
     } catch (reason) { controller.toast(errorText(reason, pinned ? tr('메시지를 고정하지 못했습니다.') : tr('고정을 해제하지 못했습니다.')), 'error') }
   }
+  // B343b: «번역» as a chat's menu has it, from the one function and path (translationMenuEntry), under the room's key.
+  const translationRoute = useDesktop(state => state?.translationRoute)
   const openMenu = (item: InquiryMessageItem, point: { x: number; y: number }): void => {
+    void translationMenuEntry(accountUid, inquiryQueueChatId(inquiryId), inquiryChatMessage(item, inquiryId), 'inquiry', translationRoute, false)
+      .then(translate => showMenu(item, point, translate), () => showMenu(item, point, null))
+  }
+  const showMenu = (item: InquiryMessageItem, point: { x: number; y: number }, translate: MenuEntry): void => {
     const pinned = pinnedIds.includes(item.id)
     // The attachment this message can hand over, as a chat hands one over (Telegram «Save As…»).
     const savable = (item.attachments ?? []).find(part => part.available && !part.blind)
     const message = inquiryChatMessage(item, inquiryId)
     popupMenu.open(point, [
       item.text ? { label: tr('텍스트 복사'), icon: <Copy size={18} />, onSelect: () => { const copied = copyText(item.text); controller.toast(copied ? tr('텍스트를 복사했습니다.') : tr('텍스트를 복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null,
+      translate,
       !item.system && ready ? { label: pinned ? tr('고정 해제') : tr('모두에게 고정'), icon: pinned ? <PinOff size={18} /> : <Pin size={18} />, onSelect: () => { void setPinned(item, !pinned) } } : null,
       // MorseStickerPreview: a sticker received here can be kept in this device's library, as in a chat.
       item.kind === 'sticker' && savable ? { label: tr('즐겨찾기에 추가'), icon: <Star size={18} />, onSelect: () => { void saveSticker(accountUid, inquiryId, message) } } : null,
@@ -428,7 +436,7 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
                 {layout.date && <div className="history-date"><span className="service-pill">{serviceDate(item.createdAt ?? 0)}</span></div>}
                 <MessageView accountUid={accountUid} chatId={inquiryId} message={message} own={item.own} layout={layout} read={item.own && message.readEligible && !item.system && readCovers(thread.outboxRead, readCursor(message.position)) ? 'read' : 'sent'}
                   selecting={selection !== null} selected={selection?.includes(item.id) === true} highlighted={false}
-                  autoTranslate={false} onMenu={(_message, point) => openMenu(item, point)} onReply={() => beginReply(item)} onJumpReply={() => showMessage(item.replyToId)}
+                  autoTranslate={false} translationRoom={inquiryQueueChatId(inquiryId)} onMenu={(_message, point) => openMenu(item, point)} onReply={() => beginReply(item)} onJumpReply={() => showMessage(item.replyToId)}
                   onToggle={() => toggleSelected(item)} onReaction={(_message, emoji) => react(item, emoji)}
                   onOpenMedia={(opened, index) => showMediaViewer(accountUid, inquiryId, opened, index, item.own ? tr('나') : thread?.title ?? '')} />
               </div>)}

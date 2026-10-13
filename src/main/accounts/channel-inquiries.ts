@@ -213,6 +213,12 @@ export class ChannelInquiries {
     this.scheduled = new DeferredMessages(uid, auth.signal, () => this.changed())
   }
 
+  // B343b: a message of the inquiry room that is open, for the menu's «번역» (none from a room not open).
+  openMessage(inquiryId: string, messageId: string): InquiryMessageItem | null {
+    const thread = this.thread
+    if (!thread || thread.request.inquiryId !== inquiryId) return null
+    return thread.value.items.find(item => item.id === messageId) ?? null
+  }
   get snapshot(): ChannelInquiriesSnapshot | null {
     if (!this.list && !this.thread) return null
     return { list: this.list ? { ...this.list.value, items: this.list.value.items.map(item => ({ ...item, photo: this.people?.(item.peerUid, this.photos.get(item.id) ?? null) ?? null })) } : null,

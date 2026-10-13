@@ -10,7 +10,8 @@ import { Box } from '../ui/layers'
 import { Spinner } from '../ui/controls'
 import { desktop } from '../app/store'
 import { effectivePowerSaving } from '../app/power-saving'
-import { photoSendSpec, reencodedPhotoType, videoSendPreset } from '../../../shared/photo-quality'
+import { photoSendHdInitial, photoSendHdRemembered, photoSendMode, photoSendSpec, reencodedPhotoType, videoSendPreset, type PhotoSendChoice } from '../../../shared/photo-quality'
+import { Toggle } from '../settings/settings-box'
 import { prepareChatPhoto } from '../photos/prepare-chat-photo'
 import { showPhotoEditor } from '../media/photo-editor'
 import { showVideoEditor, type VideoEditValue } from '../media/video-editor'
@@ -31,14 +32,20 @@ function Preview({ item, kind, video, edited }: { item: AttachmentDraft['items']
 // editImage: Editor::PhotoEditor's result replaces the staged picture (a chat's send box only), and answers the address the
 // edited picture is read at.
 // editVideo: Editor::VideoEditor's part and quality, cut again from the picked file by the Mac helper.
-export interface AttachmentSender { send(caption: string, itemIds: string[], video: VideoFacts | null): Promise<void>; discard(): void; editImage?(itemId: string, bytes: Uint8Array): Promise<string>; editVideo?(itemId: string, value: VideoEditValue, overlay: Uint8Array | null): Promise<string> }
+// B365: `highQuality` — this sender re-encodes photos at the box's «고화질» pick (a chat's); a 1:1 inquiry's has its own size.
+export interface AttachmentSender { send(caption: string, itemIds: string[], video: VideoFacts | null, options?: { hd: boolean }): Promise<void>; discard(): void; highQuality?: true; editImage?(itemId: string, bytes: Uint8Array): Promise<string>; editVideo?(itemId: string, value: VideoEditValue, overlay: Uint8Array | null): Promise<string> }
 
 // What a box opened again after its send failed starts from: the same text, the same pictures, and why it failed.
-export interface SendFilesRetry { caption: string; itemIds: string[]; error: string }
+export interface SendFilesRetry { caption: string; itemIds: string[]; error: string; hd?: boolean }
 
 function SendFilesBox({ draft, sender, close, sent, retry }: { draft: AttachmentDraft; sender: AttachmentSender; close(): void; sent(): void; retry?: SendFilesRetry }) {
   const [items, setItems] = useState(retry ? draft.items.filter(item => retry.itemIds.includes(item.id)) : draft.items)
   const [caption, setCaption] = useState(retry?.caption ?? '')
+  // B365: «고화질», from the last pick or the setting's default; settings «압축» or power saving's compression sends small.
+  const choice = photoChoice()
+  const [hd, setHd] = useState(retry?.hd ?? photoSendHdInitial(choice))
+  const compressing = choice.photoSendQuality === 'compressed' || effectivePowerSaving('compressMediaUploads')
+  const hdOffered = sender.highQuality === true && draft.kind === 'image' && items.some(item => !/\.gif$/i.test(item.name))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(retry?.error ?? '')
   // B323: a picture edited here is shown, and edited again, from the staged file that replaced it (its address after the
@@ -71,8 +78,9 @@ function SendFilesBox({ draft, sender, close, sent, retry }: { draft: Attachment
     setBusy(true)
     const text = caption, itemIds = items.map(item => item.id), facts = reading.current
     sent(); close()
-    void trackWrite((async () => sender.send(text, itemIds, draft.kind === 'video' ? await facts : null))())
-      .catch(reason => showAttachmentBox(draft, sender, { caption: text, itemIds, error: errorText(reason, tr('첨부를 보내지 못했습니다.')) }))
+    const pick = hd
+    void trackWrite((async () => sender.send(text, itemIds, draft.kind === 'video' ? await facts : null, { hd: pick }))())
+      .catch(reason => showAttachmentBox(draft, sender, { caption: text, itemIds, hd: pick, error: errorText(reason, tr('첨부를 보내지 못했습니다.')) }))
   }
   return <Box title={title} width={420} onClose={busy ? undefined : close} buttons={<>
     <button className="button flat" disabled={busy} onClick={close}>{tr('취소')}</button>
@@ -97,6 +105,8 @@ function SendFilesBox({ draft, sender, close, sent, retry }: { draft: Attachment
     </div>
     {draft.kind !== 'file' && <label className="field"><span>{tr('설명')}</span><textarea rows={2} maxLength={3000} value={caption} disabled={busy} placeholder={tr('설명 추가')} onChange={event => setCaption(event.target.value)}
       onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); send() } }} /></label>}
+    {hdOffered && <Toggle label={tr('고화질')} detail={compressing ? tr('절전·압축 중에는 작게 보내요') : tr('긴 변 2560px까지')}
+      checked={hd && !compressing} disabled={busy || compressing} onChange={setHd} />}
     {error && <p className="box-error" role="alert">{error}</p>}
   </Box>
 }
@@ -111,10 +121,17 @@ export function showAttachmentBox(draft: AttachmentDraft, sender: AttachmentSend
 
 export function showSendFilesBox(accountUid: string, chatId: string, draft: AttachmentDraft, reply: () => ReplyBinding | null): void {
   showAttachmentBox(draft, {
-    send: async (caption, itemIds, video) => {
+    highQuality: true,
+    send: async (caption, itemIds, video, options) => {
+      const choice = photoChoice(), hd = options?.hd ?? photoSendHdInitial(choice)
       await window.morse.pressAttachment(accountUid, chatId, draft.id)
-      if (draft.kind === 'image') await reencodePhotos(accountUid, chatId, draft, itemIds)
+      if (draft.kind === 'image') await reencodePhotos(accountUid, chatId, draft, itemIds, photoSendMode(choice, hd))
       await trackWrite(window.morse.sendAttachment(accountUid, chatId, draft.id, caption, itemIds, reply(), video))
+      // B365: the pick is kept for the next box once the photos are on their way (tdesktop saves SendFilesWay on send).
+      if (draft.kind === 'image') {
+        const keep = photoSendHdRemembered(choice, hd)
+        if (keep !== choice.photoSendHd) void window.morse.updatePreferences({ photoSendHd: keep }).catch(() => {})
+      }
       // B311: a selection with a video goes one item at a time — the next opens once this one is queued.
       void window.morse.nextAttachment(accountUid, chatId).then(next => { if (next) showSendFilesBox(accountUid, chatId, next, reply) })
         .catch(reason => controller.toast(errorText(reason, tr('첨부를 준비하지 못했습니다.')), 'error'))
@@ -151,9 +168,12 @@ export async function pickFiles(accountUid: string, chatId: string, mode: Attach
 }
 
 // iOS PhotoSendQuality: each photo goes out as a JPEG at the chosen size (an animated GIF keeps its bytes).
-async function reencodePhotos(accountUid: string, chatId: string, draft: AttachmentDraft, itemIds: string[]): Promise<void> {
+function photoChoice(): PhotoSendChoice {
   const preferences = desktop.value?.preferences
-  const spec = photoSendSpec(preferences?.photoSendQuality ?? 'auto', effectivePowerSaving('compressMediaUploads'))
+  return { photoSendQuality: preferences?.photoSendQuality ?? 'auto', photoSendHd: preferences?.photoSendHd ?? null }
+}
+async function reencodePhotos(accountUid: string, chatId: string, draft: AttachmentDraft, itemIds: string[], mode: PhotoSendChoice['photoSendQuality']): Promise<void> {
+  const spec = photoSendSpec(mode, effectivePowerSaving('compressMediaUploads'))
   for (const itemId of itemIds) {
     const item = draft.items.find(value => value.id === itemId)
     if (!item?.previewUrl) continue

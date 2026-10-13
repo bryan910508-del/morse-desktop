@@ -4,6 +4,7 @@ import type { ReadCredentials } from '../network/firestore-rpc'
 import { downloadChannelPostMedia } from '../network/channel-post-media'
 import { photoToken } from './userpic-cache'
 import { holdsImage, rememberedImage, rememberImage } from './userpic-images'
+import { autoDownloadFor } from './auto-download-limits'
 import { mediaCacheFor } from './media-cache'
 
 // The pictures of channel posts: the first one of every post in the channel tab's feed, and the ones a post shows in
@@ -90,8 +91,14 @@ export class ChannelPostPictures {
       try { this.validate(entry) } catch (error) { stored.fill(0); throw error }
       try { this.accept(entry, stored); return } catch { stored.fill(0) /* An unusable copy is fetched again. */ }
     }
+    // B360: a channel's pictures follow the person's «채널» automatic download limit, as tdesktop's broadcast channels do
+    // (SourceFromPeer → Source::Channel, data_auto_download.cpp:50-58). Off asks the server for nothing (the picture
+    // stays its placeholder); a limit under the feed's own cap lowers it, and the object's size is weighed before its
+    // bytes (channel-post-media.ts). What is kept above is shown whatever the limit.
+    const limit = autoDownloadFor(this.auth, 'channel', maxImageBytes)
+    if (limit <= 0) { entry.value = idleImage(entry); return }
     const signal = AbortSignal.any([this.auth.signal, entry.abort.signal, AbortSignal.timeout(45000)])
-    const bytes = await downloadChannelPostMedia(this.auth, entry.path, entry.postId, signal, () => this.validate(entry), maxImageBytes, () => {})
+    const bytes = await downloadChannelPostMedia(this.auth, entry.path, entry.postId, signal, () => this.validate(entry), Math.min(limit, maxImageBytes), () => {})
     try {
       signal.throwIfAborted(); this.validate(entry)
       this.accept(entry, bytes)

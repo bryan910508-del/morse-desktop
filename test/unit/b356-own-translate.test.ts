@@ -21,7 +21,9 @@ test('the menu offers «번역» on any text with words, one\'s own too; not a s
 test('the menu and the main process use the one rule, and «전체번역» still asks only for received messages', () => {
   const widget = readFileSync('src/renderer/src/history/history-widget.tsx', 'utf8')
   const session = readFileSync('src/main/accounts/session.ts', 'utf8')
-  assert.match(widget, /const translatable = menuTranslatable\(message, owner\?\.kind\)/)
+  // B343b moved the row into translations.ts translationMenuEntry, which applies menuTranslatable.
+  assert.match(widget, /translationMenuEntry\(accountUid, chatId, message, owner\?\.kind,/)
+  assert.match(readFileSync('src/renderer/src/app/translations.ts', 'utf8'), /if \(!menuTranslatable\(message, roomKind\)/)
   const source = session.slice(session.indexOf('  translationSource(chatId: string, messageId: string): string {'))
   const body = source.slice(0, source.indexOf('\n  }\n'))
   assert.match(body, /menuTranslatable\(message, history\.dialog\.summary\.kind\)/)

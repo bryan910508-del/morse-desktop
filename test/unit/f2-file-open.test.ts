@@ -126,7 +126,8 @@ test('F4: a file carries the size its sender recorded (fileSize), and nothing wh
   assert.equal(mediaResources(doc({ fileSize: { doubleValue: 2048 } }), 'c1', 'file', false)[0]?.summary.size, 2048)
   assert.equal(mediaResources(doc({}), 'c1', 'file', false)[0]?.summary.size, undefined)
   assert.equal(mediaResources(doc({ fileSize: { integerValue: '-3' } }), 'c1', 'file', false)[0]?.summary.size, undefined)
-  assert.equal(mediaResources(doc({ fileSize: { integerValue: '1536' } }), 'c1', 'image', false)[0]?.summary.size, undefined)
+  // B360: a single photo's size is read too (automatic download weighs it before asking); see b360-auto-download-before.
+  assert.equal(mediaResources(doc({ fileSize: { integerValue: '1536' } }), 'c1', 'image', false)[0]?.summary.size, 1536)
 })
 
 test('the cache answers whether it holds an object without reading it, and a month-old one is gone', async () => {

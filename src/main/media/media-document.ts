@@ -88,7 +88,10 @@ export function mediaResources(doc: FirestoreDocument, chatId: string | readonly
     path: raw.length <= 10000 ? storagePath(raw, chatId, kind, scope) : null,
     summary: { index, kind, name: kind === 'file' ? safeFileName(value(doc, 'fileName') || (/^(https?:|gs:)/.test(text) ? '' : text)) : `${labels[kind]}${candidates.length > 1 ? ` ${index + 1}` : ''}`,
       available: raw.length <= 10000 && storagePath(raw, chatId, kind, scope) !== null, blind: value(doc, 'thumbnailUrl') === '__blind__',
-      ...(kind === 'file' && fileSize(doc) ? { size: fileSize(doc) } : {}) },
+      // B360: a photo's or a sticker's size too, when the message carries one (a sticker reference's comes from the
+      // server's registry) — automatic download weighs it before asking (tdesktop data_auto_download.cpp:406-424). One
+      // fileSize names one object, so a message of several photos gives none.
+      ...((kind === 'file' || ((kind === 'image' || kind === 'sticker') && candidates.length === 1)) && fileSize(doc) ? { size: fileSize(doc) } : {}) },
   }))
 }
 export function mediaCaption(doc: FirestoreDocument, kind: string): string {

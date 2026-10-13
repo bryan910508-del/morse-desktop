@@ -2,7 +2,7 @@
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, ArrowLeft, Bookmark, Check, ChevronDown, Copy, Download, FolderOpen, EllipsisVertical, File as FileIcon, Flag, Forward, Images, Info, Languages, Link, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Star, StarOff, Timer, Trash2, X } from 'lucide-react'
+import { ArrowDown, ArrowLeft, Bookmark, Check, ChevronDown, Copy, Download, FolderOpen, EllipsisVertical, File as FileIcon, Flag, Forward, Images, Info, Link, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Star, StarOff, Timer, Trash2, X } from 'lucide-react'
 import { fileReady } from './file-states'
 import type { ChatMessage, DialogSummary, HistorySnapshot } from '../../../shared/model'
 import { deliveryFailed, type LocalOutgoing, type OutgoingSnapshot } from '../../../shared/delivery'
@@ -54,14 +54,14 @@ import { deleteMessage, overlayMessage, reconcileActions, reconcileMessages, tog
 import { useVisibleRead } from './visible-read'
 import { useScrollDate } from './scroll-date'
 import { followsBottom, keepBottomOnResize, keepsBottomOnChange } from './keep-bottom'
-import { autoTranslate, offerTranslation, toggleTranslation, translationShown } from '../app/translations'
+import { autoTranslate, translationMenuEntry } from '../app/translations'
 import { usePresence } from '../app/presence'
 import { useTyping } from '../app/typing'
 import { PinnedBar, togglePin } from './pinned-bar'
 import { DeferredBar } from './deferred-send'
 import { linkLabel, useShownConnection } from '../app/connection'
 import { tr } from '../../../shared/i18n'
-import { translationAvailable, menuTranslatable } from '../../../shared/translation'
+import { translationAvailable } from '../../../shared/translation'
 import { expandedReactions, reactionStrip, readRecentReactions, recordReaction } from './recent-reactions'
 import emojiList from './emoji-data.json'
 import { chatRestrictedNotice } from '../../../shared/sanctions'
@@ -516,12 +516,10 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     const deletable = Boolean(message.version)
     const removable = deletable && canDelete(messageDeletion(message, owner, accountUid))
     // Message menu «번역»: text in another language, one's own too (B356); chosen again, the original returns.
-    const translatable = menuTranslatable(message, owner?.kind)
-    const shown = translationShown(accountUid, chatId, message.id, message.text, autoTranslateRef.current)
     // A sticker's menu waits a moment for whether it is a favourite (its bytes hashed once per message); not known by
     // then, it offers the add, which for a favourite only moves it to the front.
     let faved: { id: string; favourite: boolean } | null = null
-    const open = (offer: boolean): void => {
+    const open = (translate: MenuEntry): void => {
       const favourite = faved
       const copyLink: MenuEntry | null = link ? { label: link.email ? tr('이메일 복사') : tr('링크 복사'), icon: <Link size={18} />, onSelect: () => { const copied = copyText(link.email ? link.url.replace(/^mailto:/, '') : link.url); controller.toast(copied ? tr('복사했습니다.') : tr('복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null
       const copyMessage: MenuEntry | null = text && !message.encrypted ? { label: tr('텍스트 복사'), icon: <Copy size={18} />, onSelect: () => { const copied = copyText(text); controller.toast(copied ? tr('복사했습니다.') : tr('복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null
@@ -540,7 +538,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
         canReply(message) && outgoingRef.current.canCompose ? { label: tr('답장'), icon: <Reply size={18} />, onSelect: () => { void selectReply(message) } } : null,
         mutable && own && message.kind === 'text' ? { label: tr('수정'), icon: <Pencil size={18} />, onSelect: () => { setEditing(message) } } : null,
         copyMessage,
-        offer ? { label: shown ? tr('원문 보기') : tr('번역'), icon: <Languages size={18} />, onSelect: () => { void toggleTranslation(accountUid, chatId, message, autoTranslateRef.current) } } : null,
+        translate,
         message.version && message.serverConfirmed && !message.system && !message.encrypted && owner?.kind !== 'secret'
           ? (pinnedRef.current?.items.some(item => item.id === message.id)
             ? { label: tr('고정 해제'), icon: <PinOff size={18} />, onSelect: () => { void togglePin(accountUid, chatId, message.id, pinnedRef.current) } }
@@ -570,9 +568,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
         onPick={emoji => { popupMenu.close(); void toggleReaction(accountUid, message, emoji) }} /> : undefined })
     }
     const proceed = (): void => {
-      if (!translatable || !translationAvailable(desktop.value?.translationRoute)) open(false)
-      else if (shown) open(true)
-      else void offerTranslation(accountUid, chatId, message.id).then(open)
+      void translationMenuEntry(accountUid, chatId, message, owner?.kind, desktop.value?.translationRoute, autoTranslateRef.current).then(open, () => open(null))
     }
     if (message.kind !== 'sticker' || !savable || !message.version) { proceed(); return }
     void Promise.race([window.morse.stickerMessageFavourite(accountUid, chatId, message.id, message.version).catch(() => null), new Promise<null>(resolve => setTimeout(() => resolve(null), 600))])

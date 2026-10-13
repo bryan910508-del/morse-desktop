@@ -69,6 +69,9 @@ export function preferencePatch(value: unknown): Partial<Preferences> {
       result.autoDeleteDefaultSeconds = record.autoDeleteDefaultSeconds
     } else if (key === 'autoDownloadPhotos') {
       result.autoDownloadPhotos = autoDownloadLimits(record.autoDownloadPhotos)
+    } else if (key === 'photoSendHd') {
+      if (record.photoSendHd !== null && typeof record.photoSendHd !== 'boolean') throw new Error(tr('사진 화질을 다시 선택해 주세요.'))
+      result.photoSendHd = record.photoSendHd
     } else if (key === 'photoSendQuality') {
       if (record.photoSendQuality !== 'auto' && record.photoSendQuality !== 'original' && record.photoSendQuality !== 'compressed') throw new Error(tr('사진 화질을 다시 선택해 주세요.'))
       result.photoSendQuality = record.photoSendQuality

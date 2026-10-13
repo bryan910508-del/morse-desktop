@@ -50,7 +50,7 @@ function update(patch: Partial<Preferences>): void {
   void window.morse.updatePreferences(patch).then(next => desktop.replace(next)).catch(reason => controller.toast(errorText(reason, tr('설정을 저장하지 못했습니다.')), 'error'))
 }
 
-function Toggle({ label, detail, checked, onChange, disabled }: { label: string; detail?: string; checked: boolean; onChange(value: boolean): void; disabled?: boolean }) {
+export function Toggle({ label, detail, checked, onChange, disabled }: { label: string; detail?: string; checked: boolean; onChange(value: boolean): void; disabled?: boolean }) {
   return <label className="settings-toggle">
     <span className="settings-toggle-text"><span>{label}</span>{detail && <small>{detail}</small>}</span>
     <Switch label={label} checked={checked} disabled={disabled} onChange={onChange} />
@@ -286,7 +286,7 @@ function DataPage({ preferences, onPage }: { preferences: Preferences; onPage(pa
     <div className="section-label">{tr('전송 화질')}</div>
     {preferences.compressMediaUploads || active ? <p className="settings-note">{tr('절전 모드의 업로드 자동 압축이 켜져 있어 사진을 압축해서 보내요.')}</p> : null}
     {([['auto', tr('자동'), tr('긴 변 1280px')], ['original', tr('원본'), tr('긴 변 2560px까지')], ['compressed', tr('압축'), tr('긴 변 512px')]] as const).map(([id, label, detail]) =>
-      <label key={id} className="settings-radio"><input type="radio" name="photo-quality" checked={preferences.photoSendQuality === id} onChange={() => update({ photoSendQuality: id })} /><span>{tr('사진 화질 · {0}', [label])}<small>{detail}</small></span></label>)}
+      <label key={id} className="settings-radio"><input type="radio" name="photo-quality" checked={preferences.photoSendQuality === id} onChange={() => update({ photoSendQuality: id, photoSendHd: null })} /><span>{tr('사진 화질 · {0}', [label])}<small>{detail}</small></span></label>)}
     {preferences.compressMediaUploads || active ? <p className="settings-note">{tr('절전 모드의 업로드 자동 압축이 켜져 있어 동영상을 360p로 압축해서 보내요.')}</p> : null}
     {([['auto', tr('자동'), '480p (960×540)'], ['original', tr('원본'), '720p (1280×720)'], ['compressed', tr('압축'), '360p']] as const).map(([id, label, detail]) =>
       <label key={id} className="settings-radio"><input type="radio" name="video-quality" checked={preferences.videoSendQuality === id} onChange={() => update({ videoSendQuality: id })} /><span>{tr('영상 화질 · {0}', [label])}<small>{detail}</small></span></label>)}

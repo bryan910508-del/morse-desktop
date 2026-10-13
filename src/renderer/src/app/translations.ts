@@ -1,6 +1,8 @@
-import { useSyncExternalStore } from 'react'
+import { createElement, useSyncExternalStore } from 'react'
+import { Languages } from 'lucide-react'
 import type { ChatMessage } from '../../../shared/model'
-import { serverTranslationBatch, translationMessage, type TranslationResult } from '../../../shared/translation'
+import { menuTranslatable, serverTranslationBatch, translationAvailable, translationMessage, type TranslationResult, type TranslationRoute } from '../../../shared/translation'
+import type { MenuEntry } from '../ui/popup-menu'
 import { controller } from './ui'
 import { tr } from '../../../shared/i18n'
 
@@ -78,6 +80,17 @@ export function toggleTranslation(accountUid: string, chatId: string, message: C
   return run(accountUid, chatId, message, true)
 }
 
+// B343b: the message menu's «번역» / «원문 보기», one for a chat and a 1:1 inquiry room alike (the chat's path, B343·B356) —
+// tdesktop offers it in any room, for any sender (history_view_context_menu.cpp:1901-1909). `room` is the translation
+// key: a chat's id, or an inquiry room's inquiryQueueChatId (shared/translation.ts translationRoom). On this device's
+// route the language gate decides first; the server's route offers it and answers «same language» itself.
+export async function translationMenuEntry(accountUid: string, room: string, message: ChatMessage, roomKind: string | undefined,
+  route: TranslationRoute | undefined, auto: boolean): Promise<MenuEntry> {
+  if (!menuTranslatable(message, roomKind) || !translationAvailable(route)) return null
+  const shown = translationShown(accountUid, room, message.id, message.text, auto)
+  if (!shown && !await offerTranslation(accountUid, room, message.id)) return null
+  return { label: shown ? tr('원문 보기') : tr('번역'), icon: createElement(Languages, { size: 18 }), onSelect: () => { void toggleTranslation(accountUid, room, message, auto) } }
+}
 // The menu offers «번역» only for text in another language; a slow answer leaves it out.
 export async function offerTranslation(accountUid: string, chatId: string, messageId: string): Promise<boolean> {
   try {

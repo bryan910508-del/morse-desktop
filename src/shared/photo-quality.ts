@@ -13,6 +13,21 @@ export function photoSendSpec(mode: PhotoSendQuality, compress: boolean): PhotoS
 // iOS VideoSendQuality and MorseMediaPolicy.videoSendQualityDefault(fallback: .q480) for a picked video: «자동» is 480p
 // (AVAssetExportPreset960x540), «원본» 720p (1280x720), and «압축» or power saving's «업로드 자동 압축» 360p (medium quality).
 export type VideoSendPreset = '960x540' | '1280x720' | 'medium'
+// B365: the send box's «고화질» (tdesktop's send menu «High Quality», menu_send.cpp:780-786 → SendFilesBox::
+// setSendLargePhotos, send_files_box.cpp:1146-1153; kept as SendFilesWay in the settings, core_settings.h:409-413). The
+// box opens with the last pick, else the setting's default; «압축» in the settings or power saving's upload compression
+// still sends small (photoSendSpec).
+export interface PhotoSendChoice { photoSendQuality: PhotoSendQuality; photoSendHd: boolean | null }
+export function photoSendHdInitial(preferences: PhotoSendChoice): boolean {
+  return preferences.photoSendHd ?? preferences.photoSendQuality === 'original'
+}
+export function photoSendMode(preferences: PhotoSendChoice, hd: boolean): PhotoSendQuality {
+  return preferences.photoSendQuality === 'compressed' ? 'compressed' : hd ? 'original' : 'auto'
+}
+// What is kept after a send: the pick when it differs from the setting's default, else nothing (the setting again).
+export function photoSendHdRemembered(preferences: PhotoSendChoice, hd: boolean): boolean | null {
+  return hd === (preferences.photoSendQuality === 'original') ? null : hd
+}
 export function videoSendPreset(mode: PhotoSendQuality, compress: boolean): VideoSendPreset {
   if (compress || mode === 'compressed') return 'medium'
   return mode === 'original' ? '1280x720' : '960x540'

@@ -68,6 +68,14 @@ export function appBadgeBox(layer: AppBadgeLayer, textWidth: number, ascent: num
   const x = size - width, y = size - height
   return { x, y, width, height, textX: x + (width - textWidth) / 2, textY: y + (height - ascent - descent) / 2 + ascent }
 }
+// B348b: tdesktop Window::WithSmallCounter (window/main_window.cpp:350-391), the count on the tray icon's logo: below
+// 100 the number, from 100 on «..» and the last digit (:353-356); font half the size, padding and corners by the
+// text's length (:365-370, integer sizes as Qt's), the box at the bottom right as GenerateCounterLayer's.
+export function appSmallCounterLayer(size: number, count: number): AppBadgeLayer {
+  const text = count < 100 ? String(count) : `..${count % 10}`
+  const one = text.length < 2
+  return { size, text, font: Math.floor(size / 2), delta: Math.floor(size / (one ? 8 : 16)), radius: Math.floor(size / (one ? 4 : 5)) }
+}
 // The overlay is a small icon (tdesktop NativeIcon(…, SM_CXSMICON), main_window_win.cpp:654): 16 px at 100 %, drawn at
 // the window's scale from the sizes the table has.
 export function appBadgePixels(scaleFactor: number): number {

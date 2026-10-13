@@ -1,5 +1,6 @@
 // Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
+import { registerAutoDownload } from './auto-download-limits'
 import { autoDownloadLimit, autoDownloadSource, type AutoDownloadLimits } from '../../shared/auto-download'
 import { AccountToolsApi } from '../api/account-tools'
 import { TwoStepSettingsApi } from '../api/two-step-settings'
@@ -141,7 +142,7 @@ import { StickerPacks } from './sticker-packs'
 import { stickerPackItemURL } from '../../shared/sticker-packs'
 import { StickerLibrary } from './sticker-library'
 import { ServerTranslator } from '../messaging/server-translation'
-import { menuTranslatable, type TranslationResult } from '../../shared/translation'
+import { menuTranslatable, translationRoom, type TranslationResult } from '../../shared/translation'
 import { featureAccessPath, featureOn } from '../api/feature-switch'
 import { downloadMedia } from '../media/download-media'
 import { ContactFlags } from './contact-flags'
@@ -384,6 +385,8 @@ export class AccountSession {
     // Every media loader of this account reaches the account's file cache the same way.
     this.mediaFiles = new MediaCache(command => this.delivery.mediaCacheState(command))
     registerMediaCache(credentials, this.mediaFiles)
+    // B360: the loaders that decide by themselves (channel pictures) read the person's limits as they are now.
+    registerAutoDownload(credentials, () => events.notifications.preferences().autoDownloadPhotos)
     this.channelReadMarks = new ChannelReadMarks((channelId, position, postId) => {
       const reader = this.reader
       if (this.closed || this.locked || !reader) return Promise.reject(new Error('Account not ready'))
@@ -638,7 +641,7 @@ export class AccountSession {
       (requestId, loaded, total) => { if (!this.closed) events.mediaProgress(requestId, loaded, total) })
     this.files = new OpenedFiles(credentials, (chatId, request) => this.mediaResourceFor(chatId, request), join(directory, 'opened-files'),
       (chatId, messageId, index, state) => { if (!this.closed) events.fileState(chatId, messageId, index, state) }, events.files)
-    this.photoPreviews = new PhotoPreviews(credentials, (chatId, request) => this.mediaResourceFor(chatId, request))
+    this.photoPreviews = new PhotoPreviews(credentials, (chatId, request) => this.mediaResourceFor(chatId, request), this.mediaFiles)
     this.hiddenChats = new HiddenChats(<T,>(command: HiddenChatCommand) => this.delivery.hiddenChatState<T>(command),
       () => {
         if (this.closed) return
@@ -653,7 +656,12 @@ export class AccountSession {
     this.stickerMessageBytes = async (chatId, messageId, version, signal) => {
       const resource = this.mediaResourceFor(chatId, { requestId: randomUUID(), messageId, version, index: 0 })
       if (!resource || resource.summary.kind !== 'sticker') throw new Error(tr('스티커를 다시 선택해 주세요.'))
-      return downloadMedia(credentials, resource, signal, () => { if (this.closed || this.locked) throw new Error('Account changed') }, () => {}, maxStickerBytes)
+      // B359: the disk cache first (the bubble put it there), and what is fetched is kept there.
+      const kept = resource.path ? await this.mediaFiles.read(resource.path, maxStickerBytes) : null
+      if (kept) return Buffer.from(kept)
+      const bytes = await downloadMedia(credentials, resource, signal, () => { if (this.closed || this.locked) throw new Error('Account changed') }, () => {}, maxStickerBytes)
+      if (resource.path) this.mediaFiles.write(resource.path, bytes)
+      return bytes
     }
     this.stickerPacks = new StickerPacks(profile.uid, credentials, () => this.reader, () => { if (!this.closed) this.events.changed() }, this.stickerMessageBytes)
     this.serverTranslator = new ServerTranslator(profile.uid, (name, data) => callMorseFunction(credentials, name, data, AbortSignal.any([credentials.signal, AbortSignal.timeout(65000)])))
@@ -2985,6 +2993,13 @@ export class AccountSession {
   // A text message in the open chat to translate — the menu's «번역» on any of them, one's own too (B356); «전체번역»
   // asks only for received ones (the window's translatableOnScreen).
   translationSource(chatId: string, messageId: string): string {
+    // B343b: a 1:1 inquiry room's message (its key is inquiryQueueChatId), as a chat's — the same rule (menuTranslatable).
+    const room = translationRoom(chatId)
+    if (room.kind === 'inquiry') {
+      const item = this.closed || this.locked ? null : this.channelInquiries.openMessage(room.roomId, messageId)
+      if (!item || !menuTranslatable(item, 'inquiry')) throw new Error(tr('번역할 수 있는 메시지가 아닙니다.'))
+      return item.text
+    }
     const history = this.selected
     if (this.closed || this.locked || !history || history.dialog.summary.id !== chatId || history.dialog.summary.kind === 'secret') throw new Error(tr('대화를 다시 선택해 주세요.'))
     const message = history.snapshot.messages.find(item => item.id === messageId)

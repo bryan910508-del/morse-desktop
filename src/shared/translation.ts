@@ -51,3 +51,12 @@ export function translationMessage(result: TranslationResult): string {
 export function menuTranslatable(message: { kind: string; text: string; encrypted?: boolean; system?: boolean }, roomKind: string | undefined): boolean {
   return message.kind === 'text' && !message.encrypted && !message.system && roomKind !== 'secret' && Boolean(message.text.trim())
 }
+
+// B343b: which room a translation key names — a chat by its id, a 1:1 inquiry room by the key its messages already go
+// under on this device (inquiryQueueChatId, `sub_inq_<inquiryId>`). translateMorseMessages takes both kinds
+// (morse-translation.js:7, :51, :146).
+export type TranslationRoom = { kind: 'chat' | 'inquiry'; roomId: string }
+const inquiryKey = 'sub_inq_'
+export function translationRoom(key: string): TranslationRoom {
+  return key.startsWith(inquiryKey) ? { kind: 'inquiry', roomId: key.slice(inquiryKey.length) } : { kind: 'chat', roomId: key }
+}

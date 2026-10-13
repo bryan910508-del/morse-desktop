@@ -406,12 +406,14 @@ export interface MessageViewProps {
   onMenu(message: ChatMessage, point: { x: number; y: number }, target?: MessageMenuTarget): void; onReply(message: ChatMessage): void; onJumpReply(message: ChatMessage): void
   onOpenMedia(message: ChatMessage, index: number): void; onToggle(message: ChatMessage): void; onReaction(message: ChatMessage, emoji: string): void
   autoTranslate: boolean
+  // B343b: where this bubble's translation is kept, when it is not the chat id (a 1:1 inquiry room's inquiryQueueChatId).
+  translationRoom?: string
 }
 
 // HistoryView::Message: bubble with Telegram geometry and Morse colors.
 export const MessageView = memo(function MessageView(props: MessageViewProps) {
   const { accountUid, chatId, message, own, layout, read, selecting, selected, highlighted } = props
-  const translation = useTranslation(accountUid, chatId, message.id)
+  const translation = useTranslation(accountUid, props.translationRoom ?? chatId, message.id)
   // A channel post mirrored into the discussion room is a card with the post's picture, its channel and its text,
   // the way iOS draws it (MorseChatUIKitNativeChannelPostRow) and Telegram shows a channel's post in the group.
   if (message.channelPost) {

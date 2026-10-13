@@ -5,6 +5,7 @@ import type { ReadCredentials } from '../network/firestore-rpc'
 import { downloadMedia } from './download-media'
 import { recordPhotoStep } from '../platform/photo-diagnostics'
 import type { MediaResource } from './media-document'
+import type { MediaCache } from '../accounts/media-cache'
 
 // Telegram shows a received photo inside the bubble without being asked for it (Settings >
 // Advanced > Automatic media download). Morse keeps no small size or blurred placeholder for a
@@ -51,8 +52,12 @@ export class PhotoPreviews {
   private held = 0
   private closed = false
 
+  // B359: `cache` is the account's encrypted disk cache (MediaCache — the one opened media, files and channel pictures
+  // use). This class keeps only the pictures on screen; the disk keeps what was fetched, so a restart, a lock, a
+  // reconnection or a long scroll draws it again without asking the server.
   constructor(private readonly credentials: ReadCredentials,
-    private readonly resolve: (chatId: string, request: MediaRequest) => MediaResource | null) {}
+    private readonly resolve: (chatId: string, request: MediaRequest) => MediaResource | null,
+    private readonly cache: Pick<MediaCache, 'read' | 'write'> | null = null) {}
 
   private static key(chatId: string, request: MediaRequest): string {
     return JSON.stringify([chatId, request.messageId, request.version, request.index])
@@ -73,8 +78,9 @@ export class PhotoPreviews {
   // bytes limit for the peer's source); a picture they asked for themselves comes with none and is
   // held only by what a preview can keep.
   async load(chatId: string, request: MediaRequest, limit = maxPreviewBytes): Promise<string | null> {
-    // A limit of zero is off (SetDisabledForSource): nothing is asked of the server at all.
-    if (this.closed || limit <= 0) return null
+    // A limit of zero is off (SetDisabledForSource): nothing is asked of the server — but what this device keeps is
+    // still shown (B359, tdesktop PhotoMedia::automaticLoad LoadFromLocalOnly, data_photo_media.cpp:173-186).
+    if (this.closed) return null
     const key = PhotoPreviews.key(chatId, request)
     const held = this.url(chatId, request)
     if (held) return held
@@ -145,6 +151,20 @@ export class PhotoPreviews {
         : !resource.summary.available ? 'unavailable' : resource.summary.blind ? 'blind' : `kind-${resource.summary.kind}`)
       return null
     }
+    const sticker = resource.summary.kind === 'sticker'
+    // B359: this device's copy first — memory, then the disk cache by the object's storage path (outbox.ts writes a
+    // sent picture under the same path), and the server only for what neither holds.
+    const kept = await this.cache?.read(resource.path, maxPreviewBytes) ?? null
+    if (kept && !this.closed && this.resolve(chatId, request)?.path === resource.path && previewMime(kept, sticker)) {
+      recordPhotoStep('preview-cached', `bytes-${kept.length}`)
+      return Buffer.from(kept)
+    }
+    // Automatic download decides only what is asked of the server (Data::AutoDownload::Should, data_auto_download.cpp:
+    // 406-424): off asks nothing; a size the message carries is weighed before the request (B360), else the answer's
+    // length is (download-media.ts).
+    if (limit <= 0) { recordPhotoStep('preview-held', 'auto-download-off'); return null }
+    const size = resource.summary.size
+    if (typeof size === 'number' && size >= Math.min(limit, maxPreviewBytes)) { recordPhotoStep('preview-held', `size-${size}`); return null }
     let bytes: Buffer
     try {
       bytes = await downloadMedia(this.credentials, resource, this.credentials.signal,
@@ -155,10 +175,12 @@ export class PhotoPreviews {
       recordPhotoStep('preview-failed', error instanceof Error ? error.message.slice(0, 60) : 'unknown')
       return null
     }
-    if (this.closed || !previewMime(bytes, resource.summary.kind === 'sticker')) {
+    if (this.closed || !previewMime(bytes, sticker)) {
       recordPhotoStep('preview-unreadable', this.closed ? 'closed' : `bytes-${bytes.length}`)
       bytes.fill(0); return null
     }
+    // Kept on the disk for the next time (MediaCache.write copies; a blind resource never reaches here).
+    this.cache?.write(resource.path, bytes)
     return bytes
   }
 

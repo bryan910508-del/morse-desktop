@@ -9,7 +9,9 @@ export const nativeImage = {
     return image
   },
   // The taskbar overlay (desktop-shell.ts) is built from the window's PNG; the stand-in keeps the URL to compare.
-  createFromDataURL: (url: string) => ({ isEmpty: () => !url.includes(','), url })
+  createFromDataURL: (url: string) => ({ isEmpty: () => !url.includes(','), url }),
+  // The Windows tray's logo (desktop-shell.ts): a marker image that resizes to itself.
+  createFromPath: (path: string) => { const image = { isEmpty: () => false, url: `file:${path}`, resize: () => image }; return image }
 }
 // The desktop shell builds the Dock menu; the Windows tray icon is never made in tests.
 export const Menu = { buildFromTemplate: (template: unknown[]) => template }

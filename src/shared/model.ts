@@ -93,6 +93,8 @@ export interface Preferences {
   spellCheck: boolean
   // iOS DataStorageView «사진 화질» (PhotoSendQuality).
   photoSendQuality: import('./photo-quality').PhotoSendQuality
+  // B365: the send box's last «고화질» pick; null follows photoSendQuality.
+  photoSendHd: boolean | null
   // iOS DataStorageView «영상 화질» (videoQuality).
   videoSendQuality: import('./photo-quality').PhotoSendQuality
   // iOS PowerSavingView (MorsePowerSaving): automation and the options that mean something on a desktop.
@@ -108,7 +110,7 @@ export const defaultPreferences: Preferences = {
   storyStealth: false, closeToTray: false, showUnreadBadge: true, autoDeleteDefaultSeconds: 0, autoTranslateChats: false,
   autoDownloadPhotos: { user: 8 * 1024 * 1024, group: 8 * 1024 * 1024, channel: 8 * 1024 * 1024 }, recordVideoMessages: false, sendTypingIndicator: true, disableTypingIndicators: false,
   notifyPersonal: true, notifyGroup: true, notifyChannel: true, notificationSound: true, inAppNotifications: true, badgeMode: 'messages', spellCheck: true,
-  photoSendQuality: 'auto', videoSendQuality: 'auto', powerSavingAuto: true, powerSavingAlwaysOn: false, compressMediaUploads: false, reduceMessageAnimations: false, mainMenuAccountsShown: true, language: null
+  photoSendQuality: 'auto', photoSendHd: null, videoSendQuality: 'auto', powerSavingAuto: true, powerSavingAlwaysOn: false, compressMediaUploads: false, reduceMessageAnimations: false, mainMenuAccountsShown: true, language: null
 }
 
 export interface AccountProfile {
@@ -469,8 +471,9 @@ export type DesktopEvent =
   // macOS hides the window buttons in full screen, so the title strip they need goes away.
   | { type: 'full-screen'; value: boolean }
   | { type: 'prepare-close'; requestId: string }
-  // B348: draw the Windows taskbar overlay (the unread count) at this many pixels and give it back with appBadgeDrawn.
-  | { type: 'draw-app-badge'; key: string; count: number; muted: boolean; pixels: number }
+  // B348/B348b: draw the Windows taskbar overlay or the tray icon (the unread count) at this many pixels and give it
+  // back with appBadgeDrawn.
+  | { type: 'draw-app-badge'; key: string; count: number; muted: boolean; pixels: number; target: 'taskbar' | 'tray' }
 
 export interface DesktopBridge {
   // The language this window was started in; a change is saved and applies after relaunchApp.
