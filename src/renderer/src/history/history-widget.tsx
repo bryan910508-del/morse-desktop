@@ -22,7 +22,7 @@ import { errorText, sameDay, serviceDate } from '../app/format'
 import { copyText } from '../app/clipboard'
 import { selectedMessagesText } from '../../../shared/message-copy'
 import { selectionActions, selectionMenuRows } from '../../../shared/message-selection'
-import { canDelete, deletionChoices, type DeletionChoices } from '../../../shared/message-deletion'
+import { canDelete, deletionChoices, vanishedFromHistory, type DeletionChoices } from '../../../shared/message-deletion'
 import { copyImage } from '../app/copy-image'
 import { hasFiles } from '../app/drop'
 import { trackWrite } from '../app/drafts'
@@ -61,7 +61,7 @@ import { PinnedBar, togglePin } from './pinned-bar'
 import { DeferredBar } from './deferred-send'
 import { linkLabel, useShownConnection } from '../app/connection'
 import { tr } from '../../../shared/i18n'
-import { translationAvailable } from '../../../shared/translation'
+import { translationAvailable, menuTranslatable } from '../../../shared/translation'
 import { expandedReactions, reactionStrip, readRecentReactions, recordReaction } from './recent-reactions'
 import emojiList from './emoji-data.json'
 import { chatRestrictedNotice } from '../../../shared/sanctions'
@@ -234,6 +234,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     return () => { alive = false }
   }, [accountUid, chatId, historyReady, dialogExists, secret])
   useEffect(() => { reconcileMessages(chatId, history.messages) }, [chatId, history.messages])
+  // B354: the message being edited was deleted (for everyone or for me) — the edit ends.
+  useEffect(() => { if (editing && history.status === 'ready' && vanishedFromHistory(editing, history)) setEditing(null) }, [editing, history])
   useEffect(() => {
     if (!highlight) return
     const timer = setTimeout(() => setHighlight(null), 2500)
@@ -513,8 +515,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     const text = message.kind === 'text' ? message.text : message.caption ?? ''
     const deletable = Boolean(message.version)
     const removable = deletable && canDelete(messageDeletion(message, owner, accountUid))
-    // MorseChatRoom message menu «번역»: received text in another language; chosen again, the original returns.
-    const translatable = !own && message.kind === 'text' && !message.encrypted && !message.system && owner?.kind !== 'secret' && Boolean(message.text.trim())
+    // Message menu «번역»: text in another language, one's own too (B356); chosen again, the original returns.
+    const translatable = menuTranslatable(message, owner?.kind)
     const shown = translationShown(accountUid, chatId, message.id, message.text, autoTranslateRef.current)
     // A sticker's menu waits a moment for whether it is a favourite (its bytes hashed once per message); not known by
     // then, it offers the add, which for a favourite only moves it to the front.

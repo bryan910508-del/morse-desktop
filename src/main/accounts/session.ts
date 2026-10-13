@@ -141,7 +141,7 @@ import { StickerPacks } from './sticker-packs'
 import { stickerPackItemURL } from '../../shared/sticker-packs'
 import { StickerLibrary } from './sticker-library'
 import { ServerTranslator } from '../messaging/server-translation'
-import type { TranslationResult } from '../../shared/translation'
+import { menuTranslatable, type TranslationResult } from '../../shared/translation'
 import { featureAccessPath, featureOn } from '../api/feature-switch'
 import { downloadMedia } from '../media/download-media'
 import { ContactFlags } from './contact-flags'
@@ -412,7 +412,8 @@ export class AccountSession {
     this.groupPhoto = new GroupPhoto(profile.uid, credentials, (request, exact) => this.groupPhotoSource(request, exact), () => { if (!this.closed) events.changed() })
     this.presence = new AccountPresence(profile.uid, credentials, () => { if (!this.closed) events.changed() })
     this.channelPeople = new ChannelPeoplePhotos(credentials, () => { if (!this.closed) events.changed() })
-    this.pins = new PinnedMessages(credentials.signal, command => this.delivery.bookmarkState(command), () => { if (!this.closed) events.changed() })
+    this.pins = new PinnedMessages(credentials.signal, command => this.delivery.bookmarkState(command), () => { if (!this.closed) events.changed() },
+      (chatId, messageId) => this.hiddenMessages.has(chatId, messageId))
     this.deferred = new DeferredMessages(profile.uid, credentials.signal, () => { if (!this.closed) events.changed() })
     this.typing = new ChatTyping(profile.uid, credentials.signal, () => { if (!this.closed) events.changed() })
     this.listTyping = new DialogTyping(profile.uid, credentials.signal, () => { if (!this.closed) events.changed() },
@@ -445,7 +446,7 @@ export class AccountSession {
       }, () => { if (!this.closed) { this.followPeople(); events.changed() } }, newChatAutoDelete)
     void this.userpics.load().then(() => { if (!this.closed) { this.dialogAvatars.prune(); this.contacts.listAvatars.prune(); events.changed() } })
     this.draftReply = new ReplyDraft(credentials.signal, command => this.delivery.replyState(command),
-      (chatId, snapshot) => { if (!this.closed) events.reply(chatId, snapshot) })
+      (chatId, snapshot) => { if (!this.closed) events.reply(chatId, snapshot) }, (chatId, messageId) => this.hiddenMessages.has(chatId, messageId))
     this.voiceDraftStorage=new VoiceDraftStorage((command,validate)=>this.delivery.voiceDraftStorageState(command,validate),()=>{
       const generation=this.generation
       const validate=():void=>{if(this.closed || this.locked || this.credentials.signal.aborted || this.connection!=='ready' || this.status!=='ready' || generation!==this.generation)throw new Error(tr('계정 연결과 대화 목록을 확인해 주세요.'))}
@@ -2497,6 +2498,7 @@ export class AccountSession {
     if (this.closed) return
     this.selected?.hiddenChanged()
     this.search?.hiddenChanged()
+    this.draftReply?.hiddenChanged()
     this.channelInquiries?.refreshHidden()
     if (this.chatsCurrent && this.pinsCurrent) this.rebuild()
     this.events.changed()
@@ -2980,12 +2982,13 @@ export class AccountSession {
     if (!this.serverTranslationOn()) return Object.fromEntries(items.map(item => [item.id, { status: 'unavailable' } as TranslationResult]))
     return Object.fromEntries(await this.serverTranslator.translate(chatId, items))
   }
-  // A received text message in the open chat, for on-device translation (message menu «번역», "전체번역").
+  // A text message in the open chat to translate — the menu's «번역» on any of them, one's own too (B356); «전체번역»
+  // asks only for received ones (the window's translatableOnScreen).
   translationSource(chatId: string, messageId: string): string {
     const history = this.selected
     if (this.closed || this.locked || !history || history.dialog.summary.id !== chatId || history.dialog.summary.kind === 'secret') throw new Error(tr('대화를 다시 선택해 주세요.'))
     const message = history.snapshot.messages.find(item => item.id === messageId)
-    if (!message || message.senderId === this.profile.uid || message.system || message.encrypted || message.kind !== 'text' || !message.text.trim()) throw new Error(tr('번역할 수 있는 메시지가 아닙니다.'))
+    if (!message || !menuTranslatable(message, history.dialog.summary.kind)) throw new Error(tr('번역할 수 있는 메시지가 아닙니다.'))
     return message.text
   }
   selectReply(chatId: string, messageId: string, version: string): Promise<void> {

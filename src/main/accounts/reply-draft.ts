@@ -16,7 +16,14 @@ export class ReplyDraft {
   private owner: Owner | null = null
   private revision = 0
   constructor(private readonly signal: AbortSignal, private readonly store: <T>(command: ReplyDraftCommand) => Promise<T>,
-    private readonly changed: (chatId: string, value: ReplyDraftSnapshot) => void) {}
+    private readonly changed: (chatId: string, value: ReplyDraftSnapshot) => void,
+    private readonly hidden: (chatId: string, messageId: string) => boolean = () => false) {}
+  // B354: the message being answered was deleted for me (here or on another device) — the reply goes, as tdesktop's
+  // HistoryWidget::itemRemoved cancels it (history_widget.cpp:8358-8366).
+  hiddenChanged(): void {
+    const owner = this.owner, selection = owner?.selection
+    if (owner && selection && this.current(owner) && this.hidden(owner.dialog.summary.id, selection.messageId)) void this.cancel(owner.dialog.summary.id, selection.selectionId).catch(() => {})
+  }
   private frame(owner: Owner): ReplyDraftSnapshot {
     const selection = owner.selection ? { ...owner.selection } : null
     const preview = owner.state === 'ready' ? originalPreview(owner.original, owner.dialog) : null
@@ -65,7 +72,10 @@ export class ReplyDraft {
         try {
           if ([...rows.keys()].some(key => key !== name)) throw new Error('Reply scope mismatch')
           const doc = rows.get(name), original = doc ? replyOriginal(doc, owner.dialog) : null
+          const had = owner.original
           owner.original = original && !original.system && original.kind !== 'unsupported' ? original : null; owner.state = 'ready'
+          // B354: the original was deleted while being answered — the reply goes (HistoryWidget::itemRemoved).
+          if (had && !owner.original) { void this.cancel(owner.dialog.summary.id, selection.selectionId).catch(() => {}); return }
           const at = owner.original?.expiresAt
           if (at && at > Date.now()) {
             const expire = (): void => {

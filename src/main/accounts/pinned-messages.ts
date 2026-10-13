@@ -22,7 +22,7 @@ export class PinnedMessages {
   // "모두에게 고정" shows at once and until the chat document carries the change.
   private readonly expected = new Map<string, boolean>()
   constructor(private readonly signal: AbortSignal, private readonly store: <T>(command: MessageBookmarkCommand) => Promise<T>,
-    private readonly changed: () => void) {}
+    private readonly changed: () => void, private readonly hidden: (chatId: string, messageId: string) => boolean = () => false) {}
 
   bind(dialog: ReadDialog, reader: FirestoreReader): void {
     this.clear()
@@ -76,9 +76,12 @@ export class PinnedMessages {
       }
     }, names.length, 4 * 1024 * 1024)
   }
+  // B354: a pin deleted for me leaves the bar, which shows the next one — tdesktop takes a removed message out of the
+  // pinned index (HistoryItem::removeFromSharedMediaIndex, history_item.cpp:3231-3243) and PinnedTracker moves on. A pin
+  // for everyone stays on the server; only this account's bar loses it.
   private items(owner: Owner): PinnedMessageItem[] {
     const chatId = owner.dialog.summary.id
-    return this.entries(owner).map(entry => {
+    return this.entries(owner).filter(entry => !this.hidden(chatId, entry.id)).map(entry => {
       const doc = owner.docs.get(`${documents}/chats/${chatId}/messages/${entry.id}`)
       let message: ChatMessage | null = null
       try { message = doc ? decodeMessage(doc, owner.dialog) : null } catch { message = null }

@@ -88,7 +88,8 @@ export class HistoryReader {
   }
   replyTarget(messageId: string, version: string): MessagePosition | null {
     const source = this.actionMessage(messageId, version)
-    if (!source?.replyToId || source.replyToId === source.id || source.encrypted) return null
+    // B354: an original deleted for me has nowhere to go, as a deleted one (tdesktop clearData, _unavailable).
+    if (!source?.replyToId || source.replyToId === source.id || source.encrypted || this.hidden(source.replyToId)) return null
     const original = this.rows.get(`${documents}/chats/${this.dialog.summary.id}/messages/${source.replyToId}`)
     return original ? replyOriginal(original, this.dialog)?.position ?? null : this.replies.target(source.replyToId)
   }
@@ -262,6 +263,9 @@ export class HistoryReader {
       this.replies.setTargets(this.value.status === 'ready' ? [...new Set([...messages.flatMap(message =>
         message.replyToId && message.replyToId !== message.id ? [message.replyToId] : []), ...local])].filter(id => !this.rows.has(name(id))) : [])
       const quote = (replyToId: string): ReplyPreview => {
+        // B354: a quote of a message deleted for me is the quote of a deleted one — tdesktop removeDependencyMessage →
+        // HistoryMessageReply::clearData (history_item_components.cpp:659-703), drawn «Deleted message».
+        if (this.hidden(replyToId)) return { state: 'unavailable' }
         const original = this.rows.get(name(replyToId))
         return original ? originalPreview(replyOriginal(original, this.dialog), this.dialog) : this.replies.preview(replyToId)
       }

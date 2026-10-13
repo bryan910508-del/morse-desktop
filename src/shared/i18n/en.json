@@ -2234,6 +2234,7 @@
  "원본 크기가 첨부 전송 범위를 넘습니다. 이미지 스티커는 10 MB 미만이어야 합니다.": "The original is larger than attachments allow. Image stickers must be under 10 MB.",
  "원본을 불러오는 중…": "Loading original…",
  "원본을 확인하지 못했습니다.": "Couldn't verify the original.",
+ "삭제된 메시지": "Deleted message",
  "원본이 변경되었거나 만료되었습니다. 최신 첨부를 다시 선택해 주세요.": "The original changed or expired. Please choose the latest attachment again.",
  "원본이 변경되었거나 만료되었습니다. 최신 텍스트를 다시 선택해 주세요.": "The original changed or expired. Please choose the latest text again.",
  "원하는 시간에 자동으로 전송돼요": "Will be sent automatically at your chosen time",

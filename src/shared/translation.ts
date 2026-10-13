@@ -44,3 +44,10 @@ export function translationMessage(result: TranslationResult): string {
     default: return tr('번역할 수 없습니다. 잠시 후 다시 시도해 주세요.')
   }
 }
+
+// B356: what the message menu offers «번역» on — any text with words in it, one's own too: tdesktop's menu asks only for
+// an original text that is not to be skipped, not whether the message went out (history_view_context_menu.cpp:1901-1909).
+// Not a secret chat's, an encrypted or a service line. «전체번역» stays with received messages (translate_tracker.cpp:116).
+export function menuTranslatable(message: { kind: string; text: string; encrypted?: boolean; system?: boolean }, roomKind: string | undefined): boolean {
+  return message.kind === 'text' && !message.encrypted && !message.system && roomKind !== 'secret' && Boolean(message.text.trim())
+}

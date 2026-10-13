@@ -41,7 +41,9 @@ function rowClass(own: boolean, layout: Pick<MessageLayout, 'top' | 'bottom'>, e
 
 // A message still on its way quotes the same original the same way (B46); it has nowhere to jump yet, so onOpen is left out.
 function ReplyQuote({ preview, onOpen }: { preview: ReplyPreview; onOpen?(): void }) {
-  if (preview.state !== 'ready') return <div className="bubble-quote"><strong>{tr('답장')}</strong><span className="ellipsis">{preview.state === 'loading' ? tr('원본을 불러오는 중…') : tr('원본 메시지를 볼 수 없습니다')}</span></div>
+  // B354: an original deleted for everyone or for me is «삭제된 메시지», with no name or excerpt and nowhere to go —
+  // tdesktop history_view_reply.cpp:715-725 (lng_deleted_message).
+  if (preview.state !== 'ready') return <div className="bubble-quote"><strong>{tr('답장')}</strong><span className="ellipsis">{preview.state === 'loading' ? tr('원본을 불러오는 중…') : preview.state === 'error' ? tr('원본을 확인하지 못했습니다.') : tr('삭제된 메시지')}</span></div>
   if (!onOpen) return <div className="bubble-quote"><strong className="ellipsis">{preview.senderName}</strong><span className="ellipsis">{preview.text}</span></div>
   return <button type="button" className="bubble-quote" onClick={event => { event.stopPropagation(); onOpen() }} title={tr('원본 메시지로 이동')}>
     {/* The quote is the original's own one-line preview and nothing else, as Telegram's is
