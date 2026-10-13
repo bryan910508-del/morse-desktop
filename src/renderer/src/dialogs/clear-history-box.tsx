@@ -3,6 +3,7 @@ import { controller } from '../app/ui'
 import { errorText } from '../app/format'
 import { trackWrite } from '../app/drafts'
 import { Box, confirmBox } from '../ui/layers'
+import { DeleteChoice } from '../ui/delete-choice'
 import { tr } from '../../../shared/i18n'
 
 // B327 «대화 기록 삭제»: Telegram's «Clear history» (ClearHistoryHandler, window/window_peer_menu.cpp:862-880), whose box
@@ -10,16 +11,16 @@ import { tr } from '../../../shared/i18n'
 // box's two buttons, as «대화 삭제» has them. For me: every device of this account (clearMorseHistoryForMe), and the
 // row stays without its messages. For everyone: clearMorseChatHistory, as before. The official notice chat has only its
 // own clear, for this account (B154 §2-2).
-export function showClearHistoryBox(accountUid: string, dialog: Pick<DialogSummary, 'id' | 'service'>): void {
+export function showClearHistoryBox(accountUid: string, dialog: Pick<DialogSummary, 'id' | 'service' | 'kind'>): void {
   if (dialog.service) { void clearForEveryone(accountUid, dialog, true); return }
   controller.showLayer(close => {
     const choose = (forEveryone: boolean): void => { close(); void (forEveryone ? clearForEveryone(accountUid, dialog, false) : clearForMe(accountUid, dialog.id)) }
     return <Box title={tr('대화 기록 삭제')} width={360} onClose={close} buttons={<button className="button flat" onClick={close}>{tr('취소')}</button>}>
       <p className="box-text">{tr('나에게만 지우면 내 모든 기기에서 이 대화의 기록이 지워지고, 대화는 목록에 남아요. 모두에게서 지우면 참여자 모두의 기록에서 지워지고 되돌릴 수 없어요.')}</p>
-      <div className="pin-type-actions">
-        <button type="button" className="button secondary block" onClick={() => choose(false)}>{tr('나에게만 삭제')}</button>
-        <button type="button" className="button primary block danger" onClick={() => choose(true)}>{tr('모두에게 삭제')}</button>
-      </div>
+      <DeleteChoice rows={[
+        { label: tr('나에게만 삭제'), choose: () => choose(false) },
+        { label: tr('모두에게 삭제'), detail: dialog.kind === 'direct' ? tr('상대방 화면에서도 삭제돼요') : tr('모든 참여자의 화면에서 삭제돼요'), danger: true, choose: () => choose(true) }
+      ]} />
     </Box>
   })
 }

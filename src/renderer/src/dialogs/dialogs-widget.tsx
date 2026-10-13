@@ -2,7 +2,7 @@
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { memo, useEffect, useMemo, useRef, type CSSProperties, type KeyboardEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { Archive, ArchiveRestore, ArrowLeft, ArrowUpDown, Bell, BellOff, Check, CircleAlert, Clock3, FolderPlus, Lock, LogOut, Mail, MailOpen, Megaphone, Menu, Pencil, Pin, PinOff, Search, StickyNote, Trash2, Users, X } from 'lucide-react'
+import { Archive, ArchiveRestore, ArrowLeft, ArrowUpDown, Bell, BellOff, CircleAlert, Clock3, FolderPlus, Lock, LogOut, Mail, MailOpen, Megaphone, Menu, Pencil, Pin, PinOff, Search, StickyNote, Trash2, Users, X } from 'lucide-react'
 import type { ContactSummary } from '../../../shared/contacts'
 import { folderContains, folderTitle, type ChatFolder } from '../../../shared/chat-folders'
 import type { DialogSummary } from '../../../shared/model'
@@ -20,6 +20,7 @@ import { setChatFlag } from '../app/chat-flags'
 import { Avatar, PeerAvatar } from '../ui/avatar'
 import { Spinner } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
+import { DeleteChoice } from '../ui/delete-choice'
 import { trackWrite } from '../app/drafts'
 import { showClearHistoryBox } from './clear-history-box'
 import { popupMenu, pointFor } from '../ui/popup-menu'
@@ -27,7 +28,6 @@ import { OfficialMark } from '../ui/official-mark'
 import { dialogFlags, reconcileDialogs, reconcilePin, reconcileUnread, setPinned, setUnread, useDialogOverrides } from './dialog-overrides'
 import { chatListDraft } from '../../../shared/chat-list-preview'
 import { rowSendState, type RowSendState } from '../../../shared/row-send-state'
-import { ReadMark } from '../history/message'
 import { loadChatFolders, receiveChatFolders, toggleChatPinnedInFolder, useChatFolders } from '../app/chat-folders'
 import { removeChatFolder, showFolderEditBox, showFolderPickerBox, showFoldersBox } from '../boxes/chat-folder-boxes'
 import { StoriesRow } from '../stories/stories-row'
@@ -71,10 +71,10 @@ function ChatDeleteBox({ close, onChoose, title, text, selfLabel }: {
   const choose = (forEveryone: boolean): void => { close(); onChoose(forEveryone) }
   return <Box title={title ?? tr('대화 삭제')} width={360} onClose={close} buttons={<button className="button flat" onClick={close}>{tr('취소')}</button>}>
     <p className="box-text">{text ?? tr('나에게만 지우면 내 모든 기기에서 기록이 지워지고, 새 메시지가 오면 그 메시지부터 다시 보여요. 모두에게서 지우면 상대방 목록과 기록에서도 사라지고 되돌릴 수 없어요.')}</p>
-    <div className="pin-type-actions">
-      <button type="button" className="button secondary block" onClick={() => choose(false)}>{selfLabel ?? tr('나에게만 삭제')}</button>
-      <button type="button" className="button primary block danger" onClick={() => choose(true)}>{tr('모두에게 삭제')}</button>
-    </div>
+    <DeleteChoice rows={[
+      { label: selfLabel ?? tr('나에게만 삭제'), choose: () => choose(false) },
+      { label: tr('모두에게 삭제'), detail: selfLabel ? tr('모든 참여자의 화면에서 삭제돼요') : tr('상대방 화면에서도 삭제돼요'), danger: true, choose: () => choose(true) }
+    ]} />
   </Box>
 }
 
@@ -118,16 +118,14 @@ function InquiryDialogRow({ accountUid, inquiry, style, index, onMenu }: { accou
   </button>
 }
 
-// B291 (row-send-state.ts): the one place just left of the row's date — TI ChatListItem.swift:4627-4633, as iOS B300 put its
-// «!» there — for a message of mine on its way (the clock), one that did not go (the «!»), and the row's newest message
-// when it is mine: sent (a check) or read (the circled check the bubble shows). B338: the mark and the date are one group
-// at the row's far end (.dialog-row-end), so the room left over sits between the name and the mark, as tdesktop paints
-// the send state at the end of the name's rectangle once the date's width is taken off (dialogs_layout.cpp:825-863).
+// B291/B340 (row-send-state.ts): the one place just left of the row's date — TI ChatListItem.swift:4627-4633, as iOS B300
+// put its «!» there — for a message of mine on its way (the clock) or one that did not go (the «!»); B340 took the sent
+// check and the read circle off the row. B338: the mark and the date are one group at the row's far end
+// (.dialog-row-end), so the room left over sits between the name and the mark, as tdesktop paints the send state at the
+// end of the name's rectangle once the date's width is taken off (dialogs_layout.cpp:825-863).
 function RowStateMark({ state }: { state: RowSendState }) {
   if (state === 'sending') return <Clock3 size={12} className="dialog-row-sending" aria-label={tr('보내는 중')} />
   if (state === 'failed') return <CircleAlert size={14} className="dialog-row-failed" aria-label={tr('보내지 못한 메시지가 있습니다')} />
-  if (state === 'sent') return <Check size={14} className="dialog-row-sent" aria-label={tr('보냄')} />
-  if (state === 'read') return <span className="dialog-row-read"><ReadMark /></span>
   return null
 }
 
@@ -156,8 +154,7 @@ const DialogRow = memo(function DialogRow({ dialog, active, style, index, flags,
         {dialog.official && <OfficialMark kind={dialog.official} className="dialog-row-official" />}
         {dialog.muted && <BellOff size={13} className="dialog-row-status" aria-label={tr('알림 꺼짐')} />}
         <span className="dialog-row-end">
-          <RowStateMark state={rowSendState({ secret, draft: Boolean(draft), sending: dialog.sends?.sending, failed: dialog.sends?.failed,
-            topFromMe: dialog.topFromMe, top: dialog.top, topMessageId: dialog.topMessageId, outboxRead: dialog.outboxRead })} />
+          <RowStateMark state={rowSendState({ secret, draft: Boolean(draft), sending: dialog.sends?.sending, failed: dialog.sends?.failed })} />
           <span className="dialog-row-time">{dialogTime(positionTime(dialog.top))}</span>
         </span>
       </span>

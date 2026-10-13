@@ -1,28 +1,19 @@
-import type { MessagePosition } from './model'
-import { positionMilliseconds } from './model'
-import { readCovers, type ReadCursor } from './read-receipts'
-
-// B291 (contracts/B291-chat-list-send-state.md; tdesktop Dialogs::Ui::RowPainter sendStateIcon, dialogs_layout.cpp:825-862):
-// one place on a chat's row, just left of its date, says where this account's newest message there stands — a draft
-// first (it stands in for the line), then one on its way, one that did not go, then the row's newest message when it is
-// this account's: read by the other side (the Morse circled check, as in the bubble) or sent (a check). A line the
-// server wrote before it kept its sender, a channel post's mirror, someone else's message or a secret chat show nothing.
-export type RowSendState = 'none' | 'sending' | 'failed' | 'read' | 'sent'
+// B340 (user decision 10-13 «권장대로»): a chat's row says only where a message of mine stands while it has not gone — on
+// its way (the clock) or failed (the «!») — just left of the date (B338's group). The sent check and the read circle
+// B291 drew there are gone from the row: on the list they read like the official mark beside the name (the same accent,
+// a filled shape). Telegram draws them (tdesktop Dialogs::Ui::RowPainter sendStateIcon, dialogs_layout.cpp:837-855);
+// this is Morse's own choice. The bubbles in a room keep both. A draft stands in for the line, and a secret chat shows
+// nothing.
+export type RowSendState = 'none' | 'sending' | 'failed'
 export interface RowSendFacts {
   secret: boolean
   draft: boolean
   sending?: boolean
   failed?: boolean
-  topFromMe?: boolean
-  top: MessagePosition | null
-  topMessageId?: string
-  outboxRead: ReadCursor | null
 }
 export function rowSendState(row: RowSendFacts): RowSendState {
   if (row.secret || row.draft) return 'none'
   if (row.sending) return 'sending'
   if (row.failed) return 'failed'
-  if (!row.topFromMe || !row.top) return 'none'
-  // The row's message by its own id (lastMessageId), as the bubble's is: the read position names the message read.
-  return readCovers(row.outboxRead, { at: positionMilliseconds(row.top), id: row.topMessageId ?? '' }) ? 'read' : 'sent'
+  return 'none'
 }

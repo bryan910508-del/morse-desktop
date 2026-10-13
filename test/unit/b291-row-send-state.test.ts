@@ -5,26 +5,18 @@ import { decodeDialog, type FirestoreDocument } from '../../src/main/network/fir
 import { ChatListTops, expiredTop } from '../../src/main/accounts/chat-list-tops'
 import type { DialogSummary, MessagePosition } from '../../src/shared/model'
 
-// B291 (user: «다음판에 세 앱 함께 ✓(보냄)·✓체크 동그라미 모스디자인(읽음)»; tdesktop sendStateIcon, dialogs_layout.cpp:825-862):
-// one place left of the row's date — draft > on its way > failed > read > sent — for the row's newest message when it is mine.
+// B340 (user decision 10-13): the row's place left of the date keeps only a message of mine still on its way or failed —
+// draft > on its way > failed; the sent check and the read circle B291 drew there are gone (the bubbles keep them). The
+// room document still says whose the line is (topFromMe, lastMessageId) — B327's «나에게만» uses its message id.
 const at = (seconds: number, id: string): MessagePosition => ({ seconds, nanoseconds: 0, id })
-const base: RowSendFacts = { secret: false, draft: false, topFromMe: true, top: at(100, 'c1'), topMessageId: 'm9', outboxRead: null }
+const base: RowSendFacts = { secret: false, draft: false }
 
-test('the order of what the place shows', () => {
-  assert.equal(rowSendState(base), 'sent')
-  assert.equal(rowSendState({ ...base, outboxRead: { at: 100_000, id: 'm9' } }), 'read', 'read to that very message')
-  assert.equal(rowSendState({ ...base, outboxRead: { at: 100_500, id: 'm10' } }), 'read', 'read past it')
-  assert.equal(rowSendState({ ...base, outboxRead: { at: 99_000, id: 'm8' } }), 'sent', 'read up to an earlier one')
+test('the place shows a message on its way or one that did not go, and nothing for one sent or read', () => {
+  assert.equal(rowSendState(base), 'none', 'sent or read: nothing on the row')
   assert.equal(rowSendState({ ...base, failed: true }), 'failed')
   assert.equal(rowSendState({ ...base, failed: true, sending: true }), 'sending')
   assert.equal(rowSendState({ ...base, sending: true, draft: true }), 'none', 'a draft stands in for the line')
-})
-
-test('nothing for someone else\'s message, a line without its sender, a secret chat or an empty row', () => {
-  assert.equal(rowSendState({ ...base, topFromMe: undefined }), 'none')
   assert.equal(rowSendState({ ...base, secret: true, sending: true }), 'none')
-  assert.equal(rowSendState({ ...base, top: null }), 'none')
-  assert.equal(rowSendState({ ...base, topFromMe: undefined, failed: true }), 'failed', 'one of mine that did not go shows whoever wrote last')
 })
 
 const root = 'projects/talky-a38c3/databases/(default)/documents/chats'

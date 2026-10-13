@@ -30,6 +30,7 @@ import { useShortcut } from '../app/shortcuts'
 import { Avatar, PeerAvatar } from '../ui/avatar'
 import { Spinner } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
+import { DeleteChoice } from '../ui/delete-choice'
 import { popupMenu, pointFor, type MenuEntry } from '../ui/popup-menu'
 import { OfficialMark } from '../ui/official-mark'
 import { showReportBox } from '../boxes/report-box'
@@ -759,16 +760,10 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
 function DeleteMessagesBox({ count, forEveryone, direct, choose, close }: { count: number; forEveryone: boolean; direct: boolean; choose(value: 'everyone' | 'me'): void; close(): void }) {
   return <Box title={count > 1 ? tr('{0}개 메시지 삭제', [count]) : tr('메시지 삭제')} width={360} onClose={close} buttons={<button className="button flat" onClick={close}>{tr('취소')}</button>}>
     <p className="box-text">{tr('삭제된 메시지는 복구할 수 없어요.')}</p>
-    <div className="delete-choice">
-      {forEveryone && <button type="button" className="delete-choice-row danger" onClick={() => { choose('everyone'); close() }}>
-        <span className="delete-choice-icon"><Trash2 size={18} /></span>
-        <span><strong>{tr('모두에게 삭제')}</strong><small>{direct ? tr('상대방 화면에서도 삭제돼요') : tr('모든 참여자의 화면에서 삭제돼요')}</small></span>
-      </button>}
-      <button type="button" className="delete-choice-row" onClick={() => { choose('me'); close() }}>
-        <span className="delete-choice-icon"><Trash2 size={18} /></span>
-        <span><strong>{tr('나에게만 삭제')}</strong><small>{tr('내 화면에서만 삭제돼요')}</small></span>
-      </button>
-    </div>
+    <DeleteChoice rows={[
+      forEveryone && { label: tr('모두에게 삭제'), detail: direct ? tr('상대방 화면에서도 삭제돼요') : tr('모든 참여자의 화면에서 삭제돼요'), danger: true, choose: () => { choose('everyone'); close() } },
+      { label: tr('나에게만 삭제'), detail: tr('내 화면에서만 삭제돼요'), choose: () => { choose('me'); close() } }
+    ]} />
   </Box>
 }
 
