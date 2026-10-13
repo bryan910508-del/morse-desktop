@@ -62,7 +62,7 @@ export interface AuthenticationBridge {
 }
 
 // One saved account on this device: connection phase, whether its session runs, whether the window shows it.
-export interface AccountAuthState { uid: string; userId: string; displayName: string; phase: AuthPhase; message: string; connected: boolean; active: boolean; unread: number; photo: string | null; banned?: boolean; updateRequired?: boolean }
+export interface AccountAuthState { uid: string; userId: string; displayName: string; phase: AuthPhase; message: string; connected: boolean; active: boolean; unread: number; unreadMuted: boolean; photo: string | null; banned?: boolean; updateRequired?: boolean }
 
 // The recovery code is shown once; `connected` is false when the account exists but this device could not finish connecting.
 export interface AccountCreationResult { userId: string; backupCode: string; connected: boolean }

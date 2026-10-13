@@ -122,11 +122,11 @@ import { groupPhotoRequest, groupPhotoClear } from '../shared/group-photo'
 import { visibleDialogPhotos } from '../shared/dialog-avatars'
 import { channelPostsRequest } from '../shared/channel-posts'
 import { groupAnnouncementEdit } from '../shared/group-announcement'
-import { app, BrowserWindow, clipboard, ClipboardItem, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, powerMonitor, protocol, session, shell, systemPreferences } from 'electron'
+import { app, BrowserWindow, clipboard, ClipboardItem, dialog, ipcMain, Menu, nativeImage, nativeTheme, net, powerMonitor, protocol, screen, session, shell, systemPreferences } from 'electron'
 import { mkdir, readFile, rm, stat as fileStat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { release } from 'node:os'
-import { onDeviceFeatures } from '../shared/translation'
+import { onDeviceFeatures, translationRoute } from '../shared/translation'
 import { operatorMailURL } from '../shared/sanctions'
 import { randomUUID } from 'node:crypto'
 import type { IpcMainInvokeEvent, MenuItemConstructorOptions } from 'electron'
@@ -196,7 +196,7 @@ import { pinMessageRequest } from '../shared/pinned-messages'
 import { deferredKind, deferredSendRequest } from '../shared/deferred-send'
 import { eventReminderRequest } from '../shared/chat-event'
 import { normalizeBackupCode, type AccountAuthState } from '../shared/auth'
-import { effectiveUnreadCount as accountUnreadCount } from '../shared/manual-unread'
+import { accountBadgeState } from '../shared/app-badge'
 import { autoLockValue, passcodeInput, type AppLockSnapshot } from '../shared/app-lock'
 import { language, locale, tr } from '../shared/i18n'
 import { reachability, watchSystemOnline } from './network/reachability'
@@ -287,7 +287,12 @@ async function replaceLocalData(): Promise<void> {
 let touchIdAvailable = false
 let autoLockTimer: ReturnType<typeof setTimeout> | null = null
 let shouldLockAt = 0
-const desktopShell = new DesktopShell(showWindow, () => app.quit())
+// B348: the Windows taskbar overlay goes on the main window; the window draws its picture (draw-app-badge → app-badge-drawn).
+const desktopShell = new DesktopShell(showWindow, () => app.quit(), () => {
+  const window = mainWindow
+  if (!window || window.isDestroyed()) return null
+  return { setOverlayIcon: (overlay, description) => window.setOverlayIcon(overlay, description), scaleFactor: () => screen.getDisplayMatching(window.getBounds()).scaleFactor }
+}, request => emit({ type: 'draw-app-badge', ...request }))
 const appUpdates = new AppUpdates(() => { void publish() })
 // app_config/desktop: below its minimum this version may not run (platform/app-version-gate.ts); a newer current version
 // only has the updater check now.
@@ -301,6 +306,11 @@ function readVersionGate(force: boolean): void {
 }
 const notifications = new NativeNotifications(() => { void publish() })
 const translator = new ChatTranslator()
+// B343: a development run (or the Phase1 test app) may pin the translation route to try the server's on a Mac that
+// translates itself; a release ignores it.
+const forcedTranslationRoute = !app.isPackaged || app.getName() === 'morse-messenger-desktop-phase1' ? process.env.MORSE_TRANSLATION_ROUTE : undefined
+const translationRouteOf = (session: { serverTranslationOn(): boolean } | null | undefined) =>
+  translationRoute(onDeviceFeatures(process.platform, release(), { translate: translator.usable, media: false }).translation, session?.serverTranslationOn() ?? false, forcedTranslationRoute)
 const mediaHelper = new MediaHelper()
 // A link in Morse's own schemes waits here until the window takes it (at start the window may not be listening yet).
 let pendingSchemeLink: string | null = null
@@ -399,6 +409,7 @@ async function snapshot(): Promise<DesktopSnapshot> {
     preferences: settings.preferences, systemDark: nativeTheme.shouldUseDarkColors, notifications: notifications.status(),
     platformIntegration: desktopShell.status(),
     onDevice: onDeviceFeatures(process.platform, release(), { translate: translator.usable, media: mediaHelper.usable }),
+    translationRoute: appLocked ? 'none' : translationRouteOf(active),
     swipeBack: swipeBackEnabled(),
     accounts: profiles, activeAccountUid: active?.profile.uid ?? null, selfProfile: appLocked ? null : selfProfile, contacts: appLocked ? null : active?.contactsSnapshot() ?? null,
     channels: screenLocked ? null : active?.channels.snapshot ?? null,
@@ -2758,13 +2769,28 @@ function registerIPC(): void {
     return accounts.requireActive(identifier(uid)).jumpPinned(identifier(chatId), identifier(messageId))
   })
   handle('reply-draft', (uid, chatId) => accounts.requireActive(identifier(uid)).replyDraft(identifier(chatId)))
-  handle('translation-gate', (uid, chatId, messageId) => {
+  // B343: one route for both (translationRoute): this Mac's helper, the server, or none. On the server's route the menu
+  // offers «번역» for any received text — the server judges the language, as Telegram's does.
+  handle('translation-gate', async (uid, chatId, messageId) => {
     if (screenLocked) return false
-    return translator.differs(accounts.requireActive(identifier(uid)).translationSource(identifier(chatId), identifier(messageId)))
+    const session = accounts.requireActive(identifier(uid)), route = translationRouteOf(session)
+    const text = session.translationSource(identifier(chatId), identifier(messageId))
+    return route === 'device' ? translator.differs(text) : route === 'server'
   })
-  handle('translate-message', (uid, chatId, messageId) => {
+  handle('translate-message', async (uid, chatId, messageId) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return translator.translate(accounts.requireActive(identifier(uid)).translationSource(identifier(chatId), identifier(messageId)))
+    const session = accounts.requireActive(identifier(uid)), route = translationRouteOf(session), id = identifier(messageId)
+    if (route === 'server') return (await session.translateOnServer(identifier(chatId), [id]))[id] ?? { status: 'failed' }
+    if (route === 'none') return { status: 'unavailable' }
+    return translator.translate(session.translationSource(identifier(chatId), id))
+  })
+  // B343: «전체번역» on the server's route — the messages on screen in one request (up to 20 each, ServerTranslator).
+  handle('translate-messages', async (uid, chatId, messageIds) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    if (!Array.isArray(messageIds) || !messageIds.length || messageIds.length > 100) throw new Error(tr('번역할 수 있는 메시지가 아닙니다.'))
+    const session = accounts.requireActive(identifier(uid))
+    if (translationRouteOf(session) !== 'server') return {}
+    return session.translateOnServer(identifier(chatId), [...new Set(messageIds.map(id => identifier(id)))])
   })
   // System Settings › General › Language & Region › Translation Languages
   handle('open-translation-settings', () => shell.openExternal('x-apple.systempreferences:com.apple.Localization-Settings.extension'))
@@ -2798,6 +2824,10 @@ function registerIPC(): void {
   })
   handle('cancel-reply', (uid, chatId, selectionId) => accounts.requireActive(identifier(uid)).cancelReply(identifier(chatId), identifier(selectionId)))
   handle('save-draft', (uid, chatId, text) => accounts.requireActive(identifier(uid)).saveDraft(identifier(chatId), draftText(text)), true)
+  handle('app-badge-drawn', (key, dataURL) => {
+    if (typeof key !== 'string' || key.length > 20 || typeof dataURL !== 'string' || dataURL.length > 200000 || !dataURL.startsWith('data:image/png;base64,')) return
+    desktopShell.overlayDrawn(key, dataURL)
+  })
   handle('complete-close', (id, success) => { if (pendingClose?.id === identifier(id)) pendingClose.finish(success === true) }, true)
   handle('send-text', (uid, chatId, text, id, reply, silent) => accounts.requireActive(identifier(uid)).sendText(identifier(chatId), draftText(text), identifier(id), replyBinding(reply), silent === true))
   handle('schedule-event-reminder', (uid, raw) => {
@@ -2852,14 +2882,11 @@ function accountStates(): AccountAuthState[] {
   const activeUid = accounts.active?.profile.uid ?? null
   return authentication.states().map(state => {
     const session = accounts.get(state.uid), profile = session?.selfProfile.snapshot.profile
-    let unread = 0
-    if (session && session.state === 'ready' && session.readStatus === 'ready') for (const dialog of session.dialogs()) {
-      const count = accountUnreadCount(dialog)
-      if (!dialog.muted && !dialog.archived && dialog.kind !== 'secret' && Number.isSafeInteger(count) && count > 0) unread = Math.min(100000, unread + count)
-    }
+    // B353: the same count as the Dock's, for this account (accountBadgeState, tdesktop unreadWithMentionsBadge).
+    const badge = session && session.state === 'ready' && session.readStatus === 'ready' ? accountBadgeState(state.uid, session.dialogs(), settings?.preferences.badgeMode ?? 'messages') : { count: 0, muted: false }
     // Each account's own photo, as Settings::AccountsList paints every account's userpic.
     const photo = session?.selfProfile.snapshot.photo
-    return { ...state, userId: profile?.userId || state.userId, displayName: profile?.displayName || state.displayName, connected: Boolean(session), active: state.uid === activeUid, unread,
+    return { ...state, userId: profile?.userId || state.userId, displayName: profile?.displayName || state.displayName, connected: Boolean(session), active: state.uid === activeUid, unread: badge.count, unreadMuted: badge.muted,
       photo: photo?.status === 'ready' ? photo.url : null }
   })
 }
@@ -3051,7 +3078,7 @@ function createWindow(): void {
   })
   window.on('blur', () => { contextMenus.close(); if (!window.webContents.isDestroyed()) window.webContents.setIgnoreMenuShortcuts(false) })
   window.on('hide', () => contextMenus.close()); window.on('minimize', () => contextMenus.close())
-  window.webContents.on('did-finish-load', () => emit({ type: 'full-screen', value: window.isFullScreen() }))
+  window.webContents.on('did-finish-load', () => { emit({ type: 'full-screen', value: window.isFullScreen() }); desktopShell.windowReset(); updateDesktopShell() })
   // B58: the page's wheel events carry no phases. Chromium's gestureScrollBegin/End mark a whole scroll sequence (a
   // phase-less wheel makes one per tick — measured 10-02 on Electron 44), not the fingers lifting, so only a fling, if
   // one is reported, is passed on: like Telegram's ScrollMomentum it ends the swipe and its coasting is not a new one.

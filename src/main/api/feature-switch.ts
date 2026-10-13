@@ -9,7 +9,7 @@ import { boolField } from '../network/firestore-values'
 // sticker_reference_send (B195, contract «옛 앱 호환과 켜는 시점»): a sticker goes as a reference to the server's copy
 // only while it is on — an app older than the reference cannot draw sticker_files; the server refuses a reference with
 // STICKER_REFERENCE_OFF while it is off.
-export const featureSwitches = { qr_login: 'qrLogin', two_step: 'twoStep', system_notices: 'systemNotices', sticker_reference_send: 'stickerReferenceSend' } as const
+export const featureSwitches = { qr_login: 'qrLogin', two_step: 'twoStep', system_notices: 'systemNotices', sticker_reference_send: 'stickerReferenceSend', server_translation: 'serverTranslation' } as const
 export type FeatureSwitchName = keyof typeof featureSwitches
 export const featureAccessPath = (uid: string): string => `users/${uid}/featureAccess/state`
 

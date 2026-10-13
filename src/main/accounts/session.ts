@@ -91,7 +91,10 @@ import { ManualUnread } from './manual-unread'
 import { clearsUnreadMark, effectiveUnreadCount, type ManualUnreadRequest } from '../../shared/manual-unread'
 import type { ContactCreateFields } from '../network/participant-contact-write'
 import { FirestoreReader } from '../network/firestore-rpc'
-import { boolField, childId, decodeDialog, readDialogs, historyReadable, documents, positionValue, timestamp, documentVersion, mapField, numberField, stringField, ReadFailure, type FirestoreDocument, type ReadDialog, type WireObject } from '../network/firestore-values'
+import { boolField, childId, decodeDialog, decodeMessage, messagesQuery, readDialogs, historyReadable, documents, positionValue, timestamp, documentVersion, mapField, numberField, stringField, ReadFailure, type FirestoreDocument, type ReadDialog, type WireObject } from '../network/firestore-values'
+import { decodeHiddenMessages } from './hidden-messages'
+import { HiddenMessageUploads, type HideAnswer, type HideRoute } from './hidden-message-uploads'
+import { HiddenRowLines, type HiddenRowLine, type OpenRowLines } from './hidden-row-lines'
 import { HistoryReader } from './history-reader'
 import { OutboxPump, type AccountAuthorization } from '../messaging/outbox'
 import type { OutgoingSnapshot } from '../../shared/delivery'
@@ -137,6 +140,9 @@ import { ChatFlags } from './chat-flags'
 import { StickerPacks } from './sticker-packs'
 import { stickerPackItemURL } from '../../shared/sticker-packs'
 import { StickerLibrary } from './sticker-library'
+import { ServerTranslator } from '../messaging/server-translation'
+import type { TranslationResult } from '../../shared/translation'
+import { featureAccessPath, featureOn } from '../api/feature-switch'
 import { downloadMedia } from '../media/download-media'
 import { ContactFlags } from './contact-flags'
 import type { PostLiker, PostLikersRequest, PostLikersSnapshot } from '../../shared/post-likers'
@@ -294,9 +300,13 @@ export class AccountSession {
   // "나에게만 삭제": the moment each room was deleted on this device (hidden_chats).
   private readonly hiddenChats: HiddenChats
   private readonly hiddenMessages: HiddenMessages
+  private readonly hiddenUploads: HiddenMessageUploads
+  private readonly hiddenRowLines: HiddenRowLines
   private readonly chatFlags: ChatFlags
   private readonly contactFlags: ContactFlags
   private readonly stickerLibrary: StickerLibrary
+  private serverTranslation = false
+  private readonly serverTranslator: ServerTranslator
   private readonly stickerMessageBytes: (chatId: string, messageId: string, version: string, signal: AbortSignal) => Promise<Buffer>
   // A sticker message's bytes hashed once, so its menu knows at once the next time whether it is a favourite.
   private readonly stickerMessageIds = new Map<string, string>()
@@ -645,6 +655,7 @@ export class AccountSession {
       return downloadMedia(credentials, resource, signal, () => { if (this.closed || this.locked) throw new Error('Account changed') }, () => {}, maxStickerBytes)
     }
     this.stickerPacks = new StickerPacks(profile.uid, credentials, () => this.reader, () => { if (!this.closed) this.events.changed() }, this.stickerMessageBytes)
+    this.serverTranslator = new ServerTranslator(profile.uid, (name, data) => callMorseFunction(credentials, name, data, AbortSignal.any([credentials.signal, AbortSignal.timeout(65000)])))
     this.stickerLibrary = new StickerLibrary(profile.uid, credentials,
       (name, data) => callMorseFunction(credentials, name, data, AbortSignal.any([credentials.signal, AbortSignal.timeout(65000)])),
       () => { if (!this.closed) this.events.changed() },
@@ -656,7 +667,13 @@ export class AccountSession {
     this.delivery.stickerRefused = (chatId, id, reason, ref) => { void this.stickerReferenceRefused(chatId, id, reason, ref).catch(() => {}) }
     this.delivery.sendingMedia = this.sendingMedia
     this.hiddenMessages = new HiddenMessages(<T,>(command: HiddenMessageCommand) => this.delivery.hiddenMessageState<T>(command),
-      () => { if (!this.closed) this.selected?.hiddenChanged() })
+      () => this.hiddenArrived(), Date.now, () => this.hiddenUploads.kick())
+    // B327b: «나에게만 삭제» to the account's other devices (hideMorseMessagesForMe), and a row whose line was deleted for me.
+    this.hiddenUploads = new HiddenMessageUploads(this.hiddenMessages, chatId => this.hideRoute(chatId), () => this.closed ? null : {
+      call: (name, data, signal) => callMorseFunction(credentials, name, data, AbortSignal.any([signal, AbortSignal.timeout(65000)]))
+    }, profile.uid)
+    this.hiddenRowLines = new HiddenRowLines(this.hiddenMessages, chatId => this.readRowLines(chatId),
+      () => { if (!this.closed && this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() } })
     const connected = (): void => { if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('계정 연결을 확인해 주세요.')) }
     this.groups = new GroupApi(profile.uid, credentials, connected, {
       create: request => this.groupCreateSource(request), members: request => this.groupMembersSource(request),
@@ -700,7 +717,7 @@ export class AccountSession {
     this.stopReachability = reachability.subscribe(() => {
       if (this.closed) return
       if (this.status === 'error' && !this.locked) this.refresh()
-      this.actions.retryNow(); this.inquirySends.retryNow(); this.channelOperations.retryNow(); this.historyClears.retryNow(); this.postCreation.resume(); this.commentCreation.resume()
+      this.actions.retryNow(); this.inquirySends.retryNow(); this.channelOperations.retryNow(); this.historyClears.retryNow(); this.hiddenUploads.retryNow(); this.postCreation.resume(); this.commentCreation.resume()
     })
     this.channelInquiries = new ChannelInquiries(profile.uid, credentials, connected, () => this.selfProfile.commentAuthor(), () => events.canRead(), () => { if (!this.closed) events.changed() },
       request => this.inquirySends.enqueue(request), inquiryId => this.inquirySends.forgetRoom(inquiryId),
@@ -768,11 +785,11 @@ export class AccountSession {
     if (this.chatsCurrent && this.pinsCurrent) this.rebuild()
     if (locked) { this.lockedPictures = this.dialogAvatars.drawnPictures(); this.dialogAvatars.clear(); this.storyMedia.clear() }
     this.voiceDraftStorage.invalidate();this.backgroundStorage.invalidate()
-    if (locked) { this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); this.groupName.pause(); this.groupAnnouncement.pause(); this.groupPhoto.clear(); this.groupPhotoEditor.pause(); this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause() }
+    if (locked) { this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.hiddenUploads.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); this.groupName.pause(); this.groupAnnouncement.pause(); this.groupPhoto.clear(); this.groupPhotoEditor.pause(); this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause() }
     if (locked) { this.ownStories.pause(); this.spaceNotes.pause(); this.channelPublicPreview.pause(); this.channelPublicPreview.comments.forget(); this.channelDiscovery.pause(); this.contactDiscovery.pause(); this.participantAdd.pause(); this.dialogPins.pause(); this.manualUnread.pause(); this.draftReply.clear(); this.cancelForwardPreparation() }
     else if (this.selected && this.reader) this.draftReply.bind(this.selected.dialog, this.reader)
     // A post or a comment on its way goes on once the screen is open again.
-    if (!locked) { this.postCreation.resume(); this.commentCreation.resume(); this.inquirySends.resume(); this.channelOperations.resume(); this.historyClears.resume() }
+    if (!locked) { this.postCreation.resume(); this.commentCreation.resume(); this.inquirySends.resume(); this.channelOperations.resume(); this.historyClears.resume(); this.hiddenUploads.resume() }
   }
   // B288: tdesktop's passcode lock only covers the window (MainWindow::setupPasscodeLock hides _main, mainwindow.cpp:182-204),
   // so its list comes back as it was. Morse takes every picture out of memory while locked (userpic-images forgetImages)
@@ -1193,8 +1210,8 @@ export class AccountSession {
     this.connection = state
     // A contact's stories are read from Firestore and their reaction and view receipt are written there, so
     // they are not stopped by the socket going down; only what is sent through the socket waits for it.
-    if (state !== 'ready') { this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause(); this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); }
-    else { void this.channelJoinDecisions.refresh().catch(() => {}); void this.channelAccess.refresh().catch(() => {}); void this.channelPhotoUpload.refresh().catch(() => {}); void this.groupPhotoUpload.refresh().catch(() => {}); void this.discussionJoin.refresh().catch(() => {}); this.postCreation.resume(); this.commentCreation.resume(); this.inquirySends.resume(); this.channelOperations.resume(); this.historyClears.resume() }
+    if (state !== 'ready') { this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause(); this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.hiddenUploads.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); }
+    else { void this.channelJoinDecisions.refresh().catch(() => {}); void this.channelAccess.refresh().catch(() => {}); void this.channelPhotoUpload.refresh().catch(() => {}); void this.groupPhotoUpload.refresh().catch(() => {}); void this.discussionJoin.refresh().catch(() => {}); this.postCreation.resume(); this.commentCreation.resume(); this.inquirySends.resume(); this.channelOperations.resume(); this.historyClears.resume(); this.hiddenUploads.resume() }
     // What is read and shown — the contacts, the profiles, their pictures — is not told about a socket that went
     // down: telling them would throw away what is on screen (Contacts.invalidate clears the pictures) and Telegram
     // keeps its userpics through a reconnect. They are started again when the connection is back.
@@ -1280,6 +1297,26 @@ export class AccountSession {
         reconnecting: () => {},
         state: () => {}
       }, 5000, 4 * 1024 * 1024)
+      // B327b: this account's «나에게만 삭제» from any of its devices (users/{uid}/hiddenMessages, written by
+      // hideMorseMessagesForMe). Taken into this device's own list; a refusal (a server without it yet) changes nothing.
+      reader.watch({ query: { parent: `${documents}/users/${this.profile.uid}`, structuredQuery: { from: [{ collectionId: 'hiddenMessages' }] } } }, this.credentials.signal, {
+        snapshot: rows => { if (active()) this.hiddenMessages.setServer(decodeHiddenMessages(rows.values(), this.profile.uid)) },
+        reconnecting: () => {},
+        state: () => {}
+      }, 5000)
+      // B343: the server translation switch, read as the server decides it (morse-feature-switch decide): on for everyone
+      // (app_config/server_translation.enabled) or for this account (featureAccess/state.serverTranslation). Off until
+      // read, and off again on a refusal or a missing document; the listen stays.
+      const switchNames = [`${documents}/app_config/server_translation`, `${documents}/${featureAccessPath(this.profile.uid)}`]
+      reader.watch({ documents: { documents: switchNames } }, this.credentials.signal, {
+        snapshot: rows => {
+          if (!active()) return
+          const on = featureOn('server_translation', rows.get(switchNames[0]!) ?? null, rows.get(switchNames[1]!) ?? null)
+          if (on !== this.serverTranslation) { this.serverTranslation = on; this.events.changed() }
+        },
+        reconnecting: () => {},
+        state: state => { if (active() && state === 'error' && this.serverTranslation) { this.serverTranslation = false; this.events.changed() } }
+      }, 2)
     } catch (error) { failed(error instanceof ReadFailure ? error : new ReadFailure('data')) }
   }
   // Telegram R-60 / A11 §4: a person's name is the same on every screen — the chat list, the chat's header and a
@@ -1331,6 +1368,8 @@ export class AccountSession {
       // B163 ④: the row's message expired — the next one this device holds, or no line (chat-list-tops.ts expiredTop).
       if (!this.chatListTops.apply(value.summary) && !expiredTop(value.summary, value.topExpiresAt, now, this.openRowSource(value.summary.id)) &&
         value.topExpiresAt !== undefined) nextExpiry = Math.min(nextExpiry, value.topExpiresAt)
+      // B327b: a line deleted for me is never shown; the row takes the newest message left.
+      this.hiddenRowLines.apply(value.summary, this.openRowLines(value.summary.id))
       this.discussionHistory.apply(doc, value)
       // The server's boundary, before this device's own deletion moment replaces it.
       if (emptyRevokedDirect(value.summary, value.cutoff, `memo_${this.profile.uid}`) && value.cutoff && !this.hiddenChats.keepsCleared(value.summary.id, value.cutoff)) unlisted.add(value.summary.id)
@@ -1534,7 +1573,7 @@ export class AccountSession {
     const dialog = this.index.get(chatId)
     if (this.closed || this.status !== 'ready' || !this.reader || this.selected?.dialog.summary.id !== chatId || !dialog || !historyReadable(dialog) || dialog.summary.kind === 'secret') throw new Error(tr('일반 대화가 준비된 뒤 검색해 주세요.'))
     this.cancelSearch()
-    const search = new MessageSearch(id, { ...dialog }, query, this.reader, snapshot => this.events.search(chatId, snapshot), () => ++this.revision)
+    const search = new MessageSearch(id, { ...dialog }, query, this.reader, snapshot => this.events.search(chatId, snapshot), () => ++this.revision, null, messageId => this.hiddenMessages.has(chatId, messageId))
     this.search = search
     return search.more()
   }
@@ -1544,7 +1583,7 @@ export class AccountSession {
     const dialog = this.index.get(chatId)
     if (this.closed || this.status !== 'ready' || !this.reader || this.selected?.dialog.summary.id !== chatId || !dialog || !historyReadable(dialog) || dialog.summary.kind === 'secret') throw new Error(tr('일반 대화가 준비된 뒤 열어 주세요.'))
     this.cancelSearch()
-    const search = new MessageSearch(id, { ...dialog }, filter, this.reader, snapshot => this.events.search(chatId, snapshot), () => ++this.revision, filter)
+    const search = new MessageSearch(id, { ...dialog }, filter, this.reader, snapshot => this.events.search(chatId, snapshot), () => ++this.revision, filter, messageId => this.hiddenMessages.has(chatId, messageId))
     this.search = search
     return search.more()
   }
@@ -2431,21 +2470,63 @@ export class AccountSession {
     if (summary.kind !== 'group' || summary.createdBy !== this.profile.uid || summary.discussion) throw new Error(tr('그룹을 만든 사람만 카테고리를 바꿀 수 있어요.'))
     return this.reader
   }
-  // A message's «나에게만 삭제» (iOS deleteMessage hideForMe): gone from this device's history, kept on the server.
-  async hideMessages(chatId: string, messageIds: string[]): Promise<'done'> {
+  // A message's «나에게만 삭제» (iOS deleteMessage hideForMe): gone from this device's history at once, then to the
+  // account's other devices through hideMorseMessagesForMe (B327b). 'too-many': the server's list for the room is full,
+  // so only this device has it (the person is told «기록 비우기(나에게만)» does the rest).
+  async hideMessages(chatId: string, messageIds: string[]): Promise<'done' | 'too-many'> {
     if (this.closed || this.locked || !this.index.has(chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
     if (!messageIds.length || messageIds.length > maxHiddenMessagesPerCall) throw new Error(tr('삭제할 메시지를 다시 선택해 주세요.'))
     await this.hiddenMessages.hide(chatId, messageIds)
-    return 'done'
+    return this.firstHideAnswer(chatId, messageIds)
   }
   // «나에게만 삭제» in a 1:1 inquiry room: the same store a chat's hidden messages use, under the room's client id.
-  async hideInquiryMessages(inquiryId: string, messageIds: string[]): Promise<'done'> {
+  async hideInquiryMessages(inquiryId: string, messageIds: string[]): Promise<'done' | 'too-many'> {
     if (this.closed || this.locked) throw new Error(tr('문의를 다시 열어 주세요.'))
     if (!messageIds.length || messageIds.length > maxHiddenMessagesPerCall) throw new Error(tr('삭제할 메시지를 다시 선택해 주세요.'))
     await this.hiddenMessages.hide(inquiryQueueChatId(inquiryId), messageIds)
-    this.channelInquiries.refreshHidden()
+    return this.firstHideAnswer(inquiryQueueChatId(inquiryId), messageIds)
+  }
+  // The first answer, briefly: the window needs to know only of a full list. Otherwise the queue keeps trying.
+  private async firstHideAnswer(chatId: string, messageIds: string[]): Promise<'done' | 'too-many'> {
+    const answer = await Promise.race([this.hiddenUploads.answer(chatId, messageIds), new Promise<HideAnswer>(done => setTimeout(() => done('unconfirmed'), 10000))])
+    return answer === 'too-many' ? 'too-many' : 'done'
+  }
+  // A hide here or from another device: every view of messages drops it — the history, search and shared media, the
+  // inquiry room, and the list's line.
+  private hiddenArrived(): void {
+    if (this.closed) return
+    this.selected?.hiddenChanged()
+    this.search?.hiddenChanged()
+    this.channelInquiries?.refreshHidden()
+    if (this.chatsCurrent && this.pinsCurrent) this.rebuild()
     this.events.changed()
-    return 'done'
+  }
+  // Where a room's hides go: an inquiry room and a chat to the server; a secret chat's history lives on its two devices
+  // and saved messages are deleted for real, so those stay here (the server refuses both). Until the list is read a
+  // chat's kind is not known.
+  private hideRoute(chatId: string): HideRoute {
+    const inquiry = 'sub_inq_'
+    if (chatId.startsWith(inquiry)) return { kind: 'inquiry', roomId: chatId.slice(inquiry.length) }
+    if (chatId === `memo_${this.profile.uid}`) return 'local'
+    const summary = this.index.get(chatId)?.summary
+    if (summary) return summary.kind === 'secret' ? 'local' : { kind: 'chat', roomId: chatId }
+    return this.chatsCurrent ? { kind: 'chat', roomId: chatId } : 'later'
+  }
+  // The newest messages of a room whose line was deleted for me, newest first.
+  private async readRowLines(chatId: string): Promise<HiddenRowLine[]> {
+    const reader = this.reader, dialog = this.index.get(chatId)
+    if (!reader || !dialog || this.closed) throw new Error('No room')
+    const docs = await reader.query(`${documents}/chats/${chatId}`, messagesQuery(dialog), this.credentials.signal)
+    return docs.flatMap(doc => { const message = decodeMessage(doc, dialog); return message ? [message] : [] })
+      .sort((a, b) => comparePosition(b.position, a.position))
+      .map(message => ({ preview: messageListPreview(message), position: message.position, fromMe: message.senderId === this.profile.uid, messageId: message.id }))
+  }
+  private openRowLines(chatId: string): OpenRowLines | null {
+    const history = this.selected
+    if (!history || history.dialog.summary.id !== chatId) return null
+    const snapshot = history.snapshot, messages = snapshot.messages
+    return { ready: snapshot.status === 'ready', newerAvailable: snapshot.newerAvailable, hasMore: snapshot.hasMore, count: messages.length,
+      line: index => ({ preview: messageListPreview(messages[index]!), position: messages[index]!.position, fromMe: messages[index]!.senderId === this.profile.uid, messageId: messages[index]!.id }) }
   }
   async restoreChat(chatId: string): Promise<'done'> {
     if (this.closed || this.locked) throw new Error(tr('계정이 변경되었습니다.'))
@@ -2891,6 +2972,14 @@ export class AccountSession {
     if (!target) throw new Error(tr('고정된 메시지를 확인할 수 없습니다.'))
     return this.selected.jump(target)
   }
+  // B343: whether the server translates for this account now (the switch above), and its translations of received text in
+  // the open chat — the same messages translationSource allows, by id (the server reads them itself).
+  serverTranslationOn(): boolean { return !this.closed && !this.locked && this.serverTranslation }
+  async translateOnServer(chatId: string, messageIds: readonly string[]): Promise<Record<string, TranslationResult>> {
+    const items = messageIds.map(id => ({ id, text: this.translationSource(chatId, id) }))
+    if (!this.serverTranslationOn()) return Object.fromEntries(items.map(item => [item.id, { status: 'unavailable' } as TranslationResult]))
+    return Object.fromEntries(await this.serverTranslator.translate(chatId, items))
+  }
   // A received text message in the open chat, for on-device translation (message menu «번역», "전체번역").
   translationSource(chatId: string, messageId: string): string {
     const history = this.selected
@@ -2920,8 +3009,8 @@ export class AccountSession {
   async close(purge: boolean): Promise<void> {
     if (this.closed) return
     this.keptHistories.clear(); this.settleListed(false)
-    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.sendingMedia.clear(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stickerLibrary.close(); this.storyBarApi.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
-    this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); 
+    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); void this.hiddenUploads.close(); this.hiddenRowLines.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.sendingMedia.clear(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stickerLibrary.close(); this.serverTranslator.close(); this.storyBarApi.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
+    this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.hiddenUploads.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); 
     await storyClose
     await noteClose
     await presenceClose

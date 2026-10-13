@@ -23,7 +23,7 @@ import { ActionRow, ContactProfile } from '../info/info-panel'
 import { showReportBox } from '../boxes/report-box'
 import { Avatar, PeerAvatar } from '../ui/avatar'
 import { LocalMessageView, MessageView, type MessageLayout } from '../history/message'
-import { chooseDeletion, ReactionStrip, saveAttachment, saveSticker, showInFolderItem } from '../history/history-widget'
+import { chooseDeletion, hideAnswered, ReactionStrip, saveAttachment, saveSticker, showInFolderItem } from '../history/history-widget'
 import { EntityPanel } from '../history/entity-panel'
 import type { LocalOutgoing } from '../../../shared/delivery'
 import { showMediaViewer } from '../media/media-viewer'
@@ -326,7 +326,7 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
     if (!choice) return
     setSelection(null)
     try {
-      if (choice === 'me') { await trackWrite(window.morse.hideInquiryMessages(accountUid, inquiryId, items.map(item => item.id))); return }
+      if (choice === 'me') { hideAnswered(await trackWrite(window.morse.hideInquiryMessages(accountUid, inquiryId, items.map(item => item.id)))); return }
       for (const item of items) await trackWrite(window.morse.deleteInquiryMessage(accountUid, { requestId, inquiryId, messageId: item.id }))
     } catch (reason) { controller.toast(errorText(reason, tr('메시지를 삭제하지 못했습니다.')), 'error') }
   }

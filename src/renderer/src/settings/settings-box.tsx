@@ -463,7 +463,7 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
         <div className="section-label">{tr('앱 사용 중')}</div>
         <Toggle label={tr('앱 사용 중 알림')} detail={tr('Morse를 사용하는 동안 다른 메시지 도착 시 표시')} checked={preferences.inAppNotifications} disabled={!preferences.notifications} onChange={value => update({ inAppNotifications: value })} />
         <div className="section-label">{tr('앱 아이콘 배지')}</div>
-        <Toggle label={tr('배지 표시')} detail={tr('Dock 아이콘에 알림 카운트 표시')} checked={preferences.showUnreadBadge} onChange={value => update({ showUnreadBadge: value })} />
+        <Toggle label={tr('배지 표시')} detail={desktop.value?.platform === 'Windows' ? tr('작업 표시줄 아이콘에 알림 카운트 표시') : tr('Dock 아이콘에 알림 카운트 표시')} checked={preferences.showUnreadBadge} onChange={value => update({ showUnreadBadge: value })} />
         {preferences.showUnreadBadge && <>
           <label className="settings-radio"><input type="radio" name="badge-mode" checked={preferences.badgeMode === 'messages'} onChange={() => update({ badgeMode: 'messages' })} /><span>{tr('메시지 수')}<small>{tr('안 읽은 메시지 총 개수')}</small></span></label>
           <label className="settings-radio"><input type="radio" name="badge-mode" checked={preferences.badgeMode === 'chats'} onChange={() => update({ badgeMode: 'chats' })} /><span>{tr('채팅 수')}<small>{tr('안 읽은 채팅방 개수')}</small></span></label>

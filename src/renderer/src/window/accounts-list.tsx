@@ -46,7 +46,7 @@ export function AccountsList({ variant, onDone }: { variant: 'menu' | 'settings'
         <small className={`ellipsis${!state.connected && state.phase === 'error' ? ' error' : ''}`}>{state.connected ? (state.userId ? `@${state.userId}` : '') : state.phase === 'restoring' || state.phase === 'connecting' ? tr('연결하는 중…') : state.message || tr('연결되지 않음')}</small>
       </span>
       {state.active ? <Check size={18} className="accounts-row-check" aria-label={tr('현재 계정')} />
-        : state.unread > 0 ? <span className="accounts-row-badge" aria-label={tr('읽지 않은 메시지 {0}개', [state.unread])}>{state.unread > 999 ? '999+' : state.unread}</span> : null}
+        : state.unread > 0 ? <span className={`accounts-row-badge${state.unreadMuted ? ' muted' : ''}`} aria-label={tr('읽지 않은 메시지 {0}개', [state.unread])}>{state.unread > 999 ? '999+' : state.unread}</span> : null}
     </button>
     {/* A10 §4 (Telegram SendToBannedHelp): a banned account offers a mail to the operator. */}
     {state.banned && <button type="button" className="accounts-row-help" onClick={() => { void window.morse.operatorMail(state.uid, 'banned').catch(() => {}) }}>{tr('도움')}</button>}

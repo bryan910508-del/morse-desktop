@@ -194,6 +194,8 @@ db.transaction(() => {
   const hiddenColumns = new Set((db.pragma('table_info(hidden_chats)') as { name: string }[]).map(column => column.name))
   if (!hiddenColumns.has('remove_row')) db.exec('ALTER TABLE hidden_chats ADD COLUMN remove_row INTEGER NOT NULL DEFAULT 1')
   if (!hiddenColumns.has('uploaded')) db.exec('ALTER TABLE hidden_chats ADD COLUMN uploaded INTEGER NOT NULL DEFAULT 0')
+  // B327b: whether a message hidden here has gone to the server (hidden-message-table.ts). Rows from before are not sent yet.
+  if (!(db.pragma('table_info(hidden_messages)') as { name: string }[]).some(column => column.name === 'uploaded')) db.exec('ALTER TABLE hidden_messages ADD COLUMN uploaded INTEGER NOT NULL DEFAULT 0')
   for (const name of ['parent_id', 'parent_revision']) if (!draftColumns.has(name)) db.exec(`ALTER TABLE channel_comment_drafts ADD COLUMN ${name} TEXT`)
   const columns = new Set((db.pragma('table_info(intents)') as { name: string }[]).map(column => column.name))
   for (const [name, type] of [['upload', 'TEXT'], ['source', 'BLOB'], ['source_digest', 'TEXT'], ['upload_request_digest', 'TEXT'], ['forward_operation_id', 'TEXT']]) if (!columns.has(name!)) db.exec(`ALTER TABLE intents ADD COLUMN ${name} ${type}`)
@@ -275,7 +277,7 @@ function execute(command: DeliveryCommand): unknown {
     case 'reply-draft': case 'reply-select': case 'reply-clear': return executeReplyDraft(db, command)
     case 'bookmarks-read': case 'bookmark-set': return executeMessageBookmark(db, command)
     case 'hidden-chats-read': case 'hidden-chat-set': case 'hidden-chat-uploaded': case 'cleared-chats-read': case 'cleared-chat-set': return executeHiddenChat(db, command)
-    case 'hidden-messages-read': case 'hidden-messages-add': return executeHiddenMessage(db, command)
+    case 'hidden-messages-read': case 'hidden-messages-add': case 'hidden-messages-merge': case 'hidden-messages-uploaded': return executeHiddenMessage(db, command)
     case 'peer-photos-read': case 'peer-photo-seen': case 'peer-photo-forget': return executePeerPhoto(db, command)
     case 'chat-flags-read': case 'chat-flag-set': return executeChatFlag(db, command)
     case 'contact-flags-read': case 'contact-flag-set': return executeContactFlag(db, command)

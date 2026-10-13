@@ -7,8 +7,13 @@ export const nativeImage = {
   createFromBuffer: (bytes: Buffer) => {
     const image = { resize: () => image, toJPEG: () => Buffer.from(`thumb:${bytes.length}`) }
     return image
-  }
+  },
+  // The taskbar overlay (desktop-shell.ts) is built from the window's PNG; the stand-in keeps the URL to compare.
+  createFromDataURL: (url: string) => ({ isEmpty: () => !url.includes(','), url })
 }
+// The desktop shell builds the Dock menu; the Windows tray icon is never made in tests.
+export const Menu = { buildFromTemplate: (template: unknown[]) => template }
+export class Tray { constructor() { throw new Error('Tray is not available in unit tests') } }
 // safeStorage stands in for the OS keychain with a marked, reversible wrapper; tests never read it as secret.
 export const safeStorage = {
   isAsyncEncryptionAvailable: async () => true,
@@ -22,4 +27,4 @@ export const shell = { openExternal: async () => { throw new Error('shell is not
 // The App Check provider (web-app-proof.ts) asks whether the machine is online and listens for its page's answer.
 export const net = { isOnline: () => true }
 export const ipcMain = { on: () => {}, removeListener: () => {} }
-export default { app, nativeImage, safeStorage, BrowserWindow, session, shell, net, ipcMain }
+export default { app, nativeImage, Menu, Tray, safeStorage, BrowserWindow, session, shell, net, ipcMain }

@@ -27,13 +27,15 @@ export class MessageSearch {
   private timer?: ReturnType<typeof setTimeout>
   private value: SearchSnapshot
   constructor(readonly id: string, readonly dialog: ReadDialog, query: string, private readonly reader: FirestoreReader,
-    private readonly changed: (snapshot: SearchSnapshot) => void, private readonly nextRevision: () => number, private readonly filter: SharedMediaFilter | null = null) {
+    private readonly changed: (snapshot: SearchSnapshot) => void, private readonly nextRevision: () => number, private readonly filter: SharedMediaFilter | null = null,
+    private readonly hidden: (messageId: string) => boolean = () => false) {
     this.value = { id, query, revision: 0, status: 'loading', hits: [], scanned: 0, hasMore: true, limited: false, message: '' }
   }
   get snapshot(): SearchSnapshot { return { ...this.value, hits: [...this.value.hits] } }
   private match(doc: FirestoreDocument): { message: ChatMessage; hit: SearchHit } | null {
     const message = decodeMessage(doc, this.dialog)
-    if (!message || message.encrypted || message.system || !message.readEligible || !message.version || message.kind === 'unsupported') return null
+    // B327b: a message deleted for me is gone from search and shared media too, as from the history.
+    if (!message || message.encrypted || message.system || !message.readEligible || !message.version || message.kind === 'unsupported' || this.hidden(message.id)) return null
     if (this.filter) return this.matchShared(message)
     const fields = [message.text, message.caption ?? '', ...(message.attachments ?? []).filter(item => item.kind === 'file' && !item.blind).map(item => item.name)]
     const field = fields.map(searchText).find(text => searchFold(text).includes(searchFold(this.value.query)))
@@ -68,6 +70,7 @@ export class MessageSearch {
     return doc ? this.match(doc)?.message.position ?? null : null
   }
   updateNames(names: Record<string, string>): void { this.dialog.participantNames = names; this.publish() }
+  hiddenChanged(): void { this.publish() }
   private stopWatches(): void {
     this.watchGeneration++; for (const stop of this.stops) stop()
     this.stops = []; this.currentGroups.clear(); this.groupCount = 0

@@ -507,6 +507,7 @@ const bridge: DesktopBridge = {
   saveDraft: (uid, chatId, text) => ipcRenderer.invoke('morse:save-draft', uid, chatId, text),
   replyDraft: (uid, chatId) => ipcRenderer.invoke('morse:reply-draft', uid, chatId),
   translationGate: (uid, chatId, messageId) => ipcRenderer.invoke('morse:translation-gate', uid, chatId, messageId),
+  translateMessages: (uid, chatId, messageIds) => ipcRenderer.invoke('morse:translate-messages', uid, chatId, messageIds),
   translateMessage: (uid, chatId, messageId) => ipcRenderer.invoke('morse:translate-message', uid, chatId, messageId),
   pinMessage: (uid, request) => ipcRenderer.invoke('morse:pin-message', uid, request),
   jumpPinned: (uid, chatId, messageId) => ipcRenderer.invoke('morse:jump-pinned', uid, chatId, messageId),
@@ -551,6 +552,7 @@ const bridge: DesktopBridge = {
   outgoing: (uid, chatId) => ipcRenderer.invoke('morse:outgoing', uid, chatId),
   discardOutgoing: (uid, chatId, id) => ipcRenderer.invoke('morse:discard-outgoing', uid, chatId, id),
   completeClose: (id, success) => ipcRenderer.invoke('morse:complete-close', id, success),
+  appBadgeDrawn: (key, dataURL) => ipcRenderer.invoke('morse:app-badge-drawn', key, dataURL),
   onEvent: listener => {
     const handler = (_event: Electron.IpcRendererEvent, value: DesktopEvent): void => listener(value)
     ipcRenderer.on('morse:event', handler)

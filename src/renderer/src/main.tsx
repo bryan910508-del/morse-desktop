@@ -18,6 +18,7 @@ import { openLink } from './app/links'
 import { language, tr } from '../../shared/i18n'
 import { useChannelOperationNotices } from './channels/channel-operations'
 import { installTapRecorder } from './app/tap-recorder'
+import { drawAppBadge } from './app/app-badge-image'
 
 function takeOpenLink(): void {
   void window.morse.takeOpenLink().then(url => {
@@ -73,6 +74,8 @@ function App() {
     else if (event.type === 'attachment-preparing' && event.active) controller.toast(tr('동영상을 압축하고 있어요…'))
     else if (event.type === 'open-link' && desktop.value?.activeAccountUid) takeOpenLink()
     else if (event.type === 'full-screen') document.documentElement.dataset.fullScreen = String(event.value)
+    // B348: the Windows taskbar overlay is drawn here and handed back to the main process.
+    else if (event.type === 'draw-app-badge') void drawAppBadge(event.count, event.muted, event.pixels).then(url => window.morse.appBadgeDrawn(event.key, url)).catch(() => {})
     else if (event.type === 'open-notification-chat') {
       if (desktop.value?.activeAccountUid === event.accountUid) controller.openChat(event.chatId)
       else pendingNotificationChat = { accountUid: event.accountUid, chatId: event.chatId, at: Date.now() }

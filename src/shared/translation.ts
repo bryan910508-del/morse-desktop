@@ -2,7 +2,7 @@ import { language, tr, type Language } from './i18n'
 // Chat translation (MorseMessenger iOS: message menu "번역" and "전체번역"), on this Mac only.
 export type TranslationResult =
   | { status: 'translated'; text: string }
-  | { status: 'same-language' | 'unsupported' | 'not-installed' | 'unavailable' | 'failed' }
+  | { status: 'same-language' | 'unsupported' | 'not-installed' | 'unavailable' | 'failed' | 'rate-limited' }
 
 // The interface language of Morse Desktop; translations are made into it, as iOS translates into currentLanguage.
 export function translationTarget(): Language { return language() }
@@ -17,6 +17,20 @@ export function onDeviceFeatures(platform: string, kernelRelease: string, helper
   const darwin = platform === 'darwin' ? Number.parseInt(kernelRelease, 10) || 0 : 0
   return { translation: darwin >= 25 && helpers.translate, voiceToText: darwin > 0 && helpers.media, backgroundRemoval: darwin >= 23 && helpers.media }
 }
+// B343: where a translation is made — tdesktop CreateTranslateProvider (lang/translate_provider.cpp:34-46, v7.3.0 42f8a36d;
+// v7.3.1 changes no translation file): this device's own translation when it can, else the server's. Morse asks the
+// server only while its switch is on for this account (app_config/server_translation or the account's featureAccess,
+// morse-feature-switch decide); with neither there is no translation, as before.
+export type TranslationRoute = 'device' | 'server' | 'none'
+export function translationRoute(device: boolean, serverSwitch: boolean, forced?: string): TranslationRoute {
+  // A development build may pin the route (MORSE_TRANSLATION_ROUTE) to try the server's on a Mac that translates itself.
+  if (forced === 'device' || forced === 'server' || forced === 'none') return forced
+  return device ? 'device' : serverSwitch ? 'server' : 'none'
+}
+export const translationAvailable = (route: TranslationRoute | undefined): boolean => route === 'device' || route === 'server'
+// translateMorseMessages takes at most this many ids in one request (tdesktop sends the visible messages together:
+// history_view_translate_tracker.cpp:273-306, translate_mtproto_provider.cpp:46-104).
+export const serverTranslationBatch = 20
 export const translationUnavailableNote = (): string => tr('번역은 macOS 26 이상의 Mac에서 쓸 수 있어요.')
 
 export function translationMessage(result: TranslationResult): string {
@@ -26,6 +40,7 @@ export function translationMessage(result: TranslationResult): string {
     case 'unsupported': return tr('이 언어는 이 Mac에서 번역할 수 없어요.')
     case 'not-installed': return tr('번역 언어를 내려받아야 해요. 시스템 설정의 번역 언어에서 내려받아 주세요.')
     case 'unavailable': return translationUnavailableNote()
+    case 'rate-limited': return tr('번역을 너무 많이 했어요. 잠시 후 다시 시도해 주세요.')
     default: return tr('번역할 수 없습니다. 잠시 후 다시 시도해 주세요.')
   }
 }

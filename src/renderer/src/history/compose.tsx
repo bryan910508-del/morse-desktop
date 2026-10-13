@@ -10,7 +10,7 @@ import { outgoingText } from '../../../shared/validation'
 import type { PressedSend } from './pressed-sends'
 import { maxAlbumPhotos } from '../../../shared/uploads'
 import { useDesktop } from '../app/store'
-import { translationUnavailableNote } from '../../../shared/translation'
+import { translationUnavailableNote, translationAvailable } from '../../../shared/translation'
 import { useTypingReport } from '../app/typing'
 import { EntityPanel } from './entity-panel'
 import { controller, useUi } from '../app/ui'
@@ -51,8 +51,9 @@ export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, 
   const latest = useRef(''), dirty = useRef(false), available = useRef(false), sending = useRef(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const replyRef = useRef(reply); replyRef.current = reply
-  // B51: «전체번역» only where this device can translate; elsewhere a saved «on» means nothing and the menu says why.
-  const canTranslate = useDesktop(snapshot => snapshot?.onDevice.translation ?? false)
+  // B51·B343: «전체번역» only where a translation can be made (this device, or the server while its switch is on);
+  // elsewhere a saved «on» means nothing and the menu says why.
+  const canTranslate = useDesktop(snapshot => translationAvailable(snapshot?.translationRoute))
   const autoTranslateChats = useDesktop(snapshot => snapshot?.preferences.autoTranslateChats ?? false) && canTranslate
   const [focused, setFocused] = useState(false), [entities, setEntities] = useState(false)
   // iOS MorseEntityKeyboard insertEmoji: at the caret, replacing a selection.

@@ -22,6 +22,7 @@ import { errorText, sameDay, serviceDate } from '../app/format'
 import { copyText } from '../app/clipboard'
 import { selectedMessagesText } from '../../../shared/message-copy'
 import { selectionActions, selectionMenuRows } from '../../../shared/message-selection'
+import { canDelete, deletionChoices, type DeletionChoices } from '../../../shared/message-deletion'
 import { copyImage } from '../app/copy-image'
 import { hasFiles } from '../app/drop'
 import { trackWrite } from '../app/drafts'
@@ -60,6 +61,7 @@ import { PinnedBar, togglePin } from './pinned-bar'
 import { DeferredBar } from './deferred-send'
 import { linkLabel, useShownConnection } from '../app/connection'
 import { tr } from '../../../shared/i18n'
+import { translationAvailable } from '../../../shared/translation'
 import { expandedReactions, reactionStrip, readRecentReactions, recordReaction } from './recent-reactions'
 import emojiList from './emoji-data.json'
 import { chatRestrictedNotice } from '../../../shared/sanctions'
@@ -85,8 +87,12 @@ function canMutate(message: ChatMessage, dialog: DialogSummary | null): boolean 
 // «Delete for everyone» (A1 §3-6, Telegram's supergroup rule, telegram-refs R-1/R-2): in a channel's discussion room
 // only the channel's owner or a canDeleteMessages admin removes someone else's message; anyone their own. Other rooms
 // keep their rule.
-function canDeleteForEveryone(message: ChatMessage, dialog: DialogSummary | null, accountUid: string): boolean {
-  return canMutate(message, dialog) && (!dialog?.discussion || message.senderId === accountUid || dialog.moderates === true)
+// B327b: «모두에게» and «나에게만» by the room's rule (shared/message-deletion.ts — none for me in a discussion room or a
+// secret chat).
+function messageDeletion(message: ChatMessage, dialog: DialogSummary | null, accountUid: string): DeletionChoices {
+  if (!dialog) return { everyone: false, me: false }
+  return deletionChoices({ kind: dialog.kind, discussion: dialog.discussion, moderates: dialog.moderates, saved: dialog.id === `memo_${accountUid}` },
+    message.senderId === accountUid, canMutate(message, dialog))
 }
 function attachable(entry: Entry): boolean {
   return entry.kind === 'local' || (!entry.message.system && !entry.message.encrypted && entry.message.kind !== 'channelPost' && entry.message.kind !== 'unsupported')
@@ -284,7 +290,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   })
   virtualRef.current = virtual
   // "전체번역" (every chat but memo and secret chats): translate received text rows as they come on screen.
-  const autoTranslateOn = useDesktop(snapshot => (snapshot?.preferences.autoTranslateChats ?? false) && (snapshot?.onDevice.translation ?? false)) && !chatId.startsWith('memo_') && dialog?.kind !== 'secret'
+  const autoTranslateOn = useDesktop(snapshot => (snapshot?.preferences.autoTranslateChats ?? false) && translationAvailable(snapshot?.translationRoute)) && !chatId.startsWith('memo_') && dialog?.kind !== 'secret'
   const autoTranslateRef = useRef(autoTranslateOn); autoTranslateRef.current = autoTranslateOn
   const pinnedSnapshot = useDesktop(snapshot => snapshot?.pinnedMessages?.chatId === chatId ? snapshot.pinnedMessages : null)
   const pinnedRef = useRef(pinnedSnapshot); pinnedRef.current = pinnedSnapshot
@@ -294,7 +300,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   })
   const translatableKey = translatableOnScreen.map(message => `${message.id}:${message.text.length}`).join(',')
   useEffect(() => {
-    if (autoTranslateOn && historyReady) autoTranslate(accountUid, chatId, translatableOnScreen)
+    if (autoTranslateOn && historyReady) autoTranslate(accountUid, chatId, translatableOnScreen, desktop.value?.translationRoute === 'server')
   }, [autoTranslateOn, historyReady, translatableKey, accountUid, chatId])
   // HistoryWidget paints a chat only after its rows are measured and scrolled into place,
   // so opening it does not show rows jumping from estimated heights.
@@ -424,6 +430,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     catch (reason) { controller.toast(errorText(reason, tr('답장할 메시지를 선택하지 못했습니다.')), 'error') }
   }, [accountUid, chatId])
   // iOS DeleteConfirmOverlay / Telegram DeleteMessagesBox: for everyone where the room allows it, or for me only.
+  // B327b: a message the room lets be deleted at all — the selection offers «삭제» only when every chosen one is.
+  const removableMessage = useCallback((message: ChatMessage): boolean => dialogRef.current?.service === true || canDelete(messageDeletion(message, dialogRef.current, accountUid)), [accountUid])
   const removeMessages = useCallback(async (messages: ChatMessage[]): Promise<void> => {
     if (!messages.length) return
     // Saved Messages holds one copy and nobody else sees it, so there is nothing to choose between:
@@ -441,14 +449,16 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       })
       return
     }
-    const forEveryone = messages.every(message => canDeleteForEveryone(message, dialogRef.current, accountUid))
+    const choices = messages.map(message => messageDeletion(message, dialogRef.current, accountUid))
+    const forEveryone = choices.every(choice => choice.everyone), forMe = choices.every(choice => choice.me)
+    if (!forEveryone && !forMe) return
     const choice = saved ? (forEveryone && await confirmBox({ title: messages.length > 1 ? tr('메모 {0}개 삭제', [messages.length]) : tr('메모 삭제'),
       text: tr('저장한 메시지에서 지웁니다. 다른 기기에서도 사라져요. 되돌릴 수 없어요.'), confirm: tr('삭제'), danger: true }) ? 'everyone' : null)
-      : await chooseDeletion(messages.length, forEveryone, messages.every(message => message.senderId === accountUid))
+      : await chooseDeletion(messages.length, forEveryone, messages.every(message => message.senderId === accountUid), forMe)
     if (!choice) return
     setSelection(null)
     if (choice === 'everyone') { for (const message of messages) void deleteMessage(accountUid, message); return }
-    void trackWrite(window.morse.hideMessages(accountUid, chatId, messages.map(message => message.id))).catch(reason => controller.toast(errorText(reason, tr('메시지를 삭제하지 못했습니다.')), 'error'))
+    void trackWrite(window.morse.hideMessages(accountUid, chatId, messages.map(message => message.id))).then(hideAnswered, reason => controller.toast(errorText(reason, tr('메시지를 삭제하지 못했습니다.')), 'error'))
   }, [accountUid, chatId])
   // B58 (Telegram R-66, history_inner_widget.cpp:641-809): two-finger swipes over the messages. Fingers right close
   // the chat (showBackFromStack with nothing stacked); fingers left reply to the message under the pointer, where a
@@ -488,7 +498,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     // selection bar offers, under its rules, and clearing the selection.
     if (selectionRef.current !== null) {
       const chosen = currentEntries.current.flatMap(entry => entry.kind === 'message' && selectionRef.current!.includes(entry.message.id) ? [entry.message] : [])
-      popupMenu.open(point, selectionMenuRows(selectionActions(chosen)).map(row =>
+      popupMenu.open(point, selectionMenuRows(selectionActions(chosen, removableMessage)).map(row =>
         row === 'copy' ? { label: tr('선택한 메시지 복사'), icon: <Copy size={18} />, onSelect: () => copyMessages(chosen) }
         : row === 'forward' ? { label: tr('선택 전달'), icon: <Forward size={18} />, onSelect: () => { showShareBox(accountUid, chosen); setSelection(null) } }
         : row === 'delete' ? { label: tr('선택 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void removeMessages(chosen) } }
@@ -502,6 +512,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     const owner = dialogRef.current, mutable = canMutate(message, owner), own = message.senderId === accountUid
     const text = message.kind === 'text' ? message.text : message.caption ?? ''
     const deletable = Boolean(message.version)
+    const removable = deletable && canDelete(messageDeletion(message, owner, accountUid))
     // MorseChatRoom message menu «번역»: received text in another language; chosen again, the original returns.
     const translatable = !own && message.kind === 'text' && !message.encrypted && !message.system && owner?.kind !== 'secret' && Boolean(message.text.trim())
     const shown = translationShown(accountUid, chatId, message.id, message.text, autoTranslateRef.current)
@@ -515,9 +526,9 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       // B113: a notice of the official notice chat offers copying (A13-5 §3-2), and B154 §2-1 one «삭제» (Telegram lets
       // a 777000 message be deleted — MessageObject.canDeleteMessage).
       if (owner?.service) {
-        const removable = deletable && message.serverConfirmed && !message.encrypted
-        popupMenu.open(point, [copyLink, copyMessage, removable && (copyLink || copyMessage) ? 'separator' : null,
-          removable ? { label: tr('삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void removeMessages([message]) } } : null])
+        const notice = deletable && message.serverConfirmed && !message.encrypted
+        popupMenu.open(point, [copyLink, copyMessage, notice && (copyLink || copyMessage) ? 'separator' : null,
+          notice ? { label: tr('삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void removeMessages([message]) } } : null])
         return
       }
       const entries: MenuEntry[] = [
@@ -550,14 +561,14 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
           onSelect: () => owner && owner.participantUids.includes(accountUid)
             ? showReportBox(accountUid, { type: 'message', targetId: message.id, chatId }, tr('메시지 신고'))
             : showReportBox(accountUid, { type: 'user', targetId: message.senderId }, tr('메시지 신고'), null, tr('신고한 메시지: 대화 {0}, 메시지 {1}', [chatId, message.id])) } : null,
-        deletable ? 'separator' : null,
-        deletable ? { label: tr('삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void removeMessages([message]) } } : null
+        removable ? 'separator' : null,
+        removable ? { label: tr('삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void removeMessages([message]) } } : null
       ]
       popupMenu.open(point, entries, { header: mutable ? <ReactionStrip accountUid={accountUid} mine={message.reactions.filter(item => item.selected).map(item => item.emoji)}
         onPick={emoji => { popupMenu.close(); void toggleReaction(accountUid, message, emoji) }} /> : undefined })
     }
     const proceed = (): void => {
-      if (!translatable || !desktop.value?.onDevice.translation) open(false)
+      if (!translatable || !translationAvailable(desktop.value?.translationRoute)) open(false)
       else if (shown) open(true)
       else void offerTranslation(accountUid, chatId, message.id).then(open)
     }
@@ -600,7 +611,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   })
 
   const selected = selection === null ? [] : entries.flatMap(entry => entry.kind === 'message' && selection.includes(entry.message.id) ? [entry.message] : [])
-  const { copy: canCopySelection, forward: canForwardSelection, delete: canDeleteSelection } = selectionActions(selected)
+  const { copy: canCopySelection, forward: canForwardSelection, delete: canDeleteSelection } = selectionActions(selected, removableMessage)
   // Telegram: Cmd/Ctrl+C with messages chosen, and no words selected on the page, copies them.
   useEffect(() => {
     if (!canCopySelection) return
@@ -757,21 +768,21 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   </section>
 }
 
-function DeleteMessagesBox({ count, forEveryone, direct, choose, close }: { count: number; forEveryone: boolean; direct: boolean; choose(value: 'everyone' | 'me'): void; close(): void }) {
+function DeleteMessagesBox({ count, forEveryone, forMe, direct, choose, close }: { count: number; forEveryone: boolean; forMe: boolean; direct: boolean; choose(value: 'everyone' | 'me'): void; close(): void }) {
   return <Box title={count > 1 ? tr('{0}개 메시지 삭제', [count]) : tr('메시지 삭제')} width={360} onClose={close} buttons={<button className="button flat" onClick={close}>{tr('취소')}</button>}>
     <p className="box-text">{tr('삭제된 메시지는 복구할 수 없어요.')}</p>
     <DeleteChoice rows={[
       forEveryone && { label: tr('모두에게 삭제'), detail: direct ? tr('상대방 화면에서도 삭제돼요') : tr('모든 참여자의 화면에서 삭제돼요'), danger: true, choose: () => { choose('everyone'); close() } },
-      { label: tr('나에게만 삭제'), detail: tr('내 화면에서만 삭제돼요'), choose: () => { choose('me'); close() } }
+      forMe && { label: tr('나에게만 삭제'), detail: tr('내 화면에서만 삭제돼요'), choose: () => { choose('me'); close() } }
     ]} />
   </Box>
 }
 
-export function chooseDeletion(count: number, forEveryone: boolean, direct: boolean): Promise<'everyone' | 'me' | null> {
+export function chooseDeletion(count: number, forEveryone: boolean, direct: boolean, forMe = true): Promise<'everyone' | 'me' | null> {
   return new Promise(resolve => {
     let settled = false
     const settle = (value: 'everyone' | 'me' | null): void => { if (!settled) { settled = true; resolve(value) } }
-    controller.showLayer(close => <DeleteMessagesBox count={count} forEveryone={forEveryone} direct={direct} choose={settle} close={() => { settle(null); close() }} />, { onClose: () => settle(null) })
+    controller.showLayer(close => <DeleteMessagesBox count={count} forEveryone={forEveryone} forMe={forMe} direct={direct} choose={settle} close={() => { settle(null); close() }} />, { onClose: () => settle(null) })
   })
 }
 
@@ -812,4 +823,10 @@ export async function saveSticker(accountUid: string, chatId: string, message: C
     await window.morse.faveStickerMessage(accountUid, chatId, message.id, message.version)
     controller.toast(tr('즐겨찾기에 저장했어요'))
   } catch (reason) { controller.toast(errorText(reason, tr('처리하지 못했습니다. 다시 시도해 주세요.')), 'error') }
+}
+
+// B327b: the server's list of this room's messages deleted for me is full — this device has it, the account's others
+// not; «기록 비우기(나에게만)» clears the rest everywhere (contract §2-1 TOO_MANY_HIDDEN).
+export function hideAnswered(answer: 'done' | 'too-many'): void {
+  if (answer === 'too-many') controller.toast(tr('이 대화에서 나에게만 삭제한 메시지가 너무 많아 다른 기기에서는 그대로 보여요. 모든 기기에서 지우려면 «대화 기록 삭제»에서 «나에게만 삭제»를 골라 주세요.'))
 }

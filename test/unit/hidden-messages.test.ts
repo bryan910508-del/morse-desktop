@@ -6,7 +6,7 @@ import { executeHiddenMessage, type HiddenMessageCommand } from '../../src/main/
 
 function store(): (command: HiddenMessageCommand) => Promise<unknown> {
   const db = new Database(':memory:')
-  db.exec('CREATE TABLE hidden_messages (chat_id TEXT NOT NULL, message_id TEXT NOT NULL, hidden_at REAL NOT NULL, PRIMARY KEY(chat_id, message_id))')
+  db.exec('CREATE TABLE hidden_messages (chat_id TEXT NOT NULL, message_id TEXT NOT NULL, hidden_at REAL NOT NULL, uploaded INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(chat_id, message_id))')
   return async command => executeHiddenMessage(db, command)
 }
 

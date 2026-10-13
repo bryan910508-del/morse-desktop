@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import type { ChatMessage } from '../../../shared/model'
-import { translationMessage, type TranslationResult } from '../../../shared/translation'
+import { serverTranslationBatch, translationMessage, type TranslationResult } from '../../../shared/translation'
 import { controller } from './ui'
 import { tr } from '../../../shared/i18n'
 
@@ -15,6 +15,8 @@ const dismissed = new Set<string>(), skipped = new Set<string>(), queued = new S
 const listeners = new Set<() => void>()
 const queue: (() => Promise<void>)[] = []
 let running = 0, notInstalledShown = false
+// B343: rooms whose automatic translation the server's rate limit stopped (RATE_LIMITED) until «전체번역» is turned again.
+const limitedRooms = new Set<string>()
 // AutoTranslateConcurrencyBox: automatic requests run a couple at a time.
 const autoLimit = 2
 
@@ -40,6 +42,14 @@ function report(result: TranslationResult, manual: boolean): void {
   }
   if (manual) controller.toast(translationMessage(result), result.status === 'same-language' ? 'default' : 'error')
 }
+// One message's answer: shown, or let go (an automatic one is not asked again until the text changes).
+function settle(key: string, source: string, result: TranslationResult): { manual: boolean } | null {
+  const current = states.get(key)
+  if (!current || current.source !== source || current.status !== 'loading') return null
+  if (result.status === 'translated') states.set(key, { status: 'shown', manual: current.manual, source, text: result.text })
+  else { states.delete(key); if (!current.manual) skipped.add(key) }
+  return { manual: current.manual }
+}
 
 async function run(accountUid: string, chatId: string, message: ChatMessage, manual: boolean): Promise<void> {
   const key = keyOf(accountUid, chatId, message.id), source = message.text
@@ -51,12 +61,10 @@ async function run(accountUid: string, chatId: string, message: ChatMessage, man
   states.set(key, { status: 'loading', manual, source }); emit()
   let result: TranslationResult
   try { result = await window.morse.translateMessage(accountUid, chatId, message.id) } catch { result = { status: 'failed' } }
-  const current = states.get(key)
-  if (!current || current.source !== source || current.status !== 'loading') return
-  if (result.status === 'translated') states.set(key, { status: 'shown', manual: current.manual, source, text: result.text })
-  else { states.delete(key); if (!current.manual) skipped.add(key) }
+  const settled = settle(key, source, result)
+  if (!settled) return
   emit()
-  report(result, current.manual)
+  report(result, settled.manual)
 }
 
 // Message menu «번역»: translate, or show the original again when the translation is on screen.
@@ -84,8 +92,11 @@ function pump(): void {
     void job().catch(() => {}).finally(() => { running--; pump() })
   }
 }
-// "전체번역": received text on screen in another language is translated as it appears.
-export function autoTranslate(accountUid: string, chatId: string, messages: ChatMessage[]): void {
+// "전체번역": received text on screen in another language is translated as it appears. B343: on the server's route the
+// messages on screen go together, up to 20 in a request (tdesktop TranslateTracker::requestSome bunches what is visible,
+// history_view_translate_tracker.cpp:273-306), and the server judges the language.
+export function autoTranslate(accountUid: string, chatId: string, messages: ChatMessage[], server = false): void {
+  if (server) { autoTranslateOnServer(accountUid, chatId, messages); return }
   for (const message of messages) {
     const key = keyOf(accountUid, chatId, message.id)
     if (dismissed.has(key) || skipped.has(key) || queued.has(key) || states.get(key)?.source === message.text) continue
@@ -100,4 +111,35 @@ export function autoTranslate(accountUid: string, chatId: string, messages: Chat
   }
   pump()
 }
-export function resetAutoTranslation(): void { skipped.clear(); notInstalledShown = false }
+function autoTranslateOnServer(accountUid: string, chatId: string, messages: ChatMessage[]): void {
+  const room = `${accountUid}\n${chatId}`
+  if (limitedRooms.has(room)) return
+  const fresh = messages.filter(message => {
+    const key = keyOf(accountUid, chatId, message.id)
+    return !dismissed.has(key) && !skipped.has(key) && !queued.has(key) && states.get(key)?.source !== message.text
+  })
+  for (let start = 0; start < fresh.length; start += serverTranslationBatch) {
+    const batch = fresh.slice(start, start + serverTranslationBatch).map(message => ({ id: message.id, key: keyOf(accountUid, chatId, message.id), source: message.text }))
+    for (const item of batch) { queued.add(item.key); states.set(item.key, { status: 'loading', manual: false, source: item.source }) }
+    emit()
+    queue.push(async () => {
+      try {
+        let results: Record<string, TranslationResult> = {}
+        if (!limitedRooms.has(room)) {
+          try { results = await window.morse.translateMessages(accountUid, chatId, batch.map(item => item.id)) } catch { results = {} }
+        }
+        let limited = false
+        for (const item of batch) {
+          const result = results[item.id] ?? { status: 'failed' as const }
+          if (result.status === 'rate-limited') limited = true
+          settle(item.key, item.source, result)
+        }
+        emit()
+        // The server's rate: automatic translation stops in this room, said once (a press of «번역» still asks).
+        if (limited && !limitedRooms.has(room)) { limitedRooms.add(room); report({ status: 'rate-limited' }, true) }
+      } finally { for (const item of batch) queued.delete(item.key) }
+    })
+  }
+  pump()
+}
+export function resetAutoTranslation(): void { skipped.clear(); limitedRooms.clear(); notInstalledShown = false }

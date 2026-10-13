@@ -380,6 +380,8 @@ export interface DesktopSnapshot {
   platformIntegration: { trayAvailable: boolean; message: string }
   // B51: translation, voice to text and background removal on this device (shared/translation.ts).
   onDevice: import('./translation').OnDeviceFeatures
+  // B343: where a translation is made now — this device, the server (its switch on), or none.
+  translationRoute: import('./translation').TranslationRoute
   // B58: whether a two-finger swipe may go back (the Mac's «Swipe between pages»; always on elsewhere).
   swipeBack: boolean
   selfProfile: ProfileSnapshot | null
@@ -467,6 +469,8 @@ export type DesktopEvent =
   // macOS hides the window buttons in full screen, so the title strip they need goes away.
   | { type: 'full-screen'; value: boolean }
   | { type: 'prepare-close'; requestId: string }
+  // B348: draw the Windows taskbar overlay (the unread count) at this many pixels and give it back with appBadgeDrawn.
+  | { type: 'draw-app-badge'; key: string; count: number; muted: boolean; pixels: number }
 
 export interface DesktopBridge {
   // The language this window was started in; a change is saved and applies after relaunchApp.
@@ -492,7 +496,7 @@ export interface DesktopBridge {
   clearChatHistoryForMe(accountUid: string, chatId: string): Promise<'done' | 'unconfirmed'>
   // Telegram's "Delete chat": for me only hides the room here, for everyone removes it.
   deleteChat(accountUid: string, chatId: string, forEveryone: boolean): Promise<'done' | 'unconfirmed'>
-  hideMessages(accountUid: string, chatId: string, messageIds: string[]): Promise<'done'>
+  hideMessages(accountUid: string, chatId: string, messageIds: string[]): Promise<'done' | 'too-many'>
   setContactFlags(accountUid: string, uid: string, patch: { favorite?: boolean; archived?: boolean }): Promise<'done'>
   setChatFlags(accountUid: string, chatId: string, patch: { muted?: boolean; archived?: boolean; category?: string | null }): Promise<'done'>
   setGroupForum(accountUid: string, chatId: string, enabled: boolean): Promise<'done'>
@@ -579,7 +583,7 @@ export interface DesktopBridge {
   forwardInquiryBatch(accountUid: string, request: import('./forward-batch').ForwardBatchRequest): Promise<void>
   inquiryForwardRooms(accountUid: string, source: ForwardSource): Promise<import('./channel-inquiries').InquiryForwardRoom[]>
   forwardToInquiries(accountUid: string, request: import('./channel-inquiries').InquiryForwardRequest): Promise<void>
-  hideInquiryMessages(accountUid: string, inquiryId: string, messageIds: string[]): Promise<'done'>
+  hideInquiryMessages(accountUid: string, inquiryId: string, messageIds: string[]): Promise<'done' | 'too-many'>
   // A profile picture opened from a profile, and the earlier ones this device remembers of that person.
   openProfilePhotos(accountUid: string, peerUid: string): Promise<{ count: number }>
   openRecaptchaTerms(which: 'privacy' | 'terms'): Promise<void>
@@ -961,6 +965,8 @@ export interface DesktopBridge {
   cancelReply(accountUid: string, chatId: string, selectionId: string): Promise<void>
   translationGate(accountUid: string, chatId: string, messageId: string): Promise<boolean>
   translateMessage(accountUid: string, chatId: string, messageId: string): Promise<import('./translation').TranslationResult>
+  // B343: «전체번역» on the server's route, the messages on screen together; empty on any other route.
+  translateMessages(accountUid: string, chatId: string, messageIds: string[]): Promise<Record<string, import('./translation').TranslationResult>>
   pinMessage(accountUid: string, request: import('./pinned-messages').PinMessageRequest): Promise<'done'>
   jumpPinned(accountUid: string, chatId: string, messageId: string): Promise<HistorySnapshot>
   openTranslationSettings(): Promise<void>
@@ -1007,6 +1013,7 @@ export interface DesktopBridge {
   outgoing(accountUid: string, chatId: string): Promise<OutgoingSnapshot>
   discardOutgoing(accountUid: string, chatId: string, messageId: string): Promise<void>
   completeClose(requestId: string, success: boolean): Promise<void>
+  appBadgeDrawn(key: string, dataURL: string): Promise<void>
   onEvent(listener: (event: DesktopEvent) => void): () => void
 }
 
