@@ -19,3 +19,26 @@ export function followsBottom(distance: number, newerAvailable: boolean): boolea
 export function keepsBottomOnChange(asked: boolean, atBottom: boolean, settled: boolean): boolean {
   return !asked && atBottom && settled
 }
+// B372: the end of a list with no paging of its own (the 1:1 inquiry room), by the chat history's rule above. Read at its
+// bottom (followsBottom) it follows what is added at its end and what grows; a send from here takes it there (tdesktop
+// MessageSent → scrollTopMax, history_widget.cpp:846-847); read further up, a message that arrives keeps the place, and
+// «최근 메시지로 이동» stays (historyToDown).
+export class EndFollower {
+  private atBottom = true
+  private sent = 0
+  // The reading place after a scroll; returns how far the bottom is.
+  scrolled(box: ScrollBox): number {
+    const distance = box.scrollHeight - box.scrollTop - box.clientHeight
+    this.atBottom = followsBottom(distance, false)
+    return distance
+  }
+  // The list changed at its end; `sending` counts this device's messages still on their way, so a new one is a send.
+  changed(box: ScrollBox, sending: number): void {
+    if (sending > this.sent) this.atBottom = true
+    this.sent = sending
+    this.follow(box)
+  }
+  // A message grew or a picture was measured.
+  follow(box: ScrollBox): void { if (keepsBottomOnChange(false, this.atBottom, true)) box.scrollTop = box.scrollHeight }
+  toBottom(box: ScrollBox): void { this.atBottom = true; this.follow(box) }
+}

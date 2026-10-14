@@ -174,7 +174,7 @@ import { fullscreenAllowed } from './platform/fullscreen-permission'
 import { applicationMenuShown, composingKey, shortcutAccelerator, shortcutFor, shortcuts, viewerZoomKey, windowShortcutFor, type ShortcutCommand, type WindowCommand } from '../shared/shortcuts'
 import { NativeContextMenus, type ContextMenuItem } from './platform/context-menus'
 import { WindowState } from './platform/window-state'
-import { DesktopShell } from './platform/desktop-shell'
+import { activeForTrayClick, DesktopShell } from './platform/desktop-shell'
 import { AppUpdates } from './platform/app-updates'
 import { AppVersionGate } from './platform/app-version-gate'
 import { BackgroundPhotos, type BackgroundPhotoOwner } from './platform/background-photos'
@@ -187,6 +187,7 @@ import { watchForStalls } from './platform/heartbeat'
 import { ChatTranslator } from './platform/translation'
 import { MediaHelper } from './platform/media-helper'
 import { schemeLinkTarget } from '../shared/text-links'
+import { localKeyUnreadableDetail } from '../shared/secure-store-hint'
 import { setVideoCompressor } from './media/attachment-staging'
 import { maxVideoSourceSeconds, videoSendPreset } from '../shared/photo-quality'
 import { maxChannelStoryCaption } from '../shared/channel-stories'
@@ -292,7 +293,13 @@ const desktopShell = new DesktopShell(showWindow, () => app.quit(), () => {
   const window = mainWindow
   if (!window || window.isDestroyed()) return null
   return { setOverlayIcon: (overlay, description) => window.setOverlayIcon(overlay, description), scaleFactor: () => screen.getDisplayMatching(window.getBounds()).scaleFactor }
-}, request => emit({ type: 'draw-app-badge', ...request }))
+}, request => emit({ type: 'draw-app-badge', ...request }), process.platform, Date.now, undefined, {
+  // B374: a tray click hides a window that is shown and active and shows any other (activeForTrayClick).
+  active: () => Boolean(mainWindow && !mainWindow.isDestroyed() && activeForTrayClick(mainWindow.isVisible() && !mainWindow.isMinimized(), mainWindow.isFocused(), windowBlurredAt, Date.now())),
+  hide: () => { if (mainWindow && !mainWindow.isDestroyed()) hideToTray(mainWindow) }
+})
+// When the window last lost the focus: clicking the tray takes it just before the click arrives.
+let windowBlurredAt = 0
 const appUpdates = new AppUpdates(() => { void publish() })
 // app_config/desktop: below its minimum this version may not run (platform/app-version-gate.ts); a newer current version
 // only has the updater check now.
@@ -2569,7 +2576,7 @@ function registerIPC(): void {
   })
   handle('preferences', async patch => {
     const update = preferencePatch(patch)
-    if (update.closeToTray && (process.platform !== 'win32' || !desktopShell.status().trayAvailable)) throw new Error(tr('시스템 트레이를 사용할 수 없습니다.'))
+    if (update.closeToTrayChoice === true && (process.platform !== 'win32' || !desktopShell.status().trayAvailable)) throw new Error(tr('시스템 트레이를 사용할 수 없습니다.'))
     const owner = update.chatBackground ? backgroundPhotoOwner({ kind: 'device' }) : undefined
     const photo = update.chatBackground?.preset === 'photo' ? backgroundPhotos.forSave(owner!, update.chatBackground.photoId) : undefined
     try { await settings.update(update, photo, owner?.validate) }
@@ -2956,6 +2963,12 @@ function refreshScreenLock(): void {
 // JavaScript error occurred in the main process: Cannot read properties of undefined (reading
 // 'initial')». A link that arrives first is kept in pendingSchemeLink and taken by the window when it
 // opens, so nothing is lost by refusing here.
+// B374: the window goes away and the app keeps running — to the tray on Windows, where the first time one balloon says so
+// (DesktopShell.showTrayHint, tdesktop showTrayMessage); on macOS as a closed window does.
+function hideToTray(window: BrowserWindow): void {
+  void windowState.save(); window.hide()
+  if (!settings.trayHintSeen && desktopShell.showTrayHint()) void settings.markTrayHintSeen().catch(() => {})
+}
 function showWindow(): void {
   if (shutdown !== 'running' || !windowsReady) return
   if (!mainWindow || mainWindow.isDestroyed()) { createWindow(); return }
@@ -3124,9 +3137,10 @@ function createWindow(): void {
   window.on('close', event => {
     if (shutdown !== 'running') return
     event.preventDefault()
-    if (process.platform === 'darwin' || desktopShell.canCloseToTray(settings.preferences)) { void windowState.save(); window.hide() }
+    if (process.platform === 'darwin' || desktopShell.canCloseToTray(settings.preferences)) hideToTray(window)
     else app.quit()
   })
+  window.on('blur', () => { windowBlurredAt = Date.now() })
   window.on('closed', () => { voiceQueuePreviews.clear();voiceCaptures.clear();storySavedAudio.clear(); storyAudioInputs.clear(); storySavedVideos.clear(); storyVideoInputs.clear(); backgroundPhotos.clear(); contextMenus.close(); if (mainWindow === window) mainWindow = null })
   void window.loadURL(entryURL).catch(() => dialog.showErrorBox('Morse', tr('앱 화면을 불러오지 못했습니다. 설치 파일을 확인해 주세요.')))
 }
@@ -3425,7 +3439,7 @@ else {
       const { response } = await dialog.showMessageBox({ type: 'warning', defaultId: 0, cancelId: 2, noLink: true,
         buttons: [tr('다시 열기'), tr('로컬 데이터 새로 시작'), tr('종료')],
         message: tr('이 기기의 로컬 데이터 키를 읽지 못했습니다.'),
-        detail: tr('키체인 접근을 거부했다면 다시 열어 허용해 주세요. 새로 시작하면 이 기기에만 있던 기록은 휴지통으로 옮겨지고, 저장된 계정은 다시 연결됩니다.') })
+        detail: localKeyUnreadableDetail(process.platform) })
       if (response === 1) await replaceLocalData()
       else { if (response === 0) app.relaunch(); app.exit(0); return }
     }

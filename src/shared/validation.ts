@@ -46,7 +46,7 @@ export function historyPosition(value: unknown): MessagePosition | undefined {
   return { seconds, nanoseconds, id: identifier(record.id) }
 }
 type BooleanPreference = { [K in keyof Preferences]: Preferences[K] extends boolean ? K : never }[keyof Preferences]
-const booleanPreferences = new Set<BooleanPreference>(['storyStealth', 'enterToSend', 'notifications', 'showNotificationPreview', 'closeToTray', 'showUnreadBadge',
+const booleanPreferences = new Set<BooleanPreference>(['storyStealth', 'enterToSend', 'notifications', 'showNotificationPreview', 'showUnreadBadge',
   'autoTranslateChats', 'recordVideoMessages', 'sendTypingIndicator', 'disableTypingIndicators',
   'notifyPersonal', 'notifyGroup', 'notifyChannel', 'notificationSound', 'inAppNotifications', 'spellCheck', 'powerSavingAuto', 'powerSavingAlwaysOn', 'compressMediaUploads', 'reduceMessageAnimations', 'mainMenuAccountsShown'])
 export function preferencePatch(value: unknown): Partial<Preferences> {
@@ -69,6 +69,9 @@ export function preferencePatch(value: unknown): Partial<Preferences> {
       result.autoDeleteDefaultSeconds = record.autoDeleteDefaultSeconds
     } else if (key === 'autoDownloadPhotos') {
       result.autoDownloadPhotos = autoDownloadLimits(record.autoDownloadPhotos)
+    } else if (key === 'closeToTrayChoice') {
+      if (record.closeToTrayChoice !== null && typeof record.closeToTrayChoice !== 'boolean') throw new Error(tr('잘못된 설정입니다.'))
+      result.closeToTrayChoice = record.closeToTrayChoice
     } else if (key === 'photoSendHd') {
       if (record.photoSendHd !== null && typeof record.photoSendHd !== 'boolean') throw new Error(tr('사진 화질을 다시 선택해 주세요.'))
       result.photoSendHd = record.photoSendHd

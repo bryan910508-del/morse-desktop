@@ -1,6 +1,9 @@
 # Builds the Windows installer without publishing anything, so the Windows build is known to work before a release
 # tag starts release-windows.yml. It runs when the windows-check branch is pushed (or by hand) and keeps the installer
 # as a workflow artifact for a week.
+# B379: it also runs the unit tests on Windows, installs the installer silently for this user, starts the installed app
+# and checks that its window reads the app's own page, then removes it again. No secret is read: the app starts at its
+# sign-in screen with no account.
 name: Windows check
 on:
   push:
@@ -17,10 +20,61 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      - run: npm run build
-      - run: npx electron-builder --config electron-builder.release.cjs --win --x64 --publish never
+      - name: Unit tests on Windows
+        run: npm run test:unit
+      # The steps below still run when the tests fail, so one run shows both; the job then fails.
+      - name: Build
+        if: ${{ !cancelled() }}
+        run: npm run build
+      - name: Package the installer
+        if: ${{ !cancelled() }}
+        run: npx electron-builder --config electron-builder.release.cjs --win --x64 --publish never
       - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
         with:
           name: morse-windows-setup
           path: dist/Morse-Setup-x64.exe
           retention-days: 7
+      - name: Install silently for this user
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $setup = Start-Process -FilePath dist\Morse-Setup-x64.exe -ArgumentList '/S' -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "installer exit $($setup.ExitCode)" }
+          $exe = Get-ChildItem -Path "$env:LOCALAPPDATA\Programs" -Recurse -Filter Morse.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'Morse.exe not found after the silent install' }
+          "MORSE_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Output "installed: $($exe.FullName)"
+      - name: The installed version is this version
+        if: ${{ !cancelled() && env.MORSE_EXE != '' }}
+        shell: pwsh
+        run: |
+          $expected = (node -p "require('./package.json').version").Trim()
+          $product = (Get-Item $env:MORSE_EXE).VersionInfo.ProductVersion
+          $feed = (Select-String -Path dist\latest.yml -Pattern '^version:\s*(.+)$').Matches[0].Groups[1].Value.Trim()
+          Write-Output "package $expected, executable $product, latest.yml $feed"
+          if (-not $product.StartsWith($expected)) { throw "executable version $product is not $expected" }
+          if ($feed -ne $expected) { throw "latest.yml version $feed is not $expected" }
+      - name: The installed app starts and reads its own page
+        if: ${{ !cancelled() && env.MORSE_EXE != '' }}
+        shell: pwsh
+        run: |
+          # The renderer's debugging port answers in a release build (the fuses close Node's --inspect, not this).
+          $app = Start-Process -FilePath $env:MORSE_EXE -ArgumentList '--remote-debugging-port=9222' -PassThru
+          $page = $null
+          for ($i = 0; $i -lt 60 -and -not $page; $i++) {
+            Start-Sleep -Seconds 1
+            try { $page = (Invoke-RestMethod -Uri 'http://127.0.0.1:9222/json' -TimeoutSec 2) | Where-Object { $_.type -eq 'page' -and $_.url -like 'morse://app/*' } | Select-Object -First 1 } catch { }
+            if ($app.HasExited) { throw "Morse exited with $($app.ExitCode) before its window opened" }
+          }
+          if (-not $page) { throw 'no morse://app page within 60 seconds' }
+          Write-Output "window page: $($page.url) after $i s"
+      - name: Close and remove the installed app
+        if: ${{ always() && env.MORSE_EXE != '' }}
+        shell: pwsh
+        run: |
+          Get-Process -Name Morse -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 2
+          $uninstaller = Get-ChildItem -Path (Split-Path $env:MORSE_EXE) -Filter 'Uninstall*.exe' | Select-Object -First 1
+          if ($uninstaller) { Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S' -Wait }
+          Write-Output 'removed'

@@ -9,6 +9,7 @@ import { restoreFile } from './compression'
 import { downloadMedia, MediaFailure } from './download-media'
 import { mediaCacheFor } from '../accounts/media-cache'
 import { tr } from '../../shared/i18n'
+import { markDownloaded } from '../platform/zone-mark'
 
 // tdesktop HistoryView::Document (history_view_document.cpp:1455-1463): a file's bubble is pressed to fetch it when it is
 // not here (_savel), pressed again to stop while it comes (_cancell), and pressed to open once it is here (_openl) —
@@ -130,6 +131,8 @@ export class OpenedFiles {
       try { await handle.writeFile(bytes); await handle.sync() } finally { await handle.close() }
       await rename(temporary, file)
       temporary = null
+      // B377: the plain copy the system opens is marked as from the Internet, so Windows and Office protect it.
+      await markDownloaded(file)
       return file
     } catch (error) {
       throw error instanceof MediaFailure ? error : new MediaFailure(tr('파일을 저장하지 못했습니다. 저장 위치와 여유 공간을 확인해 주세요.'))

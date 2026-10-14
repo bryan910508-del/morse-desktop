@@ -62,7 +62,8 @@ export interface Preferences {
   enterToSend: boolean
   notifications: boolean
   showNotificationPreview: boolean
-  closeToTray: boolean
+  // B374: null until chosen; on Windows that means the tray (close-to-tray.ts).
+  closeToTrayChoice: boolean | null
   storyStealth: boolean
   showUnreadBadge: boolean
   autoDeleteDefaultSeconds: number
@@ -107,7 +108,7 @@ export interface Preferences {
 }
 export const defaultPreferences: Preferences = {
   theme: 'system', messageFontSize: 14, chatBackground: defaultChatBackground, enterToSend: true, notifications: true, showNotificationPreview: false,
-  storyStealth: false, closeToTray: false, showUnreadBadge: true, autoDeleteDefaultSeconds: 0, autoTranslateChats: false,
+  storyStealth: false, closeToTrayChoice: null, showUnreadBadge: true, autoDeleteDefaultSeconds: 0, autoTranslateChats: false,
   autoDownloadPhotos: { user: 8 * 1024 * 1024, group: 8 * 1024 * 1024, channel: 8 * 1024 * 1024 }, recordVideoMessages: false, sendTypingIndicator: true, disableTypingIndicators: false,
   notifyPersonal: true, notifyGroup: true, notifyChannel: true, notificationSound: true, inAppNotifications: true, badgeMode: 'messages', spellCheck: true,
   photoSendQuality: 'auto', photoSendHd: null, videoSendQuality: 'auto', powerSavingAuto: true, powerSavingAlwaysOn: false, compressMediaUploads: false, reduceMessageAnimations: false, mainMenuAccountsShown: true, language: null

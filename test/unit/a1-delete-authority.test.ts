@@ -53,9 +53,9 @@ test('the owner\'s post delete keeps the pin pointer in the same commit; an admi
 test('another person\'s comment is deleted only by a moderator', async () => {
   const post = postDoc('someone')
   const comment = { name: `${postPath}/comments/c1`, ...stamp, fields: { authorId: { stringValue: 'someone' }, text: { stringValue: '댓글' }, channelId: { stringValue: 'ch1' }, postId: { stringValue: 'p1' } } } as unknown as FirestoreDocument
-  const removal = { id: 'op1', selectionId: 'op1', requestId: 'op1', channelId: 'ch1', postId: 'p1', revision: channelPostRevision(post), commentId: 'c1', commentRevision: channelPostRevision(comment), text: '댓글', count: 1 }
+  const removal = { id: 'op1', selectionId: 'op1', requestId: 'op1', channelId: 'ch1', postId: 'p1', revision: channelPostRevision(post), commentId: 'c1', commentRevision: channelPostRevision(comment), text: '댓글' }
   await assert.rejects(writeChannelCommentRemoval(client([]), {} as never, me, removal, { post, comment }, new AbortController().signal), (error: unknown) => error instanceof ChannelCommentRemovalFailure)
   const sent: WireObject[][] = []
   await writeChannelCommentRemoval(client(sent), {} as never, me, removal, { post, comment, moderator: true }, new AbortController().signal)
-  assert.equal(sent[0]!.length, 2, 'the comment and its post\'s count')
+  assert.equal(sent[0]!.length, 1, 'the comment alone: the server counts the post\'s comments (B373 S2)')
 })

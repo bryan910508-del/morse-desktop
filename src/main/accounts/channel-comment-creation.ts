@@ -5,7 +5,7 @@ import { documents, ReadFailure, stringField } from '../network/firestore-values
 import { commentCreationRequest, type CommentCreationPrepare, type CommentCreationRequest, type CommentCreationSnapshot, type PendingCommentCreation, type CommentCreationAction } from '../../shared/channel-comment-creation'
 import type { CommentCreationCommand } from '../storage/channel-comment-creation-table'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
-import { ChannelCommentCreationFailure, commentCreationCount } from '../network/channel-comment-creation-write'
+import { ChannelCommentCreationFailure } from '../network/channel-comment-creation-write'
 import type { FirestoreDocument } from '../network/firestore-values'
 import { channelPostRevision } from '../media/channel-post-media-document'
 import { postRetryDelay } from './channel-post-creation'
@@ -15,8 +15,7 @@ import { recordConnectionStep, recordRetry } from '../platform/connection-diagno
 // As a post (channel-post-creation.ts): a comment on its way goes again by itself — what never left when the connection
 // is back, and one whose outcome is unknown is looked for and sent again under the same id if it is not there (the
 // write creates the comment only while its id is free, so it cannot be posted twice). Before it goes again it is
-// brought up to date with the post: the count it raises and the post revision that count is checked against move with
-// every like and comment, so an old one would only be refused.
+// brought up to date with the post's revision. Since B373 S2 it raises no count: the server counts the comments.
 type Attempt = 'confirmed' | 'rejected' | 'retry' | 'check' | 'retired'
 const request = (pending: PendingCommentCreation): CommentCreationRequest => { const { state: _state, ...value } = pending; return value }
 
@@ -43,7 +42,7 @@ export class ChannelCommentCreation {
   private source(request: CommentCreationRequest): FirestoreDocument {
     this.validate(true)
     const post = this.post(request), author = this.author()
-    if (channelPostRevision(post) !== request.postRevision || commentCreationCount(post) !== request.count || Object.entries(author).some(([k, v]) => request[k as keyof CommentCreationRequest] !== v)) throw new Error(tr('현재 게시물 또는 작성자 정보가 변경되었습니다.'))
+    if (channelPostRevision(post) !== request.postRevision || Object.entries(author).some(([k, v]) => request[k as keyof CommentCreationRequest] !== v)) throw new Error(tr('현재 게시물 또는 작성자 정보가 변경되었습니다.'))
     if (request.parent && this.parent(request, request.parent) !== request.parentAuthorName) throw new Error(tr('현재 원댓글의 작성자 정보가 변경되었습니다.'))
     return post
   }
@@ -84,7 +83,7 @@ export class ChannelCommentCreation {
   prepare(input: CommentCreationPrepare): Promise<void> {
     if (this.value.status !== 'ready' || this.value.pending) throw new Error(tr('이전 댓글 등록 기록을 먼저 확인해 주세요.'))
     this.validate(true)
-    const post = this.post(input), request = commentCreationRequest({ ...input, ...this.author(), postRevision: channelPostRevision(post), count: commentCreationCount(post), ...(input.parent ? { parentAuthorName: this.parent(input, input.parent) } : {}) })
+    const post = this.post(input), request = commentCreationRequest({ ...input, ...this.author(), postRevision: channelPostRevision(post), ...(input.parent ? { parentAuthorName: this.parent(input, input.parent) } : {}) })
     return this.run(async signal => {
       const validate = (): void => { signal.throwIfAborted(); this.source(request) }
       this.value.pending = await this.store<PendingCommentCreation>({ kind: 'comment-creation-prepare', request }, validate)
@@ -201,7 +200,7 @@ export class ChannelCommentCreation {
       this.validate(true)
       const source = await this.current(pending, signal); validate()
       post = source.post
-      const fresh = commentCreationRequest({ ...request(pending), ...this.author(), postRevision: channelPostRevision(post), count: commentCreationCount(post),
+      const fresh = commentCreationRequest({ ...request(pending), ...this.author(), postRevision: channelPostRevision(post),
         ...(pending.parent ? { parentAuthorName: source.parentAuthorName } : {}) })
       if (JSON.stringify(fresh) !== JSON.stringify(request(pending))) pending = this.value.pending = await this.store<PendingCommentCreation>({ kind: 'comment-creation-rebase', id: pending.id, expected: 'prepared', request: fresh }, validate)
     } catch (error) { this.failed = { stage: 'source', error }; return error instanceof ChannelCommentCreationFailure && error.delivery === 'refused' ? 'rejected' : 'retry' }

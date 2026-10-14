@@ -43,6 +43,20 @@ export function likeView(server: { selected: boolean | null; count: number | nul
   if (!mine || mine.liked === null || server.selected === null || server.count === null || mine.liked === server.selected) return server
   return { selected: mine.liked, count: Math.max(0, server.count + (mine.liked ? 1 : -1)) }
 }
+// B373 S2: a post's comment count is the server's — it counts the comment documents a moment after each change. Right
+// after this device sends or deletes a comment, until that count moves from what it was then, the screen moves it by one
+// (as likeView does for a like). A nudge older than 15 seconds is dropped, so a count the server never moves is shown as is.
+export interface CommentCountNudge { baseline: number; delta: number; at: number }
+export const commentNudgeLife = 15000
+export function commentCountView(server: number | null, nudge: CommentCountNudge | null | undefined, now: number): number | null {
+  if (server === null || !nudge || now - nudge.at > commentNudgeLife || server !== nudge.baseline) return server
+  return Math.max(0, nudge.baseline + nudge.delta)
+}
+// Another send or delete before the server moved adds to the nudge it already has.
+export function nudgeCommentCount(previous: CommentCountNudge | null | undefined, server: number, delta: 1 | -1, now: number): CommentCountNudge {
+  const live = previous && now - previous.at <= commentNudgeLife && previous.baseline === server
+  return { baseline: server, delta: (live ? previous.delta : 0) + delta, at: now }
+}
 // New words for a post: on their way or refused (the post shows its own, with the typed ones kept for another try),
 // else just confirmed (shown as the post's words until its copy has them).
 export function editView(items: ChannelOperationItem[], postId: string): ChannelOperationItem | null {

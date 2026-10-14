@@ -1,0 +1,3 @@
+# B379: every text file is checked out with LF on every platform. The source tests read the files as text and match their
+# lines; on Windows Git would otherwise give them CRLF and those tests fail there only.
+* text=auto eol=lf

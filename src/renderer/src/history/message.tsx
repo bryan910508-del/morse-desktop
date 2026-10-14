@@ -1,6 +1,6 @@
 // Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
-import { memo, useEffect, useRef, useState, type MouseEvent } from 'react'
+import { memo, useEffect, useRef, useState, type MouseEvent, type ReactElement } from 'react'
 import { Camera, Check, CircleAlert, Clock3, Download, File as FileIcon, Image as ImageIcon, LockKeyhole, Megaphone, MessageSquareText, MessageSquareWarning, Mic, NotebookPen, Pause, Play, X } from 'lucide-react'
 import type { ChatMessage, ReplyPreview } from '../../../shared/model'
 import { deliveryFailed, type LocalOutgoing } from '../../../shared/delivery'
@@ -473,7 +473,7 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
   // (MorseChatUIKitNativeBubbleRow: memoContentRow, gated on the room being memo_{uid}). It carries no
   // link card, as iOS leaves its linkURL nil.
   const memo = plainText && chatId.startsWith('memo_') ? decodeMemoNote(message.text) : null
-  const emojiOnly = plainText && !memo && emojiOnlyText(message.text)
+  const emojiBody = plainText && !memo ? emojiOnlyBody(message.text) : null, emojiOnly = emojiBody !== null
   const card = plainText && !memo && !emojiOnly ? linkCardFor(message.text) : null
   const shown = card?.share ? card.share.bodyText : text
   const mediaOnly = media && !text && !plainLabel
@@ -518,8 +518,7 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
         {/* The date sits at the bubble's end, so the room it needs belongs to the note's last line. */}
         {memo.body ? <span>{memo.body}{metaSpace}</span> : !memo.title.trim() && metaSpace}
       </div>
-        : emojiOnly ? <div className="bubble-emoji selectable" style={{ fontSize: emojiOnlyFontSize(message.text) }}>{message.text.trim()}</div>
-        : (text || plainLabel || !media) && <div className="bubble-text selectable">{plainLabel ? <em className={message.kind === 'unsupported' ? 'unsupported' : undefined}>{plainLabel}</em> : message.encrypted ? text : <LinkedText accountUid={accountUid} text={shown} disabled={selecting} />}{!card?.url && !inlineMeta && <span className={`bubble-meta-space${message.edited ? ' edited' : ''}${own ? ' own' : ''}`} />}</div>}
+        : emojiBody ? emojiBody : (text || plainLabel || !media) && <div className="bubble-text selectable">{plainLabel ? <em className={message.kind === 'unsupported' ? 'unsupported' : undefined}>{plainLabel}</em> : message.encrypted ? text : <LinkedText accountUid={accountUid} text={shown} disabled={selecting} />}{!card?.url && !inlineMeta && <span className={`bubble-meta-space${message.edited ? ' edited' : ''}${own ? ' own' : ''}`} />}</div>}
       {card?.url && <LinkCard accountUid={accountUid} text={message.text} disabled={selecting} />}
       {/* B113: a sign-in this person may not have made leads to where its session ends (A13-5 §3-4 «기기 관리»). */}
       {message.notice && systemNoticeShortcut(message.notice) === 'sessions' && <button type="button" className="bubble-notice-action" disabled={selecting}
@@ -541,6 +540,12 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
   </div>
 })
 
+// B384: a text made only of emoji is drawn large with no bubble from the moment it is sent — tdesktop decides an isolated
+// emoji from the message's own text (Element::refreshMedia, history_view_element.cpp:1755-1758; isolatedEmoji :1826-1827),
+// for a local message on its way as for the server's copy. The one test and the one drawing, for both rows.
+function emojiOnlyBody(text: string): ReactElement | null {
+  return emojiOnlyText(text) ? <div className="bubble-emoji selectable" style={{ fontSize: emojiOnlyFontSize(text) }}>{text.trim()}</div> : null
+}
 export const LocalMessageView = memo(function LocalMessageView({ accountUid, item, layout, onMenu, reply }: { accountUid: string; item: LocalOutgoing; layout: MessageLayout; onMenu(item: LocalOutgoing, point: { x: number; y: number }): void; reply?: ReplyPreview }) {
   const failed = deliveryFailed(item.state)
   // B269: a medium on its way is drawn as the message the server's copy will be (local-media.ts), the ring over it while
@@ -554,13 +559,14 @@ export const LocalMessageView = memo(function LocalMessageView({ accountUid, ite
   const bare = overMedia && !round && media.kind !== 'sticker' && !item.replyToId && !item.forwarded && !item.storyReply
   const going = !failed && item.state !== 'sent' && (item.state === 'uploading' || Boolean(item.progress))
   const local = { progress: sendingProgress(item.progress), going }
+  const emojiBody = !media && !item.voicePreview && item.text ? emojiOnlyBody(item.text) : null
   const localMeta = <span className="bubble-meta">
     <time>{messageTime(item.createdAt)}</time>
     {failed ? <CircleAlert size={14} aria-label={tr('전송 실패')} /> : item.state === 'sent' ? <Check size={15} aria-label={tr('보냄')} /> : <Clock3 size={13} aria-label={item.state === 'uploading' ? tr('업로드 중') : tr('보내는 중')} />}
   </span>
   return <div className={rowClass(true, layout, failed ? ' failed' : '')} onContextMenu={event => { event.preventDefault(); onMenu(item, pointFor(event, event.currentTarget)) }}>
     {failed && <button type="button" className="history-failed" aria-label={tr('보내지 못한 메시지 메뉴')} onClick={event => onMenu(item, pointFor(event, event.currentTarget))}><CircleAlert size={22} /></button>}
-    <div className={`bubble${media && !caption ? ' media-only' : ''}${overMedia ? ' info-over' : ''}${bare ? ' bare' : ''}${round ? ' round' : ''}`}>
+    <div className={`bubble${media && !caption ? ' media-only' : ''}${overMedia ? ' info-over' : ''}${bare ? ' bare' : ''}${round ? ' round' : ''}${emojiBody ? ' emoji-only' : ''}`}>
       {/* B263: the server names the original's sender by their privacy (forwardInfo); until it has, the header says only
           that it is a forward, in the place and look the confirmed one takes. */}
       {item.forwarded ? <div className="bubble-forward ellipsis">{tr('전달된 메시지')}</div> : item.storyReply && <div className="bubble-label">{tr('스토리 답장')}</div>}
@@ -568,7 +574,7 @@ export const LocalMessageView = memo(function LocalMessageView({ accountUid, ite
       {media ? (overMedia ? <div className="bubble-media"><Attachments accountUid={accountUid} chatId={item.chatId} message={media} own onOpen={() => {}} local={local} />{localMeta}</div>
         : <Attachments accountUid={accountUid} chatId={item.chatId} message={media} own onOpen={() => {}} local={local} />)
         : item.voicePreview ? <div className="voice-message own local"><QueuedVoicePlay accountUid={accountUid} item={item} /><span className="voice-message-body"><small>{tr('음성 메시지 · {0}', [formatDuration(item.voicePreview.duration)])}</small></span></div>
-        : <div className="bubble-text selectable">{item.text || tr('첨부')}<span className="bubble-meta-space own" /></div>}
+        : emojiBody ?? <div className="bubble-text selectable">{item.text || tr('첨부')}<span className="bubble-meta-space own" /></div>}
       {media && caption && <div className="bubble-text selectable">{caption}<span className="bubble-meta-space own" /></div>}
       {!media && item.progress && <div className="bubble-progress" role="progressbar" aria-valuenow={Math.round(100 * (sendingProgress(item.progress) ?? 0))} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${Math.round(100 * (sendingProgress(item.progress) ?? 0))}%` }} /></div>}
       {!overMedia && localMeta}

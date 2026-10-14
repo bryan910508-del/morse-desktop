@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { fieldHeight } from '../history/field-height'
-import { ArrowLeft, CheckCheck, CircleAlert, Clock, Clock3, Copy, Download, EllipsisVertical, File as FileIcon, Film, Flag, Forward, Image as ImageIcon, Mic, Pencil, Pin, PinOff, Plus, Reply, RotateCcw, Send, Smile, Star, Timer, Trash2, UserPlus, X } from 'lucide-react'
+import { EndFollower } from '../history/keep-bottom'
+import { ArrowDown, ArrowLeft, CheckCheck, CircleAlert, Clock, Clock3, Copy, Download, EllipsisVertical, File as FileIcon, Film, Flag, Forward, Image as ImageIcon, Mic, Pencil, Pin, PinOff, Plus, Reply, RotateCcw, Send, Smile, Star, Timer, Trash2, UserPlus, X } from 'lucide-react'
 import { inquiryChatMessage, inquiryQueueChatId, maxInquiryText, ownedChannelDiscussion, type InquiryMessageItem } from '../../../shared/channel-inquiries'
 import type { ChatMessage } from '../../../shared/model'
 import { readCovers, readCursor } from '../../../shared/read-receipts'
@@ -136,7 +137,21 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
   const list = useRef<HTMLDivElement>(null), field = useRef<HTMLTextAreaElement>(null)
   const items = thread?.items ?? [], ready = thread?.status === 'ready', pinnedIds = thread?.pinnedIds ?? []
   const waiting = pending.filter(entry => !items.some(item => item.id === entry.id))
-  useLayoutEffect(() => { const element = list.current; if (element) element.scrollTop = element.scrollHeight }, [items.length, waiting.length])
+  // B372: the room follows its end as a chat does (EndFollower, keep-bottom.ts): read at the bottom it follows a message
+  // that arrives and a picture that is measured, a send from here takes it there, and read further up it keeps its
+  // place with «최근 메시지로 이동». The newest message is watched rather than the count: the room keeps its newest 300
+  // (channel-inquiries.ts), so past that a new message leaves the count as it was.
+  const follower = useRef(new EndFollower()).current
+  const [away, setAway] = useState(false)
+  const newest = items.at(-1)?.id ?? null, shown = items.length > 0 || waiting.length > 0
+  useLayoutEffect(() => { const element = list.current; if (element) follower.changed(element, waiting.length) }, [newest, waiting.length])
+  useLayoutEffect(() => {
+    const element = list.current, inner = element?.querySelector<HTMLElement>('.inquiry-inner')
+    if (!element || !inner) return
+    const observer = new ResizeObserver(() => follower.follow(element))
+    observer.observe(inner)
+    return () => observer.disconnect()
+  }, [shown])
   useLayoutEffect(() => {
     const element = field.current
     if (!element) return
@@ -427,11 +442,12 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
       </span>
     </button>}
     <DeferredItemsBar items={thread?.scheduled ?? []} drop={async item => { await trackWrite(window.morse.cancelInquiryScheduled(accountUid, { requestId, inquiryId, messageId: item.id })) }} />
-    <div ref={list} className="channel-comments-list inquiry-messages">
+    <div className="inquiry-list-area">
+    <div ref={list} className="channel-comments-list inquiry-messages" onScroll={() => { const element = list.current; if (element) setAway(follower.scrolled(element) > 480) }}>
       {!thread || (thread.status === 'loading' && !items.length) ? <div className="empty-state"><Spinner size={22} /></div>
         : thread.status === 'error' ? <div className="empty-state">{thread.message || tr('문의를 열지 못했습니다.')}</div>
           : !items.length && !waiting.length ? <div className="empty-state">{thread.role === 'subscriber' ? tr('채널 운영자에게 궁금한 점을 남겨 보세요.') : tr('아직 메시지가 없습니다.')}</div>
-            : <>
+            : <div className="inquiry-inner">
               {rows.map(({ item, message, layout }) => <div key={item.id} className="history-row inquiry-thread-row" data-inquiry-message={item.id}>
                 {layout.date && <div className="history-date"><span className="service-pill">{serviceDate(item.createdAt ?? 0)}</span></div>}
                 <MessageView accountUid={accountUid} chatId={inquiryId} message={message} own={item.own} layout={layout} read={item.own && message.readEligible && !item.system && readCovers(thread.outboxRead, readCursor(message.position)) ? 'read' : 'sent'}
@@ -443,7 +459,9 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
               {waiting.map(entry => <div key={entry.id} className="history-row inquiry-thread-row">
                 <LocalMessageView accountUid={accountUid} item={inquiryLocal(entry, inquiryId)} layout={{ date: false, unread: false, top: false, bottom: false, name: false, photo: false, gutter: false, roomOnly: false }} onMenu={(_item, point) => pendingMenu(entry, point)} />
               </div>)}
-            </>}
+            </div>}
+    </div>
+    {away && <button className="history-down" aria-label={tr('최근 메시지로 이동')} onClick={() => { const element = list.current; if (element) follower.toBottom(element) }}><ArrowDown size={22} /></button>}
     </div>
     <div className="compose" ref={composeArea}>
       {replyTo && <div className="compose-bar">

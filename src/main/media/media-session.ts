@@ -9,6 +9,7 @@ import { restoreFile } from './compression'
 import { downloadMedia, MediaFailure } from './download-media'
 import { mediaCacheFor } from '../accounts/media-cache'
 import { tr } from '../../shared/i18n'
+import { markDownloaded } from '../platform/zone-mark'
 
 interface OwnedMedia {
   chatId: string
@@ -164,6 +165,8 @@ export class MediaSession {
       this.requireCurrent(owner)
       await rename(temporary, destination)
       temporary = null
+      // B377: a saved attachment is a file from the Internet to Windows (zone-mark.ts).
+      await markDownloaded(destination)
       return true
     } finally {
       if (temporary) await unlink(temporary).catch(() => {})

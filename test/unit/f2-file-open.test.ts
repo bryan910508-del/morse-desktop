@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import { test } from 'node:test'
 import { MediaCacheStore, type MediaCacheCommand } from '../../src/main/storage/media-cache-table'
 import { MediaCache, registerMediaCache } from '../../src/main/accounts/media-cache'
@@ -60,9 +60,10 @@ test('opening writes the file once, as itself, readable by this user only, and h
   try {
     assert.equal(await h.files.open('c1', request), 'opened')
     const opened = h.calls[0]!.slice('open:'.length)
-    assert.ok(opened.startsWith(h.directory) && opened.endsWith('/report.pdf'))
+    assert.ok(opened.startsWith(h.directory) && basename(opened) === 'report.pdf')
     assert.equal((await readFile(opened)).toString(), '%PDF-1.4 body')
-    assert.equal((await stat(opened)).mode & 0o777, 0o600)
+    // Windows keeps no POSIX mode bits (the file is under the user's own profile there); elsewhere this user only.
+    if (process.platform !== 'win32') assert.equal((await stat(opened)).mode & 0o777, 0o600)
     assert.equal(await h.files.open('c1', request), 'opened')
     assert.equal(h.calls.length, 2, 'no question for a document')
     assert.deepEqual(await h.files.state('c1', request), { state: 'ready' })

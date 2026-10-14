@@ -3,6 +3,7 @@ import { test } from 'node:test'
 import { appSmallCounterLayer } from '../../src/shared/app-badge'
 import { DesktopShell, type OverlayDrawRequest, type TrayLike } from '../../src/main/platform/desktop-shell'
 import type { DialogSummary, Preferences } from '../../src/shared/model'
+import { join } from 'node:path'
 
 // B348b (reports/desktop/2026-10-14-b348b-tray-small-icon-plan.md, review 10-14 01:0x): the Windows tray icon carries the
 // count as tdesktop's does — Tray::updateIcon (tray_win.cpp:209-233) → WithSmallCounter (window/main_window.cpp:350-391),
@@ -43,7 +44,7 @@ test('Windows: a count asks for the tray picture beside the overlay, the tray sh
   assert.deepEqual(requests.slice(2).map(r => [r.target, r.muted]), [['taskbar', true], ['tray', true]], 'grey on both, the one muted rule')
   shell.update(prefs, [{ uid: 'me', dialogs: [dialog(0)] }], true)
   shell.update(prefs, [{ uid: 'me', dialogs: [dialog(0)] }], true)
-  assert.deepEqual([tray.images.at(-1), tray.tooltips.at(-1)], ['file:' + process.cwd() + '/resources/brand/morse.png', 'Morse'], 'the logo alone, once')
+  assert.deepEqual([tray.images.at(-1), tray.tooltips.at(-1)], ['file:' + join(process.cwd(), 'resources/brand/morse.png'), 'Morse'], 'the logo alone, once')
   assert.equal(tray.images.filter(url => url.startsWith('file:')).length, 1)
 })
 

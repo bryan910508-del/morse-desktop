@@ -7,6 +7,8 @@ import { AuthenticationDomain } from '../../src/main/auth/domain'
 import type { DesktopAuthConfiguration } from '../../src/main/auth/contracts'
 import type { CredentialVault } from '../../src/main/auth/credential-vault'
 import { reconnectingAtStart } from '../../src/renderer/src/auth/entry-screen'
+// The sign-in configuration names the platform it runs on (firebase-rest.ts refuses another), so the test runs on either.
+const hostPlatform = process.platform === 'win32' ? 'Windows' as const : 'macOS' as const
 
 // B193 (0.241.13 on the user's Mac): after the passcode the QR form flashed three or four times before the account
 // opened. The form showed in every gap of the start — the saved list not read yet, an account's first «signed-out»
@@ -30,7 +32,7 @@ test('the form comes only when nothing is coming, or the person asked for it', (
 })
 
 const appId = '1:123713400904:web:test'
-const configuration: DesktopAuthConfiguration = { apiKey: 'key', appId, projectId: 'talky-a38c3', projectNumber: '123713400904', platform: 'macOS',
+const configuration: DesktopAuthConfiguration = { apiKey: 'key', appId, projectId: 'talky-a38c3', projectNumber: '123713400904', platform: hostPlatform,
   proof: { getProof: async () => ({ token: 'proof', appId, expiresAt: Date.now() + 3600000 }) } }
 
 test('the domain says «starting» from the first frame of start() until the first restore has settled', async () => {

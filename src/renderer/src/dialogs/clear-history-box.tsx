@@ -16,7 +16,7 @@ export function showClearHistoryBox(accountUid: string, dialog: Pick<DialogSumma
   controller.showLayer(close => {
     const choose = (forEveryone: boolean): void => { close(); void (forEveryone ? clearForEveryone(accountUid, dialog, false) : clearForMe(accountUid, dialog.id)) }
     return <Box title={tr('대화 기록 삭제')} width={360} onClose={close} buttons={<button className="button flat" onClick={close}>{tr('취소')}</button>}>
-      <p className="box-text">{tr('나에게만 지우면 내 모든 기기에서 이 대화의 기록이 지워지고, 대화는 목록에 남아요. 모두에게서 지우면 참여자 모두의 기록에서 지워지고 되돌릴 수 없어요.')}</p>
+      <p className="box-text">{tr('나에게만 지우면 내 모든 기기에서 이 대화의 기록이 지워지고, 대화는 목록에 남아요. 모두에게서 지우면 참여자 모두의 기록에서 지워져요. 어느 쪽이든 되돌릴 수 없어요.')}</p>
       <DeleteChoice rows={[
         { label: tr('나에게만 삭제'), choose: () => choose(false) },
         { label: tr('모두에게 삭제'), detail: dialog.kind === 'direct' ? tr('상대방 화면에서도 삭제돼요') : tr('모든 참여자의 화면에서 삭제돼요'), danger: true, choose: () => choose(true) }

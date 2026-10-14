@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
 import type { DesktopSnapshot } from '../../../shared/model'
-import type { ChannelOperationItem, ChannelOperationRequest } from '../../../shared/channel-operations'
+import { commentCountView, nudgeCommentCount, type ChannelOperationItem, type ChannelOperationRequest, type CommentCountNudge } from '../../../shared/channel-operations'
 import { useDesktop } from '../app/store'
 import { controller } from '../app/ui'
 import { errorText } from '../app/format'
@@ -24,6 +24,25 @@ export function useChannelOperations(accountUid: string, channelId: string | nul
   return useDesktop(select, same)
 }
 export { likeView, editView, removedPosts, removedComments } from '../../../shared/channel-operations'
+// B373 S2: this device's comment sends and deletes, per post, until the server's count moves (commentCountView).
+const nudges = new Map<string, CommentCountNudge>(), nudgeListeners = new Set<() => void>()
+const nudgeKey = (accountUid: string, channelId: string, postId: string): string => `${accountUid}/${channelId}/${postId}`
+export function nudgeComments(accountUid: string, channelId: string, postId: string, server: number | null, delta: 1 | -1): void {
+  if (server === null) return
+  const key = nudgeKey(accountUid, channelId, postId)
+  nudges.set(key, nudgeCommentCount(nudges.get(key), server, delta, Date.now()))
+  for (const listener of nudgeListeners) listener()
+  // Drawn again once the nudge has run out, so a count the server never moved goes back to the server's.
+  setTimeout(() => { for (const listener of nudgeListeners) listener() }, 15100)
+}
+let nudgeVersion = 0
+nudgeListeners.add(() => { nudgeVersion++ })
+const subscribeNudges = (listener: () => void): (() => void) => { nudgeListeners.add(listener); return () => { nudgeListeners.delete(listener) } }
+// A screen that shows comment counts draws again when a nudge starts or runs out.
+export function useCommentNudges(): number { return useSyncExternalStore(subscribeNudges, () => nudgeVersion) }
+export function commentCountFor(accountUid: string, channelId: string, postId: string, server: number | null): number | null {
+  return commentCountView(server, nudges.get(nudgeKey(accountUid, channelId, postId)), Date.now())
+}
 export function enqueueChannelOperation(accountUid: string, request: ChannelOperationRequest): Promise<void> {
   return trackWrite(window.morse.enqueueChannelOperation(accountUid, request)).then(() => {}, reason => {
     controller.toast(errorText(reason, tr('변경을 시작하지 못했습니다.')), 'error')

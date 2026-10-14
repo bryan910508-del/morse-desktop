@@ -283,3 +283,6 @@
 .channel-story-pick { display: grid; justify-items: center; gap: 10px; padding: 24px; color: var(--accent); font-size: var(--t-caption) }
 .channel-story-pick span { display: flex; gap: 8px }
 .channel-home-post-action.liked { color: #FF3B30 }
+/* B372: the list and its «최근 메시지로 이동» button, as a chat's (.history-down). */
+.inquiry-list-area { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column }
+.inquiry-inner { display: flex; flex-direction: column }

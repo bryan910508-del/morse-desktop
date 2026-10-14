@@ -18,7 +18,7 @@ import { openChannelOrPreview as openChannel } from './channel-discovery-box'
 import { ChannelStoryRing, showChannelStoryComposer, useChannelStoryVisibility } from './channel-stories'
 import { locale, tr } from '../../../shared/i18n'
 import { subscriberCountText } from '../../../shared/channel-subscriber-count'
-import { editView, enqueueChannelOperation, likeView, removedPosts, useChannelOperations } from './channel-operations'
+import { commentCountFor, editView, enqueueChannelOperation, likeView, removedPosts, useChannelOperations, useCommentNudges } from './channel-operations'
 
 const noChannels: ChannelHomeChannel[] = []
 
@@ -52,6 +52,8 @@ function PostCard({ accountUid, post, channel }: { accountUid: string; post: Cha
   // the server shows it, and a newer press replaces one still waiting (channel-operations.ts).
   const operations = useChannelOperations(accountUid, post.channelId)
   const view = likeView({ selected: post.liked, count: post.likeCount }, operations, post.id)
+  useCommentNudges()
+  const comments = commentCountFor(accountUid, post.channelId, post.id, post.commentCount)
   const liked = view.selected, likeCount = view.count
   // New words on their way or just confirmed are the post's words here too, as on the channel's own screen.
   const edit = editView(operations, post.id)
@@ -86,7 +88,7 @@ function PostCard({ accountUid, post, channel }: { accountUid: string; post: Cha
       <button type="button" className={`channel-home-post-action${liked ? ' liked' : ''}`} onClick={like} aria-label={tr('좋아요')} aria-pressed={liked ?? undefined}>
         <Heart size={17} fill={liked ? 'currentColor' : 'none'} />{likeCount ? likeCount.toLocaleString(locale()) : ''}
       </button>
-      <button type="button" className="channel-home-post-action" onClick={open} aria-label={tr('댓글')}><MessageCircle size={17} />{post.commentCount ? post.commentCount.toLocaleString(locale()) : ''}</button>
+      <button type="button" className="channel-home-post-action" onClick={open} aria-label={tr('댓글')}><MessageCircle size={17} />{comments ? comments.toLocaleString(locale()) : ''}</button>
     </div>
   </article>
 }

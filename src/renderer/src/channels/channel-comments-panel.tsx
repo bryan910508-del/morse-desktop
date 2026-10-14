@@ -20,12 +20,14 @@ import { arrangeComments } from './channel-comment-display'
 import type { ChannelSurface } from './channel-media-viewer'
 import { UserAvatar } from '../ui/user-avatar'
 import { locale, tr } from '../../../shared/i18n'
-import { enqueueChannelOperation, removedComments, useChannelOperations } from './channel-operations'
+import { commentCountFor, enqueueChannelOperation, nudgeComments, removedComments, useChannelOperations, useCommentNudges } from './channel-operations'
 
 interface ReplySelection extends CommentReplyTarget { author: string }
 interface ThreadPost { id: string; revision: string; commentCount: number | null }
 
-function CommentComposer({ accountUid, channelId, postId, surface, reply, authorOf, onReply }: {
+function CommentComposer({ accountUid, channelId, postId, count, surface, reply, authorOf, onReply }: {
+  // B373 S2: the post's count as the server has it, which this send moves by one until the server counts it.
+  count: number | null
   accountUid: string; channelId: string; postId: string; surface: ChannelSurface; reply: ReplySelection | null; authorOf(id: string): string; onReply(value: ReplySelection | null): void
 }) {
   const enterToSend = useDesktop(snapshot => snapshot?.preferences.enterToSend ?? true)
@@ -86,6 +88,7 @@ function CommentComposer({ accountUid, channelId, postId, surface, reply, author
       if (!saved.revision) throw new Error(tr('초안을 저장하지 못했습니다.'))
       latest.current = ''; setText('')
       const result = await publishComment(accountUid, { ...preview, channelId, postId, text: saved.text, draftRevision: saved.revision, parent: saved.parent })
+      nudgeComments(accountUid, channelId, postId, count, 1)
       if (result === 'queued') controller.toast(queuedCommentText)
       const record = await writer.load()
       if (result === 'done' && record.parent) onReply(null)
@@ -149,6 +152,7 @@ export function CommentsThread({ accountUid, channelId, requestId, post, surface
   // Telegram takes a deleted comment off at once; the device queue deletes it on the server (channel-operations.ts).
   async function remove(item: ChannelCommentItem): Promise<void> {
     if (!await confirmBox({ title: tr('댓글 삭제'), text: tr('이 댓글을 삭제할까요?'), confirm: tr('삭제'), danger: true })) return
+    nudgeComments(accountUid, channelId, postId, post.commentCount, -1)
     void enqueueChannelOperation(accountUid, { kind: 'comment-delete', id: crypto.randomUUID(), channelId, postId, commentId: item.id })
   }
   const openMenu = (item: ChannelCommentItem, point: { x: number; y: number }): void => {
@@ -188,7 +192,7 @@ export function CommentsThread({ accountUid, channelId, requestId, post, surface
             </div>
           })}
     </div>
-    <CommentComposer accountUid={accountUid} channelId={channelId} postId={postId} surface={surface} reply={reply} authorOf={authorOf} onReply={setReply} />
+    <CommentComposer accountUid={accountUid} channelId={channelId} postId={postId} count={post.commentCount} surface={surface} reply={reply} authorOf={authorOf} onReply={setReply} />
   </>
 }
 
@@ -198,7 +202,8 @@ export function ChannelCommentsPanel({ accountUid, channelId, postId }: { accoun
   // The channel's posts are being read again (the channel list came back): the post is not «not found» meanwhile.
   const reading = useDesktop(state => { const value = state?.channels?.posts; return value?.channelId === channelId && value.status === 'loading' })
   const post = posts?.posts.find(item => item.id === postId) ?? null
-  const total = post?.commentCount ?? 0
+  useCommentNudges()
+  const total = commentCountFor(accountUid, channelId, postId, post?.commentCount ?? null) ?? 0
   return <section className="side-panel channel-comments-panel" aria-label={tr('댓글')}>
     <header className="top-bar">
       <strong className="side-title">{tr('댓글{0}', [total ? ` ${total.toLocaleString(locale())}` : ''])}</strong>

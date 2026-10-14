@@ -33,7 +33,7 @@ import '../styles/channels.css'
 import { usePostReads } from './post-reads'
 import { locale, tr } from '../../../shared/i18n'
 import { subscriberCountText } from '../../../shared/channel-subscriber-count'
-import { editView, enqueueChannelOperation, likeView, removedPosts, useChannelOperations } from './channel-operations'
+import { commentCountFor, editView, enqueueChannelOperation, likeView, removedPosts, useChannelOperations, useCommentNudges } from './channel-operations'
 import type { ChannelOperationItem } from '../../../shared/channel-operations'
 import { roomRestrictedNotice } from '../../../shared/sanctions'
 
@@ -174,8 +174,8 @@ function showComposeBox(accountUid: string, channelId: string, name: string): vo
   </Box>)
 }
 
-function PostView({ post, name, likes, edit, pinned, onLike, onLikers, onMedia, onComments, onMenu, onEditAgain, onEditDrop }: {
-  post: ChannelPostText; name: string; likes: { selected: boolean | null; count: number | null }; edit: ChannelOperationItem | null; pinned: boolean
+function PostView({ post, comments, name, likes, edit, pinned, onLike, onLikers, onMedia, onComments, onMenu, onEditAgain, onEditDrop }: {
+  post: ChannelPostText; comments: number | null; name: string; likes: { selected: boolean | null; count: number | null }; edit: ChannelOperationItem | null; pinned: boolean
   onLike(): void; onLikers?(): void; onMedia(index: number): void; onComments(): void; onMenu(point: { x: number; y: number }): void
   onEditAgain?(): void; onEditDrop?(id: string): void
 }) {
@@ -219,7 +219,7 @@ function PostView({ post, name, likes, edit, pinned, onLike, onLikers, onMedia, 
       {/* iOS PostLikersView opens from the like count. */}
       {likes.count !== null && likes.count > 0 && <button type="button" className="channel-like-count" disabled={!onLikers} aria-label={tr('좋아요 누른 사람')} onClick={onLikers}>{likes.count.toLocaleString(locale())}</button>}
       <button type="button" className="channel-post-comment-action" onClick={onComments} aria-label={tr('댓글')}>
-        <MessageCircle size={18} />{post.commentCount ? post.commentCount.toLocaleString(locale()) : ''}
+        <MessageCircle size={18} />{comments ? comments.toLocaleString(locale()) : ''}
       </button>
     </div>
     {text && <p className="channel-post-text selectable">{text}</p>}
@@ -230,7 +230,7 @@ function PostView({ post, name, likes, edit, pinned, onLike, onLikers, onMedia, 
       {onEditDrop && <button type="button" onClick={() => onEditDrop(edit.id)}>{tr('취소')}</button>}
     </p>}
     <button type="button" className="channel-post-comments" onClick={onComments}>
-      <span>{post.commentCount ? tr('댓글 {0}개 모두 보기', [post.commentCount.toLocaleString(locale())]) : tr('댓글 남기기')}</span>
+      <span>{comments ? tr('댓글 {0}개 모두 보기', [comments.toLocaleString(locale())]) : tr('댓글 남기기')}</span>
     </button>
   </article>
 }
@@ -325,6 +325,7 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
   const [viewing, setViewing] = useState<string | null>(null)
   // Likes, new words and deletes still on their way, drawn as done (channel-operations.ts).
   const operations = useChannelOperations(accountUid, channelId)
+  useCommentNudges()
   const scroller = useRef<HTMLDivElement>(null)
   useEffect(() => retainChannels(accountUid), [accountUid])
   useEffect(() => {
@@ -440,7 +441,7 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
     ])
   }
 
-  const postCard = (post: ChannelPostText): ReactNode => <PostView post={post} name={name} likes={likeState(post)} edit={editView(operations, post.id)} pinned={post.id === pinnedId}
+  const postCard = (post: ChannelPostText): ReactNode => <PostView post={post} comments={commentCountFor(accountUid, channelId, post.id, post.commentCount)} name={name} likes={likeState(post)} edit={editView(operations, post.id)} pinned={post.id === pinnedId}
     onEditAgain={() => editPost(post)} onEditDrop={id => { void window.morse.discardChannelOperation(accountUid, id).catch(() => {}) }}
     onLike={() => toggleLike(post)} onLikers={() => showPostLikers(accountUid, channelId, post.id)} onMedia={index => showChannelMedia(accountUid, channelId, requestId, post, index, name)}
     onComments={() => openComments(channelId, post.id)} onMenu={point => { if (snapshot) openPostMenu(snapshot, post, point) }} />

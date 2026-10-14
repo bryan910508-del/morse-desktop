@@ -38,6 +38,7 @@ import { openPolicy, showGuideBox, showSupportBox } from './support-boxes'
 import { showProfileShareBox } from '../boxes/profile-share-box'
 import { openPersonalChannel, PersonalChannelSection, showPersonalChannelBox, useOwnedChannels, usePersonalChannelCard } from '../info/personal-channel'
 import { languageNames, languages, locale, tr, type Language } from '../../../shared/i18n'
+import { closeToTrayEffective } from '../../../shared/close-to-tray'
 
 export type Page = 'main' | 'profile' | 'notifications' | 'chat' | 'privacy' | 'data' | 'storage' | 'power' | 'language' | 'about'
 const titles: Record<Page, string> = { main: tr('설정'), language: tr('언어'), profile: tr('내 정보'), notifications: tr('알림'), chat: tr('채팅 설정'), privacy: tr('개인정보'), data: tr('데이터 및 저장공간'), storage: tr('이 기기에 보관한 파일'), power: tr('절전'), about: tr('Morse Desktop 정보') }
@@ -468,7 +469,8 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
           <label className="settings-radio"><input type="radio" name="badge-mode" checked={preferences.badgeMode === 'messages'} onChange={() => update({ badgeMode: 'messages' })} /><span>{tr('메시지 수')}<small>{tr('안 읽은 메시지 총 개수')}</small></span></label>
           <label className="settings-radio"><input type="radio" name="badge-mode" checked={preferences.badgeMode === 'chats'} onChange={() => update({ badgeMode: 'chats' })} /><span>{tr('채팅 수')}<small>{tr('안 읽은 채팅방 개수')}</small></span></label>
         </>}
-        {integration?.trayAvailable && <Toggle label={tr('창을 닫으면 트레이로 최소화')} checked={preferences.closeToTray} onChange={value => update({ closeToTray: value })} />}
+        {/* B374: only Windows has a tray, so the toggle shows what Windows does — the tray until the person chooses. */}
+        {integration?.trayAvailable && <Toggle label={tr('창을 닫으면 트레이로 최소화')} checked={closeToTrayEffective(preferences, 'win32')} onChange={value => update({ closeToTrayChoice: value })} />}
       </>}
       {page === 'chat' && <>
         <div className="section-label"><Palette size={14} />{' '}{tr('테마')}</div>

@@ -8,6 +8,8 @@ import { AuthenticationController, type AuthenticatedAccountHooks, type Authenti
 import type { AppCheckProof, DesktopAuthConfiguration, SavedCredential } from '../../src/main/auth/contracts'
 import type { CredentialVault } from '../../src/main/auth/credential-vault'
 import { HostedWebAppProof } from '../../src/main/auth/web-app-proof'
+// The sign-in configuration names the platform it runs on (firebase-rest.ts refuses another), so the test runs on either.
+const hostPlatform = process.platform === 'win32' ? 'Windows' as const : 'macOS' as const
 
 // A16 (§33; server 10-03 23:4x: Firebase Authentication has no App Check enforcement and securetoken is not a service
 // App Check covers): a saved sign-in alone carries the account on, as in Telegram Desktop — the refresh token renews the
@@ -30,7 +32,7 @@ class QuietSocket extends EventEmitter {
 function rig(page: () => Promise<AppCheckProof>) {
   const pages: boolean[] = []
   const proof = new HostedWebAppProof('https://morse-desktop-auth.web.app', appId, 'macOS', null, async (_signal, visible) => { pages.push(visible); return page() })
-  const configuration: DesktopAuthConfiguration = { apiKey: 'key', appId, projectId, projectNumber: '123713400904', platform: 'macOS', proof }
+  const configuration: DesktopAuthConfiguration = { apiKey: 'key', appId, projectId, projectNumber: '123713400904', platform: hostPlatform, proof }
   const saved: SavedCredential = { version: 1, profile: { uid, userId: 'minji', displayName: '민지' }, sessionId, refreshToken: 'r1', authTime }
   const vault = { location: mkdtempSync(join(tmpdir(), 'morse-a16-')), ready: async () => {}, read: async () => ({ ...saved }), save: async () => {},
     remove: async () => {}, flush: async () => {} } as unknown as CredentialVault

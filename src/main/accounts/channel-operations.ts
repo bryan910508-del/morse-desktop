@@ -8,7 +8,7 @@ import type { PostRemovalTarget } from '../../shared/channel-post-removal'
 import type { ChannelOperationCommand, StoredChannelOperation } from '../storage/channel-operation-table'
 import { DeliveryCommandFailure } from '../storage/delivery-client'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
-import { documents, documentVersion, numberField, stringField, type FirestoreDocument } from '../network/firestore-values'
+import { documents, documentVersion, stringField, type FirestoreDocument } from '../network/firestore-values'
 import { channelPostRevision } from '../media/channel-post-media-document'
 import { channelPostLikeState } from './channel-post-like-state'
 import { editablePostText } from '../network/channel-post-text-write'
@@ -286,8 +286,8 @@ export class ChannelOperations {
         let removal: ChannelCommentRemoval
         try {
           removal = channelCommentRemoval({ id: request.id, selectionId: request.id, requestId: request.id, channelId: request.channelId, postId: request.postId, revision: channelPostRevision(post),
-            commentId: request.commentId, commentRevision: channelPostRevision(comment), text: comment.fields.text?.stringValue ?? '', count: numberField(post.fields, 'commentCount') })
-        } catch { return { refused: tr('댓글 집계를 확인하지 못해 삭제하지 않았습니다. 게시물을 다시 열어 주세요.') } }
+            commentId: request.commentId, commentRevision: channelPostRevision(comment), text: comment.fields.text?.stringValue ?? '' })
+        } catch { return { refused: tr('댓글을 확인하지 못해 삭제하지 않았습니다. 게시물을 다시 열어 주세요.') } }
         this.stage = 'commit'
         try { await session.removeComment(removal, { post, comment, moderator }, signal); return 'done' } catch (error) { return judge(error) }
       }

@@ -295,9 +295,12 @@ export class AttachmentStaging {
         try {
           const before = await source.stat()
           const header = Buffer.alloc(16)
-          const sniffed = mode === 'media' && videoCompressor && before.isFile() ? (await source.read(header, 0, 16, 0)).bytesRead : 0
+          // B375: what the file is, read whether or not this platform can make a video smaller — Windows has no helper to,
+          // and a video over the limit is told as a video there, not as «일반 파일».
+          const sniffed = mode === 'media' && before.isFile() ? (await source.read(header, 0, 16, 0)).bytesRead : 0
           let video = false
           try { video = sniffed === 16 && mediaType(header).kind === 'video' } catch { /* Not a picture or a video the app sends as one. */ }
+          if (video && !videoCompressor && before.size >= maxVideoUploadBytes) throw new Error(tr('50 MB 미만의 동영상을 선택해 주세요.'))
           if (video && videoCompressor) {
             if (before.size >= maxVideoSourceBytes) throw new Error(tr('600 MB 미만의 동영상을 선택해 주세요.'))
             const result = await videoCompressor(path)

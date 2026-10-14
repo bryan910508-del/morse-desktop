@@ -7,12 +7,14 @@ import { AuthenticationDomain } from '../../src/main/auth/domain'
 import type { DesktopAuthConfiguration } from '../../src/main/auth/contracts'
 import type { CredentialVault } from '../../src/main/auth/credential-vault'
 import { qrShown } from '../../src/shared/auth'
+// The sign-in configuration names the platform it runs on (firebase-rest.ts refuses another), so the test runs on either.
+const hostPlatform = process.platform === 'win32' ? 'Windows' as const : 'macOS' as const
 
 // B182 (again, 0.241.11 on the user's Mac): «계정 추가» with the QR switch off showed the QR area for a moment. Before
 // the screen's QR start made the adding controller, the domain's own entry snapshot said nothing of the QR — drawn —
 // and the controller made then said «not drawn». The screen must stay, and the QR area must never be drawn.
 const appId = '1:123713400904:web:test'
-const configuration: DesktopAuthConfiguration = { apiKey: 'key', appId, projectId: 'talky-a38c3', projectNumber: '123713400904', platform: 'macOS',
+const configuration: DesktopAuthConfiguration = { apiKey: 'key', appId, projectId: 'talky-a38c3', projectNumber: '123713400904', platform: hostPlatform,
   proof: { getProof: async () => ({ token: 'proof', appId, expiresAt: Date.now() + 3600000 }) } }
 
 function rig(switchOn: boolean | (() => boolean | null)) {

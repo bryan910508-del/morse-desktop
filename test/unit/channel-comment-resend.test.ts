@@ -11,8 +11,8 @@ import type { CommentCreationRequest } from '../../src/shared/channel-comment-cr
 import type { CommentDraftRecord } from '../../src/shared/channel-comment-drafts'
 
 // A comment on its way goes again by itself, as a post does (channel-post-resend.test.ts), and before it goes again
-// it is brought up to date with the post: the count it raises is checked against the post's revision, which a like
-// or another comment moves, so the old request would only be refused.
+// it is brought up to date with the post's revision, which a like or another comment moves. Since B373 S2 it raises
+// no count: the server counts the comments.
 const uid = 'me', channelId = 'ch1', postId = 'p1'
 const post = (count: number, seconds: string): FirestoreDocument => ({ name: `${documents}/channels/${channelId}/posts/${postId}`, updateTime: { seconds, nanos: 0 },
   createTime: { seconds: '1790121600', nanos: 0 }, fields: { commentCount: { integerValue: String(count) }, authorId: { stringValue: 'owner' } } }) as unknown as FirestoreDocument
@@ -46,7 +46,7 @@ test('a comment whose outcome is unknown goes again under the same id, against t
   assert.equal(creation.snapshot.pending?.state, 'submitted')
   await new Promise(resolve => setTimeout(resolve, 1300))
   assert.deepEqual(writes.map(request => request.id), [id, id], 'the same comment id went again')
-  assert.deepEqual(writes.map(request => request.count), [3, 4], 'and raised the count the post had then')
+  assert.ok(writes.every(request => !('count' in request)), 'and carries no count of the post (B373 S2)')
   assert.equal(creation.snapshot.pending?.state, 'confirmed')
   await creation.close()
 })

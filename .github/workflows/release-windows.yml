@@ -16,6 +16,9 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      # B379: the unit tests on Windows first; a failure publishes no Windows installer for this tag.
+      - name: Unit tests on Windows
+        run: npm run test:unit
       # What the public source leaves out, from this repository's secrets (scripts/put-official-values.cjs).
       - name: Put in the official values
         env:

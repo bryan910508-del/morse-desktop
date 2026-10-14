@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import type { DesktopSnapshot, Preferences } from '../../shared/model'
 import { appBadgePixels, appBadgeState, dockBadgeText, type AppBadgeAccount, type AppBadgeState } from '../../shared/app-badge'
 import { tr } from '../../shared/i18n'
+import { closeToTrayEffective } from '../../shared/close-to-tray'
 
 // The window that carries the Windows taskbar overlay (BrowserWindow.setOverlayIcon) and the scale it is shown at.
 export interface OverlayWindow { setOverlayIcon(overlay: NativeImage | null, description: string): void; scaleFactor(): number }
@@ -14,7 +15,17 @@ interface Overlay { key: string; state: AppBadgeState; pixels: number }
 // What a picture was asked for, which one shows, and when the window was last asked to draw it.
 interface Painting { wanted: Overlay | null; shown: string; asked: number }
 // The part of Electron's Tray the shell uses (a stand-in in tests).
-export type TrayLike = Pick<Tray, 'setImage' | 'setToolTip' | 'setContextMenu' | 'on' | 'destroy' | 'isDestroyed'>
+export type TrayLike = Pick<Tray, 'setImage' | 'setToolTip' | 'setContextMenu' | 'on' | 'destroy' | 'isDestroyed'> & Partial<Pick<Tray, 'displayBalloon'>>
+// B374: what a tray click does to the window (tdesktop Tray iconClicks, tray.cpp:67-77): one that is shown and active is
+// hidden to the tray, any other is shown. Clicking the tray takes the focus first, so a window that lost it within half a
+// second still counts as active (main_window_win.cpp:589-592, kKeepActiveForTrayIcon :63).
+export interface TrayWindow { active(): boolean; hide(): void }
+export function activeForTrayClick(visible: boolean, focused: boolean, lastBlur: number, now: number): boolean {
+  return visible && (focused || (lastBlur > 0 && now - lastBlur <= 500))
+}
+// The second click of a double-click does nothing, so it neither shows and hides nor hides and shows (tray.cpp:69-71,
+// QApplication::doubleClickInterval; Windows' default GetDoubleClickTime is 500 ms).
+const trayDoubleClick = 500
 
 // Native shell ownership never owns a socket or writes message/read state.
 export class DesktopShell {
@@ -31,7 +42,9 @@ export class DesktopShell {
     private readonly window: () => OverlayWindow | null = () => null,
     private readonly draw: (request: OverlayDrawRequest) => void = () => {},
     private readonly platform: NodeJS.Platform = process.platform, private readonly now: () => number = Date.now,
-    private readonly makeTray: (icon: NativeImage) => TrayLike = icon => new Tray(icon)) {}
+    private readonly makeTray: (icon: NativeImage) => TrayLike = icon => new Tray(icon),
+    private readonly trayWindow: TrayWindow = { active: () => false, hide: () => {} }) {}
+  private lastTrayClick = 0
 
   initialize(): void {
     if (this.platform === 'darwin') {
@@ -55,7 +68,7 @@ export class DesktopShell {
         { label: tr('Morse 열기'), click: this.show }, { type: 'separator' },
         { label: tr('Morse 종료'), click: this.quit }
       ]))
-      tray.on('click', this.show)
+      tray.on('click', () => this.trayClicked())
     } catch {
       this.tray?.destroy(); this.tray = null
       this.message = tr('시스템 트레이를 만들지 못했습니다. 창을 닫으면 앱이 종료됩니다.')
@@ -65,7 +78,24 @@ export class DesktopShell {
     return { trayAvailable: Boolean(this.tray && !this.tray.isDestroyed()), message: this.message }
   }
   canCloseToTray(preferences: Preferences): boolean {
-    return !this.closed && this.platform === 'win32' && preferences.closeToTray && this.status().trayAvailable
+    return !this.closed && closeToTrayEffective(preferences, this.platform) && this.status().trayAvailable
+  }
+  private trayClicked(): void {
+    const now = this.now()
+    if (this.lastTrayClick > 0 && now - this.lastTrayClick < trayDoubleClick) return
+    this.lastTrayClick = now
+    if (this.trayWindow.active()) this.trayWindow.hide(); else this.show()
+  }
+  // B374: tdesktop Tray::showTrayMessage (platform/win/tray_win.cpp:268-280): the first time the window goes to the tray,
+  // one balloon says Morse still runs there (lng_tray_icon_text, lang.strings:34). Whether it was shown is the caller's to
+  // keep (SettingsStore.trayHintSeen); false when there is no tray to show it from.
+  showTrayHint(): boolean {
+    const tray = this.tray
+    if (this.closed || this.platform !== 'win32' || !tray || tray.isDestroyed() || !tray.displayBalloon) return false
+    try {
+      tray.displayBalloon({ iconType: 'info', title: 'Morse', content: tr('Morse는 여기서 계속 실행 중이에요. 설정에서 바꿀 수 있어요.\n알림 영역에서 사라지면 숨겨진 아이콘에서 다시 끌어 올 수 있어요.') })
+      return true
+    } catch { return false }
   }
   update(preferences: Preferences, accounts: AppBadgeAccount[], available: boolean): void {
     if (this.closed) return

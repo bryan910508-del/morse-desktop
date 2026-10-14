@@ -5,9 +5,11 @@ import { defaultPreferences, type Preferences } from '../../shared/model'
 import { object, preferencePatch } from '../../shared/validation'
 import { backgroundImageInfo, maxBackgroundPhotoBytes } from '../../shared/background-photo-bytes'
 import { tr } from '../../shared/i18n'
+import { migrateCloseToTray } from '../../shared/close-to-tray'
 
 export interface SavedWindow extends Rectangle { maximized?: boolean }
-interface Settings { version: 1; preferences: Preferences; window?: SavedWindow; backgroundPhoto?: { id: string; data: string } }
+// trayHintSeen: B374, the Windows balloon «still running here» was shown once (tdesktop cSeenTrayTooltip).
+interface Settings { version: 1; preferences: Preferences; window?: SavedWindow; backgroundPhoto?: { id: string; data: string }; trayHintSeen?: true }
 
 // One writer serializes preference and geometry changes. No account secrets live here.
 export class SettingsStore {
@@ -24,7 +26,7 @@ export class SettingsStore {
       // A file written by another version may hold a setting this one no longer has (and the next one may add some):
       // what is not known is left behind, as every value that is known is still checked. Refusing the whole file would
       // keep the app from opening at all.
-      const stored = raw.preferences === undefined ? {} : object(raw.preferences)
+      const stored = migrateCloseToTray(raw.preferences === undefined ? {} : object(raw.preferences))
       const preferences = { ...defaultPreferences, ...preferencePatch(Object.fromEntries(Object.entries(stored).filter(([key]) => key in defaultPreferences))) }
       const window = raw.window ? object(raw.window) : undefined
       if (window && !['x', 'y', 'width', 'height'].every(key => typeof window[key] === 'number' && Number.isFinite(window[key]))) {
@@ -42,7 +44,7 @@ export class SettingsStore {
           backgroundPhoto = { id: photo.id as string, data: photo.data }
         } finally { bytes.fill(0) }
       }
-      this.value = { version: 1, preferences, window: window as SavedWindow | undefined, backgroundPhoto }
+      this.value = { version: 1, preferences, window: window as SavedWindow | undefined, backgroundPhoto, ...(raw.trayHintSeen === true ? { trayHintSeen: true as const } : {}) }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(tr('설정 파일을 읽을 수 없습니다. 원본 파일은 보존됩니다.'))
     }
@@ -69,6 +71,8 @@ export class SettingsStore {
       return { ...current, backgroundPhoto, preferences: { ...current.preferences, ...patch } }
     })
   }
+  get trayHintSeen(): boolean { return this.value.trayHintSeen === true }
+  markTrayHintSeen(): Promise<void> { return this.commit(current => ({ ...current, trayHintSeen: true })) }
   saveWindow(window: SavedWindow): Promise<void> {
     return this.commit(current => ({ ...current, window }))
   }

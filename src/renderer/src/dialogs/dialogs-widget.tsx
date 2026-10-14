@@ -70,7 +70,7 @@ function ChatDeleteBox({ close, onChoose, title, text, selfLabel }: {
 }) {
   const choose = (forEveryone: boolean): void => { close(); onChoose(forEveryone) }
   return <Box title={title ?? tr('대화 삭제')} width={360} onClose={close} buttons={<button className="button flat" onClick={close}>{tr('취소')}</button>}>
-    <p className="box-text">{text ?? tr('나에게만 지우면 내 모든 기기에서 기록이 지워지고, 새 메시지가 오면 그 메시지부터 다시 보여요. 모두에게서 지우면 상대방 목록과 기록에서도 사라지고 되돌릴 수 없어요.')}</p>
+    <p className="box-text">{text ?? tr('나에게만 지우면 내 모든 기기에서 기록이 지워지고, 새 메시지가 오면 그 메시지부터 다시 보여요. 모두에게서 지우면 상대방 목록과 기록에서도 사라져요. 어느 쪽이든 되돌릴 수 없어요.')}</p>
     <DeleteChoice rows={[
       { label: selfLabel ?? tr('나에게만 삭제'), choose: () => choose(false) },
       { label: tr('모두에게 삭제'), detail: selfLabel ? tr('모든 참여자의 화면에서 삭제돼요') : tr('상대방 화면에서도 삭제돼요'), danger: true, choose: () => choose(true) }

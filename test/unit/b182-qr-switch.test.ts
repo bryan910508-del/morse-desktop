@@ -6,13 +6,15 @@ import { test } from 'node:test'
 import { AuthenticationController, type AuthenticatedAccountHooks } from '../../src/main/auth/controller'
 import type { DesktopAuthConfiguration } from '../../src/main/auth/contracts'
 import type { CredentialVault } from '../../src/main/auth/credential-vault'
+// The sign-in configuration names the platform it runs on (firebase-rest.ts refuses another), so the test runs on either.
+const hostPlatform = process.platform === 'win32' ? 'Windows' as const : 'macOS' as const
 
 // B182: «계정 추가» drew the QR panel before it read app_config/qr_login, and took it away once it read «off» — a release
 // build, where the switch is on only for test builds, showed the panel for a moment every time. tdesktop decides its
 // first step before drawing it (intro_start.cpp:34). The QR is drawn only once the switch is known to be on; the last
 // reading is carried to the next sign-in screen, so a known «on» draws at once and a known «off» never draws.
 const appId = '1:123713400904:web:test'
-const configuration: DesktopAuthConfiguration = { apiKey: 'key', appId, projectId: 'talky-a38c3', projectNumber: '123713400904', platform: 'macOS',
+const configuration: DesktopAuthConfiguration = { apiKey: 'key', appId, projectId: 'talky-a38c3', projectNumber: '123713400904', platform: hostPlatform,
   proof: { getProof: async () => ({ token: 'proof', appId, expiresAt: Date.now() + 3600000 }) } }
 const vault = () => ({ location: mkdtempSync(join(tmpdir(), 'morse-b182-')), ready: async () => {}, read: async () => null, save: async () => {}, remove: async () => {}, flush: async () => {} } as unknown as CredentialVault)
 

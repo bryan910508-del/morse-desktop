@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join, normalize } from 'node:path'
+import { posix } from 'node:path'
 import { test } from 'node:test'
 
 // A worker thread is not the main thread: `require('electron')` throws there, and the worker dies the
@@ -12,6 +12,8 @@ import { test } from 'node:test'
 const entries = ['src/main/storage/delivery-worker.ts', 'src/main/media/compression-worker.ts']
 const mainOnly = ['electron']
 
+// Paths stay in the project's own form ('/'), on Windows too, so the module names below compare as written.
+const { dirname, join, normalize } = posix
 function resolveImport(from: string, specifier: string): string | null {
   if (!specifier.startsWith('.')) return null
   const path = normalize(join(dirname(from), specifier))

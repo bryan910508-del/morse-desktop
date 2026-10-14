@@ -78,6 +78,7 @@ import { draftPreviewChars } from '../../shared/chat-list-preview'
 import { directChatId } from './direct-chat-id'
 import { directPairPath, isPairDialog, pairCorrection, pairLookup, pairReadFailed, pairRoom, settledMoves, type PairLookup } from './direct-chat-pair'
 import type { DirectMove } from '../storage/pending-direct-table'
+import { secureStoreReopenHint } from '../../shared/secure-store-hint'
 import { tr } from '../../shared/i18n'
 import { rejectionCode, rejectionUntil, sanctionOf, storedRejection } from '../../shared/sanctions'
 import { mediaCacheFor } from '../accounts/media-cache'
@@ -467,7 +468,7 @@ export class OutboxPump {
   }
   private frame(chatId: string, rows: StoredIntent[], revision: number): OutgoingSnapshot {
     const visible = !this.closed && !this.auth.signal.aborted && this.targetExists(chatId)
-    return { revision, canCompose: this.eligible(chatId), canDiscard: this.queueAvailable(chatId), policyHeld: !this.composeAllowed(chatId), writingBlocked: this.joinChat === chatId || !this.composeAllowed(chatId), message: this.storageFailed ? (this.storageReason === 'key' ? tr('키체인 접근을 허용한 뒤 앱을 다시 열어 주세요.') : tr('전송 저장소를 사용할 수 없습니다. 앱을 다시 열어 주세요.')) :
+    return { revision, canCompose: this.eligible(chatId), canDiscard: this.queueAvailable(chatId), policyHeld: !this.composeAllowed(chatId), writingBlocked: this.joinChat === chatId || !this.composeAllowed(chatId), message: this.storageFailed ? (this.storageReason === 'key' ? secureStoreReopenHint(process.platform) : tr('전송 저장소를 사용할 수 없습니다. 앱을 다시 열어 주세요.')) :
       !this.initialized ? tr('전송 기록을 불러오는 중…') : this.joinChat === chatId ? tr('토론방 참여 기록을 확인한 뒤 작성할 수 있습니다.') : !this.composeAllowed(chatId) ? this.context().dialogs.get(chatId)?.composeMessage || tr('토론방 작성 조건을 확인해 주세요.') : !this.eligible(chatId) ? tr('이 대화에는 지금 메시지를 보낼 수 없습니다.') : '',
       items: visible ? outgoingOrder(chatId, rows, [...this.sent.values()].map(entry => entry.row)).map(({ row, sent }) => sent ? {
         id: row.id, chatId, sequence: row.sequence, text: pendingText(row), replyToId: row.wire.replyToId, createdAt: row.createdAt, state: 'sent' as const, reason: '', busy: false,

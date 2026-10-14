@@ -19,8 +19,9 @@ export async function writeChannelPostLike(client: CommitClient, auth: Metadata,
     let settled = false
     const finish = (error?: ChannelPostLikeFailure): void => { if (settled) return; settled = true; signal.removeEventListener('abort', cancel); if (error) reject(error); else resolve() }
     const cancel = (): void => { call.cancel(); finish(new ChannelPostLikeFailure(true)) }
-    const call = client.commit({ database, writes: [{ update: { name: path, fields: { likedBy: { arrayValue: { values: next.map(member => ({ stringValue: member })) } }, likeCount: { integerValue: String(next.length) } } },
-      updateMask: { fieldPaths: ['likedBy', 'likeCount'] }, currentDocument: { updateTime: doc.updateTime } }] }, auth, { deadline: new Date(Date.now() + 30000) }, (error, response) => {
+    const call = client.commit({ database, writes: [{ update: { name: path, fields: { likedBy: { arrayValue: { values: next.map(member => ({ stringValue: member })) } } } },
+      // B373 S2: the list only; the server counts it into likeCount (rules v4.8.37, recount functions).
+      updateMask: { fieldPaths: ['likedBy'] }, currentDocument: { updateTime: doc.updateTime } }] }, auth, { deadline: new Date(Date.now() + 30000) }, (error, response) => {
       if (error) { finish(new ChannelPostLikeFailure(![status.ABORTED, status.ALREADY_EXISTS, status.FAILED_PRECONDITION, status.INVALID_ARGUMENT, status.NOT_FOUND, status.PERMISSION_DENIED, status.UNAUTHENTICATED].includes(error.code), error.code)); return }
       try {
         if (!Array.isArray(response.writeResults) || response.writeResults.length !== 1 || !response.commitTime) throw new Error('Incomplete like commit')
