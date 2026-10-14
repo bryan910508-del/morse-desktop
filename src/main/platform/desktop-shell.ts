@@ -7,8 +7,12 @@ import { tr } from '../../shared/i18n'
 import { closeToTrayEffective } from '../../shared/close-to-tray'
 import { errorName, type BadgeDetail } from './badge-diagnostics'
 
-// The window that carries the Windows taskbar overlay (BrowserWindow.setOverlayIcon) and the scale it is shown at.
-export interface OverlayWindow { setOverlayIcon(overlay: NativeImage | null, description: string): void; scaleFactor(): number }
+// The window that carries the Windows taskbar overlay (BrowserWindow.setOverlayIcon), the scale it is shown at, and its
+// title (B348d-3).
+export interface OverlayWindow { setOverlayIcon(overlay: NativeImage | null, description: string): void; scaleFactor(): number; setTitle(title: string): void }
+// B348d: the tray tooltip and the window title carry the count as Telegram's do (Core::TrayIconToolTip, tray.cpp:22-27;
+// MainWindow::updateTitle, window/main_window.cpp:887-917, «Telegram (n)»). No chat or account name goes into either.
+export function countTitle(count: number): string { return count > 0 ? `Morse (${count})` : 'Morse' }
 // The window draws the overlay's and the tray icon's pictures, as the main process has no canvas to set text on.
 export type BadgeTarget = 'taskbar' | 'tray'
 export interface OverlayDrawRequest { key: string; count: number; muted: boolean; pixels: number; target: BadgeTarget }
@@ -32,7 +36,12 @@ const trayDoubleClick = 500
 export class DesktopShell {
   private tray: TrayLike | null = null
   private trayBase: NativeImage | null = null
-  private tooltip = ''
+  // The tooltip the tray carries now, and the last one written to badge-check.log.
+  private tooltip = 'Morse'
+  private tooltipRecorded = ''
+  private title = ''
+  // The last count asked for, so a refresh can send it all again.
+  private last: AppBadgeState | null = null
   private message = ''
   private badge = ''
   private closed = false
@@ -66,13 +75,13 @@ export class DesktopShell {
       const base = icon.resize({ width: 32, height: 32, quality: 'best' })
       const tray = this.makeTray(base)
       this.tray = tray; this.trayBase = base
-      tray.setToolTip('Morse'); this.tooltip = 'Morse'
       tray.setContextMenu(Menu.buildFromTemplate([
         { label: tr('Morse 열기'), click: this.show }, { type: 'separator' },
         { label: tr('Morse 종료'), click: this.quit }
       ]))
       tray.on('click', () => this.trayClicked())
       this.record('tray', { made: true, pixels: 32 })
+      this.sendTip(tray)
     } catch (error) {
       this.record('tray', { made: false, reason: error instanceof Error && error.message === 'Missing icon' ? 'missing-icon' : errorName(error) })
       this.tray?.destroy(); this.tray = null
@@ -108,8 +117,24 @@ export class DesktopShell {
     // There is no local increment on receipt and no decrement when a notification is clicked.
     const state = appBadgeState(preferences, accounts, available)
     if (this.platform === 'win32') this.record('update', { count: state.count, muted: state.muted, available, shown: preferences.showUnreadBadge, accounts: accounts.length })
+    this.last = state
+    this.apply(state)
+  }
+  private apply(state: AppBadgeState): void {
+    this.updateTitle(state.count)
     if (this.platform === 'darwin') this.updateDock(state.count)
     else if (this.platform === 'win32') { this.updateOverlay(state); this.updateTray(state) }
+  }
+  // B348d-2, tdesktop Tray::updateIconCounters where it is called besides a count change: showing the window from the tray
+  // (MainWindow::showFromTray, window/main_window.cpp:621-628) and a change of the system's settings (WM_SETTINGCHANGE,
+  // platform/win/integration_win.cpp:242-247). Electron gives these as the window's 'show', nativeTheme 'updated' and
+  // screen 'display-metrics-changed'. The taskbar picture, the tray picture and the tooltip all go again: Windows makes the
+  // taskbar again after a change of scale or resolution, and Electron then puts the tray icon back without its tooltip
+  // (notify_icon.cc ResetIcon :110-128, notify_icon_host.cc:249-252).
+  refresh(): void {
+    if (this.closed || !this.last) return
+    this.windowReset(); this.painting.tray.shown = ''; this.title = ''
+    this.apply(this.last)
   }
   // The window gives back the picture for one request; an older one is dropped (the count moved on meanwhile).
   overlayDrawn(key: string, dataURL: string): void {
@@ -128,7 +153,7 @@ export class DesktopShell {
         window.setOverlayIcon(image, tr('읽지 않은 메시지 {0}개', [wanted.state.count]))
       } else {
         if (!this.tray || this.tray.isDestroyed()) { this.record('apply', { target, result: 'no-tray' }); return }
-        this.tray.setImage(image)
+        this.tray.setImage(image); this.sendTip(this.tray)
       }
       painting.shown = key
       this.record('apply', { target, result: 'ok', count: wanted.state.count, pixels: wanted.pixels })
@@ -142,11 +167,17 @@ export class DesktopShell {
     const target = (Object.keys(this.painting) as BadgeTarget[]).find(entry => this.painting[entry].wanted?.key === key)
     this.record('drawn', { target: target ?? 'stale', result: 'failed', name: name.slice(0, 40) })
   }
-  // A new window (or a reloaded one) has no overlay and forgot what it was asked: both are asked again (tdesktop draws
-  // again on showFromTray, :626).
+  // A new window (or a reloaded one) has no overlay or title of ours and forgot what it was asked: both are asked again
+  // (tdesktop draws again on showFromTray, :626).
   windowReset(): void {
     for (const painting of Object.values(this.painting)) { painting.wanted = null; painting.asked = 0 }
-    this.painting.taskbar.shown = ''
+    this.painting.taskbar.shown = ''; this.title = ''
+  }
+  // B348d-3: the window's title is «Morse (n)» from the same count as the badge (MainWindow::updateTitle).
+  private updateTitle(count: number): void {
+    const window = this.window(), title = countTitle(count)
+    if (!window || title === this.title) return
+    try { window.setTitle(title); this.title = title } catch { /* The window is going away; the next one is titled again. */ }
   }
   private updateDock(count: number): void {
     const badge = dockBadgeText(count)
@@ -162,15 +193,23 @@ export class DesktopShell {
   }
   // B348b, tdesktop Tray::updateIcon (tray_win.cpp:209-233): the notification area's small icon carries the count on the
   // logo (WithSmallCounter), none shows the logo alone; its tooltip is «Morse (n)» (Core::TrayIconToolTip, tray.cpp:22-27).
+  // B348d-1: tdesktop sends the tooltip after every picture (:231-232), and Qt sends picture and tooltip in one message
+  // (qwindowssystemtrayicon.cpp sendTrayMessage :336-352). Electron sends them apart and keeps no tooltip (notify_icon.cc
+  // SetImage :130-140, SetToolTip :160-168), so the tooltip goes again with each picture, never skipped as unchanged.
   private updateTray(state: AppBadgeState): void {
     const tray = this.tray, base = this.trayBase
     if (!tray || tray.isDestroyed() || !base) { if (state.count > 0) this.record('request', { target: 'tray', result: 'no-tray' }); return }
-    const tooltip = state.count > 0 ? `Morse (${state.count})` : 'Morse'
-    if (tooltip !== this.tooltip) {
-      try { tray.setToolTip(tooltip); this.tooltip = tooltip; this.record('tooltip', { count: state.count, result: 'ok' }) }
-      catch (error) { this.record('tooltip', { count: state.count, result: errorName(error) }) }
-    }
-    this.paint('tray', state, appBadgePixels(this.window()?.scaleFactor() ?? 1), () => tray.setImage(base))
+    const tooltip = countTitle(state.count)
+    // A new count says so at once; its picture follows when the window has drawn it, with the tooltip again.
+    if (tooltip !== this.tooltip) { this.tooltip = tooltip; this.sendTip(tray) }
+    this.paint('tray', state, appBadgePixels(this.window()?.scaleFactor() ?? 1), () => { tray.setImage(base); this.sendTip(tray) })
+  }
+  private sendTip(tray: TrayLike): void {
+    const count = this.last?.count ?? 0
+    try {
+      tray.setToolTip(this.tooltip)
+      if (this.tooltipRecorded !== this.tooltip) { this.tooltipRecorded = this.tooltip; this.record('tooltip', { count, result: 'ok' }) }
+    } catch (error) { this.tooltipRecorded = ''; this.record('tooltip', { count, result: errorName(error) }) }
   }
   private paint(target: BadgeTarget, state: AppBadgeState, pixels: number, clear: () => void): void {
     const painting = this.painting[target]

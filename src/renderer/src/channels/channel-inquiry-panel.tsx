@@ -34,7 +34,8 @@ import { showInquiryAutoDeleteBox } from '../boxes/auto-delete-box'
 import { DeferredItemsBar, showScheduleBox } from '../history/deferred-send'
 import { autoDeleteSummary } from '../../../shared/chat-auto-delete'
 import { InquiryVoiceBar, type InquiryVoiceSend } from './inquiry-voice'
-import { RecordButton, type HeldRef } from '../history/record-button'
+import { RecordButton, useRecordChoice, type HeldRef } from '../history/record-button'
+import { showsRecordButton } from '../history/record-availability'
 import { RoundVideoRecorder, type RoundVideoTarget } from '../history/round-video-record'
 import { useInquiryPending, useInquirySendState, type PendingEntry } from './inquiry-sends'
 import { tr } from '../../../shared/i18n'
@@ -131,8 +132,8 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
   // A selection of messages, as a chat keeps one: null while nothing is being selected.
   const [selection, setSelection] = useState<string[] | null>(null)
   const [recording, setRecording] = useState<false | 'voice' | 'video'>(false)
-  // Telegram's record button, as in a chat: a click switches voice and video, a held press records.
-  const recordVideo = useDesktop(snapshot => snapshot?.preferences.recordVideoMessages ?? false)
+  // Telegram's record button, as in a chat: a click switches voice and video, a held press records (B401).
+  const record = useRecordChoice()
   const held = useRef<HeldRef | undefined>(undefined), composeArea = useRef<HTMLDivElement>(null)
   const list = useRef<HTMLDivElement>(null), field = useRef<HTMLTextAreaElement>(null)
   const items = thread?.items ?? [], ready = thread?.status === 'ready', pinnedIds = thread?.pinnedIds ?? []
@@ -490,12 +491,12 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
           onPackSticker={(setId, itemId) => { void sendSticker(() => window.morse.sendInquiryPackSticker(accountUid, { requestId, inquiryId, messageId: crypto.randomUUID().toUpperCase() }, setId, itemId)) }}
           onClose={() => setEntities(false)} />}
         {/* Telegram's send button turns into the microphone while there is nothing typed. */}
-        {text.trim() ? <button className="compose-send" aria-label={tr('보내기')} disabled={!ready} onClick={() => { void send() }}
+        {text.trim() || !showsRecordButton(record.availability) ? <button className="compose-send" aria-label={tr('보내기')} disabled={!ready || !text.trim()} onClick={() => { void send() }}
           onContextMenu={event => { event.preventDefault(); if (ready) popupMenu.open(pointFor(event, event.currentTarget), [
             { label: tr('예약 전송'), icon: <Clock size={18} />, onSelect: () => showScheduleBox(at => { void sendLater(at) }) }
           ]) }}><Send size={20} /></button>
-          : <RecordButton mode={recordVideo ? 'video' : 'voice'} disabled={!ready || picking} area={() => composeArea.current}
-            onHold={next => { held.current = next; setRecording(recordVideo ? 'video' : 'voice') }} />}
+          : <RecordButton choice={record} disabled={!ready || picking} area={() => composeArea.current}
+            onHold={next => { held.current = next; setRecording(record.mode) }} />}
       </div>}
     </div>
   </section>

@@ -3,9 +3,10 @@
 import { useEffect, useRef } from 'react'
 import { Mic, Video } from 'lucide-react'
 import { controller } from '../app/ui'
-import { desktop } from '../app/store'
+import { desktop, useDesktop } from '../app/store'
 import { errorText } from '../app/format'
 import { tr } from '../../../shared/i18n'
+import { recordModeFor, recordTipAfterSwitch, useRecordAvailability, type RecordAvailability, type RecordMode } from './record-availability'
 
 // Telegram Desktop's record button (history_widget.cpp, history_view_voice_record_bar.cpp): a click switches
 // between a voice and a video message and the choice is kept (Core::Settings::recordVideoMessages), a press
@@ -16,7 +17,7 @@ import { tr } from '../../../shared/i18n'
 export interface HeldRecording { release(send: boolean): void; lock(): void }
 // The recording bar fills in `api` when it mounts; a release that comes before that waits in `pending`.
 export interface HeldRef { api: HeldRecording | null; pending: boolean | null }
-export type RecordMode = 'voice' | 'video'
+export type { RecordMode } from './record-availability'
 
 const holdMs = 250, lockDistance = 70
 
@@ -28,24 +29,29 @@ export const recordTips = {
   held: tr('놓으면 보내기 · 위로 밀면 잠금 · 이 영역 밖에서 놓으면 취소')
 }
 
-// Webrtc::RecordAvailability: without a camera the button stays on voice. The kinds of devices are
-// listed without any permission (ids and names stay hidden).
-async function cameraAvailable(): Promise<boolean> {
-  try { return (await navigator.mediaDevices.enumerateDevices()).some(device => device.kind === 'videoinput') } catch { return false }
-}
-
-export async function switchRecordMode(current: RecordMode): Promise<void> {
-  if (current === 'voice' && !(await cameraAvailable())) { controller.toast(recordTips.hold); return }
-  const next = current === 'voice'
+// B401, tdesktop recordingTipRequests (history_widget.cpp:1406-1422): a click always turns the kept choice over, as
+// Telegram does, whether or not a camera is there now; the button shows video only while both devices are there
+// (recordModeFor), so a computer without a camera keeps the voice button and is told to hold it.
+export async function switchRecordMode(recordVideoMessages: boolean, availability: RecordAvailability): Promise<void> {
+  const next = !recordVideoMessages
   try {
     desktop.replace(await window.morse.updatePreferences({ recordVideoMessages: next }))
-    controller.toast(next ? recordTips.video : recordTips.voice)
+    controller.toast(recordTips[recordTipAfterSwitch(next, availability)])
   } catch (reason) { controller.toast(errorText(reason, tr('설정을 저장하지 못했습니다.')), 'error') }
 }
 
-export function RecordButton({ mode, disabled, area, onHold }: { mode: RecordMode; disabled: boolean; area(): Element | null; onHold(held: HeldRef): void }) {
+// What a compose area's record button is: the kept choice, what the computer can record, and so the mode it records in.
+export interface RecordChoice { recordVideoMessages: boolean; availability: RecordAvailability; mode: RecordMode }
+export function useRecordChoice(): RecordChoice {
+  const recordVideoMessages = useDesktop(snapshot => snapshot?.preferences.recordVideoMessages ?? false)
+  const availability = useRecordAvailability()
+  return { recordVideoMessages, availability, mode: recordModeFor(recordVideoMessages, availability) }
+}
+
+export function RecordButton({ choice, disabled, area, onHold }: { choice: RecordChoice; disabled: boolean; area(): Element | null; onHold(held: HeldRef): void }) {
+  const { mode } = choice
   const press = useRef<{ finish(): void; holding(): boolean } | null>(null)
-  const latest = useRef({ mode, area, onHold }); latest.current = { mode, area, onHold }
+  const latest = useRef({ choice, area, onHold }); latest.current = { choice, area, onHold }
   // The button gives way to the recording bar as soon as a hold starts, so a press being held keeps listening
   // for its release after the button is gone; only a press that has not become a hold ends with the button.
   useEffect(() => () => { if (press.current && !press.current.holding()) press.current.finish() }, [])
@@ -67,7 +73,7 @@ export function RecordButton({ mode, disabled, area, onHold }: { mode: RecordMod
     }
     const up = (next: PointerEvent): void => {
       finish()
-      if (!holding) { void switchRecordMode(latest.current.mode); return }
+      if (!holding) { void switchRecordMode(latest.current.choice.recordVideoMessages, latest.current.choice.availability); return }
       if (!locked) release(inside(next.clientX, next.clientY))
     }
     const interrupted = (): void => { finish(); if (holding && !locked) release(false) }
@@ -83,7 +89,7 @@ export function RecordButton({ mode, disabled, area, onHold }: { mode: RecordMod
   }
   const label = mode === 'video' ? tr('영상 메시지') : tr('음성 메시지')
   return <button type="button" className="icon-button compose-mic" aria-label={tr('{0} 녹음', [label])} title={mode === 'video' ? recordTips.video : recordTips.voice} disabled={disabled}
-    onPointerDown={down} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void switchRecordMode(mode) } }}>
+    onPointerDown={down} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void switchRecordMode(choice.recordVideoMessages, choice.availability) } }}>
     {mode === 'video' ? <Video size={22} /> : <Mic size={22} />}
   </button>
 }

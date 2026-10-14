@@ -21,7 +21,8 @@ import { popupMenu, pointFor } from '../ui/popup-menu'
 import { pasteFiles, pickFiles } from '../boxes/send-files-box'
 import { editMessage } from './message-overlay'
 import { VoiceDraftBar, VoiceRecordBar } from './voice-record'
-import { RecordButton, type HeldRef } from './record-button'
+import { RecordButton, useRecordChoice, type HeldRef } from './record-button'
+import { showsRecordButton } from './record-availability'
 import { RoundVideoRecorder, type RoundVideoTarget } from './round-video-record'
 import { resetAutoTranslation } from '../app/translations'
 import { showScheduleBox } from './deferred-send'
@@ -43,8 +44,9 @@ export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, 
   const focusToken = useUi(state => state.composerFocus)
   const [text, setText] = useState(''), [editText, setEditText] = useState('')
   const [loaded, setLoaded] = useState(false), [recording, setRecording] = useState<false | 'voice' | 'video'>(false)
-  // Telegram's record button: a click switches between voice and video, a held press records.
-  const recordVideo = useDesktop(snapshot => snapshot?.preferences.recordVideoMessages ?? false)
+  // Telegram's record button: a click switches between voice and video, a held press records (B401: in what the
+  // computer can record, and not there at all without a microphone).
+  const record = useRecordChoice()
   const held = useRef<HeldRef | undefined>(undefined), root = useRef<HTMLDivElement>(null)
   const [voiceDraft, setVoiceDraft] = useState<VoiceDraftRecord | null>(null)
   const field = useRef<HTMLTextAreaElement>(null)
@@ -262,11 +264,11 @@ export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, 
               disabled={!loaded} onClick={() => setEntities(value => !value)}><Smile size={22} /></button>
             {entities && <EntityPanel accountUid={accountUid} onEmoji={insertEmoji} onSticker={item => { if (!editing && canAttach) void sendSticker(item.id) }}
               onPackSticker={(setId, itemId) => { if (!editing && canAttach) void sendPackSticker(setId, itemId) }} onClose={() => setEntities(false)} />}
-            {hasText || editing
-              ? <button className="compose-send" aria-label={editing ? tr('수정 저장') : tr('보내기')} disabled={!loaded || (!editing && !outgoing.canCompose)} onClick={() => { void send() }}
+            {hasText || editing || !showsRecordButton(record.availability)
+              ? <button className="compose-send" aria-label={editing ? tr('수정 저장') : tr('보내기')} disabled={!loaded || (!editing && (!outgoing.canCompose || !hasText))} onClick={() => { void send() }}
                 onContextMenu={event => { event.preventDefault(); openSendMenu(pointFor(event, event.currentTarget)) }}>{editing ? <Check size={22} /> : <Send size={20} />}</button>
-              : <RecordButton mode={recordVideo ? 'video' : 'voice'} disabled={!canAttach} area={() => root.current}
-                onHold={next => { void flush().catch(() => {}); held.current = next; setRecording(recordVideo ? 'video' : 'voice') }} />}
+              : <RecordButton choice={record} disabled={!canAttach} area={() => root.current}
+                onHold={next => { void flush().catch(() => {}); held.current = next; setRecording(record.mode) }} />}
           </div>}
   </div>
 }

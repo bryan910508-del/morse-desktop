@@ -25,9 +25,11 @@ test('each step is written: the tray, the count, the request, the picture, what 
   desktop.overlayDrawn(taskbar.key, 'data:image/png;base64,AAAA')
   desktop.overlayFailed(tray.key, 'EncodingError')
   const names = steps.map(([step]) => step)
-  assert.deepEqual(names.slice(0, 2), ['tray', 'update'])
+  // B348d: the tooltip the icon is made with is written too.
+  assert.deepEqual(names.slice(0, 3), ['tray', 'tooltip', 'update'])
   assert.deepEqual(steps[0]![1], { made: true, pixels: 32 })
-  assert.deepEqual(steps[1]![1], { count: 3, muted: false, available: true, shown: true, accounts: 1 })
+  assert.deepEqual(steps[1]![1], { count: 0, result: 'ok' })
+  assert.deepEqual(steps[2]![1], { count: 3, muted: false, available: true, shown: true, accounts: 1 })
   assert.ok(steps.some(([step, detail]) => step === 'tooltip' && detail.count === 3 && detail.result === 'ok'))
   assert.ok(steps.some(([step, detail]) => step === 'request' && detail.target === 'taskbar' && detail.count === 3))
   assert.ok(steps.some(([step, detail]) => step === 'drawn' && detail.target === 'taskbar' && detail.result === 'ok'))

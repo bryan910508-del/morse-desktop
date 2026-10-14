@@ -10,8 +10,14 @@ const esbuild = require('esbuild')
 // The bundles stay inside the project so that a module left external (@grpc/proto-loader for the
 // wire-format tests) still resolves from node_modules when Node runs them.
 const root = resolve(__dirname, '..'), unit = join(root, 'test/unit'), out = join(root, '.build-cache/unit-tests')
+// Files named on the command line (test/unit/x.test.ts or x.test.ts) run alone; none named runs them all. A name that is
+// not a test file stops the run, so a typo never turns into the whole suite.
+const all = readdirSync(unit).filter(name => name.endsWith('.test.ts'))
+const named = process.argv.slice(2).map(arg => arg.replace(/\\/g, '/').split('/').pop())
+const unknown = named.filter(name => !all.includes(name))
+if (unknown.length) { console.error(`not a test file in test/unit: ${unknown.join(', ')}`); process.exit(1) }
+const tests = named.length ? named : all
 rmSync(out, { recursive: true, force: true }); mkdirSync(out, { recursive: true })
-const tests = readdirSync(unit).filter(name => name.endsWith('.test.ts'))
 const outputs = []
 for (const name of tests) {
   const file = join(out, name.replace(/\.ts$/, '.cjs'))

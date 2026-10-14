@@ -293,7 +293,8 @@ let shouldLockAt = 0
 const desktopShell = new DesktopShell(showWindow, () => app.quit(), () => {
   const window = mainWindow
   if (!window || window.isDestroyed()) return null
-  return { setOverlayIcon: (overlay, description) => window.setOverlayIcon(overlay, description), scaleFactor: () => screen.getDisplayMatching(window.getBounds()).scaleFactor }
+  return { setOverlayIcon: (overlay, description) => window.setOverlayIcon(overlay, description), scaleFactor: () => screen.getDisplayMatching(window.getBounds()).scaleFactor,
+    setTitle: title => window.setTitle(title) }
 }, request => emit({ type: 'draw-app-badge', ...request }), process.platform, Date.now, undefined, {
   // B374: a tray click hides a window that is shown and active and shows any other (activeForTrayClick).
   active: () => Boolean(mainWindow && !mainWindow.isDestroyed() && activeForTrayClick(mainWindow.isVisible() && !mainWindow.isMinimized(), mainWindow.isFocused(), windowBlurredAt, Date.now())),
@@ -3104,6 +3105,10 @@ function createWindow(): void {
   })
   window.on('blur', () => { contextMenus.close(); if (!window.webContents.isDestroyed()) window.webContents.setIgnoreMenuShortcuts(false) })
   window.on('hide', () => contextMenus.close()); window.on('minimize', () => contextMenus.close())
+  // B348d: the title is the shell's («Morse (n)», DesktopShell.updateTitle), not the page's <title>; shown again from the
+  // tray, the count's pictures and tooltip go again (tdesktop showFromTray, main_window.cpp:621-628).
+  window.on('page-title-updated', event => event.preventDefault())
+  window.on('show', () => desktopShell.refresh())
   window.webContents.on('did-finish-load', () => { emit({ type: 'full-screen', value: window.isFullScreen() }); desktopShell.windowReset(); updateDesktopShell() })
   // B58: the page's wheel events carry no phases. Chromium's gestureScrollBegin/End mark a whole scroll sequence (a
   // phase-less wheel makes one per tick — measured 10-02 on Electron 44), not the fingers lifting, so only a fling, if
@@ -3494,7 +3499,11 @@ else {
     nativeTheme.on('updated', () => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor(windowBackground())
       void publish()
+      desktopShell.refresh()
     })
+    // B348d-2: a change of scale or resolution makes Windows build the taskbar again (tdesktop: WM_SETTINGCHANGE,
+    // integration_win.cpp:242-247).
+    screen.on('display-metrics-changed', () => desktopShell.refresh())
     await configureRenderer()
     windowsReady = true
     registerIPC(); createMenu(); createWindow()

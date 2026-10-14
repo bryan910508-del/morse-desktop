@@ -115,6 +115,7 @@ jobs:
             [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, IntPtr process);
             public static uint MenuFlags(IntPtr window) { var info = new GUITHREADINFO(); info.cbSize = Marshal.SizeOf(typeof(GUITHREADINFO)); return GetGUIThreadInfo(GetWindowThreadProcessId(window, IntPtr.Zero), ref info) ? info.flags : 0xFFFFFFFF; }
             [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+            [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr window);
             [DllImport("user32.dll")] public static extern IntPtr LoadKeyboardLayout(string id, uint flags);
             [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
           }
@@ -145,7 +146,118 @@ jobs:
           Check 'ko-first-mode'
           [void][MorseKeys]::SetForegroundWindow($window); [void](Invoke-Page $field); Tap 0x15; Start-Sleep -Milliseconds 300
           Check 'ko-after-hangul-key'
+          # Windows PC 10-14 19:3x (0.241.31): the count shows on the taskbar while the window is minimized, not on the tray
+          # icon once the window is closed (hidden to the tray). The tray picture is drawn in the window
+          # (app-badge-image.ts: document.fonts.load, then the logo's Image.decode, then canvas.toDataURL). The same three
+          # steps run here with the window shown and then hidden (Ctrl+W hides it to the tray, B374), each with a 5 s limit.
+          $probe = "(async () => { const t0 = performance.now(), step = (name, work) => Promise.race([work.then(() => name + ':ok'), new Promise(r => setTimeout(() => r(name + ':timeout'), 5000))]); const font = await step('font', document.fonts.load('400 11px Pretendard', '7')); const logo = new Image(); logo.src = '/morse.png'; const decode = await step('decode', logo.decode()); const canvas = document.createElement('canvas'); canvas.width = canvas.height = 32; let png = 'none'; try { canvas.getContext('2d').drawImage(logo, 0, 0, 32, 32); png = canvas.toDataURL('image/png').length } catch (e) { png = e.name } return JSON.stringify({ visibility: document.visibilityState, font, decode, png, ms: Math.round(performance.now() - t0) }) })()"
+          Write-Output "badge draw [shown]: $(Invoke-Page $probe)"
+          [void][MorseKeys]::SetForegroundWindow($window); Start-Sleep -Milliseconds 300
+          [void][MorseKeys]::Key(0x11, $false); Tap 0x57; [void][MorseKeys]::Key(0x11, $true); Start-Sleep -Seconds 2
+          Write-Output "after Ctrl+W: window visible=$([MorseKeys]::IsWindowVisible($window)) process alive=$(-not $app.HasExited)"
+          Write-Output "badge draw [hidden]: $(Invoke-Page $probe)"
+          Start-Sleep -Seconds 5
+          Write-Output "badge draw [hidden +5s]: $(Invoke-Page $probe)"
+          # Where app.getPath('logs') puts it is written too, since the person is told where to find it.
+          Start-Sleep -Seconds 2
+          $badgeLogs = @(Get-ChildItem -Path $env:APPDATA, $env:LOCALAPPDATA -Recurse -Filter 'badge-check.log' -ErrorAction SilentlyContinue)
+          if (-not $badgeLogs) { Write-Output 'badge-check.log: none under APPDATA or LOCALAPPDATA' }
+          foreach ($badgeLog in $badgeLogs) { Write-Output "badge-check.log at $($badgeLog.FullName)"; Get-Content $badgeLog.FullName | ForEach-Object { Write-Output "badge-check.log: $_" } }
           $socket.Dispose()
+      # B348d (Windows PC 10-14): the tray picture shows the count but its tooltip stays «Morse». Electron's Windows icon
+      # (shell/browser/ui/win/notify_icon.cc, v44.3.0) sends the tip only in SetToolTip (:160-168); SetImage sends the
+      # picture alone (:130-140), and on TaskbarCreated ResetIcon deletes and re-adds the icon without a tip (:110-128,
+      # notify_icon_host.cc:249-252). Qt (tdesktop) sends picture and tip together every time (qwindowssystemtrayicon.cpp
+      # 336-352, 436-444). A notification-area button's Name is its tooltip; it is read here through UI Automation for the
+      # installed Morse (hidden to the tray, no account: «Morse») and for a bare Electron icon (scripts/tray-tooltip-probe.cjs)
+      # whose tip becomes «Probe (3)» — then after setImage, a TaskbarCreated broadcast, the tip sent again, an Explorer
+      # restart and the tip sent once more.
+      - name: The tray tooltip through UI Automation
+        if: ${{ !cancelled() && env.MORSE_EXE != '' }}
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+          Add-Type -TypeDefinition @'
+          using System; using System.Runtime.InteropServices;
+          public static class MorseShell {
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern uint RegisterWindowMessage(string name);
+            [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+            [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+          }
+          '@
+          Add-Type -AssemblyName System.Drawing, System.Windows.Forms
+          $shots = Join-Path $env:RUNNER_TEMP 'tray-shots'; New-Item -ItemType Directory -Force -Path $shots | Out-Null
+          # The pointer rests on a tray button for 3 s and the bottom of the screen is kept as a picture (the runner's own
+          # desktop; there is no account in it).
+          function Shot([string]$name, $rect) {
+            if ($rect -and -not $rect.IsEmpty) { [void][MorseShell]::SetCursorPos([int]($rect.X + $rect.Width / 2), [int]($rect.Y + $rect.Height / 2)) } else { $rect = $null }
+            Start-Sleep -Seconds 3
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $height = [Math]::Min(320, $bounds.Height)
+            $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $height
+            $graphics = [System.Drawing.Graphics]::FromImage($bitmap); $graphics.CopyFromScreen(0, $bounds.Height - $height, 0, 0, $bitmap.Size)
+            $bitmap.Save((Join-Path $shots "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png); $graphics.Dispose(); $bitmap.Dispose()
+            Write-Output "shot $name.png at $(if ($rect) { "$([int]$rect.X),$([int]$rect.Y)" } else { 'no button' })"
+          }
+          # The tray button whose Name is the given text (Windows 11 may put a space before it), the one nearest to where Morse's was.
+          function TrayButton([string]$name, $near) {
+            $tray = [Windows.Automation.AutomationElement]::RootElement.FindFirst([Windows.Automation.TreeScope]::Children, [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ClassNameProperty, 'Shell_TrayWnd'))
+            if (-not $tray) { return $null }
+            $found = @($tray.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button)) | Where-Object { $_.Current.Name.Trim() -eq $name })
+            if (-not $found) { return $null }
+            if ($near) { $found = @($found | Sort-Object { [Math]::Abs($_.Current.BoundingRectangle.X - $near.X) }) }
+            return $found[0].Current.BoundingRectangle
+          }
+          Write-Output "system: $((Get-CimInstance Win32_OperatingSystem).Caption) $([Environment]::OSVersion.Version); explorer running=$([bool](Get-Process explorer -ErrorAction SilentlyContinue))"
+          # Windows 11 keeps a new icon in the hidden flyout; promoting it (NotifyIconSettings\*\IsPromoted) puts it on the taskbar.
+          function Promote { Get-ChildItem 'HKCU:\Control Panel\NotifyIconSettings' -ErrorAction SilentlyContinue | ForEach-Object { $path = (Get-ItemProperty $_.PSPath).ExecutablePath; if ($path -match '(Morse|electron)\.exe$') { Set-ItemProperty $_.PSPath -Name IsPromoted -Value 1 -Type DWord } } }
+          function TrayNames([string]$label) {
+            Start-Sleep -Seconds 2
+            $root = [Windows.Automation.AutomationElement]::RootElement
+            $names = @()
+            foreach ($class in 'Shell_TrayWnd', 'NotifyIconOverflowWindow', 'TopLevelWindowForOverflowXamlIsland') {
+              $shell = $root.FindFirst([Windows.Automation.TreeScope]::Children, [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ClassNameProperty, $class))
+              if (-not $shell) { continue }
+              $buttons = $shell.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::ControlTypeProperty, [Windows.Automation.ControlType]::Button))
+              foreach ($button in $buttons) { $name = $button.Current.Name; if ($name -match 'Morse|Probe|Electron|^$') { $names += "${class}:'$name'" } }
+              Write-Output "tray [$label] $class buttons=$($buttons.Count)"
+            }
+            Write-Output "tray [$label]: $($names -join ' | ')"
+          }
+          Promote; TrayNames 'installed Morse, hidden'
+          # B348d fix: the installed Morse loses its tooltip when the taskbar is made again (TaskbarCreated); shown again
+          # from a second start (second-instance → showWindow → the window's 'show' → DesktopShell.refresh) it sends the
+          # tray picture and tooltip again. The title is the window's own (B348d-3; no account here, so «Morse»).
+          $morseRect = TrayButton 'Morse' $null
+          Shot 'morse-before' $morseRect
+          [void][MorseShell]::PostMessage([IntPtr]0xFFFF, [MorseShell]::RegisterWindowMessage('TaskbarCreated'), [IntPtr]::Zero, [IntPtr]::Zero); TrayNames 'Morse after TaskbarCreated'
+          Shot 'morse-after-taskbarcreated' (TrayButton '' $morseRect)
+          Start-Process -FilePath $env:MORSE_EXE; Start-Sleep -Seconds 4
+          TrayNames 'Morse shown again'
+          Write-Output "window title: '$((Get-Process -Name Morse | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1).MainWindowTitle)'"
+          Shot 'morse-shown-again' (TrayButton 'Morse' $morseRect)
+          # The checkout's Electron binary is fetched here if npm ci left it out (the installer above carries its own).
+          if (-not (Test-Path node_modules\electron\dist\electron.exe)) { node node_modules\electron\install.js }
+          $electron = (node -p "require('electron')").Trim()
+          Write-Output "probe electron: $(Split-Path $electron -Leaf) $(Test-Path $electron)"
+          $probe = Start-Process -FilePath $electron -ArgumentList 'scripts\tray-tooltip-probe.cjs' -PassThru
+          for ($i = 0; $i -lt 30; $i++) { Start-Sleep -Seconds 1; try { [void](Invoke-RestMethod 'http://127.0.0.1:47900/tip?text=Probe' -TimeoutSec 2); break } catch { } }
+          Promote; TrayNames 'probe made'
+          [void](Invoke-RestMethod 'http://127.0.0.1:47900/tip?text=Probe%20(3)'); TrayNames 'probe tip set'
+          [void](Invoke-RestMethod 'http://127.0.0.1:47900/image'); TrayNames 'probe image set'
+          [void][MorseShell]::PostMessage([IntPtr]0xFFFF, [MorseShell]::RegisterWindowMessage('TaskbarCreated'), [IntPtr]::Zero, [IntPtr]::Zero); TrayNames 'after TaskbarCreated'
+          [void](Invoke-RestMethod 'http://127.0.0.1:47900/tip?text=Probe%20(3)'); TrayNames 'tip sent again'
+          Get-Process explorer -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Seconds 5
+          if (-not (Get-Process explorer -ErrorAction SilentlyContinue)) { Start-Process explorer.exe; Start-Sleep -Seconds 5 }
+          Promote; TrayNames 'after Explorer restart'
+          [void](Invoke-RestMethod 'http://127.0.0.1:47900/tip?text=Probe%20(3)'); TrayNames 'tip sent again after restart'
+          try { [void](Invoke-RestMethod 'http://127.0.0.1:47900/quit' -TimeoutSec 3) } catch { }
+          if (-not $probe.HasExited) { $probe | Stop-Process -Force }
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && env.MORSE_EXE != '' }}
+        with:
+          name: tray-shots
+          path: ${{ runner.temp }}/tray-shots
+          retention-days: 7
       - name: Close and remove the installed app
         if: ${{ always() && env.MORSE_EXE != '' }}
         shell: pwsh
