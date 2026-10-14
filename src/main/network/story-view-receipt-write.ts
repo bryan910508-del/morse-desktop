@@ -9,6 +9,7 @@ import { storyHiddenFrom } from './story-hidden-audience'
 import { currentViewerRecord } from './contact-story-view-record'
 import { recordStoryStep } from '../platform/story-diagnostics'
 import { tr } from '../../shared/i18n'
+import { serverNow } from './server-clock'
 export class StoryViewReceiptWriteFailure extends Error { constructor(readonly uncertain: boolean) { super(uncertain ? tr('열람 기록 결과 미확인') : tr('열람 기록을 시작하지 못했거나 서버가 거절했습니다.')) } }
 interface CommitClient {
   commit(request: WireObject, metadata: Metadata, options: { deadline: Date }, callback: (error: ServiceError | null, response: WireObject) => void): ClientUnaryCall
@@ -33,7 +34,7 @@ export async function writeStoryViewReceipt(client: CommitClient, auth: Metadata
     if (request.viewerId !== uid || request.ownerId === uid) throw new Error('Viewer identity mismatch')
     if (story.name !== storyPath) throw new Error('Story lookup scope mismatch')
     const current = ownStoryFromDocument(story, request.ownerId, request.privacy)
-    if (current.version !== request.version || positionMilliseconds(current.expires) !== request.expiresAt || request.expiresAt <= Date.now()) throw new Error('Story expired or replaced')
+    if (current.version !== request.version || positionMilliseconds(current.expires) !== request.expiresAt || request.expiresAt <= serverNow()) throw new Error('Story expired or replaced')
     if (storyHiddenFrom(story).hiddenFrom.includes(uid)) throw new Error('Story hidden from this viewer')
     const prior = currentViewerRecord(story, uid, true)
     if (prior.listed || prior.viewerFieldPresent !== request.viewerFieldPresent || prior.timeField !== request.originalTimeField || prior.viewedAt !== request.originalViewedAt) throw new Error('Original view record changed')

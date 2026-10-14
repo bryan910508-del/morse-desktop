@@ -6,6 +6,7 @@ import type { MessagePosition, SendAcknowledgement, SendWire } from '../../share
 import type { ReadAcknowledgement } from '../../shared/read-receipts'
 import { tr } from '../../shared/i18n'
 import { systemNetwork } from '../network/reachability'
+import { serverClock } from '../network/server-clock'
 
 // A15 (contracts/A15-send-fallback.md §3.2-3.3, user «권장대로» 10-03 17:5x; inbox B95 — in Russia the message server's
 // socket does not carry, while Google's paths do): a message goes over the socket when it can, and otherwise, under
@@ -76,7 +77,12 @@ async function socketFirst<T>(socket: SocketPath, signal: AbortSignal, bySocket:
 export function sendWithFallback(wire: SendWire, signal: AbortSignal, socket: SocketPath, callable: CallablePath, note?: PathNote,
   network?: NetworkPath): Promise<SendAcknowledgement> {
   return socketFirst(socket, signal, () => socket.send(wire, signal),
-    async () => committedSendAck(await callable('sendMorseMessage', { ...wire }, signal), wire), 'send', note, network)
+    async () => {
+      const sentAt = Date.now(), ack = committedSendAck(await callable('sendMorseMessage', { ...wire }, signal), wire)
+      // B409-2: the server's date for the message it took, as on the socket (server-clock.ts).
+      if (!ack.alreadyExisted) serverClock.answered(sentAt, Date.now(), ack.createdAt)
+      return ack
+    }, 'send', note, network)
 }
 
 export function markReadWithFallback(chatId: string, readerId: string, target: MessagePosition, signal: AbortSignal, socket: SocketPath,

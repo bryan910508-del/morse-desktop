@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3-multiple-ciphers'
 import type { PendingStoryPublication } from '../../shared/story-publication'
 import { storyPublicationTime, type StoryPublicationTime } from '../../shared/story-publication-commit'
 import { storedStoryComposerDraft } from './story-composer-drafts'
+import { storageNow } from './storage-clock'
 export type StoryPublicationCommitCommand = { kind: 'story-publication-submit'; id: string } | { kind: 'story-publication-outcome'; id: string; outcome: 'confirmed' | 'rejected' }
 const fail = (): never => { throw Object.assign(new Error('Story publication or source draft changed'), { deliveryCode: 'conflict' }) }
 export function readStoryPublicationTime(db: Database.Database, id: string): StoryPublicationTime | null {
@@ -22,7 +23,7 @@ export function mutateStoryPublicationCommit(db: Database.Database, current: Pen
   if (command.kind === 'story-publication-submit') {
     if (current.state !== 'uploaded' || current.time || readStoryPublicationTime(db, current.id)) return fail()
     requireDraft(db, current)
-    const createdAt = Date.now(), time = storyPublicationTime({ createdAt, expiresAt: createdAt + 86400000 })
+    const createdAt = storageNow(), time = storyPublicationTime({ createdAt, expiresAt: createdAt + 86400000 })
     db.prepare('INSERT INTO story_publication_commits(publication_id,created_at,expires_at) VALUES(?,?,?)').run(current.id, time.createdAt, time.expiresAt)
     db.prepare("UPDATE story_publications SET state='submitted' WHERE id=?").run(current.id)
   } else {

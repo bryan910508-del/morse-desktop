@@ -9,7 +9,7 @@ import { sendsOnEnter } from '../../../shared/shortcuts'
 import { outgoingText } from '../../../shared/validation'
 import type { PressedSend } from './pressed-sends'
 import { maxAlbumPhotos } from '../../../shared/uploads'
-import { useDesktop } from '../app/store'
+import { desktop, useDesktop } from '../app/store'
 import { translationUnavailableNote, translationAvailable } from '../../../shared/translation'
 import { useTypingReport } from '../app/typing'
 import { EntityPanel } from './entity-panel'
@@ -164,7 +164,7 @@ export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, 
     const binding = replyRef.current.selection, id = crypto.randomUUID()
     clearTimeout(timer.current)
     latest.current = ''; dirty.current = false; setText('')
-    onPressed?.({ id, chatId, text: outgoingText(raw), ...(binding ? { replyToId: binding.messageId } : {}), createdAt: Date.now() })
+    onPressed?.({ id, chatId, text: outgoingText(raw), ...(binding ? { replyToId: binding.messageId } : {}), createdAt: Date.now() + (desktop.value?.serverClockOffset ?? 0) })
     try {
       // The outbox clears the stored draft only when it still equals the sent text.
       await trackWrite(window.morse.saveDraft(accountUid, chatId, raw))

@@ -5,6 +5,7 @@ import { committedReadAck, committedSendAck, floodWaitDelay, incomingMessage, No
 import { registrationDelay, registrationOutcome } from './registration-outcome'
 import { tr } from '../../shared/i18n'
 import { reachability } from './reachability'
+import { serverClock, serverNow } from './server-clock'
 
 export interface SessionCredentials {
   uid: string
@@ -137,8 +138,9 @@ export class SocketMessageTransport {
     // answer in time falls back to a new connection, as a lapsed one would.
     const scheduleRenewal = (): void => {
       clearTimeout(this.renewTimer)
-      const at = expiresAt ? expiresAt - 5 * 60000 : Date.now() + 50 * 60000
-      this.renewTimer = setTimeout(() => { void renew() }, Math.max(30000, at - Date.now()))
+      // B409-2: the token's end is the server's time; the wait is measured on it.
+      const at = expiresAt ? expiresAt - 5 * 60000 : serverNow() + 50 * 60000
+      this.renewTimer = setTimeout(() => { void renew() }, Math.max(30000, at - serverNow()))
     }
     const renew = async (): Promise<void> => {
       if (!active() || !socket.connected || this.currentState !== 'ready' || this.renewing) return
@@ -178,6 +180,9 @@ export class SocketMessageTransport {
     })
     socket.on('disconnect', reason => {
       if (!active()) return
+      // B412: nothing Socket.IO kept back goes out on the next connection before it registers (the server answers that
+      // UNAUTHORIZED); each such request is the caller's to settle — its answer never comes and it ends unanswered.
+      socket.sendBuffer = []
       this.events.step?.('disconnect', String(reason))
       this.invalidateRegistration()
       this.transition('offline')
@@ -274,8 +279,23 @@ export class SocketMessageTransport {
         wire.senderId !== this.credentials?.uid) throw new NotEmitted(tr('연결을 기다리고 있습니다.'))
     // SQLite owns replay. Socket.IO must not silently buffer this across a new
     // connection before that connection has completed application registration.
+    const sentAt = Date.now()
     const body = await this.ask(socket, generation, 'sendMessage', wire, signal, tr('전송 결과를 확인해야 합니다.'))
-    return committedSendAck(body, wire)
+    this.unregistered(body)
+    const ack = committedSendAck(body, wire)
+    // B409-2: the server dated this message as it took it (server-clock.ts).
+    if (!ack.alreadyExisted) serverClock.answered(sentAt, Date.now(), ack.createdAt)
+    return ack
+  }
+  // B412: UNAUTHORIZED is the server saying this connection is not registered (talky-server index.js:443) — nothing was
+  // applied. The connection registers again with a fresh token, and the request is one that never left: the caller sends
+  // it again, by the callable meanwhile (send-fallback.ts). tdesktop's requests likewise wait for the session to be ready
+  // and are sent again after it is made anew (mtproto/session_private.cpp tryToSend :576-582 sends nothing without a key; resendAll :2354, called :1384·:1719·:2659).
+  private unregistered(body: unknown): void {
+    if (typeof body !== 'object' || body === null || (body as { error?: unknown }).error !== 'UNAUTHORIZED') return
+    this.events.step?.('unregistered-answer')
+    if (this.credentials) this.connect(this.credentials, true)
+    throw new NotEmitted(tr('연결을 기다리고 있습니다.'))
   }
 
   async markRead(chatId: string, readerId: string, target: MessagePosition, signal: AbortSignal): Promise<ReadAcknowledgement> {
@@ -284,6 +304,7 @@ export class SocketMessageTransport {
         readerId !== this.credentials?.uid) throw new NotEmitted(tr('연결을 기다리고 있습니다.'))
     // Existing contract: the server derives identity and timestamp itself.
     const body = await this.ask(socket, generation, 'markRead', { chatId, messageId: target.id }, signal, tr('읽음 응답을 다시 확인해야 합니다.'))
+    this.unregistered(body)
     return committedReadAck(body, chatId, readerId, target)
   }
 
@@ -302,6 +323,11 @@ export class SocketMessageTransport {
   // caller giving up, ends it as any unanswered request does (for the caller to settle as now).
   private async ask(socket: Socket, generation: number, event: string, payload: unknown, signal: AbortSignal, unanswered: string): Promise<unknown> {
     for (;;) {
+      // B412: a heartbeat that ran out without the socket knowing yet (a clock that jumped, a machine waking) makes
+      // Socket.IO keep the request back for the next connection, where it would reach the server before `register`
+      // (socket.io-client socket.js emit: isConnected = connected && !engine._hasPingExpired()). It does not leave
+      // now; the connection is made again, and the caller goes on as with a request that never left.
+      if (pingExpired(socket)) throw new NotEmitted(tr('연결을 기다리고 있습니다.'))
       const pending = socket.volatile.timeout(15000).emitWithAck(event, payload)
       let cancel!: () => void
       const body: unknown = await new Promise((resolve, reject) => {
@@ -342,6 +368,12 @@ export class SocketMessageTransport {
 }
 
 // The `exp` a Firebase ID token carries (seconds), as the server reads it with verifyIdToken; 0 when unreadable.
+// Engine.IO's own test for a heartbeat that ran out while its timer was held back (engine.io-client socket.js
+// _hasPingExpired; it also starts closing the connection). Absent in another version, nothing is held back by it.
+export function pingExpired(socket: Pick<Socket, 'io'>): boolean {
+  const engine = socket.io.engine as unknown as { _hasPingExpired?: () => boolean } | undefined
+  return typeof engine?._hasPingExpired === 'function' ? engine._hasPingExpired() : false
+}
 export function tokenExpiry(idToken: string): number {
   try {
     const payload = idToken.split('.')[1]

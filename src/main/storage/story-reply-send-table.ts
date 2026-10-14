@@ -8,6 +8,7 @@ import { maxQueuedMessages } from '../../shared/delivery'
 import { pendingStoryReplyDraft } from './story-reply-draft-table'
 import { storyReplyWire } from '../messaging/story-reply-wire'
 import { textDigest } from '../messaging/text-identity'
+import { storageNow } from './storage-clock'
 export type StoryReplySendCommand = { kind: 'story-reply-send-history'; request: StoryReplyHistoryRequest } | { kind: 'story-reply-send-known'; id: string } | { kind: 'enqueue-story-reply'; request: StoryReplySendRequest; wire: TextSendWire }
 const conflict = (): never => { throw Object.assign(new Error('Story reply queue conflict'), { deliveryCode: 'conflict' }) }
 function known(db: Database.Database, id: string): StoryReplySendReceipt | null {
@@ -37,14 +38,14 @@ export function executeStoryReplySend(db: Database.Database, command: StoryReply
     const request = storyReplySendRequest(command.request), receipt = known(db, request.id)
     if (receipt) return receipt // Retained identity survives body deletion; never recreate it.
     const pending = pendingStoryReplyDraft(db, uid)
-    if (!pending || pending.id !== request.id || pending.revision !== request.revision || pending.expiresAt <= Date.now()) return conflict()
+    if (!pending || pending.id !== request.id || pending.revision !== request.revision || pending.expiresAt <= storageNow()) return conflict()
     const chatId = identifier(command.wire.chatId)
     const peer = db.prepare('SELECT peer_uid FROM pending_directs WHERE chat_id=?').get(chatId) as { peer_uid: string } | undefined
     const expected = storyReplyWire(pending, chatId, peer?.peer_uid)
     if (JSON.stringify(expected) !== JSON.stringify(command.wire)) return conflict()
     if (db.prepare('SELECT 1 FROM intents WHERE id=?').get(request.id)) return conflict()
     if ((db.prepare('SELECT COUNT(*) AS n FROM intents WHERE wire IS NOT NULL').get() as { n: number }).n >= maxQueuedMessages) throw Object.assign(new Error('Outbox full'), { deliveryCode: 'capacity' })
-    db.prepare("INSERT INTO intents(id,chat_id,wire,digest,created_at,state) VALUES(?,?,?,?,?,'queued')").run(expected.id, chatId, JSON.stringify(expected), textDigest(expected), Date.now())
+    db.prepare("INSERT INTO intents(id,chat_id,wire,digest,created_at,state) VALUES(?,?,?,?,?,'queued')").run(expected.id, chatId, JSON.stringify(expected), textDigest(expected), storageNow())
     db.prepare("UPDATE story_reply_drafts SET state='queued',payload=NULL WHERE id=?").run(request.id)
     db.prepare('DELETE FROM story_reply_texts WHERE draft_id=?').run(request.id)
     // The direct chat's ordinary text/reply drafts belong to a separate editor.

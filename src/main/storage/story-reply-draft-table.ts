@@ -4,6 +4,7 @@ import { storyReplyTextWrite, type StoryReplyTextWrite } from '../../shared/stor
 import type Database from 'better-sqlite3-multiple-ciphers'
 import { storyReplyDraftRequest, type StoryReplyDraftRequest, type PendingStoryReplyDraft } from '../../shared/story-reply-draft'
 import { backgroundPhotoId } from '../../shared/chat-background'
+import { storageNow } from './storage-clock'
 export type StoryReplyDraftCommand = { kind: 'story-reply-source-rebase'; request: StoryReplySourceRebase } | { kind: 'story-reply-draft-read' } | { kind: 'story-reply-draft-prepare'; request: StoryReplyDraftRequest } | { kind: 'story-reply-text-write'; request: StoryReplyTextWrite } | { kind: 'story-reply-draft-dismiss'; id: string; expected: 'prepared'; revision: string }
 const conflict = (): never => { throw Object.assign(new Error('Story reply draft changed'), { deliveryCode: 'conflict' }) }
 export function pendingStoryReplyDraft(db: Database.Database, uid: string): PendingStoryReplyDraft | null {
@@ -35,7 +36,7 @@ export function executeStoryReplyDraft(db: Database.Database, command: StoryRepl
       if (!current || current.id !== request.id) return conflict()
       const matches = current.version === request.current.version && current.expiresAt === request.current.expiresAt && current.captionPreview === request.current.captionPreview
       if (current.revision === request.revision && matches) return current
-      if (current.revision !== request.expected || request.current.expiresAt <= Date.now()) return conflict()
+      if (current.revision !== request.expected || request.current.expiresAt <= storageNow()) return conflict()
       const { state: _state, text: _text, revision: _revision, ...source } = current
       // Destination, identity and ordinary chat draft are never part of this update.
       const next = storyReplyDraftRequest({ ...source, ...request.current }), payload = JSON.stringify(next)

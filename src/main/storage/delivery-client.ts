@@ -1,3 +1,4 @@
+import { serverClock } from '../network/server-clock'
 import { Worker } from 'node:worker_threads'
 import { join } from 'node:path'
 import type { DeliveryCommand } from './delivery-protocol'
@@ -98,7 +99,7 @@ export class DeliveryRepository {
         reject(new DeliveryCommandFailure('timeout'))
       }, carriesSource ? 60000 : 15000)
       this.pending.set(id, { resolve: value => resolve(value as T), reject, timer })
-      try { this.worker.postMessage({ id, command }) }
+      try { this.worker.postMessage({ id, command, clock: serverClock.offset() }) }
       catch (error) {
         clearTimeout(timer); this.pending.delete(id)
         recordDeliveryStep('post-failed', command.kind)

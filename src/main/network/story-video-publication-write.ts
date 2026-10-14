@@ -7,11 +7,12 @@ import { storyVideoPath } from '../media/story-video-upload-record'
 import { storageBucket } from '../media/media-document'
 import { object } from '../../shared/validation'
 import { tr } from '../../shared/i18n'
+import { serverNow } from './server-clock'
 export class StoryVideoPublicationFailure extends Error { constructor(readonly uncertain: boolean) { super(uncertain ? tr('스토리 게시 응답 미확인') : tr('스토리 게시를 시작하지 못했거나 서버가 거절했습니다.')) } }
 interface CommitClient { commit(request: WireObject, metadata: Metadata, options: { deadline: Date }, callback: (error: ServiceError | null, response: WireObject) => void): ClientUnaryCall }
 export async function writeStoryVideoPublication(client: CommitClient, auth: Metadata, uid: string, input: StoryVideoPublicationCommitRequest, signal: AbortSignal): Promise<void> {
   let request: StoryVideoPublicationCommitRequest
-  try { request = storyVideoPublicationCommitRequest(input); if (signal.aborted || request.intent.ownerId !== uid || request.time.expiresAt <= Date.now() || request.time.createdAt > Date.now() + 60000) throw new Error('Invalid story publication scope or time') }
+  try { request = storyVideoPublicationCommitRequest(input); if (signal.aborted || request.intent.ownerId !== uid || request.time.expiresAt <= serverNow() || request.time.createdAt > serverNow() + 60000) throw new Error('Invalid story publication scope or time') }
   catch { throw new StoryVideoPublicationFailure(false) }
   const { intent, time } = request, str = (value: string): WireObject => ({ stringValue: value }), at = (value: number): WireObject => ({ timestampValue: { seconds: String(Math.floor(value / 1000)), nanos: value % 1000 * 1000000 } })
   const fields: WireObject = { ownerType: str('user'), ownerId: str(uid), authorId: str(uid), mediaType: str('video'), durationSeconds: { doubleValue: intent.video.declaredDuration }, mediaURL: str(`gs://${storageBucket}/${storyVideoPath(uid, intent.id, 'video')}`), thumbnailURL: str(`gs://${storageBucket}/${storyVideoPath(uid, intent.id, 'poster')}`), caption: str(intent.caption), privacy: str(intent.privacy), createdAt: at(time.createdAt), expiresAt: at(time.expiresAt), hiddenFrom: { arrayValue: { values: intent.hiddenFrom.map(str) } }, viewerIds: { arrayValue: { values: [] } }, reactionByUid: { mapValue: { fields: {} } }, viewedAtByUid: { mapValue: { fields: {} } }, repostByUid: { mapValue: { fields: {} } }, forwardByUid: { mapValue: { fields: {} } } }

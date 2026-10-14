@@ -92,7 +92,8 @@ export function useDesktop<T>(select: (snapshot: DesktopSnapshot | null) => T, e
     cache.current = { source, select, value }
     return value
   }, [select, equal])
-  return useSyncExternalStore(desktop.subscribe, get)
+  // The same reading for markup drawn outside a window (a unit test's renderToStaticMarkup).
+  return useSyncExternalStore(desktop.subscribe, get, get)
 }
 
 export function useDesktopEvent(listener: (event: DesktopEvent) => void): void {

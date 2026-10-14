@@ -47,7 +47,8 @@ import { PlaybackBar } from './playback-bar'
 import { showDateJumpBox } from './date-jump-box'
 import { CategoryBar } from './category-bar'
 import { inCategory } from '../../../shared/forum'
-import { LocalMessageView, MessageView, type MessageLayout, type MessageMenuTarget } from './message'
+import { MessageView, type MessageLayout, type MessageMenuTarget } from './message'
+import { localChatMessage } from './local-media'
 import { isPressedItem, stillPressed, withPressed, type PressedSend } from './pressed-sends'
 import { appendedCount, reveal, revealAllowed } from './item-reveal'
 import { deleteMessage, overlayMessage, reconcileActions, reconcileMessages, toggleReaction, useMessageOverlay } from './message-overlay'
@@ -722,12 +723,16 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
               {layout.date && <div className="history-date"><button type="button" className="service-pill" title={tr('날짜로 이동')}
                 onClick={() => { if (dialog && !secret && historyReady) showDateJumpBox(accountUid, chatId, entry.time) }}>{serviceDate(entry.time)}</button></div>}
               {layout.unread && <div className="history-unread-bar">{tr('읽지 않은 메시지')}</div>}
+              {/* B409: one view for a message on its way and for its server copy (tdesktop HistoryItem::setRealId), so the
+                  answer changes the row's state and not the row (localChatMessage). */}
               {entry.kind === 'message'
                 ? <MessageView accountUid={accountUid} chatId={chatId} message={entry.message} own={entry.own} layout={layout} read={entry.own ? readState(entry.message) : 'sent'}
                   selecting={selection !== null} selected={selection?.includes(entry.message.id) ?? false} highlighted={highlight === entry.message.id}
                   autoTranslate={autoTranslateOn} onMenu={openMessageMenu} onReply={replyByDoubleClick} onJumpReply={jumpReply} onOpenMedia={openMedia} onToggle={toggleSelected} onReaction={react} />
-                : <LocalMessageView accountUid={accountUid} item={entry.item} layout={layout} onMenu={openLocalMenu}
-                  reply={entry.item.replyToId ? history.replyQuotes?.[entry.item.replyToId] ?? { state: 'loading' } : undefined} />}
+                : <MessageView accountUid={accountUid} chatId={chatId} message={localChatMessage(entry.item, accountUid, entry.item.replyToId ? history.replyQuotes?.[entry.item.replyToId] ?? { state: 'loading' } : undefined)}
+                  own layout={layout} read="sent" selecting={selection !== null} selected={false} highlighted={false} autoTranslate={autoTranslateOn}
+                  onMenu={openMessageMenu} onReply={replyByDoubleClick} onJumpReply={jumpReply} onOpenMedia={openMedia} onToggle={toggleSelected} onReaction={react}
+                  outgoing={{ item: entry.item, onMenu: openLocalMenu }} />}
             </div>
           })}
         </div>

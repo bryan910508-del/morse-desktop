@@ -11,6 +11,7 @@ import { mediaMetadata } from '../../shared/media-metadata'
 import { textDigest } from '../messaging/text-identity'
 import { stickerReferenceWire } from './sticker-reference-table'
 import { forwardWireSource } from '../../shared/channel-inquiries'
+import { storageNow } from './storage-clock'
 
 const hash = (value: unknown): string => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 export function forwardMediaDigest(media: PreparedForwardMedia): string {
@@ -45,12 +46,12 @@ export function insertForwardMedia(db: Database.Database, uid: string, request: 
     for (const target of request.targets) {
       const wire = stickerReferenceWire({ id: target.messageId, chatId: target.chatId, senderId: uid, type: 'sticker', text: '', mediaUrl: '', isSilent: media.isSilent,
         isEncrypted: false, protocolVersion: 3, isForwarded: true, forwardSource: forwardWireSource(request.source), stickerId: media.sticker.id, stickerKind: media.sticker.kind, ...(media.sticker.setId ? { stickerSetId: media.sticker.setId } : {}) }, uid)
-      reference.run(wire.id, wire.chatId, JSON.stringify(wire), textDigest(wire), Date.now(), request.id)
+      reference.run(wire.id, wire.chatId, JSON.stringify(wire), textDigest(wire), storageNow(), request.id)
     }
     return
   }
   const insertPart = db.prepare('INSERT INTO upload_parts(intent_id,part_index,descriptor,source) VALUES(?,?,?,?)')
-  const createdAt = Date.now(), first = media.parts[0]!
+  const createdAt = storageNow(), first = media.parts[0]!
   const metadata = mediaMetadata(media.metadata, media.kind, media.parts.length)
   for (const target of request.targets) {
     const wire: MediaSendWire = { id: target.messageId, chatId: target.chatId, senderId: uid, type: media.kind,

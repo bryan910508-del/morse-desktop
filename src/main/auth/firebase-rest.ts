@@ -12,6 +12,7 @@ export type ProviderIdentity = ({ provider: 'apple.com' } & AppleIdentity) | ({ 
 import { reachability } from '../network/reachability'
 import { describeThisDevice } from '../platform/device-model'
 import { decodeQrIssue, decodeQrRedeem, qrSwitchOn, type QrIssue, type QrRedeem } from './qr-login'
+import { serverClock, serverNow } from '../network/server-clock'
 
 function string(value: unknown, max = 16384): string {
   if (typeof value !== 'string' || !value || value.length > max) throw new AuthenticationFailure('protocol')
@@ -71,7 +72,7 @@ export class FirebaseAuthenticationAPI {
         .finally(() => bounded.removeEventListener('abort', cancel))
     })
     signal.throwIfAborted()
-    if (proof.appId !== this.config.appId || !Number.isFinite(proof.expiresAt) || proof.expiresAt <= Date.now() + 60000) {
+    if (proof.appId !== this.config.appId || !Number.isFinite(proof.expiresAt) || proof.expiresAt <= serverNow() + 60000) {
       throw new AuthenticationFailure('unavailable')
     }
     return { ...proof, token: string(proof.token) }
@@ -226,11 +227,13 @@ export class FirebaseAuthenticationAPI {
     if (components.length !== 3) throw new AuthenticationFailure('protocol')
     const claims = object(JSON.parse(Buffer.from(components[1]!, 'base64url').toString('utf8')))
     const authTime = Number(claims.morseAuthTime ?? claims.auth_time)
+    // B409-2: the token's issue time is the server's word on the time (server-clock.ts), before its end is checked.
+    serverClock.issued(claims.iat, Date.now())
     if (claims.sub !== uid || claims.aud !== this.config.projectId || claims.iss !== `https://securetoken.google.com/${this.config.projectId}` ||
-        !Number.isSafeInteger(authTime) || authTime <= 0 || !Number.isSafeInteger(claims.exp) || Number(claims.exp) * 1000 <= Date.now()) {
+        !Number.isSafeInteger(authTime) || authTime <= 0 || !Number.isSafeInteger(claims.exp) || Number(claims.exp) * 1000 <= serverNow()) {
       throw new AuthenticationFailure('protocol')
     }
-    return { idToken, refreshToken, uid, authTime, expiresAt: Math.min(Date.now() + lifetime * 1000, Number(claims.exp) * 1000) }
+    return { idToken, refreshToken, uid, authTime, expiresAt: Math.min(serverNow() + lifetime * 1000, Number(claims.exp) * 1000) }
   }
   private async confirmUser(tokens: AuthTokens, signal: AbortSignal): Promise<void> {
     const result = await this.request(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(this.config.apiKey)}`,

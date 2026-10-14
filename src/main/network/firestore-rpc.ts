@@ -98,6 +98,7 @@ import { GroupAnnouncementWriteFailure, writeGroupAnnouncement } from './group-a
 import { ProfileDisplayWriteFailure, writeProfileDisplay, type ProfileDisplayEdit } from './profile-display-write'
 import { tr } from '../../shared/i18n'
 import { ListenTargets } from './firestore-listen'
+import { serverNow } from './server-clock'
 export class ContactWriteFailure extends Error {
   constructor(readonly uncertain: boolean) { super(uncertain ? tr('연락처 저장 결과를 확인하지 못했습니다. 목록을 다시 확인해 주세요.') : tr('연락처를 저장하지 못했습니다. 연결과 권한을 확인해 주세요.')) }
 }
@@ -508,9 +509,9 @@ export class FirestoreReader {
       bounded.throwIfAborted(); validate()
       if (!doc || request.ownerId !== uid) throw new Error('Current own story missing')
       const current = ownStoryFromDocument(doc, uid, request.privacy), expiresAt = positionMilliseconds(current.expires)
-      if (current.version !== request.draft.baseVersion || current.caption !== request.draft.baseCaption || expiresAt <= Date.now()) throw new Error('Story changed or expired')
+      if (current.version !== request.draft.baseVersion || current.caption !== request.draft.baseCaption || expiresAt <= serverNow()) throw new Error('Story changed or expired')
       authorization = await this.auth.authorize(bounded, false); bounded.throwIfAborted(); validate()
-      if (expiresAt <= Date.now()) throw new Error('Story expired before commit')
+      if (expiresAt <= serverNow()) throw new Error('Story expired before commit')
     } catch { throw new StoryCaptionSaveFailure(false) }
     try { await writeStoryCaptionSave(this.client, metadata(authorization), uid, request, bounded) }
     catch (error) { throw error instanceof StoryCaptionSaveFailure ? error : new StoryCaptionSaveFailure(true) }
@@ -1163,7 +1164,7 @@ export class FirestoreReader {
         relisten()
         const authorization = await this.auth.authorize(bounded, force)
         if (!active()) return
-        const lifetime = authorization.expiresAt - Date.now() - 30000
+        const lifetime = authorization.expiresAt - serverNow() - 30000
         if (lifetime < 1000) throw new ReadFailure('permission')
         const renewAfter = Math.min(lifetime, 45 * 60000)
         stream = this.client.listen(metadata(authorization), { deadline: new Date(Date.now() + renewAfter + 30000) })
@@ -1238,7 +1239,7 @@ export class FirestoreReader {
       open: async (signal, force) => {
         const authorization = await this.auth.authorize(signal, force)
         signal.throwIfAborted()
-        const lifetime = authorization.expiresAt - Date.now() - 30000
+        const lifetime = authorization.expiresAt - serverNow() - 30000
         if (lifetime < 1000) throw new ReadFailure('permission')
         const renewAfter = Math.min(lifetime, 45 * 60000)
         return { stream: this.client.listen(metadata(authorization), { deadline: new Date(Date.now() + renewAfter + 30000) }), renewAfter }

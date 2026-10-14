@@ -14,6 +14,7 @@ import { maxAlbumPhotos } from '../../shared/uploads'
 import { maxQueuedMessages } from '../../shared/delivery'
 import { storageBucket } from '../media/media-document'
 import { textDigest, forwardSourceValid } from '../messaging/text-identity'
+import { storageNow } from './storage-clock'
 
 export function listUploadParts(db: Database.Database, id: string): UploadPart[] {
   const rows = db.prepare('SELECT part_index,descriptor,url FROM upload_parts WHERE intent_id=? ORDER BY part_index').all(id) as
@@ -124,7 +125,7 @@ export function executeUpload(db: Database.Database, uid: string, command: Uploa
     const originals = db.prepare('SELECT COALESCE(SUM(length(source)),0) AS size FROM upload_parts').get() as { size: number }
     if (count.count >= maxQueuedMessages || originals.size + size > 250 * 1024 * 1024) throw Object.assign(new Error('Upload capacity exceeded'), { deliveryCode: 'capacity' })
     db.prepare("INSERT INTO intents(id,chat_id,wire,digest,created_at,state,upload,source_digest,upload_request_digest) VALUES(?,?,?,?,?,'uploading',?,?,?)")
-      .run(wire.id, wire.chatId, JSON.stringify(wire), '', Date.now(), JSON.stringify(parts[0]!.upload), digest, receipt)
+      .run(wire.id, wire.chatId, JSON.stringify(wire), '', storageNow(), JSON.stringify(parts[0]!.upload), digest, receipt)
     const insert = db.prepare('INSERT INTO upload_parts(intent_id,part_index,descriptor,source) VALUES(?,?,?,?)')
     for (const [index, part] of parts.entries()) insert.run(wire.id, index, JSON.stringify(part.upload), Buffer.from(part.bytes.buffer, part.bytes.byteOffset, part.bytes.byteLength))
     // Consume only the reply bound to this enqueue; a separately typed text

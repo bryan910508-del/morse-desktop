@@ -9,6 +9,7 @@ import { storyHiddenFrom } from './story-hidden-audience'
 import { currentViewerReaction } from './contact-story-reaction'
 import { recordStoryStep } from '../platform/story-diagnostics'
 import { tr } from '../../shared/i18n'
+import { serverNow } from './server-clock'
 export class StoryReactionWriteFailure extends Error { constructor(readonly uncertain: boolean) { super(uncertain ? tr('반응 변경 결과 미확인') : tr('반응 변경을 시작하지 못했거나 서버가 거절했습니다.')) } }
 interface CommitClient {
   commit(request: WireObject, metadata: Metadata, options: { deadline: Date }, callback: (error: ServiceError | null, response: WireObject) => void): ClientUnaryCall
@@ -28,7 +29,7 @@ export async function writeStoryReaction(client: CommitClient, auth: Metadata, u
     if (request.viewerId !== uid || request.ownerId === uid) throw new Error('Viewer identity mismatch')
     if (story.name !== storyPath) throw new Error('Story lookup scope mismatch')
     const current = ownStoryFromDocument(story, request.ownerId, request.privacy)
-    if (positionMilliseconds(current.expires) !== request.expiresAt || request.expiresAt <= Date.now()) throw new Error('Story expired or replaced')
+    if (positionMilliseconds(current.expires) !== request.expiresAt || request.expiresAt <= serverNow()) throw new Error('Story expired or replaced')
     if (storyHiddenFrom(story).hiddenFrom.includes(uid)) throw new Error('Story hidden from this viewer')
     if (currentViewerReaction(story, uid, request.desired !== null).value !== request.original) throw new Error('Original reaction changed')
     // A quoted single UID segment cannot address another map entry.

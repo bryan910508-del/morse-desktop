@@ -43,9 +43,11 @@ function rowClass(own: boolean, layout: Pick<MessageLayout, 'top' | 'bottom'>, e
 function ReplyQuote({ preview, onOpen }: { preview: ReplyPreview; onOpen?(): void }) {
   // B354: an original deleted for everyone or for me is «삭제된 메시지», with no name or excerpt and nowhere to go —
   // tdesktop history_view_reply.cpp:715-725 (lng_deleted_message).
-  if (preview.state !== 'ready') return <div className="bubble-quote"><strong>{tr('답장')}</strong><span className="ellipsis">{preview.state === 'loading' ? tr('원본을 불러오는 중…') : preview.state === 'error' ? tr('원본을 확인하지 못했습니다.') : tr('삭제된 메시지')}</span></div>
-  if (!onOpen) return <div className="bubble-quote"><strong className="ellipsis">{preview.senderName}</strong><span className="ellipsis">{preview.text}</span></div>
-  return <button type="button" className="bubble-quote" onClick={event => { event.stopPropagation(); onOpen() }} title={tr('원본 메시지로 이동')}>
+  if (preview.state !== 'ready') return <button type="button" className="bubble-quote" aria-disabled tabIndex={-1} onClick={event => event.stopPropagation()}><strong>{tr('답장')}</strong><span className="ellipsis">{preview.state === 'loading' ? tr('원본을 불러오는 중…') : preview.state === 'error' ? tr('원본을 확인하지 못했습니다.') : tr('삭제된 메시지')}</span></button>
+  // B409: the same element whether it can open the original yet or not (a message on its way has nowhere to jump), so the
+  // server's copy keeps the quote the row already drew.
+  return <button type="button" className="bubble-quote" onClick={event => { event.stopPropagation(); onOpen?.() }} title={onOpen ? tr('원본 메시지로 이동') : undefined}
+    aria-disabled={onOpen ? undefined : true} tabIndex={onOpen ? undefined : -1}>
     {/* The quote is the original's own one-line preview and nothing else, as Telegram's is
         (HistoryView::Reply draws item->toPreview). ReplyContext.originalPreview already begins it with
         the kind's name, so naming the kind again here read «사진 · 사진 · 사진 설명». */}
@@ -408,7 +410,11 @@ export interface MessageViewProps {
   autoTranslate: boolean
   // B343b: where this bubble's translation is kept, when it is not the chat id (a 1:1 inquiry room's inquiryQueueChatId).
   translationRoom?: string
+  // B409: this device's message still on its way, drawn by this same view (`message` is localChatMessage of it); its
+  // state — sending, sent, failed, the upload's progress — and its own menu. The server's copy takes the same row.
+  outgoing?: OutgoingRow
 }
+export interface OutgoingRow { item: LocalOutgoing; onMenu(item: LocalOutgoing, point: { x: number; y: number }): void }
 
 // HistoryView::Message: bubble with Telegram geometry and Morse colors.
 export const MessageView = memo(function MessageView(props: MessageViewProps) {
@@ -437,7 +443,9 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
   }
   if (message.system) return <div className="history-service" data-message-id={message.id}><span className="service-pill selectable">{message.text || messageKindLabel(message.kind) || tr('시스템 메시지')}</span></div>
   const time = positionMilliseconds(message.position)
+  const local = props.outgoing?.item, failed = local ? deliveryFailed(local.state) : false
   const openMenu = (event: MouseEvent<HTMLElement>): void => {
+    if (local) { event.preventDefault(); props.outgoing!.onMenu(local, pointFor(event, event.currentTarget)); return }
     // While choosing, only a chosen message has a menu: «선택한 메시지 복사» (B53).
     if ((selecting && !selected) || message.encrypted) return
     const selection = window.getSelection()
@@ -464,8 +472,8 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
   const round = media && ((message.kind === 'video' && message.circular) || message.kind === 'sticker')
   // A bubble has room for the whole notice, and Telegram puts it in the message's own text; every other
   // place has one line, and gets the name (message-kinds.ts).
-  const plainLabel = !message.encrypted && message.kind !== 'text' && !media && !poll
-    ? (message.kind === 'unsupported' ? unsupportedMessageNotice() : messageKindLabel(message.kind)) : ''
+  const plainLabel = local?.voicePreview ? '' : !message.encrypted && message.kind !== 'text' && !media && !poll
+    ? (message.kind === 'unsupported' ? unsupportedMessageNotice() : messageKindLabel(message.kind)) : local && message.kind === 'text' && !message.text ? tr('첨부') : ''
   // A text message made only of emoji is drawn large with no bubble; a shared channel keeps the words before its
   // address and shows the channel as a card (iOS MorseChatManualTextBubble).
   const plainText = !message.encrypted && message.kind === 'text' && translated === null
@@ -481,7 +489,7 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
   // history_view_media_grouped.cpp:904-940): a photo or a video with no caption, reply, forward, story or sender's name
   // is its own bubble — rounded, the time over it — not a picture inside one.
   const bare = mediaOnly && !message.encrypted && (message.kind === 'image' || (message.kind === 'video' && !message.circular)) &&
-    !message.reply && !message.forward && !message.storySource && !(layout.name && !own && message.senderName)
+    !message.reply && !message.forward && !message.storySource && !local?.forwarded && !local?.storyReply && !(layout.name && !own && message.senderName)
   // ChatMessageDateAndStatusNode: under reactions the date joins their LAST row when that row's width and the date's
   // fit the bubble (`currentRowWidth + dateWidth <= constrainedWidth`), whatever the number of rows, and goes below
   // otherwise — the date is the row's last item, pushed to its end. A picture alone and a sticker keep theirs on it.
@@ -491,12 +499,18 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
   const meta = <span className={`bubble-meta${inlineMeta ? ' inline' : ''}`}>
     {message.edited && !emojiOnly && <span>{tr('수정됨')}</span>}
     <time dateTime={new Date(time).toISOString()}>{messageTime(time)}</time>
-    {own && (read === 'read' ? <ReadMark /> : <Check size={15} aria-label={tr('보냄')} />)}
+    {local ? (failed ? <CircleAlert size={14} aria-label={tr('전송 실패')} /> : local.state === 'sent' ? <Check size={15} aria-label={tr('보냄')} />
+      : <Clock3 size={13} aria-label={local.state === 'uploading' ? tr('업로드 중') : tr('보내는 중')} />)
+      : own && (read === 'read' ? <ReadMark /> : <Check size={15} aria-label={tr('보냄')} />)}
   </span>
-  return <div className={rowClass(own, layout, `${selected ? ' selected' : ''}${highlighted ? ' highlight' : ''}${selecting ? ' selecting' : ''}`)}
-    data-message-id={message.id} onContextMenu={openMenu} onClick={selecting ? () => props.onToggle(message) : undefined}
-    onDoubleClick={event => { if (!selecting && !message.encrypted && (event.target as HTMLElement).closest('.bubble') && !onMessageText(event.target, event.clientX, event.clientY)) { window.getSelection()?.removeAllRanges(); props.onReply(message) } }}>
+  // A medium on its way carries the ring of its upload (B269); nothing for the server's copy.
+  const going = local ? !failed && local.state !== 'sent' && (local.state === 'uploading' || Boolean(local.progress)) : false
+  const sending = local ? { progress: sendingProgress(local.progress), going } : undefined
+  return <div className={rowClass(own, layout, `${selected ? ' selected' : ''}${highlighted ? ' highlight' : ''}${selecting ? ' selecting' : ''}${failed ? ' failed' : ''}`)}
+    data-message-id={local ? undefined : message.id} data-local-id={local ? message.id : undefined} onContextMenu={openMenu} onClick={selecting && !local ? () => props.onToggle(message) : undefined}
+    onDoubleClick={event => { if (!local && !selecting && !message.encrypted && (event.target as HTMLElement).closest('.bubble') && !onMessageText(event.target, event.clientX, event.clientY)) { window.getSelection()?.removeAllRanges(); props.onReply(message) } }}>
     {selecting && <span className="history-check"><RoundCheck checked={selected} /></span>}
+    {failed && <button type="button" className="history-failed" aria-label={tr('보내지 못한 메시지 메뉴')} onClick={event => props.outgoing!.onMenu(local!, pointFor(event, event.currentTarget))}><CircleAlert size={22} /></button>}
     {/* B266 — tdesktop Element::fromLink / fromPhotoLink (history_view_element.cpp:2458-2493, .h:725-727): the sender's
         name and picture in a group open them as a person. Not in a channel's discussion room, which shows its owner by
         the room's name and its people by the room's own copies only (iOS MorseGroupChatSenderDisplay). */}
@@ -507,24 +521,28 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
     <div className={`bubble${message.encrypted ? ' encrypted' : ''}${mediaOnly ? ' media-only' : ''}${overMedia ? ' info-over' : ''}${bare ? ' bare' : ''}${round ? ' round' : ''}${emojiOnly ? ' emoji-only' : ''}${card?.url ? ' has-link-card' : ''}`}>
       {layout.name && !own && message.senderName && (selecting || message.system || layout.roomOnly ? <div className="bubble-name ellipsis">{message.senderName}</div>
         : <button type="button" className="bubble-name ellipsis" onClick={event => { event.stopPropagation(); controller.openPersonInfo(message.senderId, message.senderName ?? '') }}>{message.senderName}</button>)}
-      {!message.encrypted && message.forward && <ForwardedHeader accountUid={accountUid} forward={message.forward} disabled={selecting} />}
-      {!message.encrypted && message.storySource && <StorySource source={message.storySource} />}
-      {!message.encrypted && message.reply && <ReplyQuote preview={message.reply} onOpen={() => props.onJumpReply(message)} />}
-      {media && (overMedia ? <div className="bubble-media"><Attachments accountUid={accountUid} chatId={chatId} message={message} own={own} onOpen={props.onOpenMedia} />{meta}</div>
-        : <Attachments accountUid={accountUid} chatId={chatId} message={message} own={own} onOpen={props.onOpenMedia} />)}
+      {/* B263: the server names the original's sender by their privacy (forwardInfo); until it has, the header says only
+          that it is a forward, in the place and look the confirmed one takes. */}
+      {local?.forwarded ? <div className="bubble-forward ellipsis">{tr('전달된 메시지')}</div> : !message.encrypted && message.forward && <ForwardedHeader accountUid={accountUid} forward={message.forward} disabled={selecting} />}
+      {local?.storyReply ? <div className="bubble-label">{tr('스토리 답장')}</div> : !message.encrypted && message.storySource && <StorySource source={message.storySource} />}
+      {!message.encrypted && message.reply && <ReplyQuote preview={message.reply} onOpen={local ? undefined : () => props.onJumpReply(message)} />}
+      {local?.voicePreview ? <div className="voice-message own local"><QueuedVoicePlay accountUid={accountUid} item={local} /><span className="voice-message-body"><small>{tr('음성 메시지 · {0}', [formatDuration(local.voicePreview.duration)])}</small></span></div>
+        : media && (overMedia ? <div className="bubble-media"><Attachments accountUid={accountUid} chatId={chatId} message={message} own={own} onOpen={local ? () => {} : props.onOpenMedia} local={sending} />{meta}</div>
+        : <Attachments accountUid={accountUid} chatId={chatId} message={message} own={own} onOpen={local ? () => {} : props.onOpenMedia} local={sending} />)}
       {poll && <PollCard accountUid={accountUid} message={message} poll={poll} />}
       {memo ? <div className="bubble-memo selectable">
         {memo.title.trim() && <strong><NotebookPen size={14} aria-hidden />{memo.title.trim()}{!memo.body && metaSpace}</strong>}
         {/* The date sits at the bubble's end, so the room it needs belongs to the note's last line. */}
         {memo.body ? <span>{memo.body}{metaSpace}</span> : !memo.title.trim() && metaSpace}
       </div>
-        : emojiBody ? emojiBody : (text || plainLabel || !media) && <div className="bubble-text selectable">{plainLabel ? <em className={message.kind === 'unsupported' ? 'unsupported' : undefined}>{plainLabel}</em> : message.encrypted ? text : <LinkedText accountUid={accountUid} text={shown} disabled={selecting} />}{!card?.url && !inlineMeta && <span className={`bubble-meta-space${message.edited ? ' edited' : ''}${own ? ' own' : ''}`} />}</div>}
+        : emojiBody ? emojiBody : !local?.voicePreview && (text || plainLabel || !media) && <div className="bubble-text selectable">{plainLabel ? <em className={message.kind === 'unsupported' ? 'unsupported' : undefined}>{plainLabel}</em> : message.encrypted ? text : <LinkedText accountUid={accountUid} text={shown} disabled={selecting} />}{!card?.url && !inlineMeta && <span className={`bubble-meta-space${message.edited ? ' edited' : ''}${own ? ' own' : ''}`} />}</div>}
       {card?.url && <LinkCard accountUid={accountUid} text={message.text} disabled={selecting} />}
       {/* B113: a sign-in this person may not have made leads to where its session ends (A13-5 §3-4 «기기 관리»). */}
       {message.notice && systemNoticeShortcut(message.notice) === 'sessions' && <button type="button" className="bubble-notice-action" disabled={selecting}
         onClick={event => { event.stopPropagation(); showSessionsBox(accountUid) }}>{tr('기기 관리')}</button>}
       {message.notice && systemNoticeShortcut(message.notice) === 'two-step' && <button type="button" className="bubble-notice-action" disabled={selecting}
         onClick={event => { event.stopPropagation(); showTwoStepBox(accountUid) }}>{tr('2단계 인증')}</button>}
+      {!media && local?.progress && <div className="bubble-progress" role="progressbar" aria-valuenow={Math.round(100 * (sendingProgress(local.progress) ?? 0))} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${Math.round(100 * (sendingProgress(local.progress) ?? 0))}%` }} /></div>}
       {!inlineMeta && !overMedia && meta}
       {message.reactions.length > 0 && <div className="bubble-reactions">{message.reactions.slice(0, 20).map(reaction => {
         // Telegram and iOS MorseReactionButton: one to three people show as small photos instead of a number.
@@ -537,6 +555,7 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
         </button>
       })}{inlineMeta && meta}</div>}
     </div>
+    {failed && local?.reason && <div className="history-failed-reason">{local.reason}</div>}
   </div>
 })
 
@@ -546,39 +565,3 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
 function emojiOnlyBody(text: string): ReactElement | null {
   return emojiOnlyText(text) ? <div className="bubble-emoji selectable" style={{ fontSize: emojiOnlyFontSize(text) }}>{text.trim()}</div> : null
 }
-export const LocalMessageView = memo(function LocalMessageView({ accountUid, item, layout, onMenu, reply }: { accountUid: string; item: LocalOutgoing; layout: MessageLayout; onMenu(item: LocalOutgoing, point: { x: number; y: number }): void; reply?: ReplyPreview }) {
-  const failed = deliveryFailed(item.state)
-  // B269: a medium on its way is drawn as the message the server's copy will be (local-media.ts), the ring over it while
-  // it goes up (tdesktop draws the local message with its media — api_sending.cpp:1227-1240; history_view_photo.cpp:366-373).
-  const media = localMediaMessage(item)
-  const caption = media?.caption?.trim() ? media.caption : ''
-  const round = media !== null && (media.kind === 'sticker' || (media.kind === 'video' && media.circular))
-  // A message on its way takes the shape its server copy will (B317): a lone photo or video with no caption, reply or
-  // forward has no bubble, and the time sits on a picture, a video or a sticker.
-  const overMedia = media !== null && !caption && infoOverMedia(media.kind)
-  const bare = overMedia && !round && media.kind !== 'sticker' && !item.replyToId && !item.forwarded && !item.storyReply
-  const going = !failed && item.state !== 'sent' && (item.state === 'uploading' || Boolean(item.progress))
-  const local = { progress: sendingProgress(item.progress), going }
-  const emojiBody = !media && !item.voicePreview && item.text ? emojiOnlyBody(item.text) : null
-  const localMeta = <span className="bubble-meta">
-    <time>{messageTime(item.createdAt)}</time>
-    {failed ? <CircleAlert size={14} aria-label={tr('전송 실패')} /> : item.state === 'sent' ? <Check size={15} aria-label={tr('보냄')} /> : <Clock3 size={13} aria-label={item.state === 'uploading' ? tr('업로드 중') : tr('보내는 중')} />}
-  </span>
-  return <div className={rowClass(true, layout, failed ? ' failed' : '')} onContextMenu={event => { event.preventDefault(); onMenu(item, pointFor(event, event.currentTarget)) }}>
-    {failed && <button type="button" className="history-failed" aria-label={tr('보내지 못한 메시지 메뉴')} onClick={event => onMenu(item, pointFor(event, event.currentTarget))}><CircleAlert size={22} /></button>}
-    <div className={`bubble${media && !caption ? ' media-only' : ''}${overMedia ? ' info-over' : ''}${bare ? ' bare' : ''}${round ? ' round' : ''}${emojiBody ? ' emoji-only' : ''}`}>
-      {/* B263: the server names the original's sender by their privacy (forwardInfo); until it has, the header says only
-          that it is a forward, in the place and look the confirmed one takes. */}
-      {item.forwarded ? <div className="bubble-forward ellipsis">{tr('전달된 메시지')}</div> : item.storyReply && <div className="bubble-label">{tr('스토리 답장')}</div>}
-      {item.replyToId && reply && <ReplyQuote preview={reply} />}
-      {media ? (overMedia ? <div className="bubble-media"><Attachments accountUid={accountUid} chatId={item.chatId} message={media} own onOpen={() => {}} local={local} />{localMeta}</div>
-        : <Attachments accountUid={accountUid} chatId={item.chatId} message={media} own onOpen={() => {}} local={local} />)
-        : item.voicePreview ? <div className="voice-message own local"><QueuedVoicePlay accountUid={accountUid} item={item} /><span className="voice-message-body"><small>{tr('음성 메시지 · {0}', [formatDuration(item.voicePreview.duration)])}</small></span></div>
-        : emojiBody ?? <div className="bubble-text selectable">{item.text || tr('첨부')}<span className="bubble-meta-space own" /></div>}
-      {media && caption && <div className="bubble-text selectable">{caption}<span className="bubble-meta-space own" /></div>}
-      {!media && item.progress && <div className="bubble-progress" role="progressbar" aria-valuenow={Math.round(100 * (sendingProgress(item.progress) ?? 0))} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${Math.round(100 * (sendingProgress(item.progress) ?? 0))}%` }} /></div>}
-      {!overMedia && localMeta}
-    </div>
-    {failed && item.reason && <div className="history-failed-reason">{item.reason}</div>}
-  </div>
-})

@@ -1,4 +1,4 @@
-import type { ChatMessage } from '../../../shared/model'
+import type { ChatMessage, ReplyPreview } from '../../../shared/model'
 import type { LocalOutgoing } from '../../../shared/delivery'
 import { positionAt } from '../../../shared/model'
 
@@ -18,6 +18,16 @@ export function localMediaMessage(item: Pick<LocalOutgoing, 'id' | 'chatId' | 'm
     // from SendingMedia by the message id and nothing on the server matches.
     mediaMetadata: media.metadata, circular: media.circular === true, position: positionAt(item.createdAt, item.id), version: localMediaVersion,
     serverConfirmed: false, encrypted: false, silent: false, state: 'sent', readEligible: false, edited: false, system: false, reactions: [] } as ChatMessage
+}
+// B409 (tdesktop HistoryItem::setRealId, history_item.cpp:3309-3341: the item being sent and the one the server confirms
+// are the same item, its id changed and repainted): every message on its way — text, emoji, media, a voice message — is
+// the ChatMessage its server copy will be, drawn by the one MessageView, so the answer changes its state and not its row.
+export function localChatMessage(item: LocalOutgoing, senderId: string, reply?: ReplyPreview): ChatMessage {
+  const media = localMediaMessage(item)
+  const base: ChatMessage = media ?? { id: item.id, chatId: item.chatId, senderId, kind: item.voicePreview ? 'voice' : 'text', text: item.voicePreview ? '' : item.text,
+    attachments: [], position: positionAt(item.createdAt, item.id), version: localMediaVersion, serverConfirmed: false, encrypted: false, silent: false,
+    state: 'sent', readEligible: false, edited: false, system: false, reactions: [] } as ChatMessage
+  return { ...base, senderId, ...(reply ? { reply } : {}) }
 }
 // How far the message's media has gone up, 0 to 1, or null while it waits (tdesktop's radial: uploadingData offset/size,
 // data_photo.cpp:223-233).

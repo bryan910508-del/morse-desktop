@@ -27,7 +27,9 @@ function emit(): void { for (const listener of listeners) listener() }
 function subscribe(listener: () => void): () => void { listeners.add(listener); return () => { listeners.delete(listener) } }
 
 export function useTranslation(accountUid: string, chatId: string, messageId: string): TranslationState | null {
-  return useSyncExternalStore(subscribe, () => states.get(keyOf(accountUid, chatId, messageId)) ?? null)
+  const get = (): TranslationState | null => states.get(keyOf(accountUid, chatId, messageId)) ?? null
+  // The same reading for markup drawn outside a window (a unit test's renderToStaticMarkup).
+  return useSyncExternalStore(subscribe, get, get)
 }
 export function translationShown(accountUid: string, chatId: string, messageId: string, source: string, auto: boolean): boolean {
   const state = states.get(keyOf(accountUid, chatId, messageId))

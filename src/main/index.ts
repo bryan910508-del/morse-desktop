@@ -205,6 +205,7 @@ import { reachability, watchSystemOnline } from './network/reachability'
 import { recordConnectionStep } from './platform/connection-diagnostics'
 import { answerAfterPublish, answerWhenListed } from './platform/chat-opening'
 import { channelOperationId, channelOperationRequest } from '../shared/channel-operations'
+import { serverClock } from './network/server-clock'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'morse', privileges: {
   standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true
@@ -419,6 +420,7 @@ async function snapshot(): Promise<DesktopSnapshot> {
     platformIntegration: desktopShell.status(),
     onDevice: onDeviceFeatures(process.platform, release(), { translate: translator.usable, media: mediaHelper.usable }),
     translationRoute: appLocked ? 'none' : translationRouteOf(active),
+    serverClockOffset: serverClock.offset(),
     swipeBack: swipeBackEnabled(),
     accounts: profiles, activeAccountUid: active?.profile.uid ?? null, selfProfile: appLocked ? null : selfProfile, contacts: appLocked ? null : active?.contactsSnapshot() ?? null,
     channels: screenLocked ? null : active?.channels.snapshot ?? null,
@@ -3496,6 +3498,8 @@ else {
     desktopShell.initialize()
     notifications.initialize()
     applyTheme()
+    // B409-2: the window dates a message it is sending with the server's time.
+    serverClock.subscribe(() => { void publish() })
     nativeTheme.on('updated', () => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.setBackgroundColor(windowBackground())
       void publish()

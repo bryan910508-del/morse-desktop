@@ -4,6 +4,7 @@ import type Database from 'better-sqlite3-multiple-ciphers'
 import type { PendingStoryVideoPublication } from '../../shared/story-video-publication'
 import { storyPublicationTime, type StoryPublicationTime } from '../../shared/story-publication-commit'
 import { storedStoryComposerDraft } from './story-composer-drafts'
+import { storageNow } from './storage-clock'
 export type StoryVideoCommitCommand = { kind: 'story-video-publication-submit'; id: string } | { kind: 'story-video-publication-outcome'; id: string; outcome: 'confirmed' | 'rejected' }
 const fail = (): never => { throw Object.assign(new Error('Video publication or source draft changed'),{ deliveryCode:'conflict' }) }
 export function readStoryVideoTime(db: Database.Database,id: string): StoryPublicationTime | null { const row = db.prepare('SELECT created_at AS createdAt,expires_at AS expiresAt FROM story_video_commits WHERE publication_id=?').get(id); return row ? storyPublicationTime(row) : null }
@@ -18,7 +19,7 @@ export function mutateStoryVideoCommit(db: Database.Database,current: PendingSto
   if (command.kind === 'story-video-publication-submit') {
     if (current.state !== 'uploaded' || current.time || readStoryVideoTime(db,current.id)) return fail()
     requireDraft(db,current)
-    const createdAt = Date.now(), time = storyPublicationTime({ createdAt,expiresAt:createdAt+86400000 })
+    const createdAt = storageNow(), time = storyPublicationTime({ createdAt,expiresAt:createdAt+86400000 })
     db.prepare('INSERT INTO story_video_commits(publication_id,created_at,expires_at) VALUES(?,?,?)').run(current.id,time.createdAt,time.expiresAt)
     db.prepare("UPDATE story_video_publications SET state='submitted' WHERE id=?").run(current.id)
   } else {

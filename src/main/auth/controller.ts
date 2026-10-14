@@ -28,6 +28,7 @@ import { endingOutcome, type EndingSession } from './session-enders'
 import { tr } from '../../shared/i18n'
 import { TwoStepApi } from '../api/two-step'
 import { passPassword as runPasswordStep, profileAfterPassword, type PasswordAction, type PasswordPassed } from './password-gate'
+import { serverNow } from '../network/server-clock'
 
 // A Curve25519 key pair in the base64 form iOS CryptoService stores and the server keeps as publicKey.
 function newKeypair(): { publicKey: string; privateKey: string } {
@@ -713,7 +714,7 @@ export class AuthenticationController {
   }
   private async idToken(owner: CredentialOwner, force: boolean): Promise<string> {
     if (this.owner !== owner || owner.controller.signal.aborted) throw new AuthenticationFailure('cancelled')
-    if (!force && owner.tokens.expiresAt > Date.now() + 60000) return owner.tokens.idToken
+    if (!force && owner.tokens.expiresAt > serverNow() + 60000) return owner.tokens.idToken
     if (owner.refresh) return owner.refresh
     const task = (async () => {
       const tokens = await this.requireAPI().refresh(owner.tokens.refreshToken, owner.record.profile.uid, owner.record.authTime, owner.controller.signal)
@@ -807,7 +808,7 @@ export class AuthenticationController {
         const signal = AbortSignal.any([this.logoutAbort.signal, AbortSignal.timeout(35000)])
         try {
           // A token about to run out is renewed first: an expired one would only be refused as unauthenticated.
-          const idToken = owner.tokens.expiresAt > Date.now() + 60000 ? owner.tokens.idToken
+          const idToken = owner.tokens.expiresAt > serverNow() + 60000 ? owner.tokens.idToken
             : (await this.api.refresh(owner.record.refreshToken, owner.record.profile.uid, owner.record.authTime, signal)).idToken
           await this.api.signOutSession(idToken, owner.record.sessionId, signal)
         } catch (error) { remoteFailed = true; endLater = endingOutcome(error) === 'later' }

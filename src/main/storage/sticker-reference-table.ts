@@ -5,6 +5,7 @@ import { maxQueuedMessages } from '../../shared/delivery'
 import { identifier } from '../../shared/validation'
 import { textDigest, forwardSourceValid } from '../messaging/text-identity'
 import { requireReply } from './reply-draft-table'
+import { storageNow } from './storage-clock'
 
 // B195: a sticker queued as a reference to the server's copy (tdesktop SendExistingDocument → MTP_inputMediaDocument,
 // api_sending.cpp:701-716) — no bytes, no upload; the server fills mediaUrl from stickerFiles/{stickerId}. The queue
@@ -37,7 +38,7 @@ export function executeStickerReference(db: Database.Database, uid: string, comm
     const count = db.prepare('SELECT COUNT(*) AS count FROM intents WHERE wire IS NOT NULL').get() as { count: number }
     if (count.count >= maxQueuedMessages) throw Object.assign(new Error('Outbox full'), { deliveryCode: 'capacity' })
     db.prepare("INSERT INTO intents(id,chat_id,wire,digest,created_at,state) VALUES(?,?,?,?,?,'queued')")
-      .run(wire.id, wire.chatId, JSON.stringify(wire), digest, Date.now())
+      .run(wire.id, wire.chatId, JSON.stringify(wire), digest, storageNow())
     if (command.reply) db.prepare('DELETE FROM reply_drafts WHERE chat_id=? AND selection_id=?').run(wire.chatId, command.reply.selectionId)
   })()
   return null

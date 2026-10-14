@@ -22,10 +22,12 @@ export function revealAllowed(atBottom: boolean, visible: boolean, reducedMotion
   return atBottom && visible && !reducedMotion
 }
 export const easeOutCirc = (t: number): number => Math.sqrt(1 - (t - 1) ** 2)
-// The height still hidden at a moment of a rise of `height` that started at `start` (ms).
+// The height still hidden at a moment of a rise of `height` that started at `start` (ms). B409-3: not rounded — the rise
+// is the row's measured height (a fraction of a pixel at 125 % or 150 %), and a rounded one hid a little more than the
+// row at the start and let the list step the difference.
 export function remainingAt(height: number, start: number, now: number): number {
   const t = Math.min(1, Math.max(0, (now - start) / itemRevealMs))
-  return Math.round(height * (1 - easeOutCirc(t)))
+  return t >= 1 ? 0 : height * (1 - easeOutCirc(t))
 }
 
 // Starts the rise, adding to what a rise still running has left (tdesktop adds the new height to _itemsRevealHeight).

@@ -166,7 +166,7 @@ button.bubble-forward:hover { text-decoration: underline }
 }
 .bubble-quote strong { display: flex; align-items: center; gap: 4px; min-width: 0; font-weight: 600; color: var(--accent) }
 .bubble-quote span { opacity: .86 }
-button.bubble-quote:hover { background: var(--accent-border) }
+button.bubble-quote:hover:not([aria-disabled=true]) { background: var(--accent-border) }
 .history-message.own .bubble-quote { border-left-color: #fff; background: rgb(255 255 255 / .16) }
 .history-message.own .bubble-quote strong { color: #fff }
 

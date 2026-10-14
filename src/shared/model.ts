@@ -385,6 +385,8 @@ export interface DesktopSnapshot {
   onDevice: import('./translation').OnDeviceFeatures
   // B343: where a translation is made now — this device, the server (its switch on), or none.
   translationRoute: import('./translation').TranslationRoute
+  // B409-2: the server's time minus this computer's, in ms (main server-clock.ts); a message on its way is dated with it.
+  serverClockOffset?: number
   // B58: whether a two-finger swipe may go back (the Mac's «Swipe between pages»; always on elsewhere).
   swipeBack: boolean
   selfProfile: ProfileSnapshot | null

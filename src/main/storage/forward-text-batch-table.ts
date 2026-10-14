@@ -5,6 +5,7 @@ import { outgoingText } from '../../shared/validation'
 import { maxQueuedMessages } from '../../shared/delivery'
 import type { TextSendWire } from '../../shared/model'
 import { textDigest } from '../messaging/text-identity'
+import { storageNow } from './storage-clock'
 
 export type ForwardTextBatchCommand =
   | { kind: 'forward-texts-known'; request: TextForwardBatchRequest }
@@ -25,7 +26,7 @@ export function executeForwardTexts(db: Database.Database, uid: string, command:
     if (count.count + request.sources.length * request.targets.length > maxQueuedMessages) throw Object.assign(new Error('Forward batch capacity'), { deliveryCode: 'capacity' })
     for (const target of request.targets) for (const id of target.messageIds) if (db.prepare('SELECT 1 FROM intents WHERE id=?').get(id)) throw conflict()
     const insert = db.prepare("INSERT INTO intents(id,chat_id,wire,digest,created_at,state,forward_operation_id) VALUES(?,?,?,?,?,'queued',?)")
-    const now = Date.now()
+    const now = storageNow()
     for (const target of request.targets) for (const [index, source] of command.content.entries()) {
       const wire: TextSendWire = { id: target.messageIds[index]!, chatId: target.chatId, senderId: uid, type: 'text',
         text: source.text, isSilent: source.isSilent, isEncrypted: false, protocolVersion: 3 }

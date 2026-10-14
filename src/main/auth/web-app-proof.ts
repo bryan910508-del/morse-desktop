@@ -8,16 +8,21 @@ import { AuthenticationFailure, ProofWaiting, type AppCheckProof, type DesktopAp
 import type { ProofTokenStore } from './proof-token-store'
 import { tr } from '../../shared/i18n'
 import { reachability } from '../network/reachability'
+import { serverClock, serverNow } from '../network/server-clock'
 
 // The App Check token's claims must name this Web App and the Morse project and stay within the TTL.
-function proofFromToken(token: string, appId: string): AppCheckProof {
+// `fresh`: just issued (an exchange's answer), not one kept from an earlier run — only that one tells the time.
+function proofFromToken(token: string, appId: string, fresh: boolean): AppCheckProof {
   const parts = token.split('.')
   if (token.length > 16384 || parts.length !== 3) throw new Error('Malformed proof')
   const claims = JSON.parse(Buffer.from(parts[1]!, 'base64url').toString('utf8')) as Record<string, unknown>
   const expiresAt = Number(claims.exp) * 1000
+  // B409-2: the proof's issue time sets the clock first (server-clock.ts), so a computer whose clock is behind does not
+  // read a proof just issued as one that lasts too long («Mismatched proof» before any send could correct it).
+  if (fresh) serverClock.issued(claims.iat, Date.now())
   if (claims.sub !== appId || claims.iss !== 'https://firebaseappcheck.googleapis.com/123713400904' ||
       !Array.isArray(claims.aud) || !claims.aud.includes('projects/123713400904') ||
-      !Number.isSafeInteger(claims.exp) || expiresAt <= Date.now() + 120000 || expiresAt > Date.now() + 3900000) throw new Error('Mismatched proof')
+      !Number.isSafeInteger(claims.exp) || expiresAt <= serverNow() + 120000 || expiresAt > serverNow() + 3900000) throw new Error('Mismatched proof')
   return { token, expiresAt, appId }
 }
 
@@ -138,12 +143,12 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
     this.stored ??= (async () => {
       const token = await this.store?.read().catch(() => null)
       if (!token || this.cached) return
-      try { this.cached = proofFromToken(token, this.appId) } catch { /* expired or foreign proof */ }
+      try { this.cached = proofFromToken(token, this.appId, false) } catch { /* expired or foreign proof */ }
     })()
     await this.stored
     if (signal.aborted) throw new AuthenticationFailure('cancelled')
-    if (this.cached && this.cached.expiresAt > Date.now() + usableUntilBefore) {
-      if (this.cached.expiresAt <= Date.now() + renewBefore) this.renewAhead()
+    if (this.cached && this.cached.expiresAt > serverNow() + usableUntilBefore) {
+      if (this.cached.expiresAt <= serverNow() + renewBefore) this.renewAhead()
       return this.cached
     }
     let flight = this.flight
@@ -196,7 +201,7 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
       try {
         const token = await ask(signal)
         if (!token) continue
-        const proof = proofFromToken(token, this.appId)
+        const proof = proofFromToken(token, this.appId, true)
         this.cached = proof; void this.store?.save(proof)
         void recordProofTiming('session', Date.now() - started, this.platform)
         return proof
@@ -359,7 +364,7 @@ export class HostedWebAppProof implements DesktopAppProofProvider {
         if (data.kind !== 'token' || data.appId !== this.appId || typeof data.token !== 'string' || data.token.length > 16384) {
           fail('invalid-response', data.kind === 'token' && data.appId !== this.appId ? 'App ID mismatch' : 'unexpected message'); return
         }
-        try { finish(proofFromToken(data.token, this.appId)) } catch { fail('invalid-response', 'token claims') }
+        try { finish(proofFromToken(data.token, this.appId, true)) } catch { fail('invalid-response', 'token claims') }
       }
       const deadline = setTimeout(() => fail('timeout', `${visible ? 'visible' : 'hidden'} ${deadlineMs / 1000}s`), deadlineMs)
       ipcMain.on('morse:app-proof', receive)

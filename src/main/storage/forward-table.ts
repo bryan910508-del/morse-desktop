@@ -8,6 +8,7 @@ import { textDigest } from '../messaging/text-identity'
 import type { PreparedForwardMedia } from './forward-media-protocol'
 import { forwardMediaDigest, insertForwardMedia } from './forward-media-table'
 import { forwardWireSource } from '../../shared/channel-inquiries'
+import { storageNow } from './storage-clock'
 
 export type ForwardCommand =
   | { kind: 'forward-known'; request: ForwardRequest }
@@ -38,7 +39,7 @@ export function executeForward(db: Database.Database, uid: string, command: Forw
       return
     }
     const insert = db.prepare("INSERT INTO intents(id,chat_id,wire,digest,created_at,state,forward_operation_id) VALUES(?,?,?,?,?,'queued',?)")
-    const createdAt = Date.now()
+    const createdAt = storageNow()
     for (const target of request.targets) {
       // The existing server contract carries a new text message, with no
       // source-author identity, source reply, reactions or source attachment URL.

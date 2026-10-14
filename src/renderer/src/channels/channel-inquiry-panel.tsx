@@ -24,7 +24,9 @@ import { UserAvatar } from '../ui/user-avatar'
 import { ActionRow, ContactProfile } from '../info/info-panel'
 import { showReportBox } from '../boxes/report-box'
 import { Avatar, PeerAvatar } from '../ui/avatar'
-import { LocalMessageView, MessageView, type MessageLayout } from '../history/message'
+import { MessageView, type MessageLayout } from '../history/message'
+import { localChatMessage } from '../history/local-media'
+import { historyEntries } from '../history/history-entries'
 import { chooseDeletion, hideAnswered, ReactionStrip, saveAttachment, saveSticker, showInFolderItem } from '../history/history-widget'
 import { EntityPanel } from '../history/entity-panel'
 import type { LocalOutgoing } from '../../../shared/delivery'
@@ -101,7 +103,7 @@ function EditMessageBox({ initial, close, save }: { initial: string; close(): vo
 // An inquiry room is drawn with the chat's own message view (HistoryView::Message) - text, photos, videos,
 // video messages, voice messages and files alike - so it looks and behaves exactly as a chat does. iOS sends
 // all of them here (ChannelInquiryChatView). A location or an event keeps its title as the message text.
-// A message being sent, drawn as a chat draws one of its own on the way (LocalMessageView).
+// A message being sent, drawn as a chat draws one of its own on the way (MessageView with its outgoing state, B409).
 // One that did not go stays where it was, marked, until it is sent again or deleted (HistoryMessage failed state,
 // iOS «다시 보내기»); only the message's own id goes again, so the server keeps one copy of it.
 function inquiryLocal(entry: PendingEntry, inquiryId: string): LocalOutgoing {
@@ -324,6 +326,10 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
     const message = inquiryChatMessage(item, inquiryId), overlay = reacting[item.id]
     return { item, message: overlay ? { ...message, reactions: overlay.reactions } : message, layout }
   }), [items, inquiryId, reacting])
+  // The room's rows and those on their way in the chat's one order (history-entries.ts).
+  const rowById = new Map(rows.map(row => [row.item.id, row])), waitingById = new Map(waiting.map(entry => [entry.id, entry]))
+  const ordered = historyEntries(rows.map(row => row.message), waiting.map(entry => inquiryLocal(entry, inquiryId)),
+    raw => { const row = rowById.get(raw.id)!; return { kind: 'message', key: raw.id, message: row.message, own: row.item.own, time: row.item.createdAt ?? 0 } })
   function attachMenu(point: { x: number; y: number }): void {
     popupMenu.open(point, [
       { label: tr('사진'), icon: <ImageIcon size={18} />, onSelect: () => { void sendPhoto() } },
@@ -449,17 +455,25 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
         : thread.status === 'error' ? <div className="empty-state">{thread.message || tr('문의를 열지 못했습니다.')}</div>
           : !items.length && !waiting.length ? <div className="empty-state">{thread.role === 'subscriber' ? tr('채널 운영자에게 궁금한 점을 남겨 보세요.') : tr('아직 메시지가 없습니다.')}</div>
             : <div className="inquiry-inner">
-              {rows.map(({ item, message, layout }) => <div key={item.id} className="history-row inquiry-thread-row" data-inquiry-message={item.id}>
+              {/* B409: one list for the room's messages and those on their way, the same key and view for both, so a
+                  message the server confirms keeps its row (tdesktop HistoryItem::setRealId); its order is the chat's own
+                  (historyEntries — B409-4: one that failed keeps its place, those on their way are last). */}
+              {ordered.map(entry => { if (entry.kind === 'message') { const { item, message, layout } = rowById.get(entry.key)!; return <div key={item.id} className="history-row inquiry-thread-row" data-inquiry-message={item.id}>
                 {layout.date && <div className="history-date"><span className="service-pill">{serviceDate(item.createdAt ?? 0)}</span></div>}
                 <MessageView accountUid={accountUid} chatId={inquiryId} message={message} own={item.own} layout={layout} read={item.own && message.readEligible && !item.system && readCovers(thread.outboxRead, readCursor(message.position)) ? 'read' : 'sent'}
                   selecting={selection !== null} selected={selection?.includes(item.id) === true} highlighted={false}
                   autoTranslate={false} translationRoom={inquiryQueueChatId(inquiryId)} onMenu={(_message, point) => openMenu(item, point)} onReply={() => beginReply(item)} onJumpReply={() => showMessage(item.replyToId)}
                   onToggle={() => toggleSelected(item)} onReaction={(_message, emoji) => react(item, emoji)}
                   onOpenMedia={(opened, index) => showMediaViewer(accountUid, inquiryId, opened, index, item.own ? tr('나') : thread?.title ?? '')} />
-              </div>)}
-              {waiting.map(entry => <div key={entry.id} className="history-row inquiry-thread-row">
-                <LocalMessageView accountUid={accountUid} item={inquiryLocal(entry, inquiryId)} layout={{ date: false, unread: false, top: false, bottom: false, name: false, photo: false, gutter: false, roomOnly: false }} onMenu={(_item, point) => pendingMenu(entry, point)} />
-              </div>)}
+              </div> }
+              const local = entry.item, pendingEntry = waitingById.get(entry.key)!
+              return <div key={local.id} className="history-row inquiry-thread-row">
+                {false}
+                <MessageView accountUid={accountUid} chatId={inquiryId} message={localChatMessage(local, accountUid)} own layout={{ date: false, unread: false, top: false, bottom: false, name: false, photo: false, gutter: false, roomOnly: false }}
+                  read="sent" selecting={selection !== null} selected={false} highlighted={false} autoTranslate={false} translationRoom={inquiryQueueChatId(inquiryId)}
+                  onMenu={() => {}} onReply={() => {}} onJumpReply={() => {}} onToggle={() => {}} onReaction={() => {}} onOpenMedia={() => {}}
+                  outgoing={{ item: local, onMenu: (_item, point) => pendingMenu(pendingEntry, point) }} />
+              </div> })}
             </div>}
     </div>
     {away && <button className="history-down" aria-label={tr('최근 메시지로 이동')} onClick={() => { const element = list.current; if (element) follower.toBottom(element) }}><ArrowDown size={22} /></button>}

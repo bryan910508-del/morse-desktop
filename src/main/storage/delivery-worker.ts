@@ -39,6 +39,7 @@ import { executeHistoryClear } from './history-clear-table'
 import { mkdirSync, chmodSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { parentPort, workerData } from 'node:worker_threads'
+import { setStorageClock, storageNow } from './storage-clock'
 import { isPlainDatabase, openEncryptedDatabase, rawKey } from './encrypted-database'
 import { identifier, draftText, sendableText } from '../../shared/validation'
 import { maxQueuedMessages } from '../../shared/delivery'
@@ -353,7 +354,7 @@ function execute(command: DeliveryCommand): unknown {
         const count = db.prepare('SELECT COUNT(*) AS count FROM intents WHERE wire IS NOT NULL').get() as { count: number }
         if (count.count >= maxQueuedMessages) throw Object.assign(new Error('Outbox full'), { deliveryCode: 'capacity' })
         db.prepare("INSERT INTO intents(id,chat_id,wire,digest,created_at,state) VALUES(?,?,?,?,?,'queued')")
-          .run(wire.id, wire.chatId, JSON.stringify(wire), digest, Date.now())
+          .run(wire.id, wire.chatId, JSON.stringify(wire), digest, storageNow())
         db.prepare('DELETE FROM local_drafts WHERE chat_id=? AND text=?').run(wire.chatId, command.expectedDraft)
         db.prepare('DELETE FROM reply_drafts WHERE chat_id=?').run(wire.chatId)
       })(); return null
@@ -392,8 +393,9 @@ function execute(command: DeliveryCommand): unknown {
       db.pragma('wal_checkpoint(TRUNCATE)'); db.close(); return null
   }
 }
-parentPort!.on('message', (request: { id: number; command: DeliveryCommand }) => {
+parentPort!.on('message', (request: { id: number; command: DeliveryCommand; clock?: number }) => {
   try {
+    setStorageClock(request.clock)
     const value=execute(request.command)
     try{parentPort!.postMessage({id:request.id,ok:true,value})}
     finally{if(request.command.kind==='voice-draft-source' && value)(value as import('../../shared/voice-draft').VoiceDraftSource).bytes.fill(0);if(request.command.kind==='voice-queue-source' && value)(value as import('../../shared/voice-queue-preview').VoiceQueueSource).bytes.fill(0)}
