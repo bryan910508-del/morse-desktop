@@ -35,6 +35,15 @@ jobs:
           name: morse-windows-setup
           path: dist/Morse-Setup-x64.exe
           retention-days: 7
+      # Windows PC check 10-② (B394): the person types with the Microsoft Korean IME. Korean is added to this user's
+      # input languages before the app starts, so its window can switch to it.
+      - name: Add Korean input
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $languages = Get-WinUserLanguageList
+          if (-not ($languages | Where-Object LanguageTag -eq 'ko-KR')) { $languages.Add('ko-KR'); Set-WinUserLanguageList $languages -Force }
+          Write-Output "input languages: $((Get-WinUserLanguageList | ForEach-Object { $_.LanguageTag + ' ' + ($_.InputMethodTips -join ',') }) -join '; ')"
       - name: Install silently for this user
         if: ${{ !cancelled() }}
         shell: pwsh
@@ -69,6 +78,74 @@ jobs:
           }
           if (-not $page) { throw 'no morse://app page within 60 seconds' }
           Write-Output "window page: $($page.url) after $i s"
+          # One message to the page over its debugging port: an expression, its answer as text.
+          $socket = [System.Net.WebSockets.ClientWebSocket]::new()
+          $socket.ConnectAsync([Uri]$page.webSocketDebuggerUrl, [Threading.CancellationToken]::None).Wait()
+          $script:messageId = 0
+          function Invoke-Page([string]$expression) {
+            $script:messageId++
+            $request = @{ id = $script:messageId; method = 'Runtime.evaluate'; params = @{ expression = $expression; awaitPromise = $true; returnByValue = $true } } | ConvertTo-Json -Compress -Depth 5
+            $bytes = [Text.Encoding]::UTF8.GetBytes($request)
+            $socket.SendAsync([ArraySegment[byte]]::new($bytes), [System.Net.WebSockets.WebSocketMessageType]::Text, $true, [Threading.CancellationToken]::None).Wait()
+            $buffer = New-Object byte[] 65536
+            $answer = $socket.ReceiveAsync([ArraySegment[byte]]::new($buffer), [Threading.CancellationToken]::None).Result
+            $text = [Text.Encoding]::UTF8.GetString($buffer, 0, $answer.Count)
+            try { return (ConvertFrom-Json $text).result.result.value } catch { return $text }
+          }
+          # Windows PC check 9: what this Windows' Chromium offers a voice message — whether it can record AAC (the format
+          # the three apps send) and how many microphones it sees (the runner has none). Written, not judged.
+          Write-Output "voice capture: $(Invoke-Page "(async () => JSON.stringify({ aac: typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported('audio/mp4;codecs=mp4a.40.2'), microphones: (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput').length }))()")"
+          # Windows PC check 10-② (B394): the left Alt pressed and let go alone, then «abc» — on the person's PC (Korean
+          # keyboard, Microsoft Korean IME) nothing was typed and nothing chimed. Real key events (SendInput) go to the
+          # window, a text field of the test's own reads what arrived, and the window thread's menu-mode flags are read at
+          # once (GetGUIThreadInfo: GUI_INMENUMODE 0x4, GUI_SYSTEMMENUMODE 0x8, GUI_POPUPMENUMODE 0x10) — in US layout,
+          # then in the Korean IME's English and Hangul modes.
+          Add-Type -TypeDefinition @'
+          using System; using System.Runtime.InteropServices;
+          public static class MorseKeys {
+            [StructLayout(LayoutKind.Sequential)] struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+            [StructLayout(LayoutKind.Sequential)] struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+            [StructLayout(LayoutKind.Explicit)] struct InputUnion { [FieldOffset(0)] public MOUSEINPUT mi; [FieldOffset(0)] public KEYBDINPUT ki; }
+            [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint type; public InputUnion u; }
+            [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint count, INPUT[] inputs, int size);
+            public static uint Key(ushort key, bool up) { var input = new INPUT { type = 1 }; input.u.ki = new KEYBDINPUT { wVk = key, dwFlags = up ? 2u : 0u }; return SendInput(1, new[] { input }, Marshal.SizeOf(typeof(INPUT))); }
+            [StructLayout(LayoutKind.Sequential)] public struct RECT { public int left; public int top; public int right; public int bottom; }
+            [StructLayout(LayoutKind.Sequential)] public struct GUITHREADINFO { public int cbSize; public uint flags; public IntPtr active; public IntPtr focus; public IntPtr capture; public IntPtr menuOwner; public IntPtr moveSize; public IntPtr caret; public RECT caretRect; }
+            [DllImport("user32.dll")] static extern bool GetGUIThreadInfo(uint thread, ref GUITHREADINFO info);
+            [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window, IntPtr process);
+            public static uint MenuFlags(IntPtr window) { var info = new GUITHREADINFO(); info.cbSize = Marshal.SizeOf(typeof(GUITHREADINFO)); return GetGUIThreadInfo(GetWindowThreadProcessId(window, IntPtr.Zero), ref info) ? info.flags : 0xFFFFFFFF; }
+            [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr window);
+            [DllImport("user32.dll")] public static extern IntPtr LoadKeyboardLayout(string id, uint flags);
+            [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+          }
+          '@
+          $window = (Get-Process -Name Morse | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1).MainWindowHandle
+          function Tap([uint16]$key) { [void][MorseKeys]::Key($key, $false); Start-Sleep -Milliseconds 40; [void][MorseKeys]::Key($key, $true); Start-Sleep -Milliseconds 90 }
+          $field = "(() => { let f = document.getElementById('ci-keys'); if (!f) { f = document.createElement('textarea'); f.id = 'ci-keys'; f.style.cssText = 'position:fixed;left:8px;top:8px;width:200px;height:40px;z-index:99999'; document.body.append(f) } f.value = ''; f.focus(); return document.activeElement === f })()"
+          $read = "document.getElementById('ci-keys').value"
+          function Check([string]$label) {
+            [void][MorseKeys]::SetForegroundWindow($window); Start-Sleep -Milliseconds 300
+            $focused = Invoke-Page $field; Start-Sleep -Milliseconds 300
+            Tap 0x41; Tap 0x42; Tap 0x43; Start-Sleep -Milliseconds 300
+            $plain = Invoke-Page $read
+            [void](Invoke-Page $field); Start-Sleep -Milliseconds 300
+            Tap 0xA4
+            $menuAfterAlt = '0x{0:X}' -f [MorseKeys]::MenuFlags($window)
+            Tap 0x41; Tap 0x42; Tap 0x43; Start-Sleep -Milliseconds 300
+            $menuAfterKeys = '0x{0:X}' -f [MorseKeys]::MenuFlags($window)
+            $afterAlt = Invoke-Page $read
+            Tap 0x1B; Start-Sleep -Milliseconds 200
+            Write-Output "alt check [$label]: focused=$focused plain='$plain' afterAlt='$afterAlt' menuFlags afterAlt=$menuAfterAlt afterKeys=$menuAfterKeys"
+          }
+          Check 'us'
+          # The Korean IME on this window (WM_INPUTLANGCHANGEREQUEST 0x50, KLF_ACTIVATE 1); it starts in one mode and the
+          # Hangul key (VK_HANGUL 0x15) turns it to the other — what «abc» became shows which.
+          $korean = [MorseKeys]::LoadKeyboardLayout('00000412', 1)
+          [void][MorseKeys]::PostMessage($window, 0x50, [IntPtr]::Zero, $korean); Start-Sleep -Milliseconds 800
+          Check 'ko-first-mode'
+          [void][MorseKeys]::SetForegroundWindow($window); [void](Invoke-Page $field); Tap 0x15; Start-Sleep -Milliseconds 300
+          Check 'ko-after-hangul-key'
+          $socket.Dispose()
       - name: Close and remove the installed app
         if: ${{ always() && env.MORSE_EXE != '' }}
         shell: pwsh

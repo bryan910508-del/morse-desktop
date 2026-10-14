@@ -4240,5 +4240,15 @@
  "Windows 사용자 계정이 바뀌었다면(다른 사람이 비밀번호를 재설정했거나 다른 PC로 옮긴 경우) 이 기기의 보관 키를 읽지 못할 수 있어요. 새로 시작하면 이 기기에만 있던 기록은 휴지통으로 옮겨지고, 저장된 계정은 다시 연결됩니다.": "If your Windows user account changed (someone else reset its password, or it was moved to another PC), this device's storage key may not be readable. Starting over moves the records kept only on this device to the Recycle Bin, and saved accounts reconnect.",
  "Windows에 같은 사용자로 로그인한 뒤 앱을 다시 열어 주세요.": "Sign in to Windows as the same user, then reopen the app.",
  "Morse는 여기서 계속 실행 중이에요. 설정에서 바꿀 수 있어요.\n알림 영역에서 사라지면 숨겨진 아이콘에서 다시 끌어 올 수 있어요.": "Morse is still running here. You can change this in Settings.\nIf it disappears from the notification area, you can drag it back from the hidden icons.",
- "댓글을 확인하지 못해 삭제하지 않았습니다. 게시물을 다시 열어 주세요.": "Couldn't check the comment, so it wasn't deleted. Open the post again."
+ "댓글을 확인하지 못해 삭제하지 않았습니다. 게시물을 다시 열어 주세요.": "Couldn't check the comment, so it wasn't deleted. Open the post again.",
+ "마이크를 찾을 수 없어요. 마이크가 연결돼 있는지, Windows 설정 › 개인 정보 및 보안 › 마이크에서 데스크톱 앱의 마이크 사용이 켜져 있는지 확인해 주세요.": "No microphone was found. Check that a microphone is connected and that Windows Settings › Privacy & security › Microphone lets desktop apps use it.",
+ "마이크를 찾을 수 없어요. 마이크가 연결돼 있는지 확인해 주세요.": "No microphone was found. Check that a microphone is connected.",
+ "카메라나 마이크를 찾을 수 없어요. 연결돼 있는지, Windows 설정 › 개인 정보 및 보안 › 카메라·마이크에서 데스크톱 앱의 사용이 켜져 있는지 확인해 주세요.": "No camera or microphone was found. Check that they are connected and that Windows Settings › Privacy & security › Camera and Microphone let desktop apps use them.",
+ "카메라나 마이크를 찾을 수 없어요. 연결돼 있는지 확인해 주세요.": "No camera or microphone was found. Check that they are connected.",
+ "Windows 설정 › 개인 정보 및 보안 › 마이크에서 데스크톱 앱의 마이크 사용을 켜 주세요.": "Turn on microphone access for desktop apps in Windows Settings › Privacy & security › Microphone.",
+ "Windows 설정 › 개인 정보 및 보안 › 카메라·마이크에서 데스크톱 앱의 사용을 켜 주세요.": "Turn on camera and microphone access for desktop apps in Windows Settings › Privacy & security › Camera and Microphone.",
+ "다른 앱이 마이크를 쓰고 있거나 마이크를 시작하지 못했어요. 다른 앱을 닫고 다시 시도해 주세요.": "Another app is using the microphone, or it couldn't start. Close other apps and try again.",
+ "다른 앱이 카메라나 마이크를 쓰고 있거나 시작하지 못했어요. 다른 앱을 닫고 다시 시도해 주세요.": "Another app is using the camera or microphone, or they couldn't start. Close other apps and try again.",
+ "녹음을 시작하지 못했어요. 마이크를 확인해 주세요.": "Couldn't start recording. Please check your microphone.",
+ "녹화를 시작하지 못했어요. 카메라를 확인해 주세요.": "Couldn't start video recording. Please check your camera."
 }

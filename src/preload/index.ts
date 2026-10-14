@@ -553,6 +553,7 @@ const bridge: DesktopBridge = {
   discardOutgoing: (uid, chatId, id) => ipcRenderer.invoke('morse:discard-outgoing', uid, chatId, id),
   completeClose: (id, success) => ipcRenderer.invoke('morse:complete-close', id, success),
   appBadgeDrawn: (key, dataURL) => ipcRenderer.invoke('morse:app-badge-drawn', key, dataURL),
+  appBadgeFailed: (key, name) => ipcRenderer.invoke('morse:app-badge-failed', key, name),
   onEvent: listener => {
     const handler = (_event: Electron.IpcRendererEvent, value: DesktopEvent): void => listener(value)
     ipcRenderer.on('morse:event', handler)

@@ -1018,6 +1018,7 @@ export interface DesktopBridge {
   discardOutgoing(accountUid: string, chatId: string, messageId: string): Promise<void>
   completeClose(requestId: string, success: boolean): Promise<void>
   appBadgeDrawn(key: string, dataURL: string): Promise<void>
+  appBadgeFailed(key: string, name: string): Promise<void>
   onEvent(listener: (event: DesktopEvent) => void): () => void
 }
 

@@ -8,6 +8,7 @@ import { errorText } from '../app/format'
 import { Spinner } from '../ui/controls'
 import { recordTips, type HeldRef } from './record-button'
 import { tr } from '../../../shared/i18n'
+import { captureMessage } from '../app/capture-message'
 
 // Telegram Desktop's video message recorder (ui/controls/round_video_recorder.cpp): the camera's centre in a
 // square of kSide 400, at most kMaxDuration 60 seconds, shown as a circle while it records, with the
@@ -151,7 +152,7 @@ export function RoundVideoRecorder({ target, held, onClose }: { target: RoundVid
         tick = setInterval(() => setElapsed((performance.now() - started.current) / 1000), 100)
         ticking.current = tick
         limit = setTimeout(() => actions.current.send(), maxRoundVideoSeconds * 1000)
-      } catch (reason) { actions.current.cancel(errorText(reason, tr('녹화를 시작하지 못했습니다.'))) }
+      } catch (reason) { actions.current.cancel(captureMessage(reason, 'video', tr('녹화를 시작하지 못했습니다.'))) }
     })()
     return () => {
       alive.current = false

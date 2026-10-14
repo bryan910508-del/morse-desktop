@@ -5,6 +5,7 @@ import type { DesktopSnapshot, Preferences } from '../../shared/model'
 import { appBadgePixels, appBadgeState, dockBadgeText, type AppBadgeAccount, type AppBadgeState } from '../../shared/app-badge'
 import { tr } from '../../shared/i18n'
 import { closeToTrayEffective } from '../../shared/close-to-tray'
+import { errorName, type BadgeDetail } from './badge-diagnostics'
 
 // The window that carries the Windows taskbar overlay (BrowserWindow.setOverlayIcon) and the scale it is shown at.
 export interface OverlayWindow { setOverlayIcon(overlay: NativeImage | null, description: string): void; scaleFactor(): number }
@@ -43,7 +44,9 @@ export class DesktopShell {
     private readonly draw: (request: OverlayDrawRequest) => void = () => {},
     private readonly platform: NodeJS.Platform = process.platform, private readonly now: () => number = Date.now,
     private readonly makeTray: (icon: NativeImage) => TrayLike = icon => new Tray(icon),
-    private readonly trayWindow: TrayWindow = { active: () => false, hide: () => {} }) {}
+    private readonly trayWindow: TrayWindow = { active: () => false, hide: () => {} },
+    // B348: badge-check.log (badge-diagnostics.ts); a test gives its own.
+    private readonly record: (step: string, detail: BadgeDetail) => void = () => {}) {}
   private lastTrayClick = 0
 
   initialize(): void {
@@ -69,7 +72,9 @@ export class DesktopShell {
         { label: tr('Morse 종료'), click: this.quit }
       ]))
       tray.on('click', () => this.trayClicked())
-    } catch {
+      this.record('tray', { made: true, pixels: 32 })
+    } catch (error) {
+      this.record('tray', { made: false, reason: error instanceof Error && error.message === 'Missing icon' ? 'missing-icon' : errorName(error) })
       this.tray?.destroy(); this.tray = null
       this.message = tr('시스템 트레이를 만들지 못했습니다. 창을 닫으면 앱이 종료됩니다.')
     }
@@ -102,6 +107,7 @@ export class DesktopShell {
     // Every signed-in account's confirmed list contributes, as Telegram counts all accounts.
     // There is no local increment on receipt and no decrement when a notification is clicked.
     const state = appBadgeState(preferences, accounts, available)
+    if (this.platform === 'win32') this.record('update', { count: state.count, muted: state.muted, available, shown: preferences.showUnreadBadge, accounts: accounts.length })
     if (this.platform === 'darwin') this.updateDock(state.count)
     else if (this.platform === 'win32') { this.updateOverlay(state); this.updateTray(state) }
   }
@@ -109,22 +115,32 @@ export class DesktopShell {
   overlayDrawn(key: string, dataURL: string): void {
     if (this.closed || this.platform !== 'win32') return
     const target = (Object.keys(this.painting) as BadgeTarget[]).find(name => this.painting[name].wanted?.key === key)
-    if (!target) return
+    if (!target) { this.record('drawn', { result: 'stale' }); return }
+    this.record('drawn', { target, result: 'ok', bytes: dataURL.length })
     const painting = this.painting[target], wanted = painting.wanted!
     try {
       const image = nativeImage.createFromDataURL(dataURL)
       if (image.isEmpty()) throw new Error('Empty badge')
       if (target === 'taskbar') {
         const window = this.window()
-        if (!window) return
+        if (!window) { this.record('apply', { target, result: 'no-window' }); return }
         // tdesktop's description is lng_unread_bar (main_window_win.cpp:656-658), for screen readers.
         window.setOverlayIcon(image, tr('읽지 않은 메시지 {0}개', [wanted.state.count]))
       } else {
-        if (!this.tray || this.tray.isDestroyed()) return
+        if (!this.tray || this.tray.isDestroyed()) { this.record('apply', { target, result: 'no-tray' }); return }
         this.tray.setImage(image)
       }
       painting.shown = key
-    } catch { this.message = target === 'taskbar' ? tr('작업 표시줄의 읽지 않은 메시지 수를 표시하지 못했습니다.') : tr('알림 영역의 읽지 않은 메시지 수를 표시하지 못했습니다.') }
+      this.record('apply', { target, result: 'ok', count: wanted.state.count, pixels: wanted.pixels })
+    } catch (error) {
+      this.record('apply', { target, result: error instanceof Error && error.message === 'Empty badge' ? 'empty-picture' : errorName(error) }); this.message = target === 'taskbar' ? tr('작업 표시줄의 읽지 않은 메시지 수를 표시하지 못했습니다.') : tr('알림 영역의 읽지 않은 메시지 수를 표시하지 못했습니다.') }
+  }
+  // B348: the window could not draw a picture it was asked for (it used to be dropped where it failed, main.tsx). It is
+  // written down by the error's name; the request goes again a second later, as one that never came back does.
+  overlayFailed(key: string, name: string): void {
+    if (this.closed || this.platform !== 'win32') return
+    const target = (Object.keys(this.painting) as BadgeTarget[]).find(entry => this.painting[entry].wanted?.key === key)
+    this.record('drawn', { target: target ?? 'stale', result: 'failed', name: name.slice(0, 40) })
   }
   // A new window (or a reloaded one) has no overlay and forgot what it was asked: both are asked again (tdesktop draws
   // again on showFromTray, :626).
@@ -141,16 +157,19 @@ export class DesktopShell {
   // tdesktop updateTaskbarAndIconCounters (main_window_win.cpp:645-660): a count draws the overlay, none takes it off.
   private updateOverlay(state: AppBadgeState): void {
     const window = this.window()
-    if (!window) return
+    if (!window) { if (state.count > 0) this.record('request', { target: 'taskbar', result: 'no-window' }); return }
     this.paint('taskbar', state, appBadgePixels(window.scaleFactor()), () => window.setOverlayIcon(null, ''))
   }
   // B348b, tdesktop Tray::updateIcon (tray_win.cpp:209-233): the notification area's small icon carries the count on the
   // logo (WithSmallCounter), none shows the logo alone; its tooltip is «Morse (n)» (Core::TrayIconToolTip, tray.cpp:22-27).
   private updateTray(state: AppBadgeState): void {
     const tray = this.tray, base = this.trayBase
-    if (!tray || tray.isDestroyed() || !base) return
+    if (!tray || tray.isDestroyed() || !base) { if (state.count > 0) this.record('request', { target: 'tray', result: 'no-tray' }); return }
     const tooltip = state.count > 0 ? `Morse (${state.count})` : 'Morse'
-    if (tooltip !== this.tooltip) { try { tray.setToolTip(tooltip); this.tooltip = tooltip } catch { /* the tooltip stays */ } }
+    if (tooltip !== this.tooltip) {
+      try { tray.setToolTip(tooltip); this.tooltip = tooltip; this.record('tooltip', { count: state.count, result: 'ok' }) }
+      catch (error) { this.record('tooltip', { count: state.count, result: errorName(error) }) }
+    }
     this.paint('tray', state, appBadgePixels(this.window()?.scaleFactor() ?? 1), () => tray.setImage(base))
   }
   private paint(target: BadgeTarget, state: AppBadgeState, pixels: number, clear: () => void): void {
@@ -158,8 +177,8 @@ export class DesktopShell {
     if (state.count === 0) {
       painting.wanted = null
       if (painting.shown === 'none') return
-      try { clear(); painting.shown = 'none' }
-      catch { this.message = target === 'taskbar' ? tr('작업 표시줄의 읽지 않은 메시지 수를 표시하지 못했습니다.') : tr('알림 영역의 읽지 않은 메시지 수를 표시하지 못했습니다.') }
+      try { clear(); painting.shown = 'none'; this.record('apply', { target, result: 'cleared' }) }
+      catch (error) { this.record('apply', { target, result: errorName(error) }); this.message = target === 'taskbar' ? tr('작업 표시줄의 읽지 않은 메시지 수를 표시하지 못했습니다.') : tr('알림 영역의 읽지 않은 메시지 수를 표시하지 못했습니다.') }
       return
     }
     const wanted = painting.wanted
@@ -170,6 +189,7 @@ export class DesktopShell {
     if (!same) painting.wanted = { key: `${target}-${++this.serial}`, state, pixels }
     painting.asked = this.now()
     const next = painting.wanted!
+    this.record('request', { target, count: state.count, muted: state.muted, pixels, serial: this.serial, again: same })
     this.draw({ key: next.key, count: state.count, muted: state.muted, pixels, target })
   }
   close(): void {

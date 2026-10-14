@@ -7,6 +7,7 @@ import { Spinner } from '../ui/controls'
 import { recordTips, type HeldRef } from '../history/record-button'
 import { usePreviewAudio } from '../history/voice-record'
 import { tr } from '../../../shared/i18n'
+import { captureMessage } from '../app/capture-message'
 
 // The voice recording bar of a channel inquiry, built as the chat's (VoiceRecordBar): record, send at once or
 // stop to listen, then delete or send. The recording is made as iOS makes one (MorseVoiceRecordingSession):
@@ -169,7 +170,7 @@ export function InquiryVoiceBar({ accountUid, requestId, inquiryId, held, onSend
           setLevel(normalized)
         }, meterMs) }
         ticking.current = meter.interval
-      } catch (reason) { actions.current.cancel(errorText(reason, tr('녹음을 시작하지 못했습니다.'))) }
+      } catch (reason) { actions.current.cancel(captureMessage(reason, 'audio', tr('녹음을 시작하지 못했습니다.'))) }
     })()
     return () => {
       alive.current = false

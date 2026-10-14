@@ -130,7 +130,9 @@ function SessionWindow({ accountUid }: { accountUid: string }) {
         if (state.archived) { controller.setArchived(false); return true }
         return false
       case 'find-dialog': if (oneColumn && (state.chatId || state.channelId)) controller.closeChat(); controller.focusSearch(); return true
-      case 'find-message': if (state.chatId) controller.setRight('search'); return true
+      // tdesktop Command::Search (core/shortcuts.cpp:496, ctrl+f): in a chat its own search (history_widget.cpp:2708-2711);
+      // with none open the chat list's search field (dialogs_widget.cpp:1874-1895, _search->setFocus()).
+      case 'find-message': if (state.chatId) controller.setRight('search'); else { if (oneColumn && state.channelId) controller.closeChat(); controller.focusSearch() } return true
       case 'focus-composer': controller.focusComposer(); return true
       case 'show-chats': controller.showChats('all'); return true
       case 'show-channels': controller.showChannels(); return true

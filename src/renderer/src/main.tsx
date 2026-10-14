@@ -75,7 +75,9 @@ function App() {
     else if (event.type === 'open-link' && desktop.value?.activeAccountUid) takeOpenLink()
     else if (event.type === 'full-screen') document.documentElement.dataset.fullScreen = String(event.value)
     // B348: the Windows taskbar overlay is drawn here and handed back to the main process.
-    else if (event.type === 'draw-app-badge') void drawAppBadge(event.count, event.muted, event.pixels, event.target).then(url => window.morse.appBadgeDrawn(event.key, url)).catch(() => {})
+    // B348: a picture that could not be drawn is told by its error's name (badge-check.log), not dropped here.
+    else if (event.type === 'draw-app-badge') void drawAppBadge(event.count, event.muted, event.pixels, event.target).then(url => window.morse.appBadgeDrawn(event.key, url),
+      reason => window.morse.appBadgeFailed(event.key, reason instanceof Error ? reason.name : typeof reason)).catch(() => {})
     else if (event.type === 'open-notification-chat') {
       if (desktop.value?.activeAccountUid === event.accountUid) controller.openChat(event.chatId)
       else pendingNotificationChat = { accountUid: event.accountUid, chatId: event.chatId, at: Date.now() }

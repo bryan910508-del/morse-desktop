@@ -14,6 +14,7 @@ import { Spinner } from '../ui/controls'
 import { confirmBox } from '../ui/layers'
 import { recordTips, type HeldRef } from './record-button'
 import { tr } from '../../../shared/i18n'
+import { captureMessage } from '../app/capture-message'
 
 function mediaDuration(url: string): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -232,7 +233,7 @@ export function VoiceRecordBar({ accountUid, chatId, reply, held, onSaved, onClo
           setLevel(Math.max(0, Math.min(1, (db + 50) / 50)))
         }, 100) }
         ticking.current = meter.interval
-      } catch (reason) { cancel(errorText(reason, tr('녹음을 시작하지 못했습니다.'))) }
+      } catch (reason) { cancel(captureMessage(reason, 'audio', tr('녹음을 시작하지 못했습니다.'))) }
     })()
     return () => {
       alive.current = false

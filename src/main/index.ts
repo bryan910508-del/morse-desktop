@@ -4,6 +4,7 @@ import { autoDeleteMonthOptions, blockTarget, inviteToken, privacyKey, privacyRu
 import { roundVideoFacts, roundVideoSendRequest, roundVideoSide } from '../shared/round-video'
 import type { CaptureMedia } from './platform/voice-captures'
 import { recordRendererVoiceStep, recordVoiceStep, voiceErrorCode } from './platform/voice-diagnostics'
+import { recordBadgeStep } from './platform/badge-diagnostics'
 import { chatFolderInput, chatFolderOrder } from '../shared/chat-folders'
 import { autoDeleteSecondsValue, canChangeAutoDelete } from '../shared/chat-auto-delete'
 import { recordContactStep } from './platform/contact-diagnostics'
@@ -297,7 +298,7 @@ const desktopShell = new DesktopShell(showWindow, () => app.quit(), () => {
   // B374: a tray click hides a window that is shown and active and shows any other (activeForTrayClick).
   active: () => Boolean(mainWindow && !mainWindow.isDestroyed() && activeForTrayClick(mainWindow.isVisible() && !mainWindow.isMinimized(), mainWindow.isFocused(), windowBlurredAt, Date.now())),
   hide: () => { if (mainWindow && !mainWindow.isDestroyed()) hideToTray(mainWindow) }
-})
+}, recordBadgeStep)
 // When the window last lost the focus: clicking the tray takes it just before the click arrives.
 let windowBlurredAt = 0
 const appUpdates = new AppUpdates(() => { void publish() })
@@ -2835,6 +2836,10 @@ function registerIPC(): void {
     if (typeof key !== 'string' || key.length > 20 || typeof dataURL !== 'string' || dataURL.length > 200000 || !dataURL.startsWith('data:image/png;base64,')) return
     desktopShell.overlayDrawn(key, dataURL)
   })
+  handle('app-badge-failed', (key, name) => {
+    if (typeof key !== 'string' || key.length > 20 || typeof name !== 'string') return
+    desktopShell.overlayFailed(key, name)
+  })
   handle('complete-close', (id, success) => { if (pendingClose?.id === identifier(id)) pendingClose.finish(success === true) }, true)
   handle('send-text', (uid, chatId, text, id, reply, silent) => accounts.requireActive(identifier(uid)).sendText(identifier(chatId), draftText(text), identifier(id), replyBinding(reply), silent === true))
   handle('schedule-event-reminder', (uid, raw) => {
@@ -2885,12 +2890,18 @@ function updatePresence(): void {
 }
 // iOS maxDeviceAccounts / server device slots: two accounts, four with premium.
 function maxAccounts(): number { return accounts.active?.selfProfile.snapshot.profile?.premium ? 4 : 2 }
+// B348 (Windows PC 10-14 17:3x: the tray said «Morse» with unread messages — the count was 0): an account counts once
+// its chat list is here, whatever its socket is doing. The badge and the accounts list took only accounts whose socket was
+// «ready»; the socket ends every few minutes server-side and a send goes by Firestore meanwhile, so a list on screen could
+// count as nothing. tdesktop counts from the chats it has, connected or not (Domain::updateUnreadBadge,
+// main_domain.cpp:302-314). The socket's state stays in badge-check.log, for what it tells about the connection.
+function countsInBadge(session: { readStatus: string }): boolean { return session.readStatus === 'ready' }
 function accountStates(): AccountAuthState[] {
   const activeUid = accounts.active?.profile.uid ?? null
   return authentication.states().map(state => {
     const session = accounts.get(state.uid), profile = session?.selfProfile.snapshot.profile
     // B353: the same count as the Dock's, for this account (accountBadgeState, tdesktop unreadWithMentionsBadge).
-    const badge = session && session.state === 'ready' && session.readStatus === 'ready' ? accountBadgeState(state.uid, session.dialogs(), settings?.preferences.badgeMode ?? 'messages') : { count: 0, muted: false }
+    const badge = session && countsInBadge(session) ? accountBadgeState(state.uid, session.dialogs(), settings?.preferences.badgeMode ?? 'messages') : { count: 0, muted: false }
     // Each account's own photo, as Settings::AccountsList paints every account's userpic.
     const photo = session?.selfProfile.snapshot.photo
     return { ...state, userId: profile?.userId || state.userId, displayName: profile?.displayName || state.displayName, connected: Boolean(session), active: state.uid === activeUid, unread: badge.count, unreadMuted: badge.muted,
@@ -2899,7 +2910,9 @@ function accountStates(): AccountAuthState[] {
 }
 function updateDesktopShell(): void {
   if (!settings) return
-  desktopShell.update(settings.preferences, accounts.all.filter(session => session.state === 'ready' && session.readStatus === 'ready')
+  // B348: which accounts the count can see, by their states only (badge-check.log).
+  if (process.platform === 'win32') recordBadgeStep('accounts', { all: accounts.all.length, states: accounts.all.map(session => `${session.state}/${session.readStatus}`).join(','), locked: screenLocked, running: shutdown === 'running' })
+  desktopShell.update(settings.preferences, accounts.all.filter(countsInBadge)
     .map(session => ({ uid: session.profile.uid, dialogs: session.dialogs() })), shutdown === 'running' && !screenLocked)
 }
 function updateScreenProtection(): void {

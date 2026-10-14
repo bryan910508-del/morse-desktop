@@ -4,7 +4,7 @@ interface Binding { key: string; code?: string; primary?: boolean; shift?: boole
 interface Definition { label: string; group: '탐색' | '대화' | '화면'; binding: Binding }
 export const shortcuts = {
   'find-dialog': { label: tr('대화 찾기'), group: '탐색', binding: { key: 'K', code: 'KeyK', primary: true } },
-  'find-message': { label: tr('대화 안 검색'), group: '대화', binding: { key: 'F', code: 'KeyF', primary: true } },
+  'find-message': { label: tr('검색'), group: '대화', binding: { key: 'F', code: 'KeyF', primary: true } },
   'previous-dialog': { label: tr('이전 대화'), group: '대화', binding: { key: 'PageUp', primary: true } },
   'next-dialog': { label: tr('다음 대화'), group: '대화', binding: { key: 'PageDown', primary: true } },
   'focus-composer': { label: tr('메시지 작성창으로'), group: '대화', binding: { key: 'M', code: 'KeyM', primary: true, shift: true } },
