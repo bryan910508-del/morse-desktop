@@ -176,9 +176,9 @@ export function Intro() {
     {mode === 'create' && auth.available ? <div className="intro-step">
       <img className="intro-logo" src="/morse.png" alt="" />
       <h1>{tr('새 Morse 계정')}</h1>
-      <p className="intro-description">{tr('익명 ID로 새 계정을 만들고 이 데스크탑에 연결합니다.')}</p>
+      <p className="intro-description">{tr('ID로 새 계정을 만들고 이 데스크탑에 연결합니다.')}</p>
       <div className={`intro-id${userId ? '' : ' empty'}`}>{userId ? <strong className="selectable">@{userId}</strong> : tr('아이디를 생성해 주세요')}</div>
-      <button className="button secondary block" type="button" disabled={busy} onClick={() => setUserId(newUserId())}>{userId ? tr('다른 ID 생성') : tr('익명 ID로 시작하기')}</button>
+      <button className="button secondary block" type="button" disabled={busy} onClick={() => setUserId(newUserId())}>{userId ? tr('다른 ID 생성') : tr('ID로 시작하기')}</button>
       <p className="intro-note">{tr('가입 후엔 변경할 수 없어요. (이름은 언제든 가능)')}</p>
       <button className="button primary block" type="button" disabled={busy || !userId} onClick={() => { void create() }}>{busy && !provider ? <><Spinner size={16} />{tr('계정 만드는 중…')}</> : tr('계정 만들기')}</button>
       {appleButton(tr('Apple로 계정 만들기'))}

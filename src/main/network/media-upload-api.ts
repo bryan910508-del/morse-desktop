@@ -4,6 +4,7 @@ import type { UploadDescriptor } from '../storage/upload-protocol'
 import { storageBucket } from '../media/media-document'
 import { object } from '../../shared/validation'
 import { recordConnectionStep } from '../platform/connection-diagnostics'
+import { morseFetch } from './client-agent'
 
 export class UploadFailure extends Error {
   constructor(readonly reason: 'upload-network' | 'upload-permission' | 'upload-conflict' | 'upload-expired' | 'upload-metadata') { super(reason) }
@@ -64,7 +65,7 @@ export async function uploadAttachment(auth: ReadCredentials, uid: string, uploa
       const bounded = AbortSignal.any([signal, AbortSignal.timeout(65000)])
       const authorization = await auth.authorize(bounded, attempt > 0)
       bounded.throwIfAborted()
-      const response = await fetch(url, { ...init, body: typeof init.body === 'string' ? init.body : init.body ? new Uint8Array(init.body) : undefined,
+      const response = await morseFetch(url, { ...init, body: typeof init.body === 'string' ? init.body : init.body ? new Uint8Array(init.body) : undefined,
         signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store',
         headers: { ...init.headers, Authorization: `Firebase ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken } })
       if (response.status === 401 && attempt === 0) { await response.body?.cancel(); continue }

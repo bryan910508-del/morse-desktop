@@ -7,6 +7,7 @@ import { storageBucket } from '../media/media-document'
 import { tr } from '../../shared/i18n'
 import { photoToken, userpicCacheFor } from './userpic-cache'
 import { holdsImage, rememberedImage, rememberImage } from './userpic-images'
+import { morseFetch } from '../network/client-agent'
 
 function photoRaw(doc: FirestoreDocument, field: 'photoURL' | 'coverURL'): string | null {
   const raw = doc.fields[field]?.stringValue
@@ -124,7 +125,7 @@ export class ChannelImages {
     signal.throwIfAborted(); this.validate(entry)
     // channel_photos, legacy channels, and channel_covers permit public reads. Keep the
     // request account-owned and omit download-token/cache-version parameters.
-    const response = await fetch(`https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}?alt=media`, {
+    const response = await morseFetch(`https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}?alt=media`, {
       signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
       headers: { Authorization: `Firebase ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken }
     })

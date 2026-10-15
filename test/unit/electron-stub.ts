@@ -1,6 +1,11 @@
 // Electron stand-in for main-process unit tests run in plain Node.
 import { tmpdir } from 'node:os'
-export const app = { getVersion: () => 'test', getPath: () => tmpdir(), isPackaged: false, getAppPath: () => process.cwd() }
+export const app = { getVersion: () => 'test', getPath: () => tmpdir(), isPackaged: false, getAppPath: () => process.cwd(),
+  // crash-diagnostics.ts listens for processes that end; the stand-in keeps the listeners so a test can call them.
+  listeners: new Map<string, ((...args: unknown[]) => void)[]>(),
+  on(event: string, listener: (...args: unknown[]) => void) { app.listeners.set(event, [...(app.listeners.get(event) ?? []), listener]); return app } }
+// Native crash dumps: the stand-in only records that recording was started and how.
+export const crashReporter = { started: [] as unknown[], start(options: unknown) { crashReporter.started.push(options) } }
 // nativeImage stands in for the shrinking only: the "JPEG" it returns is a marker of the bytes it
 // was given, so tests can follow a placeholder through the cache. Real encoding is Electron's.
 export const nativeImage = {

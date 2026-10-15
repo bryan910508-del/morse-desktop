@@ -482,6 +482,9 @@ export interface DesktopBridge {
   setContentProtection(enabled: boolean): Promise<void>
   // The web address of the morse:// or talky:// link the app was opened with, once.
   takeOpenLink(): Promise<string | null>
+  // 0.241.36: whether the last run ended without quitting (crash-diagnostics.ts), told once; and the logs folder.
+  takeCrashNotice(): Promise<boolean>
+  openLogsFolder(): Promise<void>
   createGroup(accountUid: string, request: GroupCreateRequest): Promise<'listed' | 'done' | 'unconfirmed'>
   addGroupMembers(accountUid: string, request: GroupMembersRequest): Promise<'done' | 'unconfirmed'>
   leaveGroup(accountUid: string, request: GroupLeaveRequest): Promise<'done' | 'unconfirmed'>

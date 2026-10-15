@@ -6,6 +6,7 @@ import type { FirestoreReader, ReadCredentials } from './firestore-rpc'
 import { storageBucket } from '../media/media-document'
 import { uploadStorageObject } from './storage-object'
 import { MorseCallableFailure } from './morse-callable'
+import { morseFetch } from './client-agent'
 
 // B195·B210 (contracts/B195-B210-stickers.md): the server's own copy of a sticker's bytes, `sticker_files/{sha256}.{kind}`,
 // registered in `stickerFiles/{sha256}` (Telegram's document), and an account's favourites and recents in
@@ -54,7 +55,7 @@ export async function downloadStickerFile(auth: ReadCredentials, ref: StickerRef
   signal.throwIfAborted(); validate()
   const authorization = await auth.authorize(signal, false)
   signal.throwIfAborted(); validate()
-  const response = await fetch(`https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(stickerFilePath(ref))}?alt=media`, {
+  const response = await morseFetch(`https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(stickerFilePath(ref))}?alt=media`, {
     signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
     headers: { Authorization: `Firebase ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken } })
   const header = response.headers.get('content-length'), length = header === null ? null : Number(header)

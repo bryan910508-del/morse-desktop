@@ -4,6 +4,7 @@ import type { ReadCredentials } from './firestore-rpc'
 import { callMorseFunction } from './morse-callable'
 import { storageBucket } from '../media/media-document'
 import { sendAgain } from './resend'
+import { morseFetch } from './client-agent'
 
 // What a read of one granted Storage object must find: the custom metadata the uploader wrote, the content types it
 // may have, its largest size, and the words its errors use ('Story photo', 'Channel media', …).
@@ -64,7 +65,7 @@ export async function readGrantedStorageObject(auth: ReadCredentials, path: stri
   // Either request failing stops the other.
   const both = new AbortController(), bounded = AbortSignal.any([signal, both.signal])
   const endpoint = `https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}`
-  const fetchOnce = (url: string) => fetch(url, { signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store',
+  const fetchOnce = (url: string) => morseFetch(url, { signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store',
     headers: { Authorization: `Firebase ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken } })
   const get = (url: string) => check.resend ? sendAgain(bounded, () => fetchOnce(url)) : fetchOnce(url)
   const allowedType = (type: unknown): type is string => check.contentTypes === null || (typeof type === 'string' && check.contentTypes.includes(type))

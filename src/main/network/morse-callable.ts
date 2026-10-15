@@ -3,6 +3,7 @@ import type { ReadAuthorization, ReadCredentials } from './firestore-rpc'
 import { causeCode, unsentReason } from './resend'
 import { reachability } from './reachability'
 import { tr } from '../../shared/i18n'
+import { morseFetch } from './client-agent'
 
 // What became of one callable request, which is what decides whether it may go again:
 // - 'not-sent': it never left this device — the account's proof could not be had, or the connection was never
@@ -106,7 +107,7 @@ export async function callFunctionAt(url: string, auth: ReadCredentials, data: R
     let response: Response | null = null
     for (let attempt = 0; !response; attempt++) {
       try {
-        response = await fetch(url, {
+        response = await morseFetch(url, {
           method: 'POST', signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken },
           body: JSON.stringify({ data })

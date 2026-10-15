@@ -4,6 +4,7 @@ import { object } from '../../shared/validation'
 import { maxInquiryPhotoBytes } from '../../shared/channel-inquiries'
 import { UploadRefused } from './upload-refused'
 import { tr } from '../../shared/i18n'
+import { morseFetch } from './client-agent'
 
 // ChannelInquiryChatView attachment send. iOS MorsePendingMediaUploadManager stores an inquiry
 // attachment at inquiry_files/{inquiryId}/{messageId}.{ext} with the sender in ownerUid, which is
@@ -66,7 +67,7 @@ export async function uploadInquiryAttachment(auth: ReadCredentials, uid: string
     const bounded = AbortSignal.any([signal, auth.signal, AbortSignal.timeout(65000)])
     const credentials = await auth.authorize(bounded, false)
     validate(); bounded.throwIfAborted()
-    const response = await fetch(url, { ...init, body: typeof init.body === 'string' ? init.body : init.body ? new Uint8Array(init.body) : undefined,
+    const response = await morseFetch(url, { ...init, body: typeof init.body === 'string' ? init.body : init.body ? new Uint8Array(init.body) : undefined,
       signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store', headers: { ...init.headers,
         Authorization: `Firebase ${credentials.idToken}`, 'X-Firebase-AppCheck': credentials.appCheckToken } })
     if ([401, 403].includes(response.status)) { await response.body?.cancel(); throw new UploadRefused(tr('{0} 업로드 권한을 확인하지 못했습니다. 이 문의를 다시 열어 주세요.', [noun])) }

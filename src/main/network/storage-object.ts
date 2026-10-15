@@ -1,6 +1,7 @@
 import type { ReadCredentials } from './firestore-rpc'
 import { storageBucket } from '../media/media-document'
 import { tr } from '../../shared/i18n'
+import { morseFetch } from './client-agent'
 
 // One Storage object written with a resumable upload in 2 MB pieces (non-final pieces must be multiples of
 // 256 KiB), carrying the custom metadata the Storage rules check (ownerUid and the owning record's id).
@@ -10,7 +11,7 @@ export async function uploadStorageObject(auth: ReadCredentials, path: string, b
   const send = async (url: string, headers: Record<string, string>, payload?: string | Uint8Array): Promise<Response> => {
     signal.throwIfAborted()
     const bounded = AbortSignal.any([signal, AbortSignal.timeout(120000)]), credentials = await auth.authorize(bounded, false)
-    const response = await fetch(url, { method: 'POST', signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store',
+    const response = await morseFetch(url, { method: 'POST', signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store',
       headers: { ...headers, Authorization: `Firebase ${credentials.idToken}`, 'X-Firebase-AppCheck': credentials.appCheckToken },
       body: typeof payload === 'string' ? payload : payload ? new Uint8Array(payload) : undefined })
     if ([401, 403].includes(response.status)) { await response.body?.cancel(); throw new Error(tr('파일 업로드 권한을 확인하지 못했습니다.')) }
@@ -34,7 +35,7 @@ export async function uploadStorageObject(auth: ReadCredentials, path: string, b
 
 export async function deleteStorageObject(auth: ReadCredentials, path: string, signal: AbortSignal): Promise<void> {
   const credentials = await auth.authorize(signal, false)
-  const response = await fetch(`https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}`, { method: 'DELETE', signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
+  const response = await morseFetch(`https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}`, { method: 'DELETE', signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
     headers: { Authorization: `Firebase ${credentials.idToken}`, 'X-Firebase-AppCheck': credentials.appCheckToken } })
   await response.body?.cancel()
   // An object already gone is what was asked for; anything else (rules, quota, the network) says the file is still there.

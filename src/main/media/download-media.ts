@@ -3,6 +3,7 @@ import { storageBucket, type MediaResource } from './media-document'
 import { tr } from '../../shared/i18n'
 import { idleTimeout, maxReceivedMediaBytes, mediaIdleMs } from '../../shared/media-limits'
 import { downloadChannelPostMedia } from '../network/channel-post-media'
+import { morseFetch } from '../network/client-agent'
 
 export class MediaFailure extends Error {}
 // Shared authenticated download for explicit viewing and forwarding. The
@@ -30,7 +31,7 @@ async function download(credentials: ReadCredentials, resource: MediaResource, s
   for (let attempt = 0; attempt < 2; attempt++) {
     const authorization = await credentials.authorize(signal, attempt > 0)
     check()
-    response = await fetch(endpoint, { method: 'GET', signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
+    response = await morseFetch(endpoint, { method: 'GET', signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
       headers: { Authorization: `Firebase ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken } })
     if (response.status !== 401 || attempt > 0) break
     await response.body?.cancel()

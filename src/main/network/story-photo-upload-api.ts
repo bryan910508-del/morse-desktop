@@ -4,6 +4,7 @@ import { storyPhotoMime,storyPhotoMetadata, storyPhotoPath, storyPhotoSession, t
 import { sendAgain } from './resend'
 import { recordStoryStep } from '../platform/story-diagnostics'
 import { tr } from '../../shared/i18n'
+import { morseFetch } from './client-agent'
 export class StoryPhotoUploadBlocked extends Error { constructor(readonly reason: 'unknown' | 'expired') { super(reason === 'unknown' ? tr('서버의 완료 상태는 확인했지만 사진 완료 응답을 보관하지 못했습니다. 게시 가능 상태로 넘기지 않습니다.') : tr('업로드 세션이 만료되었습니다. 같은 경로에 새 업로드를 시작하지 않습니다.')) } }
 async function metadata(response: Response): Promise<unknown> {
   if (!response.body) throw new Error(tr('사진 완료 응답이 없습니다.'))
@@ -13,7 +14,7 @@ async function metadata(response: Response): Promise<unknown> {
 }
 // undici says only «fetch failed»; what it was is in the cause, and that is what the log keeps.
 async function fetched(url: string, init: RequestInit & { signal: AbortSignal }): Promise<Response> {
-  try { return await sendAgain(init.signal, () => fetch(url, init), (code, attempt) => recordStoryStep('upload-resend', `${code} ${attempt}`)) }
+  try { return await sendAgain(init.signal, () => morseFetch(url, init), (code, attempt) => recordStoryStep('upload-resend', `${code} ${attempt}`)) }
   catch (error) {
     const cause = error instanceof Error && error.cause, code = cause && typeof cause === 'object' ? (cause as { code?: string }).code : undefined
     recordStoryStep('upload-fetch-failed', `${code ?? ''} ${cause instanceof Error ? cause.message : ''}`)

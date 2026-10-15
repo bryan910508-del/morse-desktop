@@ -3,6 +3,7 @@ import type { StickerPackItem } from '../../shared/sticker-packs'
 import { maxStickerBytes, stickerKind } from '../../shared/stickers'
 import type { ReadCredentials } from './firestore-rpc'
 import { storageBucket } from '../media/media-document'
+import { morseFetch } from './client-agent'
 
 async function readBody(response: Response, max: number, signal: AbortSignal, validate: () => void): Promise<Buffer> {
   const header = response.headers.get('content-length'), length = header === null ? null : Number(header)
@@ -33,7 +34,7 @@ export async function downloadStickerPackItem(auth: ReadCredentials, item: Stick
   const authorization = await auth.authorize(signal, false)
   signal.throwIfAborted(); validate()
   const url = `https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(item.path)}?alt=media`
-  const response = await fetch(url, { signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
+  const response = await morseFetch(url, { signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
     headers: { Authorization: `Firebase ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken } })
   const bytes = await readBody(response, maxStickerBytes, signal, validate)
   const hash = createHash('sha256').update(bytes).digest('hex')

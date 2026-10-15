@@ -12,7 +12,7 @@ export const channelCategories = [
   { id: 'art', emoji: '🎨', title: tr('예술') }, { id: 'travel', emoji: '🌍', title: tr('여행') },
   { id: 'health', emoji: '💊', title: tr('건강') }, { id: 'finance', emoji: '💰', title: tr('재테크') },
   { id: 'pet', emoji: '🐕', title: tr('반려동물') }, { id: 'advice', emoji: '🤔', title: tr('고민/상담') },
-  { id: 'free', emoji: '🎭', title: tr('익명 자유') }
+  { id: 'free', emoji: '🎭', title: tr('자유 주제') }
 ] as const
 export type ChannelCategoryId = typeof channelCategories[number]['id']
 export function channelCategoryId(raw: unknown): ChannelCategoryId {

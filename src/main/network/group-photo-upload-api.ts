@@ -3,6 +3,7 @@ import { storageBucket } from '../media/media-document'
 import { object } from '../../shared/validation'
 import { groupPhotoUploadPath, groupPhotoUploadSession, groupPhotoUploadURL, type GroupPhotoUploadRecord } from '../storage/group-photo-upload-table'
 import { tr } from '../../shared/i18n'
+import { morseFetch } from './client-agent'
 
 async function json(response: Response): Promise<Record<string, unknown>> {
   if (!response.body) throw new Error(tr('사진 업로드 응답을 확인하지 못했습니다.'))
@@ -28,7 +29,7 @@ export async function uploadGroupPhoto(auth: ReadCredentials, uid: string, photo
     const bounded = AbortSignal.any([signal, auth.signal, AbortSignal.timeout(65000)])
     const credentials = await auth.authorize(bounded, false)
     validate(); bounded.throwIfAborted()
-    const response = await fetch(url, { ...init, body: typeof init.body === 'string' ? init.body : init.body ? new Uint8Array(init.body) : undefined,
+    const response = await morseFetch(url, { ...init, body: typeof init.body === 'string' ? init.body : init.body ? new Uint8Array(init.body) : undefined,
       signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store', headers: { ...init.headers,
         Authorization: `Firebase ${credentials.idToken}`, 'X-Firebase-AppCheck': credentials.appCheckToken } })
     if ([401, 403].includes(response.status)) { await response.body?.cancel(); throw new Error(tr('사진 업로드 권한을 확인하지 못했습니다. 계정 연결을 확인해 주세요.')) }

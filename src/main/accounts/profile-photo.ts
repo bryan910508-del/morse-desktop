@@ -6,6 +6,7 @@ import { photoAddressShape, recordAvatarStep } from '../platform/avatar-diagnost
 import { tr } from '../../shared/i18n'
 import { photoToken, userpicCacheFor, userpicURL } from './userpic-cache'
 import { forgetImages, rememberedImage, rememberImage } from './userpic-images'
+import { morseFetch } from '../network/client-agent'
 
 const limit = 10 * 1024 * 1024
 // Row photos use the storage upload ceiling (10 MB). iOS stores uncropped profile photos
@@ -99,7 +100,7 @@ export class ProfilePhoto {
     this.display?.validate()
     const authorization = await this.auth.authorize(signal, false)
     signal.throwIfAborted(); this.display?.validate()
-    const response = await fetch(`https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}?alt=media`, {
+    const response = await morseFetch(`https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}?alt=media`, {
       signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
       headers: { Authorization: `Firebase ${authorization.idToken}`, 'X-Firebase-AppCheck': authorization.appCheckToken }
     })

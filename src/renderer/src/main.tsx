@@ -67,6 +67,14 @@ function App() {
   }, [account])
   // A morse:// or talky:// link opens like the same link pressed in a message, once an account is open.
   useEffect(() => { if (ready && account) takeOpenLink() }, [ready, account])
+  // 0.241.36: the last run ended without quitting — said once, with the logs folder for an inquiry (tdesktop asks at
+  // the next launch too, core/crash_report_window.cpp; nothing is sent from here).
+  useEffect(() => {
+    if (!ready) return
+    void window.morse.takeCrashNotice().then(crashed => {
+      if (crashed) controller.toast(tr('지난번에 Morse가 예기치 않게 종료됐어요.'), 'default', { label: tr('기록 폴더 열기'), run: () => { void window.morse.openLogsFolder().catch(() => {}) } })
+    }).catch(() => {})
+  }, [ready])
   useEffect(() => desktop.on(event => {
     if (event.type === 'prepare-close') {
       void flushDrafts().then(() => true, () => false).then(ok => window.morse.completeClose(event.requestId, ok)).catch(() => {})

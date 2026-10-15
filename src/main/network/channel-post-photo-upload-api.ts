@@ -5,6 +5,7 @@ import { channelPostPhotoPath } from '../../shared/channel-post-photo'
 import { channelPostPhotoSession, type PostPhotoRecord } from '../storage/channel-post-creation-table'
 import { UploadRefused } from './upload-refused'
 import { tr } from '../../shared/i18n'
+import { morseFetch } from './client-agent'
 
 const chunkBytes = 256 * 1024
 async function json(response: Response): Promise<Record<string, unknown>> {
@@ -34,7 +35,7 @@ export async function uploadChannelPostPhoto(auth: ReadCredentials, uid: string,
     const bounded = AbortSignal.any([signal, auth.signal, AbortSignal.timeout(65000)])
     const credentials = await auth.authorize(bounded, false)
     validate(); bounded.throwIfAborted()
-    const response = await fetch(url, { ...init, body: typeof init.body === 'string' ? init.body : init.body ? new Uint8Array(init.body) : undefined,
+    const response = await morseFetch(url, { ...init, body: typeof init.body === 'string' ? init.body : init.body ? new Uint8Array(init.body) : undefined,
       signal: bounded, redirect: 'error', credentials: 'omit', cache: 'no-store', headers: { ...init.headers,
         Authorization: `Firebase ${credentials.idToken}`, 'X-Firebase-AppCheck': credentials.appCheckToken } })
     if ([401, 403].includes(response.status)) { await response.body?.cancel(); throw new UploadRefused(tr('사진 업로드 권한을 확인하지 못했습니다. 채널 권한과 연결을 확인해 주세요.')) }

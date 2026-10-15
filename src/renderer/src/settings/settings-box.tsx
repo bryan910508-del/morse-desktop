@@ -363,7 +363,7 @@ function AutoDeleteEntry({ accountUid }: { accountUid: string }) {
   const [months, setMonths] = useState<number | null>(null)
   useEffect(() => { void window.morse.accountPrivacy(accountUid).then(value => setMonths(value.autoDeleteMonths)).catch(() => setMonths(null)) }, [accountUid])
   const open = (): void => { controller.showLayer(close => <Box title={tr('자동 회원 탈퇴')} width={380} onClose={close} buttons={<button className="button flat" onClick={close}>{tr('완료')}</button>}>
-    <p className="box-text">{tr('미접속 기간이 지나면 계정 자동 삭제\nMorse의 "흔적 없는" 컨셉을 위한 마지막 보호 장치', [])}</p>
+    <p className="box-text">{tr('오래 접속하지 않으면 계정이 자동으로 삭제돼요', [])}</p>
     {autoDeleteMonthOptions.map(value => <label key={value} className="settings-radio"><input type="radio" name="auto-delete-months" defaultChecked={months === value}
       onChange={() => { setMonths(value); void window.morse.setAutoDeleteMonths(accountUid, value).catch(reason => controller.toast(errorText(reason, tr('자동 회원 탈퇴 기간을 저장하지 못했습니다.')), 'error')) }} />
       <span>{autoDeleteLabels[value]![0]}<small>{autoDeleteLabels[value]![1]}</small></span></label>)}

@@ -6,6 +6,7 @@ import { writeDialogPreference, DialogPreferenceWriteFailure, type DialogPrefere
 import { writeStickerPackInstall, writeStickerPackUninstall, StickerPackInstallFailure } from './sticker-pack-install-write'
 import type { StickerPack } from '../../shared/sticker-packs'
 import { recordStoryStep } from '../platform/story-diagnostics'
+import { clientAgent } from './client-agent'
 import { recordConnectionStep, recordWatch } from '../platform/connection-diagnostics'
 import { reachability } from './reachability'
 import { grpcCode, grpcDelivery, serverAnswered } from './grpc-delivery'
@@ -181,6 +182,8 @@ function newClient(): FirestoreClient {
     'grpc.keepalive_time_ms': 60000,
     'grpc.keepalive_timeout_ms': 20000,
     'grpc.keepalive_permit_without_calls': 1,
+    // 0.241.36: which Desktop calls (client-agent.ts) — grpc-js puts it before its own user agent.
+    'grpc.primary_user_agent': clientAgent(),
   })
 }
 // What one call says of the network (reachability.ts): it never left, or the server answered it.

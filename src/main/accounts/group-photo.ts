@@ -7,6 +7,7 @@ import { photoAddressShape, recordAvatarStep } from '../platform/avatar-diagnost
 import { tr } from '../../shared/i18n'
 import { photoToken, userpicCacheFor, userpicURL } from './userpic-cache'
 import { rememberedImage, rememberImage } from './userpic-images'
+import { morseFetch } from '../network/client-agent'
 
 export function groupPhotoFields(doc: FirestoreDocument): { hasPhoto: boolean; raw: string | null; channelId: string | null } {
   const primary = doc.fields.photoURL, cached = doc.fields.cachedPhotoURL
@@ -114,7 +115,7 @@ export class GroupPhoto {
     }
     const auth = await this.auth.authorize(signal, false)
     signal.throwIfAborted(); this.validate(photo)
-    const response = await fetch(`https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}?alt=media`, {
+    const response = await morseFetch(`https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}?alt=media`, {
       signal, redirect: 'error', credentials: 'omit', cache: 'no-store',
       headers: { Authorization: `Firebase ${auth.idToken}`, 'X-Firebase-AppCheck': auth.appCheckToken }
     })

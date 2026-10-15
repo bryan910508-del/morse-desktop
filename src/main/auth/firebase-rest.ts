@@ -13,6 +13,7 @@ import { reachability } from '../network/reachability'
 import { describeThisDevice } from '../platform/device-model'
 import { decodeQrIssue, decodeQrRedeem, qrSwitchOn, type QrIssue, type QrRedeem } from './qr-login'
 import { serverClock, serverNow } from '../network/server-clock'
+import { morseFetch } from '../network/client-agent'
 
 function string(value: unknown, max = 16384): string {
   if (typeof value !== 'string' || !value || value.length > max) throw new AuthenticationFailure('protocol')
@@ -85,7 +86,7 @@ export class FirebaseAuthenticationAPI {
   private async request(url: string, headers: Record<string, string>, body: string, signal: AbortSignal, kind: RequestKind = 'plain'): Promise<Record<string, unknown>> {
     const combined = AbortSignal.any([signal, AbortSignal.timeout(35000)])
     try {
-      const response = await sendAgain(combined, () => fetch(url, { method: 'POST', headers, body, signal: combined, redirect: 'error', credentials: 'omit', cache: 'no-store' }),
+      const response = await sendAgain(combined, () => morseFetch(url, { method: 'POST', headers, body, signal: combined, redirect: 'error', credentials: 'omit', cache: 'no-store' }),
         (code, attempt) => { reachability.lost(); recordConnectionStep('token-resend', `${code} ${attempt}`) })
       reachability.reached('https')
       // Bound the decoded response, including chunked responses with no length.
@@ -150,7 +151,7 @@ export class FirebaseAuthenticationAPI {
     const proof = await this.proof(signal)
     const combined = AbortSignal.any([signal, AbortSignal.timeout(15000)])
     try {
-      const response = await fetch(`https://firestore.googleapis.com/v1/projects/${this.config.projectId}/databases/(default)/documents/app_config/${name}?key=${encodeURIComponent(this.config.apiKey)}`,
+      const response = await morseFetch(`https://firestore.googleapis.com/v1/projects/${this.config.projectId}/databases/(default)/documents/app_config/${name}?key=${encodeURIComponent(this.config.apiKey)}`,
         { method: 'GET', headers: { 'X-Firebase-AppCheck': proof }, signal: combined, redirect: 'error', credentials: 'omit', cache: 'no-store' })
       if (!response.ok) return null
       const text = await response.text()

@@ -157,6 +157,7 @@ import { contactDetailsEdit } from '../shared/contact-details'
 import { contactPhotoBinding, contactPhotoEdit, contactPhotoRemoval } from '../shared/contact-photo'
 import { replyBinding } from '../shared/reply-draft'
 import { fullscreenAllowed } from './platform/fullscreen-permission'
+import { markCleanExit, startCrashRecording, takeCrashNotice } from './platform/crash-diagnostics'
 import { applicationMenuShown, composingKey, shortcutAccelerator, shortcutFor, shortcuts, viewerZoomKey, windowShortcutFor, type ShortcutCommand, type WindowCommand } from '../shared/shortcuts'
 import { NativeContextMenus, type ContextMenuItem } from './platform/context-menus'
 import { WindowState } from './platform/window-state'
@@ -491,6 +492,8 @@ function registerIPC(): void {
   }
   handle('snapshot', rendererSnapshot)
   handle('take-open-link', () => { const url = pendingSchemeLink; pendingSchemeLink = null; return url })
+  handle('take-crash-notice', () => takeCrashNotice())
+  handle('open-logs-folder', () => shell.openPath(app.getPath('logs')).then(() => {}))
   handle('power-saving-state', value => { if (typeof value === 'boolean') compressUploads = value })
   // tdesktop Core::ScreenshotProtection → Platform::SetWindowScreenshotProtection (NSWindowSharingNone,
   // WDA_EXCLUDEFROMCAPTURE): while protected content is shown the window stays out of captures.
@@ -3322,6 +3325,7 @@ async function configureRenderer(): Promise<void> {
 
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
+  startCrashRecording()
   app.on('second-instance', (_event, argv) => {
     const link = argv.find(value => /^(morse|talky):/i.test(value))
     if (link) receiveSchemeLink(link)
@@ -3347,7 +3351,7 @@ else {
       }
       try { await windowState?.save(); translator.close(); mediaHelper.close(); await authentication?.close(); accounts.closeAll(); await accounts.flush(); await settings?.flush() }
       catch { dialog.showErrorBox('Morse', tr('종료 중 저장소 오류가 발생했습니다. 다음 실행 시 저장 상태를 확인해 주세요.')) }
-      finally { shutdown = 'done'; desktopShell.close(); appUpdates.close(); if (appUpdates.requested) appUpdates.install(); else app.quit() }
+      finally { shutdown = 'done'; desktopShell.close(); appUpdates.close(); markCleanExit(); if (appUpdates.requested) appUpdates.install(); else app.quit() }
     })()
   })
   void app.whenReady().then(async () => {
