@@ -29,7 +29,8 @@ function feed(stories: FeedStory[], readMark?: StoryReadMark): PeerStoryFeed & {
     feedStories: (_type, owner) => stories.filter(item => item.ownerId === owner),
     mark: () => current,
     noteRead: item => { if (!laterMark(current, item)) return false; current = { ownerType: 'user', ownerId: item.ownerId, maxReadCreatedAt: item.createdAt, maxReadStoryId: item.storyId }; marks.push(current); return true },
-    inFeed: path => stories.some(item => item.storyPath === path)
+    inFeed: path => stories.some(item => item.storyPath === path),
+    gone: () => false
   }
 }
 const auth = (): ReadCredentials => ({ signal: new AbortController().signal } as unknown as ReadCredentials)

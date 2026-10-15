@@ -428,6 +428,7 @@ async function snapshot(): Promise<DesktopSnapshot> {
     peerStoryPhoto: screenLocked ? null : active?.peerStoryPhoto.snapshot ?? null,
     peerStoryVideo: screenLocked ? null : active?.peerStoryVideo.snapshot ?? null,
     peerStoryPhotoAudio: screenLocked ? null : active?.peerStoryPhotoAudio.snapshot ?? null,
+    peerStoriesDeleted: screenLocked ? null : active?.peerStories.deleted ?? null,
     storyPublication: screenLocked ? null : active?.storyPublication.snapshot ?? null,
     storyReplyDraft: screenLocked ? null : active?.storyReplyDraft.snapshot ?? null,
     storyHiddenChange: screenLocked ? null : active?.storyHiddenChange.snapshot ?? null,

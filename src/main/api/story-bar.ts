@@ -35,6 +35,9 @@ export class StoryBarApi {
   private readonly lists = new Map<ListName, Listened>()
   // Marks this device moved forward before the server's copy says so (iOS MorseStoryFeed.noteRead).
   private readonly localMarks = new Map<string, StoryReadMark>()
+  // B423: stories whose media the server says is gone (tdesktop Stories::_deleted, data_stories.cpp:909), by path. Their
+  // copies are left out of everything the feed gives until the server takes the copy away too.
+  private readonly deleted = new Set<string>()
   private order: string[] = []
   private cutoff = 0
   private rearmTimer: ReturnType<typeof setTimeout> | undefined
@@ -104,6 +107,15 @@ export class StoryBarApi {
     return this.feed().filter(story => story.ownerType === ownerType && story.ownerId === ownerId && story.expiresAt > at)
       .sort((a, b) => a.createdAt - b.createdAt || (a.storyId < b.storyId ? -1 : a.storyId > b.storyId ? 1 : 0))
   }
+  // B423, tdesktop applyDeleted (data_stories.cpp:899): the story leaves the row, the chat header's ring, the stories
+  // fetched ahead and every list opened from the feed (applyRemovedFromActive :987-1015), and is not asked for again.
+  applyDeleted(storyPath: string): void {
+    if (this.closed || this.deleted.has(storyPath)) return
+    this.deleted.add(storyPath)
+    this.changed()
+  }
+  // Whether a story was found deleted (lookup → NoStory::Deleted, :1164) — also one getMorsePeerStories gave.
+  gone(storyPath: string): boolean { return this.deleted.has(storyPath) }
   // Whether the feed holds this story — the server lets a view be written only then (firestore.rules storyViewWriteOk).
   inFeed(storyPath: string): boolean { return this.feed().some(story => story.storyPath === storyPath) }
   // Whether the feed has answered at all since it was opened.
@@ -124,7 +136,9 @@ export class StoryBarApi {
 
   private feed(): FeedStory[] {
     const out: FeedStory[] = []
-    for (const doc of this.lists.get('feed')?.docs.values() ?? []) { try { out.push(feedStoryFromDocument(doc, this.uid)) } catch { /* A malformed copy is not shown. */ } }
+    for (const doc of this.lists.get('feed')?.docs.values() ?? []) {
+      try { const story = feedStoryFromDocument(doc, this.uid); if (!this.deleted.has(story.storyPath)) out.push(story) } catch { /* A malformed copy is not shown. */ }
+    }
     return out
   }
   private storedMarks(): Map<string, StoryReadMark> {
@@ -154,7 +168,17 @@ export class StoryBarApi {
     this.lists.set(name, list)
     const mine = (): boolean => this.lists.get(name) === list
     list.stop = this.listen.add(this.target(name), {
-      snapshot: docs => { if (!mine()) return; list.docs = docs; list.answered = true; list.failed = false; this.changed() },
+      snapshot: docs => {
+        if (!mine()) return
+        list.docs = docs; list.answered = true; list.failed = false
+        // A deleted story whose copy the server has taken away is forgotten, as a story parsed again is (:597).
+        if (name === 'feed' && this.deleted.size) {
+          const held = new Set<string>()
+          for (const doc of docs.values()) { try { held.add(feedStoryFromDocument(doc, this.uid).storyPath) } catch { /* ignored */ } }
+          for (const path of this.deleted) if (!held.has(path)) this.deleted.delete(path)
+        }
+        this.changed()
+      },
       state: (state, error) => {
         if (!mine() || state !== 'error') return
         list.answered = true; list.failed = true

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { object } from '../../shared/validation'
 import type { ReadCredentials } from './firestore-rpc'
-import { callMorseFunction } from './morse-callable'
+import { callMorseFunction, MorseCallableFailure } from './morse-callable'
 import { storageBucket } from '../media/media-document'
 import { sendAgain } from './resend'
 import { morseFetch } from './client-agent'
@@ -20,8 +20,15 @@ export interface GrantedObjectCheck {
   weighFirst?: boolean
 }
 export interface GrantedObject { bytes: Buffer; contentType: string }
+// B423: the server says the object is not there — the grant answers not-found, or Storage 404. The story it belongs to
+// was deleted: tdesktop learns that from storyItemDeleted, also when a file's reference is asked for again
+// (data_stories.cpp:661-663, storage/download_manager_mtproto.cpp:933), and drops the story (applyDeleted :899).
+export class MediaGone extends Error {
+  constructor(label: string) { super(`${label} no longer exists`); this.name = 'MediaGone' }
+}
 
 async function body(response: Response, max: number, label: string, signal: AbortSignal, validate: () => void, progress?: (loaded: number, length: number | null) => void): Promise<Buffer> {
+  if (response.status === 404) { await response.body?.cancel(); throw new MediaGone(label) }
   const header = response.headers.get('content-length'), length = header === null ? null : Number(header)
   if (response.status !== 200 || !response.body || (length !== null && (!Number.isSafeInteger(length) || length <= 0 || length > max))) {
     await response.body?.cancel(); throw new Error(`Invalid ${label} response`)
@@ -55,7 +62,9 @@ export async function readGrantedStorageObject(auth: ReadCredentials, path: stri
   const resourceURL = `gs://${storageBucket}/${path}`, started = performance.now(), marks: string[] = []
   const mark = (name: string): void => { marks.push(`${name}=${Math.round(performance.now() - started)}`) }
   // The grant is the one callable of a read; morse-callable.ts sends it again while the connection was never made.
-  const grant = await callMorseFunction(auth, 'authorizeMorseMediaRead', { resourceURL }, signal, { validate, limit: 64 * 1024 })
+  const grant = await callMorseFunction(auth, 'authorizeMorseMediaRead', { resourceURL }, signal, { validate, limit: 64 * 1024 }).catch(error => {
+    throw error instanceof MorseCallableFailure && error.delivery === 'answered' && error.status === 'NOT_FOUND' ? new MediaGone(check.label) : error
+  })
   if (grant.ok !== true || grant.resourceURL !== resourceURL) throw new Error(`${check.label} authorization denied`)
   mark('grant')
   signal.throwIfAborted(); validate()
@@ -103,6 +112,7 @@ export async function readGrantedStorageObject(auth: ReadCredentials, path: stri
   const media = (async () => {
     const response = await get(`${endpoint}?alt=media`)
     mark('headers')
+    if (response.status === 404) { await response.body?.cancel(); throw new MediaGone(check.label) }
     const carried = described ? null : fromHeaders(response.headers)
     if (described) { /* Weighed already. */ }
     else if (carried) { described = Promise.resolve(carried); known = carried.size }

@@ -22,18 +22,21 @@ export class PeerStoryPhoto {
   private closed = false
   private job: Promise<void> | null = null
   private selected: { request: PeerStoryPhotoRequest; ownerId: string; viewer: OwnStoryPhoto } | null = null
-  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly detail: Detail, private readonly cache: StoryMediaCache, private readonly changed: () => void) {}
+  // `gone`: the server said a story's picture is not there (B423) — Session.storyDeleted.
+  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly detail: Detail, private readonly cache: StoryMediaCache, private readonly changed: () => void,
+    private readonly gone: (storyPath: string) => void = () => {}) {}
   private prepared(request: PeerStoryPhotoRequest): PeerStoryDetail {
     const prepared = this.detail(request), poster = request.presentation === 'video-poster'
     if (this.closed || prepared.ownerId === this.uid || prepared.story.mediaType !== (poster ? 'video' : 'image') || !(poster ? prepared.poster : prepared.image)) throw new Error(tr('현재 사진 스토리를 다시 선택해 주세요.'))
     return prepared
   }
-  private viewer(request: PeerStoryPhotoRequest, ownerId: string, valid: () => void, changed: () => void): OwnStoryPhoto {
+  private viewer(request: PeerStoryPhotoRequest, prepared: PeerStoryDetail, valid: () => void, changed: () => void): OwnStoryPhoto {
+    const { ownerId, storyPath } = prepared
     return new OwnStoryPhoto(ownerId, this.auth, current => {
       this.auth.signal.throwIfAborted(); valid()
       if (!same(current, request) || current.presentation !== request.presentation) throw new Error(tr('사진 선택이 변경되었습니다.'))
       return this.prepared(request).story
-    }, changed, { prefix: '__peer-story-photo', cache: this.cache, address: () => { const current = this.prepared(request); return request.presentation === 'video-poster' ? current.poster : current.image } })
+    }, changed, { prefix: '__peer-story-photo', cache: this.cache, address: () => { const current = this.prepared(request); return request.presentation === 'video-poster' ? current.poster : current.image }, gone: () => this.gone(storyPath) })
   }
   get snapshot(): PeerStoryPhotoSnapshot | null {
     const selected = this.selected
@@ -49,7 +52,7 @@ export class PeerStoryPhoto {
     const prepared = this.prepared(request)
     this.pause()
     const selected = { request, ownerId: prepared.ownerId, viewer: null as unknown as OwnStoryPhoto }
-    selected.viewer = this.viewer(request, prepared.ownerId, () => { if (this.closed || this.selected !== selected) throw new Error(tr('사진 선택이 변경되었습니다.')) }, () => { if (!this.closed) this.changed() })
+    selected.viewer = this.viewer(request, prepared, () => { if (this.closed || this.selected !== selected) throw new Error(tr('사진 선택이 변경되었습니다.')) }, () => { if (!this.closed) this.changed() })
     this.selected = selected
     // B416 ②: how long main takes to have a story photo ready once asked (a preloaded one should be at once).
     const started = performance.now()
@@ -63,7 +66,7 @@ export class PeerStoryPhoto {
   preload(input: unknown): Promise<void> {
     const request = peerStoryPhotoRequest(input), prepared = this.prepared(request)
     if (this.cache.has(storyMediaKey(prepared.ownerId, request.storyId, request.version, `photo:${request.presentation}:${prepared.story.privacy}`))) return Promise.resolve()
-    const viewer = this.viewer(request, prepared.ownerId, () => { if (this.closed) throw new Error(tr('사진 선택이 변경되었습니다.')) }, () => {})
+    const viewer = this.viewer(request, prepared, () => { if (this.closed) throw new Error(tr('사진 선택이 변경되었습니다.')) }, () => {})
     return viewer.load(request).finally(() => void viewer.close())
   }
   response(token: string, request: Request): Response {
@@ -78,18 +81,20 @@ export class PeerStoryVideo {
   private closed = false
   private job: Promise<void> | null = null
   private selected: { request: PeerStoryVideoRequest; ownerId: string; viewer: OwnStoryVideo } | null = null
-  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly detail: Detail, private readonly cache: StoryMediaCache, private readonly changed: () => void) {}
+  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly detail: Detail, private readonly cache: StoryMediaCache, private readonly changed: () => void,
+    private readonly gone: (storyPath: string) => void = () => {}) {}
   private prepared(request: PeerStoryVideoRequest): PeerStoryDetail {
     const prepared = this.detail(request), paired = request.mode === 'with-audio'
     if (this.closed || prepared.ownerId === this.uid || prepared.story.mediaType !== 'video' || prepared.story.audio !== (paired ? 'attached' : 'none') || !prepared.video || (paired && !prepared.audio)) throw new Error(tr('현재 영상 스토리를 다시 선택해 주세요.'))
     return prepared
   }
-  private viewer(request: PeerStoryVideoRequest, ownerId: string, valid: () => void, changed: () => void): OwnStoryVideo {
+  private viewer(request: PeerStoryVideoRequest, prepared: PeerStoryDetail, valid: () => void, changed: () => void): OwnStoryVideo {
+    const { ownerId, storyPath } = prepared
     return new OwnStoryVideo(ownerId, this.auth, current => {
       this.auth.signal.throwIfAborted(); valid()
       if (!same(current, request) || current.mode !== request.mode) throw new Error(tr('영상 선택이 변경되었습니다.'))
       return this.prepared(request).story
-    }, changed, { prefix: '__peer-story-video', cache: this.cache, address: () => { const current = this.prepared(request); return { path: current.video, audioPath: request.mode === 'with-audio' ? current.audio : null } } })
+    }, changed, { prefix: '__peer-story-video', cache: this.cache, address: () => { const current = this.prepared(request); return { path: current.video, audioPath: request.mode === 'with-audio' ? current.audio : null } }, gone: () => this.gone(storyPath) })
   }
   get snapshot(): PeerStoryVideoSnapshot | null {
     const selected = this.selected
@@ -105,7 +110,7 @@ export class PeerStoryVideo {
     const prepared = this.prepared(request)
     this.pause()
     const selected = { request, ownerId: prepared.ownerId, viewer: null as unknown as OwnStoryVideo }
-    selected.viewer = this.viewer(request, prepared.ownerId, () => { if (this.closed || this.selected !== selected) throw new Error(tr('영상 선택이 변경되었습니다.')) }, () => { if (!this.closed) this.changed() })
+    selected.viewer = this.viewer(request, prepared, () => { if (this.closed || this.selected !== selected) throw new Error(tr('영상 선택이 변경되었습니다.')) }, () => { if (!this.closed) this.changed() })
     this.selected = selected
     const task = Promise.resolve().then(() => selected.viewer.load(request)).finally(() => { if (this.job === task) this.job = null; if (!this.closed) this.changed() })
     this.job = task; this.changed(); return task
@@ -113,7 +118,7 @@ export class PeerStoryVideo {
   preload(input: unknown): Promise<void> {
     const request = peerStoryVideoRequest(input), prepared = this.prepared(request)
     if (this.cache.has(storyMediaKey(prepared.ownerId, request.storyId, request.version, `video:${request.mode}:${prepared.story.privacy}`))) return Promise.resolve()
-    const viewer = this.viewer(request, prepared.ownerId, () => { if (this.closed) throw new Error(tr('영상 선택이 변경되었습니다.')) }, () => {})
+    const viewer = this.viewer(request, prepared, () => { if (this.closed) throw new Error(tr('영상 선택이 변경되었습니다.')) }, () => {})
     return viewer.load(request).finally(() => void viewer.close())
   }
   response(token: string, request: Request, audio = false): Response {
@@ -130,7 +135,8 @@ export class PeerStoryPhotoAudio {
   private closed = false
   private selected: Pair | null = null
   private job: Promise<void> | null = null
-  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly detail: Detail, private readonly changed: () => void, private readonly now: () => number = serverNow) {}
+  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly detail: Detail, private readonly changed: () => void, private readonly now: () => number = serverNow,
+    private readonly gone: (storyPath: string) => void = () => {}) {}
   private publish(): void { if (!this.closed) this.changed() }
   private prepared(request: PeerStoryPhotoAudioRequest): PeerStoryDetail {
     const prepared = this.detail(request)
@@ -183,7 +189,7 @@ export class PeerStoryPhotoAudio {
       if (!same(current, request)) throw new Error(tr('사진·오디오 선택이 변경되었습니다.'))
       return this.prepared(request).story
     }
-    const photo = new OwnStoryPhoto(prepared.ownerId, this.auth, current => { if (current.presentation !== 'image') throw new Error('Expected image'); return source(current) }, () => this.childChanged(selected), { prefix: '__peer-story-photo-audio-image', address: () => this.prepared(request).image })
+    const photo = new OwnStoryPhoto(prepared.ownerId, this.auth, current => { if (current.presentation !== 'image') throw new Error('Expected image'); return source(current) }, () => this.childChanged(selected), { prefix: '__peer-story-photo-audio-image', address: () => this.prepared(request).image, gone: () => this.gone(prepared.storyPath) })
     const audio = new OwnStoryAudio(prepared.ownerId, this.auth, source, () => this.childChanged(selected), { prefix: '__peer-story-photo-audio-sound', address: () => this.prepared(request).audio })
     selected = { request, ownerId: prepared.ownerId, photo, audio, photoStarted: false, audioStarted: false, phase: 'loading', deadline: performance.now() + lifetime, expiresAt: this.now() + lifetime, timer: null, acquisition: null }
     this.selected = selected

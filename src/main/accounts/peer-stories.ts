@@ -3,7 +3,7 @@
 import type { OwnStoryDetail, StoryPrivacy } from '../../shared/own-stories'
 import { positionAt } from '../../shared/model'
 import { firstStoryCaptionLink } from '../../shared/story-caption-link'
-import { peerStoriesRequest, peerStoryLink, peerStoryReaction, peerStoryTarget, storyReactions, type PeerStoriesResult, type PeerStoryRow, type PeerStoryTarget } from '../../shared/peer-stories'
+import { peerStoriesRequest, peerStoryLink, peerStoryReaction, peerStoryTarget, storyReactions, type PeerStoriesDeleted, type PeerStoriesResult, type PeerStoryRow, type PeerStoryTarget } from '../../shared/peer-stories'
 import { status } from '@grpc/grpc-js'
 import { DocumentWriteFailure, FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
 import { callMorseFunction } from '../network/morse-callable'
@@ -28,10 +28,12 @@ export interface PeerStoryFeed {
   mark(ownerType: 'user', ownerId: string): StoryReadMark | undefined
   noteRead(story: Pick<FeedStory, 'ownerType' | 'ownerId' | 'createdAt' | 'storyId'>): boolean
   inFeed(storyPath: string): boolean
+  // B423: a story found deleted (StoryBarApi.gone).
+  gone(storyPath: string): boolean
 }
-interface Opened { id: string; ownerId: string; stories: Map<string, FeedStory> }
+interface Opened { id: string; ownerId: string; stories: Map<string, FeedStory>; deleted: string[] }
 // What the media viewers fetch a story from: its detail and the addresses its copy names.
-export interface PeerStoryDetail { ownerId: string; story: OwnStoryDetail; image: string | null; poster: string | null; video: string | null; audio: string | null }
+export interface PeerStoryDetail { ownerId: string; storyPath: string; story: OwnStoryDetail; image: string | null; poster: string | null; video: string | null; audio: string | null }
 // This account's own record on a story, read once per run (iOS StoryService.myView :240-250).
 interface MyView { viewed: boolean; reaction: string | null }
 
@@ -72,8 +74,8 @@ export class PeerStories {
       this.validate()
     }
     const at = this.now()
-    stories = stories.filter(story => story.expiresAt > at && story.ownerId === request.ownerId && story.collection !== 'channel')
-    this.opened = { id: request.id, ownerId: request.ownerId, stories: new Map(stories.map(story => [story.storyId, story])) }
+    stories = stories.filter(story => story.expiresAt > at && story.ownerId === request.ownerId && story.collection !== 'channel' && !this.feed.gone(story.storyPath))
+    this.opened = { id: request.id, ownerId: request.ownerId, stories: new Map(stories.map(story => [story.storyId, story])), deleted: [] }
     const mark = this.feed.mark('user', request.ownerId)
     const rows: PeerStoryRow[] = stories.map(story => ({ id: story.storyId, version: story.version, caption: story.caption, mediaType: story.mediaType, audio: story.audio,
       hasThumbnail: story.hasThumbnail, createdAt: story.createdAt, expiresAt: story.expiresAt, privacy: story.privacy as StoryPrivacy }))
@@ -83,6 +85,24 @@ export class PeerStories {
   // Whether a person's stories are open in the viewer (story-preloader.ts waits while they are).
   get isOpen(): boolean { return !this.closed && this.opened !== null }
   close(id: string): void { if (this.opened?.id === id) this.opened = null }
+  // B423, applyDeleted (data_stories.cpp:899): a deleted story leaves the open list — its media is no longer fetched, and
+  // the viewer, told by `deleted`, closes if it is the one on screen (media_stories_controller.cpp:1025-1032) and
+  // otherwise only drops it.
+  applyDeleted(storyPath: string): boolean {
+    const opened = this.opened
+    if (this.closed || !opened) return false
+    for (const [id, story] of opened.stories) {
+      if (story.storyPath !== storyPath) continue
+      opened.stories.delete(id); opened.deleted = [...opened.deleted, id]
+      return true
+    }
+    return false
+  }
+  // The stories of the open list found deleted since it opened, for the viewer.
+  get deleted(): PeerStoriesDeleted | null {
+    const opened = this.opened
+    return this.closed || !opened || !opened.deleted.length ? null : { requestId: opened.id, storyIds: opened.deleted }
+  }
   pause(): void { this.opened = null }
 
   // The story a request names, as the open list holds it.
@@ -99,7 +119,7 @@ export class PeerStories {
     const paths = storyMediaPaths({ name: story.storyPath, fields: { mediaType: { stringValue: story.mediaType }, mediaURL: { stringValue: story.mediaURL }, thumbnailURL: text(story.thumbnailURL), audioURL: text(story.audioURL) } } as unknown as FirestoreDocument, story.ownerId)
     const detail: OwnStoryDetail = { audio: story.audio, hasThumbnail: story.hasThumbnail, id: story.storyId, version: story.version, privacy: story.privacy as StoryPrivacy,
       caption: story.caption, preview: story.caption.slice(0, 160).replace(/\s+/g, ' '), created: positionAt(story.createdAt, story.storyId), expires: positionAt(story.expiresAt, story.storyId), mediaType: story.mediaType }
-    return { ownerId: story.ownerId, story: detail, image: paths.image, poster: paths.poster, video: paths.video, audio: story.audio === 'attached' ? paths.audio : null }
+    return { ownerId: story.ownerId, storyPath: story.storyPath, story: detail, image: paths.image, poster: paths.poster, video: paths.video, audio: story.audio === 'attached' ? paths.audio : null }
   }
 
   // A story was shown.

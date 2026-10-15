@@ -8,13 +8,15 @@ import { documents } from '../network/firestore-values'
 import { ownStoryCollections, ownStoryFromDocument } from '../network/own-story-document'
 import { ownStoryPhotoPath } from '../media/own-story-photo-document'
 import { downloadOwnStoryPhoto } from '../network/own-story-photo'
+import { MediaGone } from '../network/granted-storage-read'
 import { channelMediaResponse } from '../media/channel-media-response'
 import { storyMediaKey, type StoryMediaCache } from './story-media-cache'
 import { mediaCacheFor } from './media-cache'
 import { recordStoryStep } from '../platform/story-diagnostics'
 import { tr } from '../../shared/i18n'
 // B408 S2: someone else's story is fetched only from the address its feed copy names; its document is never read.
-export interface PeerStoryPhotoOptions { prefix: '__peer-story-photo' | '__peer-story-photo-audio-image'; cache?: StoryMediaCache; address(request: OwnStoryPhotoRequest): string | null }
+// `gone`: the server says the picture is not there (B423) — the story was deleted.
+export interface PeerStoryPhotoOptions { prefix: '__peer-story-photo' | '__peer-story-photo-audio-image'; cache?: StoryMediaCache; address(request: OwnStoryPhotoRequest): string | null; gone?(): void }
 interface Selection { request: OwnStoryPhotoRequest; abort: AbortController; reader: FirestoreReader; token: string; path: string | null; watched: boolean; bytes: Buffer | null; mime: string; deadline: number }
 export class OwnStoryPhoto {
   private selected: Selection | null = null
@@ -53,6 +55,7 @@ export class OwnStoryPhoto {
     const signal = AbortSignal.any([this.auth.signal, media.abort.signal, AbortSignal.timeout(45000)])
     const task = this.shown(media, source) ? Promise.resolve() : this.download(media, signal).catch(error => {
       recordStoryStep('photo-failed', error instanceof Error ? error.message : '')
+      if (error instanceof MediaGone) this.options?.gone?.()
       if (this.selected !== media) return
       this.clear(); this.value = { ...request, status: 'error', url: null, loaded: 0, total: null, message: tr('사진의 현재 문서·권한·형식·크기를 확인하지 못했습니다. 스토리 목록을 다시 읽은 뒤 열어 주세요.') }
     }).finally(() => { if (this.job === task) this.job = null; this.publish() })

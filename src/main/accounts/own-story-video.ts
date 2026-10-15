@@ -14,9 +14,11 @@ import { channelMediaResponse } from '../media/channel-media-response'
 import { storyMediaKey, type StoryMediaCache } from './story-media-cache'
 import { mediaCacheFor } from './media-cache'
 import { recordStoryStep } from '../platform/story-diagnostics'
+import { MediaGone } from '../network/granted-storage-read'
 import { tr } from '../../shared/i18n'
 // B408 S2: someone else's video and its sound come only from the addresses its feed copy names.
-export interface PeerStoryVideoOptions { prefix: '__peer-story-video'; cache?: StoryMediaCache; address(request: OwnStoryVideoRequest): { path: string | null; audioPath: string | null } }
+// `gone`: the server says the video is not there (B423) — the story was deleted. Its sound alone missing is not that.
+export interface PeerStoryVideoOptions { prefix: '__peer-story-video'; cache?: StoryMediaCache; address(request: OwnStoryVideoRequest): { path: string | null; audioPath: string | null }; gone?(): void }
 interface Selection { audioPath: string | null; audioBytes: Buffer | null; audioMime: string; request: OwnStoryVideoRequest; abort: AbortController; reader: FirestoreReader; token: string; path: string | null; watched: boolean; bytes: Buffer | null; mime: string; deadline: number }
 export class OwnStoryVideo {
   private selected: Selection | null = null
@@ -55,6 +57,7 @@ export class OwnStoryVideo {
     const signal = AbortSignal.any([this.auth.signal, media.abort.signal, AbortSignal.timeout(45000)])
     const task = this.shown(media, source) ? Promise.resolve() : this.download(media, signal).catch(error => {
       recordStoryStep('video-failed', error instanceof Error ? error.message : '')
+      if (error instanceof MediaGone) this.options?.gone?.()
       if (this.selected !== media) return
       this.clear(); this.value = { ...request, status: 'error', audioUrl: null, url: null, loaded: 0, total: null, message: tr('영상의 현재 문서·권한·형식·크기를 확인하지 못했습니다. 스토리 목록을 다시 읽은 뒤 열어 주세요.') }
     }).finally(() => { if (this.job === task) this.job = null; this.publish() })
@@ -142,6 +145,7 @@ export class OwnStoryVideo {
     if (video.status === 'rejected' || audio.status === 'rejected') {
       if (video.status === 'fulfilled') video.value.fill(0)
       if (audio.status === 'fulfilled') audio.value?.bytes.fill(0)
+      if (video.status === 'rejected' && video.reason instanceof MediaGone) throw video.reason
       throw new Error('Story media preparation incomplete')
     }
     const downloaded = video.value, soundtrack = audio.value

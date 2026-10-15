@@ -219,6 +219,19 @@ function StoryViewer({ accountUid, peers, startIndex, close }: { accountUid: str
     else if (peerIndex > 0) setPeerIndex(peerIndex - 1)
   }
   const { progress, setProgress } = useStoryProgress(key, duration, stopped, item ? storyKind(item) !== 'video' : false, next)
+  // B423: stories of this list main found deleted (peer-stories.ts applyDeleted). The one on screen closes the viewer, as
+  // tdesktop's Controller does on Destroyed (media_stories_controller.cpp:1025-1032); the others only leave the list.
+  const deleted = useDesktop(state => peer && state?.peerStoriesDeleted?.requestId === peer.requestId ? state.peerStoriesDeleted.storyIds.join(',') : '')
+  useEffect(() => {
+    if (!peer || !deleted) return
+    const ids = deleted.split(',')
+    if (item && ids.includes(item.id)) { close(); return }
+    const items = peer.items.filter(story => !ids.includes(story.id))
+    if (items.length === peer.items.length) return
+    const updated = { ...peer, items }
+    current.current = updated
+    setPeer(updated); setItemIndex(item ? Math.max(0, items.findIndex(story => story.id === item.id)) : 0)
+  }, [deleted])
   // This account's reaction on the story (its views/{me} record) is shown as selected.
   useEffect(() => {
     setMyReaction(null)

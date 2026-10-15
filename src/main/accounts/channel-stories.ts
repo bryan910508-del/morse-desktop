@@ -7,6 +7,7 @@ import { storyRead, type FeedStory, type StoryReadMark } from '../network/story-
 import { callableStories, storyReactionWrite, storyReadMarkWrite, storyViewedWrite } from '../network/story-views'
 import { positionMilliseconds } from '../../shared/model'
 import { channelStoryObject, channelStoryPath, deleteChannelStoryFile, downloadChannelStoryFile, uploadChannelStoryFile } from '../network/channel-story-media'
+import { MediaGone } from '../network/granted-storage-read'
 import { channelStoriesQuery, channelStoryFields } from '../network/channel-story-write'
 import { channelStoryReactions, maxChannelStoryCaption, type ChannelStoriesSnapshot, type ChannelStory, type ChannelStoryMedia, type ChannelStoryPublish } from '../../shared/channel-stories'
 import { identifier } from '../../shared/validation'
@@ -61,6 +62,8 @@ export interface ChannelStoryFeed {
   mark(ownerType: 'channel', ownerId: string): StoryReadMark | undefined
   noteRead(story: Pick<FeedStory, 'ownerType' | 'ownerId' | 'createdAt' | 'storyId'>): boolean
   inFeed(storyPath: string): boolean
+  // B423: the server said a story's media is not there (Session.storyDeleted).
+  storyDeleted(storyPath: string): void
 }
 export type ChannelStoryRole = 'owner' | 'admin' | null
 
@@ -139,6 +142,18 @@ export class ChannelStories {
     }
     return result
   }
+  // B423, applyDeleted (data_stories.cpp:899): a deleted story leaves the channel's ring and list at once; a viewer
+  // showing it closes (channel-stories.tsx), as tdesktop's does (media_stories_controller.cpp:1025-1032).
+  applyDeleted(storyPath: string): void {
+    let removed = false
+    for (const [channelId, list] of this.lists) {
+      const gone = list.rows.find(row => row.storyPath === storyPath)
+      if (!gone) continue
+      list.rows = list.rows.filter(row => row !== gone); removed = true
+      this.held = this.held.filter(item => { const drop = item.channelId === channelId && item.storyId === gone.story.id; if (drop) item.bytes.fill(0); return !drop })
+    }
+    if (removed && !this.closed) this.changed()
+  }
   private row(channelId: string, storyId: string): Row {
     const row = this.lists.get(identifier(channelId))?.rows.find(value => value.story.id === identifier(storyId))
     if (!row || row.story.expiresAt <= serverNow()) throw new Error(tr('스토리가 만료되었거나 삭제되었습니다.'))
@@ -160,7 +175,8 @@ export class ChannelStories {
       return `morse://app/__channel-story/${key}`
     }
     void this.readReaction(row)
-    const url = row.story.mediaType === 'video' ? await fetchOne(row.mediaPath, ['video/mp4', 'video/quicktime'], maxVideo) : await fetchOne(row.mediaPath, ['image/jpeg', 'image/png'], maxPhoto)
+    const url = await (row.story.mediaType === 'video' ? fetchOne(row.mediaPath, ['video/mp4', 'video/quicktime'], maxVideo) : fetchOne(row.mediaPath, ['image/jpeg', 'image/png'], maxPhoto))
+      .catch(error => { if (error instanceof MediaGone) this.feed?.storyDeleted(row.storyPath); throw error })
     const audioUrl = row.audioPath ? await fetchOne(row.audioPath, ['audio/mp4', 'audio/x-m4a', 'audio/m4a', 'audio/mpeg', 'audio/aac'], maxAudio).catch(() => null) : null
     return { url, audioUrl }
   }

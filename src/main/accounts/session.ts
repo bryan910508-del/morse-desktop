@@ -403,7 +403,8 @@ export class AccountSession {
     // channel's own.
     this.channelStories = new ChannelStories(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() }, {
       feedStories: (ownerType, ownerId) => this.storyBarApi.feedStories(ownerType, ownerId), mark: (ownerType, ownerId) => this.storyBarApi.mark(ownerType, ownerId),
-      noteRead: story => this.storyBarApi.noteRead(story), inFeed: storyPath => this.storyBarApi.inFeed(storyPath)
+      noteRead: story => this.storyBarApi.noteRead(story), inFeed: storyPath => this.storyBarApi.inFeed(storyPath),
+      storyDeleted: storyPath => this.storyDeleted(storyPath, 'channel')
     }, channelId => this.channelStoryRole(channelId))
     this.channelPublicPreview = new ChannelPublicPreview(profile.uid, credentials, () => !this.closed && !this.locked, request => this.channelDiscovery.selection(request), () => { if (!this.closed) events.changed() })
     this.contactDiscovery = new ContactDiscovery(profile.uid, credentials, () => !this.closed && !this.locked,
@@ -481,11 +482,12 @@ export class AccountSession {
     // from the addresses those name, and a view or reaction goes straight to the story's views/{me}.
     this.peerStories = new PeerStories(profile.uid, credentials, {
       feedStories: (ownerType, ownerId) => this.storyBarApi.feedStories(ownerType, ownerId), mark: (ownerType, ownerId) => this.storyBarApi.mark(ownerType, ownerId),
-      noteRead: story => this.storyBarApi.noteRead(story), inFeed: storyPath => this.storyBarApi.inFeed(storyPath)
+      noteRead: story => this.storyBarApi.noteRead(story), inFeed: storyPath => this.storyBarApi.inFeed(storyPath), gone: storyPath => this.storyBarApi.gone(storyPath)
     }, () => { if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.')) }, () => events.storyStealth())
-    this.peerStoryPhoto = new PeerStoryPhoto(profile.uid, credentials, target => this.peerStories.detail(target), this.storyMedia, () => { if (!this.closed) events.changed() })
-    this.peerStoryVideo = new PeerStoryVideo(profile.uid, credentials, target => this.peerStories.detail(target), this.storyMedia, () => { if (!this.closed) events.changed() })
-    this.peerStoryPhotoAudio = new PeerStoryPhotoAudio(profile.uid, credentials, target => this.peerStories.detail(target), () => { if (!this.closed) events.changed() })
+    const peerStoryGone = (storyPath: string): void => this.storyDeleted(storyPath, 'viewer')
+    this.peerStoryPhoto = new PeerStoryPhoto(profile.uid, credentials, target => this.peerStories.detail(target), this.storyMedia, () => { if (!this.closed) events.changed() }, peerStoryGone)
+    this.peerStoryVideo = new PeerStoryVideo(profile.uid, credentials, target => this.peerStories.detail(target), this.storyMedia, () => { if (!this.closed) events.changed() }, peerStoryGone)
+    this.peerStoryPhotoAudio = new PeerStoryPhotoAudio(profile.uid, credentials, target => this.peerStories.detail(target), () => { if (!this.closed) events.changed() }, undefined, peerStoryGone)
     this.storyReplyDraft = new StoryReplyDraft(profile.uid, credentials, network => {
       if (this.closed || this.locked || (network && this.connection !== 'ready')) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
     }, request => {
@@ -646,6 +648,7 @@ export class AccountSession {
       fetch: (candidate, maxBytes, weighFirst, signal) => downloadOwnStoryPhoto(credentials, candidate.path, candidate.storyId, candidate.ownerId, signal,
         () => { if (this.closed || this.locked || !this.storyRowShown) throw new Error('Story preload stopped') }, maxBytes, () => {}, weighFirst),
       keep: (path, bytes) => mediaCacheFor(credentials)?.write(path, bytes),
+      gone: storyPath => this.storyDeleted(storyPath, 'row'),
       record: (step, detail) => recordStoryStep(step, detail)
     }, credentials.signal)
     this.accountTools = new AccountToolsApi(profile.uid, credentials, connected)
@@ -2987,6 +2990,18 @@ export class AccountSession {
   }
   retry(chatId: string, id: string) { return this.delivery.retry(chatId, id) }
   discard(chatId: string, id: string) { return this.delivery.discard(chatId, id) }
+  // B423 — tdesktop Stories::applyDeleted (data_stories.cpp:899), the one place a story is dropped once the server says
+  // its media is not there: the row, the chat header's ring and the stories fetched ahead lose it (story-bar.ts), an open
+  // list loses it and its viewer closes if it is on screen (peer-stories.ts, channel-stories.ts), and it is not asked for
+  // again while its copy stays.
+  private storyDeleted(storyPath: string, source: 'viewer' | 'row' | 'channel'): void {
+    if (this.closed) return
+    if (!this.storyBarApi.gone(storyPath)) recordStoryStep('story-deleted', `source=${source}`)
+    this.storyBarApi.applyDeleted(storyPath)
+    this.peerStories.applyDeleted(storyPath)
+    this.channelStories.applyDeleted(storyPath)
+    this.events.changed()
+  }
   // B416 B: whether the stories row is on screen in a visible window (the renderer says so, as for channel stories).
   setStoryRowShown(shown: boolean): void {
     if (this.closed || this.storyRowShown === shown) return

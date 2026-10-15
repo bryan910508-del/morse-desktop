@@ -307,7 +307,6 @@ button.info-row:hover { background: var(--card-pressed) }
 .support-chat .shared-media-text { flex: 1 }
 .support-info { display: flex; justify-content: space-between; padding: 6px 4px; font-size: 14px; color: var(--text-medium) }
 .guide-bullets { margin: 6px 0; padding-left: 22px; font-size: 14px; line-height: 1.9 }
-.guide-tagline { text-align: center }
 .guide-chevron { flex: none; opacity: .5 }
 .settings-hero svg { color: var(--accent) }
 .settings-update { display: grid; justify-items: center; gap: 8px; margin: 6px 0 4px; font-size: var(--t-caption); color: var(--text-weak) }

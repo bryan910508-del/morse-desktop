@@ -414,6 +414,7 @@ export interface DesktopSnapshot {
   peerStoryPhoto: import('./peer-stories').PeerStoryPhotoSnapshot | null
   peerStoryVideo: import('./peer-stories').PeerStoryVideoSnapshot | null
   peerStoryPhotoAudio: import('./peer-stories').PeerStoryPhotoAudioSnapshot | null
+  peerStoriesDeleted: import('./peer-stories').PeerStoriesDeleted | null
   storyPublication: import('./story-publication').StoryPublicationSnapshot | null
   storyReplyDraft: import('./story-reply-draft').StoryReplyDraftSnapshot | null
   storyHiddenChange: import('./story-hidden-change').StoryHiddenChangeSnapshot | null

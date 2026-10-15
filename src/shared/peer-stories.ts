@@ -18,6 +18,8 @@ export interface PeerStoriesResult {
   id: string; ownerId: string; outcome: 'ready' | 'unavailable'; rows: PeerStoryRow[]
   readUpTo: { createdAt: number; storyId: string } | null; observedAt: number; message: string
 }
+// B423: the stories of the open list found deleted since it opened (peer-stories.ts applyDeleted).
+export interface PeerStoriesDeleted { requestId: string; storyIds: string[] }
 // One story of the open list: what is shown, read, reacted to, or whose link is opened.
 export interface PeerStoryTarget { requestId: string; storyId: string; version: string }
 export interface PeerStoryReaction extends PeerStoryTarget { emoji: string | null }

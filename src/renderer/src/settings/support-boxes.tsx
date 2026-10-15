@@ -74,7 +74,6 @@ function GuideBox({ close }: { close(): void }) {
         <span className="shared-media-text"><strong>{item.title}</strong><small>{item.summary}</small></span>
         <ChevronRight size={16} className="guide-chevron" />
       </button>)}
-      <p className="box-note guide-tagline">{tr('"공적인 것에서 해방된 메신저"')}<br />{'Morse'}</p>
     </>}
   </Box>
 }

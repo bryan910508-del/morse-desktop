@@ -1,6 +1,7 @@
 // Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.3.1),
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { MorseCallableFailure } from '../network/morse-callable'
+import { MediaGone } from '../network/granted-storage-read'
 
 // B416 B: the story each person of the stories row would open with is fetched before it is pressed, one at a time,
 // into this account's media cache — the viewer reads that cache before the network (own-story-photo.ts download), so
@@ -25,6 +26,9 @@ export interface PreloaderDeps {
   cached(path: string): Promise<boolean>
   fetch(candidate: PreloadCandidate, maxBytes: number, weighFirst: boolean, signal: AbortSignal): Promise<Buffer>
   keep(path: string, bytes: Buffer): void
+  // B423: the server said the picture is not there — the story was deleted (Session.storyDeleted); tdesktop's
+  // applyDeleted stops that story's preload and goes on with the next (data_stories.cpp:952-955).
+  gone(storyPath: string): void
   record(step: string, detail: string): void
 }
 export const maxPreloadBytes = 8 * 1024 * 1024
@@ -79,9 +83,10 @@ export class StoryPreloader {
       if (signal.aborted) then = 'stop'
       else {
         // A refusal or a mismatch is not asked again; a connection that failed is tried at the next choice.
-        const network = error instanceof TypeError || (error instanceof MorseCallableFailure && error.delivery !== 'answered')
+        const network = error instanceof TypeError || (error instanceof MorseCallableFailure && error.delivery !== 'answered'), gone = error instanceof MediaGone
         if (!network) this.done.add(candidate.path)
-        this.deps.record('story-preload-failed', `${network ? 'network' : 'refused'} ms=${Math.round(performance.now() - started)}`)
+        this.deps.record('story-preload-failed', `${network ? 'network' : gone ? 'gone' : 'refused'} ms=${Math.round(performance.now() - started)}`)
+        if (gone) this.deps.gone(candidate.storyPath)
         if (network) then = 'later'
       }
     } finally { if (this.running === abort) this.running = null }
