@@ -46,6 +46,8 @@ function format(bytes: Buffer, resource: MediaResource): { mime: string; present
 export class MediaSession {
   private selected: OwnedMedia | null = null
   private downloading: Promise<MediaReady> | null = null
+  // B416 B: a download the person asked for is on its way — what is fetched ahead waits (story-preloader.ts).
+  get busy(): boolean { return this.downloading !== null }
   private saving = false
   private writing: Promise<boolean> | null = null
   private closed = false

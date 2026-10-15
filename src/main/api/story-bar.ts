@@ -8,6 +8,8 @@ import { recordStoryStep } from '../platform/story-diagnostics'
 import { ownStoryCollections, ownStoryFromDocument } from '../network/own-story-document'
 import { feedStoryFromDocument, laterMark, readMarkId, storyRead, storyReadMarkFromDocument, type FeedStory, type StoryReadMark } from '../network/story-feed-document'
 import { serverNow } from '../network/server-clock'
+import { feedStoryPicturePath } from '../accounts/story-media-paths'
+import type { PreloadCandidate } from '../accounts/story-preloader'
 import { tr } from '../../shared/i18n'
 
 interface Tally { count: number; unseen: number; latestAt: number; expiresAt: number }
@@ -69,6 +71,21 @@ export class StoryBarApi {
     if (!owner || owner === this.uid) return null
     this.bind(false)
     return this.peer(owner, this.now())
+  }
+
+  // B416 B: the row's people as the row orders them (unseen first, then the latest), each with the story the viewer
+  // opens first (the first unread, else the first — tdesktop toOpen()), and the picture it shows first.
+  preloadCandidates(): PreloadCandidate[] {
+    if (this.closed || this.locked) return []
+    const at = this.now()
+    const entries = this.order.filter(owner => owner !== this.uid).flatMap(owner => { const entry = this.peer(owner, at); return entry ? [entry] : [] })
+      .sort((a, b) => Number(b.unseen > 0) - Number(a.unseen > 0) || b.latestAt - a.latestAt)
+    return entries.flatMap(entry => {
+      const stories = this.feedStories('user', entry.uid), mark = this.mark('user', entry.uid)
+      const story = stories.find(item => !storyRead(item, mark)) ?? stories[0]
+      const path = story ? feedStoryPicturePath(story) : null
+      return story && path ? [{ path, ownerId: story.ownerId, storyId: story.storyId, storyPath: story.storyPath }] : []
+    })
   }
 
   // A locked app reads nothing and holds no stories; unlocked, the row listens again.

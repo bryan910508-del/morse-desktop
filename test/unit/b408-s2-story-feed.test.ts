@@ -5,6 +5,7 @@ import { feedStoryFromDocument, laterMark, storyRead, storyReadMarkFromDocument 
 import { documents, ReadFailure, type FirestoreDocument, type WireObject } from '../../src/main/network/firestore-values'
 import type { WatchEvents } from '../../src/main/network/firestore-rpc'
 import type { StoryBarResult } from '../../src/shared/story-bar'
+import { storageBucket } from '../../src/main/media/media-document'
 
 // B408 S2 (contracts/B408-stories-access.md §14): the row reads others' stories only from this account's storyFeed — the
 // copies the server put there (morse-story-audience.js feedCopy) — and what is read of them from storyReadMarks; its own
@@ -167,5 +168,29 @@ test('B408 S2: one person\'s ring outside the row (the chat header) is counted f
     assert.deepEqual(api.peerEntry('z'), { uid: 'z', count: 2, unseen: 1, latestAt: t - 1000, expiresAt: t + 3600000 }, 'z is not in the row and still has a ring')
     assert.equal(api.peerEntry(me), null, 'this account\'s own stories are not a peer\'s')
     api.close()
+  } finally { mock.timers.reset() }
+})
+
+test('B416 B: the preload candidates are the row\'s people in the row\'s order, each with the story it opens first; reading them changes no mark', async () => {
+  mock.timers.enable({ apis: ['setTimeout'] })
+  try {
+    const { api, live, now } = bar()
+    await api.list(['a', 'b', 'c'], false)
+    const t = now(), later = t + 3600000
+    const pic = (owner: string, id: string) => ({ mediaURL: { stringValue: `gs://${storageBucket}/stories/user/${owner}/${id}.jpg` } })
+    live.get('me/storyFeed')!.events.snapshot(docs(
+      copy('a', 'a1', t - 5000, later, pic('a', 'a1')), copy('a', 'a2', t - 4000, later, pic('a', 'a2')),
+      copy('b', 'b1', t - 3000, later, pic('b', 'b1')),
+      copy('c', 'c1', t - 2000, later, pic('c', 'c1'))))
+    live.get('me/storyReadMarks')!.events.snapshot(docs(mark('a', t - 5000, 'a1'), mark('c', t - 2000, 'c1')))
+    const before = api.mark('user', 'a')
+    assert.deepEqual(api.preloadCandidates().map(item => item.path), [
+      'stories/user/b/b1.jpg',  // unseen, latest of the unseen
+      'stories/user/a/a2.jpg',  // unseen: a1 was read, a2 opens first
+      'stories/user/c/c1.jpg'   // all read: its first story opens
+    ])
+    assert.deepEqual(api.mark('user', 'a'), before, 'no read mark moved')
+    api.close()
+    assert.deepEqual(api.preloadCandidates(), [], 'closed: nothing')
   } finally { mock.timers.reset() }
 })

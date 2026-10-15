@@ -18,3 +18,13 @@ export function storyMediaPaths(doc: FirestoreDocument, ownerId: string): StoryM
     audio: read(() => ownStoryAudioPath(doc, ownerId)),
   }
 }
+
+// B416 B: the picture a feed copy's story shows first — the photo of a photo story, the poster of a video story — by
+// the same rules, from the fields the copy carries (peer-stories.ts detail reads it the same way).
+export function feedStoryPicturePath(story: { storyPath: string; ownerId: string; mediaType: string; mediaURL: string; thumbnailURL: string | null }): string | null {
+  const fields: Record<string, { stringValue: string }> = { mediaType: { stringValue: story.mediaType }, mediaURL: { stringValue: story.mediaURL } }
+  if (story.thumbnailURL !== null) fields.thumbnailURL = { stringValue: story.thumbnailURL }
+  const paths = storyMediaPaths({ name: story.storyPath, fields } as unknown as FirestoreDocument, story.ownerId)
+  return story.mediaType === 'image' ? paths.image : story.mediaType === 'video' ? paths.poster : null
+}
+

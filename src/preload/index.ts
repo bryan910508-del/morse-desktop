@@ -337,6 +337,7 @@ const bridge: DesktopBridge = {
   closeChannelHome: uid => ipcRenderer.invoke('morse:close-channel-home', uid),
   refreshChannelHome: uid => ipcRenderer.invoke('morse:refresh-channel-home', uid),
   setVisibleChannelStories: (uid, channelIds) => ipcRenderer.invoke('morse:visible-channel-stories', uid, channelIds),
+  setStoryRowShown: (uid, shown) => ipcRenderer.invoke('morse:story-row-shown', uid, shown),
   setChannelStoryScreen: (uid, channelId) => ipcRenderer.invoke('morse:channel-story-screen', uid, channelId),
   channelStoryMedia: (uid, channelId, storyId) => ipcRenderer.invoke('morse:channel-story-media', uid, channelId, storyId),
   markChannelStoryViewed: (uid, channelId, storyId) => ipcRenderer.invoke('morse:mark-channel-story-viewed', uid, channelId, storyId),

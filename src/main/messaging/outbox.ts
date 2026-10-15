@@ -243,6 +243,8 @@ export class OutboxPump {
   private uploadTask: Promise<void> | null = null
   private uploadingId: string | null = null
   private uploadProgress: { loaded: number; total: number; current: number; count: number } | undefined
+  // B416 B: a send's media is on its way up — what is fetched ahead waits (story-preloader.ts).
+  get uploading(): boolean { return this.uploadAbort !== null }
 
   constructor(private readonly uid: string, directory: string, private readonly auth: AccountAuthorization,
     previousClose: Promise<void>, private readonly context: () => ReadContext,

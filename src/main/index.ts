@@ -1915,6 +1915,10 @@ function registerIPC(): void {
     return accounts.requireActive(identifier(uid)).personalChannels.save(personalChannelLink(raw))
   })
   handle('refresh-channels', uid => accounts.requireActive(identifier(uid)).channels.refresh())
+  handle('story-row-shown', (uid, shown) => {
+    if (screenLocked) return
+    accounts.requireActive(identifier(uid)).setStoryRowShown(shown === true)
+  }, true)
   handle('visible-channel-stories', (uid, raw) => {
     const ids = visibleChannelPhotos(raw)
     if (screenLocked && ids.length) throw new Error(tr('화면 잠금을 해제해 주세요.'))

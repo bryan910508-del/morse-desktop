@@ -56,6 +56,15 @@ export function StoriesRow({ accountUid }: { accountUid: string }) {
     if (connection === 'ready' && !wasReady.current) setReload(value => value + 1)
     wasReady.current = connection === 'ready'
   }, [connection])
+  // B416 B: while the row is on screen in a visible window, main fetches its to-open stories ahead (story-preloader.ts;
+  // tdesktop turns its preloading on while the chat list exists, dialogs_inner_widget.cpp:587).
+  useEffect(() => {
+    const say = (shown: boolean): void => { void window.morse.setStoryRowShown(accountUid, shown).catch(() => {}) }
+    const visibility = (): void => say(!document.hidden)
+    say(!document.hidden)
+    document.addEventListener('visibilitychange', visibility)
+    return () => { document.removeEventListener('visibilitychange', visibility); say(false) }
+  }, [accountUid])
   const byUid = useMemo(() => new Map(contacts.map(contact => [contact.uid, contact])), [contacts])
   const mine = entries.find(entry => entry.uid === accountUid) ?? null
   const rows = entries.filter(entry => entry.uid !== accountUid && (byUid.has(entry.uid) || partners.has(entry.uid)))

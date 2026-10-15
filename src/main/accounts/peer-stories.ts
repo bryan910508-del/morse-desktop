@@ -80,6 +80,8 @@ export class PeerStories {
     return { id: request.id, ownerId: request.ownerId, outcome: message ? 'unavailable' : 'ready', rows,
       readUpTo: mark ? { createdAt: mark.maxReadCreatedAt, storyId: mark.maxReadStoryId } : null, observedAt: at, message }
   }
+  // Whether a person's stories are open in the viewer (story-preloader.ts waits while they are).
+  get isOpen(): boolean { return !this.closed && this.opened !== null }
   close(id: string): void { if (this.opened?.id === id) this.opened = null }
   pause(): void { this.opened = null }
 

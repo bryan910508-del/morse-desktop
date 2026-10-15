@@ -823,6 +823,7 @@ export interface DesktopBridge {
   closeChannelHome(accountUid: string): Promise<void>
   refreshChannelHome(accountUid: string): Promise<void>
   setVisibleChannelStories(accountUid: string, channelIds: string[]): Promise<void>
+  setStoryRowShown(accountUid: string, shown: boolean): Promise<void>
   setChannelStoryScreen(accountUid: string, channelId: string | null): Promise<void>
   channelStoryMedia(accountUid: string, channelId: string, storyId: string): Promise<import('./channel-stories').ChannelStoryMedia>
   markChannelStoryViewed(accountUid: string, channelId: string, storyId: string): Promise<void>

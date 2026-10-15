@@ -8,6 +8,11 @@ import { VoiceDraftStorage } from './voice-draft-storage'
 import { StoryReplyDraft } from './story-reply-draft'
 import { PeerStories } from './peer-stories'
 import { PeerStoryPhoto, PeerStoryPhotoAudio, PeerStoryVideo } from './peer-story-media'
+import { StoryPreloader, maxPreloadBytes } from './story-preloader'
+import { mediaCacheFor } from './media-cache'
+import { autoDownloadFor } from './auto-download-limits'
+import { downloadOwnStoryPhoto } from '../network/own-story-photo'
+import { recordStoryStep } from '../platform/story-diagnostics'
 import { StoryVideoUpload } from './story-video-upload'
 import { StoryPublication } from './story-publication'
 import type { StoryComposerPhotoTarget, StoryComposerPhotoWrite, StoryComposerPhotoReference, StoryComposerPhotoRecord } from '../../shared/story-composer-photo'
@@ -244,6 +249,9 @@ export class AccountSession {
   readonly peerStoryPhoto: PeerStoryPhoto
   readonly peerStoryVideo: PeerStoryVideo
   readonly peerStoryPhotoAudio: PeerStoryPhotoAudio
+  // B416 B: the row's to-open stories fetched ahead while the row is on screen (story-preloader.ts).
+  readonly storyPreloader: StoryPreloader
+  private storyRowShown = false
   readonly storyViewRecords: StoryViewRecords
   readonly storyHiddenAudience: StoryHiddenAudience
   readonly noteEditComparison: NoteEditComparison
@@ -627,7 +635,19 @@ export class AccountSession {
     this.channelMembershipApi = new ChannelMembershipApi(profile.uid, credentials, connected)
     this.channelDeletionApi = new ChannelDeletionApi(connected, () => firestoreChannelDeletion(credentials, connected))
     this.storyBarApi = new StoryBarApi(profile.uid, credentials, () => { if (this.closed || this.locked) throw new Error(tr('계정 연결을 확인해 주세요.')) },
-      result => { if (!this.closed && !this.locked) this.events.storyBar?.(result) })
+      result => { if (!this.closed && !this.locked) { this.events.storyBar?.(result); this.storyPreloader?.poke() } })
+    this.storyPreloader = new StoryPreloader({
+      candidates: () => this.storyBarApi.preloadCandidates(),
+      // Off while nothing would show the row; waiting while the person is busy with something of their own.
+      idle: () => this.closed || this.locked || !this.storyRowShown ? 'off'
+        : this.connection !== 'ready' || this.peerStories.isOpen || this.delivery.uploading || this.media.busy ? 'wait' : 'go',
+      limit: () => autoDownloadFor(credentials, 'user', maxPreloadBytes),
+      cached: path => mediaCacheFor(credentials)?.has(path) ?? Promise.resolve(false),
+      fetch: (candidate, maxBytes, weighFirst, signal) => downloadOwnStoryPhoto(credentials, candidate.path, candidate.storyId, candidate.ownerId, signal,
+        () => { if (this.closed || this.locked || !this.storyRowShown) throw new Error('Story preload stopped') }, maxBytes, () => {}, weighFirst),
+      keep: (path, bytes) => mediaCacheFor(credentials)?.write(path, bytes),
+      record: (step, detail) => recordStoryStep(step, detail)
+    }, credentials.signal)
     this.accountTools = new AccountToolsApi(profile.uid, credentials, connected)
     this.twoStep = new TwoStepSettingsApi(profile.uid, credentials, connected)
     this.inquirySends = new InquirySends(profile.uid, credentials, connected, command => this.delivery.inquirySendState(command), () => { if (!this.closed) events.changed() })
@@ -717,6 +737,7 @@ export class AccountSession {
     if (locked) this.channelHome.pause(true); else this.channelHome.resume()
     this.channelStories.setLocked(locked)
     this.storyBarApi.setLocked(locked)
+    if (locked) this.storyPreloader.pause(); else this.storyPreloader.poke()
     this.channelInquiries.setLocked(locked)
     this.inquiryRows.setLocked(locked)
     if (locked) this.inquiryNotifications.pause()
@@ -2966,10 +2987,16 @@ export class AccountSession {
   }
   retry(chatId: string, id: string) { return this.delivery.retry(chatId, id) }
   discard(chatId: string, id: string) { return this.delivery.discard(chatId, id) }
+  // B416 B: whether the stories row is on screen in a visible window (the renderer says so, as for channel stories).
+  setStoryRowShown(shown: boolean): void {
+    if (this.closed || this.storyRowShown === shown) return
+    this.storyRowShown = shown
+    if (shown) this.storyPreloader.poke(); else this.storyPreloader.pause()
+  }
   async close(purge: boolean): Promise<void> {
     if (this.closed) return
     this.keptHistories.clear(); this.settleListed(false)
-    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); void this.hiddenUploads.close(); this.hiddenRowLines.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.sendingMedia.clear(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stickerLibrary.close(); this.serverTranslator.close(); this.storyBarApi.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
+    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); void this.hiddenUploads.close(); this.hiddenRowLines.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.sendingMedia.clear(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stickerLibrary.close(); this.serverTranslator.close(); this.storyBarApi.close(); this.storyPreloader.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
     this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.hiddenUploads.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.peerStories.pause(); this.peerStoryPhoto.pause(); this.peerStoryVideo.pause(); this.peerStoryPhotoAudio.pause(); 
     await storyClose
     await noteClose
