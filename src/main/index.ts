@@ -11,8 +11,6 @@ import { recordContactStep } from './platform/contact-diagnostics'
 import { inquiryAttachmentRequest, inquiryAutoDeleteRequest, inquiryContactRequest, inquiryForwardRequest, inquiryIdentifier, inquiryReplyTo, inquiryScheduleRequest, inquiryVoiceRequest, inquiryVoiceTarget, inquiryEditRequest, inquiryListRequest, inquiryPhotoRequest, inquiryPinRequest, inquiryReactionRequest, inquirySendRequest, inquiryTargetRequest, inquiryThreadRequest } from '../shared/channel-inquiries'
 import { voiceDraftStorageNavigation, voiceDraftStorageRemoval } from '../shared/voice-draft-storage'
 import { ownStoriesPageRequest } from '../shared/own-stories'
-import { contactPublicStoriesPageRequest } from '../shared/contact-public-stories'
-import { contactAudienceStoriesPageRequest } from '../shared/contact-audience-stories'
 import { voiceDraftWrite, voiceDraftReference, type VoiceDraftRecord, type VoiceDraftSource } from '../shared/voice-draft'
 import { voiceQueueOpen } from '../shared/voice-queue-preview'
 import { VoiceQueuePreviews } from './platform/voice-queue-previews'
@@ -24,19 +22,6 @@ import { StoryVideoInputs } from './platform/story-video-inputs'
 import { storyReplySendRequest } from '../shared/story-reply-send'
 import { storyReplyTextWrite } from '../shared/story-reply-text'
 import { storyReplyDraftPrepare, storyReplyDraftAction } from '../shared/story-reply-draft'
-import { storyViewReceiptPrepare, storyViewReceiptAction } from '../shared/story-view-receipt'
-import { storyReactionChangePrepare, storyReactionChangeAction } from '../shared/story-reaction-change'
-import { contactStoryReactionRequest } from '../shared/contact-story-reaction'
-import { contactStoryPhotoAudioRequest } from '../shared/contact-story-photo-audio'
-import { contactAudienceStoryLinkRequest } from '../shared/contact-audience-story-link'
-import { contactAudienceStoryVideoRequest } from '../shared/contact-audience-story-video'
-import { contactAudienceStoryPhotoRequest } from '../shared/contact-audience-story-photo'
-import { contactAudienceStoriesRequest } from '../shared/contact-audience-stories'
-import { contactStoryAudienceRequest } from '../shared/contact-story-audience'
-import { contactPublicStoryLinkRequest } from '../shared/contact-public-story-link'
-import { contactPublicStoryVideoRequest } from '../shared/contact-public-story-video'
-import { contactPublicStoryPhotoRequest } from '../shared/contact-public-story-photo'
-import { contactPublicStoriesRequest } from '../shared/contact-public-stories'
 import { storyPublicationPrepare, storyPublicationAction } from '../shared/story-publication'
 import { storyVideoObservationRequest } from '../shared/story-video-observation'
 import { storyVideoPublishRequest } from '../shared/story-video-publication-commit'
@@ -439,16 +424,11 @@ async function snapshot(): Promise<DesktopSnapshot> {
     channelStories: screenLocked ? null : active?.channelStories.snapshot() ?? null,
     appUpdate: appUpdates.snapshot,
     versionGate: versionGate.snapshot(language()),
-    contactStoryPhotoAudio: screenLocked ? null : active?.contactStoryPhotoAudio.snapshot ?? null,
-    contactAudienceStoryVideo: screenLocked ? null : active?.contactAudienceStoryVideo.snapshot ?? null,
-    contactAudienceStoryPhoto: screenLocked ? null : active?.contactAudienceStoryPhoto.snapshot ?? null,
-    contactStoryAudience: screenLocked ? null : active?.contactStoryAudience.snapshot ?? null,
-    contactPublicStoryVideo: screenLocked ? null : active?.contactPublicStoryVideo.snapshot ?? null,
-    contactPublicStoryPhoto: screenLocked ? null : active?.contactPublicStoryPhoto.snapshot ?? null,
+    peerStoryPhoto: screenLocked ? null : active?.peerStoryPhoto.snapshot ?? null,
+    peerStoryVideo: screenLocked ? null : active?.peerStoryVideo.snapshot ?? null,
+    peerStoryPhotoAudio: screenLocked ? null : active?.peerStoryPhotoAudio.snapshot ?? null,
     storyPublication: screenLocked ? null : active?.storyPublication.snapshot ?? null,
     storyReplyDraft: screenLocked ? null : active?.storyReplyDraft.snapshot ?? null,
-    storyViewReceipt: screenLocked ? null : active?.storyViewReceipt.snapshot ?? null,
-    storyReactionChange: screenLocked ? null : active?.storyReactionChange.snapshot ?? null,
     storyHiddenChange: screenLocked ? null : active?.storyHiddenChange.snapshot ?? null,
     storyPrivacyMove: screenLocked ? null : active?.storyPrivacyMove.snapshot ?? null,
     storyRemoval: screenLocked ? null : active?.storyRemoval.snapshot ?? null,
@@ -577,6 +557,10 @@ function registerIPC(): void {
   handle('story-bar', (uid, peers, force) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).storyBarApi.list(peers, force === true)
+  })
+  handle('peer-story-entry', (uid, peerUid) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).storyBarApi.peerEntry(peerUid)
   })
   // Telegram's row menu: "Delete chat" apart from "Clear history". For me only hides the room on
   // this device; for everyone revokes a private history and removes the room document.
@@ -1288,30 +1272,6 @@ function registerIPC(): void {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).storyReplyDraft.action(storyReplyDraftAction(raw))
   })
-  handle('refresh-story-view-receipt', uid => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).storyViewReceipt.refresh()
-  })
-  handle('prepare-story-view-receipt', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).storyViewReceipt.prepare(storyViewReceiptPrepare(raw))
-  })
-  handle('story-view-receipt-action', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).storyViewReceipt.action(storyViewReceiptAction(raw))
-  })
-  handle('refresh-story-reaction-change', uid => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).storyReactionChange.refresh()
-  })
-  handle('prepare-story-reaction-change', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).storyReactionChange.prepare(storyReactionChangePrepare(raw))
-  })
-  handle('story-reaction-change-action', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).storyReactionChange.action(storyReactionChangeAction(raw))
-  })
   handle('refresh-story-hidden-change', uid => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).storyHiddenChange.refresh()
@@ -1629,98 +1589,61 @@ function registerIPC(): void {
   handle('close-own-story-photo', (uid, id) => {
     if (accounts.active?.profile.uid === identifier(uid)) accounts.active.ownStories.photo.dismiss(identifier(id))
   })
-  handle('read-contact-story-reaction', (uid, raw) => {
+  // B408 S2: anyone's stories this account may see — its feed first, else getMorsePeerStories (peer-stories.ts).
+  handle('open-peer-stories', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).contactStoryReaction.read(contactStoryReactionRequest(raw))
+    return accounts.requireActive(identifier(uid)).peerStories.open(raw)
   })
-  handle('close-contact-story-reaction', (uid, id) => accounts.requireActive(identifier(uid)).contactStoryReaction.dismiss(identifier(id)), true)
-  handle('open-contact-story-photo-audio', (uid, raw) => {
+  handle('close-peer-stories', (uid, id) => accounts.requireActive(identifier(uid)).peerStories.close(identifier(id)), true)
+  handle('peer-story-seen', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    const request = contactStoryPhotoAudioRequest(raw), active = accounts.requireActive(identifier(uid))
-    active.contactStoryPhotoAudio.prepareSource(request)
-    if (request.privacy !== 'everyone') active.contactStoryAudience.extendForMedia(request.audienceId!, request.profileRequestId, request.privacy)
-    active.contactPublicStoryPhoto.pause(); active.contactPublicStoryVideo.pause(); active.contactAudienceStoryPhoto.pause(); active.contactAudienceStoryVideo.pause()
-    return active.contactStoryPhotoAudio.open(request)
+    return accounts.requireActive(identifier(uid)).peerStories.seen(raw)
   })
-  handle('close-contact-story-photo-audio', (uid, id) => accounts.requireActive(identifier(uid)).contactStoryPhotoAudio.dismiss(identifier(id)), true)
+  handle('read-peer-story-reaction', (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).peerStories.reaction(raw)
+  })
+  handle('set-peer-story-reaction', (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).peerStories.react(raw)
+  })
+  handle('open-peer-story-link', (uid, raw) => {
+    if (screenLocked || !mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || !mainWindow.isFocused()) throw new Error(tr('현재 스토리 창에서 전체 웹 주소를 확인해 주세요.'))
+    return shell.openExternal(accounts.requireActive(identifier(uid)).peerStories.link(raw))
+  })
+  // One story's media at a time: opening one lets go of the others.
+  handle('open-peer-story-photo', (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    const active = accounts.requireActive(identifier(uid))
+    active.peerStoryVideo.pause(); active.peerStoryPhotoAudio.pause()
+    return active.peerStoryPhoto.open(raw)
+  })
+  handle('close-peer-story-photo', (uid, id) => accounts.requireActive(identifier(uid)).peerStoryPhoto.dismiss(identifier(id)), true)
+  handle('open-peer-story-video', (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    const active = accounts.requireActive(identifier(uid))
+    active.peerStoryPhoto.pause(); active.peerStoryPhotoAudio.pause()
+    return active.peerStoryVideo.open(raw)
+  })
+  handle('close-peer-story-video', (uid, id) => accounts.requireActive(identifier(uid)).peerStoryVideo.dismiss(identifier(id)), true)
+  handle('open-peer-story-photo-audio', (uid, raw) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    const active = accounts.requireActive(identifier(uid))
+    active.peerStoryPhoto.pause(); active.peerStoryVideo.pause()
+    return active.peerStoryPhotoAudio.open(raw)
+  })
+  handle('close-peer-story-photo-audio', (uid, id) => accounts.requireActive(identifier(uid)).peerStoryPhotoAudio.dismiss(identifier(id)), true)
   // Media::Stories::Controller::preloadNext reads the stories around the one on screen before they are
   // opened. These do that fetch: nothing on screen is replaced, and what is read waits in the account's
   // cache for the moment the viewer moves on.
-  handle('preload-contact-public-story-photo', (uid, raw) => {
+  handle('preload-peer-story-photo', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    const request = contactPublicStoryPhotoRequest(raw), active = accounts.requireActive(identifier(uid))
-    active.contactPublicStories.photoSource(request)
-    return active.contactPublicStoryPhoto.preload(request)
+    return accounts.requireActive(identifier(uid)).peerStoryPhoto.preload(raw)
   })
-  handle('preload-contact-public-story-video', (uid, raw) => {
+  handle('preload-peer-story-video', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    const request = contactPublicStoryVideoRequest(raw), active = accounts.requireActive(identifier(uid))
-    active.contactPublicStories.videoSource(request)
-    return active.contactPublicStoryVideo.preload(request)
+    return accounts.requireActive(identifier(uid)).peerStoryVideo.preload(raw)
   })
-  handle('preload-contact-audience-story-photo', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    const request = contactAudienceStoryPhotoRequest(raw), active = accounts.requireActive(identifier(uid))
-    active.contactAudienceStories.photoSource(request); active.contactStoryAudience.extendForMedia(request.audienceId, request.profileRequestId, request.privacy)
-    return active.contactAudienceStoryPhoto.preload(request)
-  })
-  handle('preload-contact-audience-story-video', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    const request = contactAudienceStoryVideoRequest(raw), active = accounts.requireActive(identifier(uid))
-    active.contactAudienceStories.videoSource(request); active.contactStoryAudience.extendForMedia(request.audienceId, request.profileRequestId, request.privacy)
-    return active.contactAudienceStoryVideo.preload(request)
-  })
-  handle('open-contact-audience-story-video', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    const request = contactAudienceStoryVideoRequest(raw), active = accounts.requireActive(identifier(uid))
-    active.contactAudienceStories.videoSource(request); active.contactStoryPhotoAudio.pause(); active.contactStoryAudience.extendForMedia(request.audienceId, request.profileRequestId, request.privacy); active.contactAudienceStoryPhoto.pause(); active.contactPublicStoryPhoto.pause(); active.contactPublicStoryVideo.pause()
-    return active.contactAudienceStoryVideo.open(request)
-  })
-  handle('close-contact-audience-story-video', (uid, id) => accounts.requireActive(identifier(uid)).contactAudienceStoryVideo.dismiss(identifier(id)), true)
-  handle('open-contact-audience-story-photo', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    const request = contactAudienceStoryPhotoRequest(raw), active = accounts.requireActive(identifier(uid))
-    active.contactAudienceStories.photoSource(request); active.contactStoryPhotoAudio.pause(); active.contactAudienceStoryVideo.pause(); active.contactPublicStoryPhoto.pause(); active.contactPublicStoryVideo.pause()
-    return active.contactAudienceStoryPhoto.open(request)
-  })
-  handle('close-contact-audience-story-photo', (uid, id) => accounts.requireActive(identifier(uid)).contactAudienceStoryPhoto.dismiss(identifier(id)), true)
-  handle('read-contact-audience-stories', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).contactAudienceStories.read(contactAudienceStoriesRequest(raw))
-  })
-  handle('page-contact-audience-stories', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).contactAudienceStories.page(contactAudienceStoriesPageRequest(raw))
-  })
-  handle('close-contact-audience-stories', (uid, id) => accounts.requireActive(identifier(uid)).contactAudienceStories.dismiss(identifier(id)), true)
-  handle('open-contact-story-audience', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).contactStoryAudience.open(contactStoryAudienceRequest(raw))
-  })
-  handle('close-contact-story-audience', (uid, id) => accounts.requireActive(identifier(uid)).contactStoryAudience.dismiss(identifier(id)), true)
-  handle('open-contact-public-story-video', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    const request = contactPublicStoryVideoRequest(raw), active = accounts.requireActive(identifier(uid))
-    active.contactPublicStories.videoSource(request); active.contactStoryPhotoAudio.pause(); active.contactAudienceStoryPhoto.pause(); active.contactAudienceStoryVideo.pause(); active.contactPublicStoryPhoto.pause()
-    return active.contactPublicStoryVideo.open(request)
-  })
-  handle('close-contact-public-story-video', (uid, id) => accounts.requireActive(identifier(uid)).contactPublicStoryVideo.dismiss(identifier(id)), true)
-  handle('open-contact-public-story-photo', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    const request = contactPublicStoryPhotoRequest(raw), active = accounts.requireActive(identifier(uid))
-    active.contactPublicStories.photoSource(request); active.contactStoryPhotoAudio.pause(); active.contactAudienceStoryPhoto.pause(); active.contactAudienceStoryVideo.pause(); active.contactPublicStoryVideo.pause()
-    return active.contactPublicStoryPhoto.open(request)
-  })
-  handle('close-contact-public-story-photo', (uid, id) => accounts.requireActive(identifier(uid)).contactPublicStoryPhoto.dismiss(identifier(id)), true)
-  handle('page-contact-public-stories', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).contactPublicStories.page(contactPublicStoriesPageRequest(raw))
-  })
-  handle('read-contact-public-stories', (uid, raw) => {
-    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    return accounts.requireActive(identifier(uid)).contactPublicStories.read(contactPublicStoriesRequest(raw))
-  })
-  handle('close-contact-public-stories', (uid, id) => accounts.requireActive(identifier(uid)).contactPublicStories.dismiss(identifier(id)), true)
   handle('open-own-stories', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).ownStories.open(ownStoriesRequest(raw))
@@ -1731,18 +1654,6 @@ function registerIPC(): void {
   })
   handle('close-own-stories', (uid, requestId) => {
     if (accounts.active?.profile.uid === identifier(uid)) accounts.active.ownStories.dismiss(identifier(requestId))
-  })
-  handle('open-contact-audience-story-link', (uid, raw) => {
-    if (screenLocked || !mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || !mainWindow.isFocused()) throw new Error(tr('현재 청중 스토리 창에서 전체 웹 주소를 확인해 주세요.'))
-    const request = contactAudienceStoryLinkRequest(raw), active = accounts.requireActive(identifier(uid))
-    const url = active.contactAudienceStories.linkSource(request)
-    return shell.openExternal(url)
-  })
-  handle('open-contact-public-story-link', (uid, raw) => {
-    if (screenLocked || !mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || !mainWindow.isFocused()) throw new Error(tr('현재 공개 스토리 창에서 전체 웹 주소를 확인해 주세요.'))
-    const request = contactPublicStoryLinkRequest(raw), active = accounts.requireActive(identifier(uid))
-    const url = active.contactPublicStories.linkSource(request)
-    return shell.openExternal(url)
   })
   handle('open-story-caption-link', (uid, raw) => {
     if (screenLocked || !mainWindow || mainWindow.isDestroyed() || !mainWindow.isVisible() || !mainWindow.isFocused()) throw new Error(tr('현재 스토리 창에서 웹 링크를 선택해 주세요.'))
@@ -2008,6 +1919,12 @@ function registerIPC(): void {
     const ids = visibleChannelPhotos(raw)
     if (screenLocked && ids.length) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     accounts.requireActive(identifier(uid)).channelStories.setVisible(ids)
+  })
+  // B408 S2: the channel a channel screen shows, so its stories are read even when this account does not follow it.
+  handle('channel-story-screen', (uid, raw) => {
+    const channelId = raw === null ? null : identifier(raw)
+    if (screenLocked && channelId) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    accounts.requireActive(identifier(uid)).channelStories.setScreen(channelId)
   })
   handle('channel-story-media', (uid, channelId, storyId) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
@@ -2585,7 +2502,6 @@ function registerIPC(): void {
     const photo = update.chatBackground?.preset === 'photo' ? backgroundPhotos.forSave(owner!, update.chatBackground.photoId) : undefined
     try { await settings.update(update, photo, owner?.validate) }
     finally { photo?.fill(0) }
-    if ('storyStealth' in update) accounts.active?.storyViewReceipt.pause()
     if ('notifications' in update || 'showNotificationPreview' in update || 'notifyPersonal' in update || 'notifyGroup' in update || 'inAppNotifications' in update) for (const session of accounts.all) session.notificationPreferencesChanged()
     if ('spellCheck' in update && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.session.setSpellCheckerEnabled(settings.preferences.spellCheck)
     applyTheme()
@@ -3280,37 +3196,25 @@ async function configureRenderer(): Promise<void> {
       if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
       return accounts.active?.ownStories.video.response(url.pathname.slice('/__own-story-video/'.length), request) ?? new Response(null, { status: 403 })
     }
-    if (url.hostname === 'app' && url.pathname.startsWith('/__contact-audience-story-video-audio/')) {
+    if (url.hostname === 'app' && url.pathname.startsWith('/__peer-story-video-audio/')) {
       if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
-      return accounts.active?.contactAudienceStoryVideo.response(url.pathname.slice('/__contact-audience-story-video-audio/'.length), request, true) ?? new Response(null, { status: 403 })
+      return accounts.active?.peerStoryVideo.response(url.pathname.slice('/__peer-story-video-audio/'.length), request, true) ?? new Response(null, { status: 403 })
     }
-    if (url.hostname === 'app' && url.pathname.startsWith('/__contact-story-photo-audio-image/')) {
+    if (url.hostname === 'app' && url.pathname.startsWith('/__peer-story-video/')) {
       if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
-      return accounts.active?.contactStoryPhotoAudio.response('image', url.pathname.slice('/__contact-story-photo-audio-image/'.length), request) ?? new Response(null, { status: 403 })
+      return accounts.active?.peerStoryVideo.response(url.pathname.slice('/__peer-story-video/'.length), request) ?? new Response(null, { status: 403 })
     }
-    if (url.hostname === 'app' && url.pathname.startsWith('/__contact-story-photo-audio-sound/')) {
+    if (url.hostname === 'app' && url.pathname.startsWith('/__peer-story-photo-audio-image/')) {
       if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
-      return accounts.active?.contactStoryPhotoAudio.response('audio', url.pathname.slice('/__contact-story-photo-audio-sound/'.length), request) ?? new Response(null, { status: 403 })
+      return accounts.active?.peerStoryPhotoAudio.response('image', url.pathname.slice('/__peer-story-photo-audio-image/'.length), request) ?? new Response(null, { status: 403 })
     }
-    if (url.hostname === 'app' && url.pathname.startsWith('/__contact-audience-story-video/')) {
+    if (url.hostname === 'app' && url.pathname.startsWith('/__peer-story-photo-audio-sound/')) {
       if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
-      return accounts.active?.contactAudienceStoryVideo.response(url.pathname.slice('/__contact-audience-story-video/'.length), request) ?? new Response(null, { status: 403 })
+      return accounts.active?.peerStoryPhotoAudio.response('audio', url.pathname.slice('/__peer-story-photo-audio-sound/'.length), request) ?? new Response(null, { status: 403 })
     }
-    if (url.hostname === 'app' && url.pathname.startsWith('/__contact-public-story-video-audio/')) {
+    if (url.hostname === 'app' && url.pathname.startsWith('/__peer-story-photo/')) {
       if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
-      return accounts.active?.contactPublicStoryVideo.response(url.pathname.slice('/__contact-public-story-video-audio/'.length), request, true) ?? new Response(null, { status: 403 })
-    }
-    if (url.hostname === 'app' && url.pathname.startsWith('/__contact-public-story-video/')) {
-      if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
-      return accounts.active?.contactPublicStoryVideo.response(url.pathname.slice('/__contact-public-story-video/'.length), request) ?? new Response(null, { status: 403 })
-    }
-    if (url.hostname === 'app' && url.pathname.startsWith('/__contact-audience-story-photo/')) {
-      if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
-      return accounts.active?.contactAudienceStoryPhoto.response(url.pathname.slice('/__contact-audience-story-photo/'.length), request) ?? new Response(null, { status: 403 })
-    }
-    if (url.hostname === 'app' && url.pathname.startsWith('/__contact-public-story-photo/')) {
-      if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })
-      return accounts.active?.contactPublicStoryPhoto.response(url.pathname.slice('/__contact-public-story-photo/'.length), request) ?? new Response(null, { status: 403 })
+      return accounts.active?.peerStoryPhoto.response(url.pathname.slice('/__peer-story-photo/'.length), request) ?? new Response(null, { status: 403 })
     }
     if (url.hostname === 'app' && url.pathname.startsWith('/__own-story-photo/')) {
       if (shutdown !== 'running' || screenLocked || url.search || url.hash || url.username || url.password || url.port) return new Response(null, { status: 403 })

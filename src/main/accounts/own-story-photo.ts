@@ -4,7 +4,7 @@ import type { OwnStoryPhotoRequest, OwnStoryPhotoSnapshot } from '../../shared/o
 import { positionMilliseconds } from '../../shared/model'
 import { backgroundImageInfo } from '../../shared/background-photo-bytes'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
-import { documents, type FirestoreDocument } from '../network/firestore-values'
+import { documents } from '../network/firestore-values'
 import { ownStoryCollections, ownStoryFromDocument } from '../network/own-story-document'
 import { ownStoryPhotoPath } from '../media/own-story-photo-document'
 import { downloadOwnStoryPhoto } from '../network/own-story-photo'
@@ -13,6 +13,8 @@ import { storyMediaKey, type StoryMediaCache } from './story-media-cache'
 import { mediaCacheFor } from './media-cache'
 import { recordStoryStep } from '../platform/story-diagnostics'
 import { tr } from '../../shared/i18n'
+// B408 S2: someone else's story is fetched only from the address its feed copy names; its document is never read.
+export interface PeerStoryPhotoOptions { prefix: '__peer-story-photo' | '__peer-story-photo-audio-image'; cache?: StoryMediaCache; address(request: OwnStoryPhotoRequest): string | null }
 interface Selection { request: OwnStoryPhotoRequest; abort: AbortController; reader: FirestoreReader; token: string; path: string | null; watched: boolean; bytes: Buffer | null; mime: string; deadline: number }
 export class OwnStoryPhoto {
   private selected: Selection | null = null
@@ -20,7 +22,7 @@ export class OwnStoryPhoto {
   private job: Promise<void> | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
   private closed = false
-  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly source: (request: OwnStoryPhotoRequest) => OwnStoryDetail, private readonly changed: () => void, private readonly options?: { prefix: '__contact-public-story-photo' | '__contact-audience-story-photo' | '__contact-story-photo-audio-image'; inspect(doc: FirestoreDocument): void; cache?: StoryMediaCache; address?: (request: OwnStoryPhotoRequest) => string | null }) {}
+  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly source: (request: OwnStoryPhotoRequest) => OwnStoryDetail, private readonly changed: () => void, private readonly options?: PeerStoryPhotoOptions) {}
   private publish(): void { if (!this.closed) this.changed() }
   private validate(media: Selection, documentRequired = true): void {
     this.auth.signal.throwIfAborted(); media.abort.signal.throwIfAborted()
@@ -87,7 +89,6 @@ export class OwnStoryPhoto {
             this.validate(media, false)
             const doc = rows.get(path)
             if (rows.size !== 1 || !doc || doc.name !== path) throw new Error('Story is absent')
-            this.options?.inspect(doc)
             const current = ownStoryFromDocument(doc, this.uid, source.privacy)
             if (current.version !== media.request.version || current.mediaType !== (media.request.presentation === 'video-poster' ? 'video' : 'image') || positionMilliseconds(current.expires) <= Date.now()) throw new Error('Story changed or expired')
             const photoPath = ownStoryPhotoPath(doc, this.uid, media.request.presentation)
@@ -106,9 +107,9 @@ export class OwnStoryPhoto {
   }
   private async download(media: Selection, signal: AbortSignal): Promise<void> {
     // Telegram downloads what the peer's stories answer already named (stories.getPeerStories), without
-    // reading that story again; the list here carries the same address. Only a list that cannot give one
-    // falls back to reading the story document.
-    const named = this.options?.address?.(media.request) ?? null
+    // reading that story again; a feed copy carries the same address. Only this account's own story is read.
+    const named = this.options ? this.options.address(media.request) : null
+    if (this.options && !named) throw new Error('Story photo address missing')
     if (named) { media.path = named; media.watched = true }
     const path = named ?? await this.observe(media, signal)
     signal.throwIfAborted(); this.validate(media)

@@ -92,12 +92,6 @@ export class PeerProfiles {
 
   // What this account knows about the person now, or null while nothing has been read.
   profile(uid: string): PeerProfile | null { return this.closed ? null : this.decide(uid) }
-  // B277: whether the person lists this account as a contact (users/{X}/contacts/{me}), from the last answer; null
-  // while none has come. A contacts' reader only — an author's reads no such entry.
-  keeps(uid: string): boolean | null {
-    if (this.closed || this.kind !== 'contacts' || !this.answered.has(uid)) return null
-    return this.answers.get(uid)?.reciprocal ?? null
-  }
   // Whether the read for this person has answered at all: until it has, a row draws the picture last confirmed.
   hasAnswer(uid: string): boolean { return !this.closed && this.answered.has(uid) }
   name(uid: string): string { return this.profile(uid)?.name ?? '' }

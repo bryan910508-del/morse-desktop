@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import type { ContactSummary } from '../../../shared/contacts'
+import type { DialogSummary } from '../../../shared/model'
 import { maxStoryBarPeers, mergeStoryBar, type StoryBarEntry, type StoryBarResult } from '../../../shared/story-bar'
 import { useDesktop } from '../app/store'
-import { Avatar, AvatarScope } from '../ui/avatar'
+import { Avatar, AvatarScope, PeerAvatar } from '../ui/avatar'
 import { ContactAvatar } from '../boxes/peer-picker'
 import { showOwnStoryViewer } from './own-story-viewer'
 import { showStoryComposer } from './story-composer'
@@ -19,16 +20,23 @@ export function StoriesRow({ accountUid }: { accountUid: string }) {
   const contacts = useDesktop(state => state?.contacts?.status === 'ready' ? state.contacts.items : noContacts)
   const dialogs = useDesktop(state => state?.dialogs)
   const self = useDesktop(state => state?.selfProfile ?? null)
-  const peers = useMemo(() => {
-    const known = new Set(contacts.map(contact => contact.uid)), order: string[] = []
+  // B408 S2 (review 10-15, the three apps alike — iOS ChatListView.userStoryPartnerIds): the row is this account's
+  // contacts and the other side of each 1:1 or secret chat; whose stories this account may see is the server's (main's
+  // storyFeed). The chats first, as they are ordered, then the contacts.
+  const partners = useMemo(() => {
+    const byPeer = new Map<string, DialogSummary>()
     for (const dialog of dialogs ?? []) {
-      if (dialog.kind !== 'direct') continue
+      if (dialog.kind !== 'direct' && dialog.kind !== 'secret') continue
       const peer = dialog.participantUids.find(uid => uid !== accountUid)
-      if (peer && known.has(peer) && !order.includes(peer)) order.push(peer)
+      if (peer && !byPeer.has(peer)) byPeer.set(peer, dialog)
     }
+    return byPeer
+  }, [dialogs, accountUid])
+  const peers = useMemo(() => {
+    const order: string[] = [...partners.keys()]
     for (const contact of contacts) if (!order.includes(contact.uid)) order.push(contact.uid)
     return order.slice(0, maxStoryBarPeers)
-  }, [contacts, dialogs, accountUid])
+  }, [contacts, partners])
   const key = peers.join(',')
   const [entries, setEntries] = useState<StoryBarEntry[]>([])
   const [reload, setReload] = useState(0)
@@ -50,7 +58,7 @@ export function StoriesRow({ accountUid }: { accountUid: string }) {
   }, [connection])
   const byUid = useMemo(() => new Map(contacts.map(contact => [contact.uid, contact])), [contacts])
   const mine = entries.find(entry => entry.uid === accountUid) ?? null
-  const rows = entries.filter(entry => entry.uid !== accountUid && byUid.has(entry.uid))
+  const rows = entries.filter(entry => entry.uid !== accountUid && (byUid.has(entry.uid) || partners.has(entry.uid)))
     .sort((a, b) => Number(b.unseen > 0) - Number(a.unseen > 0) || b.latestAt - a.latestAt)
   if (!rows.length && !mine) return null
   const order = rows.map(entry => entry.uid)
@@ -66,12 +74,15 @@ export function StoriesRow({ accountUid }: { accountUid: string }) {
         <span className="story-peer-name ellipsis">{tr('내 스토리')}</span>
       </button>}
       {rows.map((entry, index) => {
-        const contact = byUid.get(entry.uid)!
+        // A contact by its contact entry; someone met only in a chat by that chat's name and picture.
+        const contact = byUid.get(entry.uid), dialog = partners.get(entry.uid)
+        const name = contact?.displayName ?? dialog?.title ?? ''
         return <button key={entry.uid} type="button" role="listitem" className={`story-peer${entry.unseen ? ' unseen' : ''}`}
-          aria-label={tr('{0} 스토리{1}', [contact.displayName, entry.unseen ? tr(', 새 스토리 있음') : ''])}
+          aria-label={tr('{0} 스토리{1}', [name, entry.unseen ? tr(', 새 스토리 있음') : ''])}
           onClick={() => showStoryViewer(accountUid, order, index, refresh)}>
-          <span className="story-ring"><ContactAvatar contact={contact} size={42} /></span>
-          <span className="story-peer-name ellipsis">{contact.displayName}</span>
+          <span className="story-ring">{contact ? <ContactAvatar contact={contact} size={42} />
+            : <PeerAvatar id={dialog!.id} name={name} image={dialog!.kind === 'secret' ? null : dialog!.avatar} size={42} surface="dialogs" />}</span>
+          <span className="story-peer-name ellipsis">{name}</span>
         </button>
       })}
     </div>

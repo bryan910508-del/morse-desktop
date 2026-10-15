@@ -5,6 +5,11 @@
 .top-bar-peer { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 8px 0 6px; border-radius: var(--r-control); text-align: left; -webkit-app-region: no-drag }
 .top-bar-peer:hover { background: var(--card-pressed) }
 .top-bar-peer .top-bar-title { padding: 0 }
+.peer-story-avatar { flex: none; display: grid; place-items: center; width: 40px; height: 44px; margin-left: 4px; border-radius: var(--r-control); -webkit-app-region: no-drag }
+.peer-story-avatar:hover { background: var(--card-pressed) }
+.peer-story-ring { display: grid; place-items: center; padding: 2px; border-radius: 50%; background: var(--divider) }
+.peer-story-avatar.unseen .peer-story-ring { padding: 2.5px; background: linear-gradient(135deg, var(--accent), #6985C1) }
+.peer-story-ring > .avatar { box-shadow: 0 0 0 2px var(--card) }
 .top-bar-selection { flex: 1; padding: 0 8px; font-size: var(--t-body); font-weight: 600 }
 .history-banner { flex: none; margin: 0; padding: 8px 16px; border-bottom: 1px solid var(--divider); background: var(--sheet); font-size: var(--t-caption); color: var(--text-medium) }
 

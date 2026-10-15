@@ -3,11 +3,12 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { fromJSON } from '@grpc/proto-loader'
-import { channelStoriesQuery, channelStoryCreateWrite, channelStoryFields, channelStoryReactionWrite, channelStoryViewedWrite } from '../../src/main/network/channel-story-write'
+import { channelStoriesQuery, channelStoryCreateWrite, channelStoryFields } from '../../src/main/network/channel-story-write'
 import { ChannelStories, decodeChannelStory } from '../../src/main/accounts/channel-stories'
 import { channelStoryObject } from '../../src/main/network/channel-story-media'
 import { documents, type FirestoreDocument } from '../../src/main/network/firestore-values'
 import type { ReadCredentials } from '../../src/main/network/firestore-rpc'
+import { storyReactionWrite, storyReadMarkWrite, storyViewedWrite } from '../../src/main/network/story-views'
 
 // channels/{channelId}/stories as iOS StoryService.commitUpload writes them for ownerType .channel.
 const bucket = 'talky-a38c3.firebasestorage.app'
@@ -24,14 +25,17 @@ const story = (id: string, fields: Record<string, unknown> = {}, channelId = 'ch
   }
 } as unknown as FirestoreDocument)
 
-test('a channel story is read with its media under the channel folder, its views and my reaction', () => {
+// B408 S2: the document's viewer fields are not read — seen is the read mark, a reaction this account's views record, the
+// count storyStats (channel-stories.ts).
+test('a channel story is read with its media under the channel folder, and nothing from its viewer fields', () => {
   const row = decodeChannelStory(story('S1'), 'ch1', 'me', now)!
   assert.ok(row)
   assert.equal(row.mediaPath, 'stories/channel/ch1/S1.jpg')
   assert.equal(row.thumbnailPath, 'stories/channel/ch1/S1_thumb.jpg')
   assert.deepEqual({ viewed: row.story.viewed, reaction: row.story.reaction, viewCount: row.story.viewCount, hasThumbnail: row.story.hasThumbnail, audio: row.story.audio },
-    { viewed: false, reaction: '🔥', viewCount: 2, hasThumbnail: true, audio: false })
-  assert.equal(decodeChannelStory(story('S1', { viewerIds: { arrayValue: { values: [{ stringValue: 'me' }] } } }), 'ch1', 'me', now)!.story.viewed, true)
+    { viewed: false, reaction: null, viewCount: null, hasThumbnail: true, audio: false })
+  assert.equal(decodeChannelStory(story('S1', { viewerIds: { arrayValue: { values: [{ stringValue: 'me' }] } } }), 'ch1', 'me', now)!.story.viewed, false, 'the old viewer list says nothing')
+  assert.equal(decodeChannelStory(story('S1'), 'ch1', 'me', now)!.storyPath, `${documents}/channels/ch1/stories/S1`)
   assert.equal(decodeChannelStory(story('S1'), 'ch1', 'owner1', now)!.story.viewed, true, 'the owner never has an unseen ring on their own story')
 })
 
@@ -84,12 +88,22 @@ test('a new channel story, a receipt and a reaction serialize the way StoryServi
   assert.equal(created.update.fields.mediaURL.stringValue, `gs://${bucket}/stories/channel/ch1/S1.mp4`)
   assert.equal(created.update.fields.durationSeconds.doubleValue, 7.5)
   assert.equal(created.currentDocument.exists, false)
-  const viewed = roundTrip('commit', { database, writes: [channelStoryViewedWrite('ch1', 'S1', '0abc')] }).writes[0]
-  assert.deepEqual(viewed.transform.fieldTransforms.map((item: any) => item.fieldPath), ['viewerIds', 'viewedAtByUid.`0abc`'])
-  const reacted = roundTrip('commit', { database, writes: [channelStoryReactionWrite('ch1', 'S1', 'me', '🔥')] }).writes[0]
-  assert.deepEqual(reacted.updateMask.fieldPaths, ['reactionByUid.`me`'])
-  assert.equal(reacted.update.fields.reactionByUid.mapValue.fields.me.stringValue, '🔥')
-  const cleared = roundTrip('commit', { database, writes: [channelStoryReactionWrite('ch1', 'S1', 'me', null)] }).writes[0]
-  assert.deepEqual(cleared.updateMask.fieldPaths, ['reactionByUid.`me`'])
-  assert.equal(cleared.update.fields?.reactionByUid, undefined)
+  // B408 S2: a view, a reaction and a read mark are this account's own records (story-views.ts), never the story's fields.
+  const path = `${documents}/channels/ch1/stories/S1`
+  const viewed = roundTrip('commit', { database, writes: [storyViewedWrite(path, '0abc')] }).writes[0]
+  assert.equal(viewed.update.name, `${path}/views/0abc`)
+  assert.deepEqual(viewed.updateMask?.fieldPaths ?? [], [], 'nothing else in the record is touched')
+  assert.deepEqual(viewed.updateTransforms.map((item: any) => [item.fieldPath, item.setToServerValue]), [['viewedAt', 'REQUEST_TIME']])
+  assert.equal(viewed.currentDocument, undefined, 'made when it is not there')
+  const reacted = roundTrip('commit', { database, writes: [storyReactionWrite(path, 'me', '🔥')] }).writes[0]
+  assert.deepEqual([reacted.update.name, reacted.updateMask.fieldPaths, reacted.update.fields.reaction.stringValue], [`${path}/views/me`, ['reaction'], '🔥'])
+  const cleared = roundTrip('commit', { database, writes: [storyReactionWrite(path, 'me', null)] }).writes[0]
+  assert.deepEqual(cleared.updateMask.fieldPaths, ['reaction'])
+  assert.equal(cleared.update.fields?.reaction, undefined)
+  assert.equal(cleared.currentDocument.exists, true, 'taking a reaction back never makes an empty record')
+  const marked = roundTrip('commit', { database, writes: [storyReadMarkWrite('me', { ownerType: 'channel', ownerId: 'ch1', maxReadCreatedAt: now + 1250, maxReadStoryId: 'S1' })] }).writes[0]
+  assert.equal(marked.update.name, `${documents}/users/me/storyReadMarks/channel_ch1`)
+  assert.deepEqual([marked.update.fields.ownerType.stringValue, marked.update.fields.ownerId.stringValue, marked.update.fields.maxReadStoryId.stringValue, marked.update.fields.maxReadCreatedAt.timestampValue.nanos], ['channel', 'ch1', 'S1', 250_000_000])
+  assert.equal(marked.updateMask, undefined, 'the whole mark (iOS setData without merge)')
+  assert.deepEqual(marked.updateTransforms.map((item: any) => item.fieldPath), ['updatedAt'])
 })

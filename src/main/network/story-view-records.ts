@@ -1,50 +1,43 @@
-import { identifier, object } from '../../shared/validation'
-import { positionMilliseconds, type MessagePosition } from '../../shared/model'
+import { identifier } from '../../shared/validation'
+import { positionMilliseconds } from '../../shared/model'
 import type { StoryViewRecordData } from '../../shared/story-view-records'
-import { timestamp, type FirestoreDocument } from './firestore-values'
-import { tr } from '../../shared/i18n'
-export function storyViewRecords(doc: FirestoreDocument): StoryViewRecordData {
-  const fields = doc.fields, missing: string[] = []
-  const names: Record<string, string> = { viewerIds: tr('열람 목록'), reactionByUid: tr('반응'), viewedAtByUid: tr('열람 시각'), repostByUid: tr('재게시'), forwardByUid: tr('전달') }
-  const viewers = (): string[] => {
-    if (fields.viewerIds === undefined) { missing.push(names.viewerIds!); return [] }
-    const value = object(fields.viewerIds.arrayValue).values ?? []
-    if (!Array.isArray(value) || value.length > 1000) throw new Error('Unsupported viewer list')
-    const ids = value.map(item => identifier(object(item).stringValue))
-    if (new Set(ids).size !== ids.length) throw new Error('Duplicate viewer list')
-    return ids
-  }
-  function map<T>(key: string, parse: (value: Record<string, unknown>, uid: string) => T): Map<string, T> {
-    const field = fields[key]
-    if (field === undefined) { missing.push(names[key]!); return new Map() }
-    const raw = object(object(field.mapValue).fields ?? {}), entries = Object.entries(raw)
-    if (entries.length > 1000) throw new Error('Unsupported interaction map size')
-    return new Map(entries.map(([uid, value]) => [identifier(uid), parse(object(value), uid)]))
-  }
-  const viewerIds = viewers(), viewerIndex = new Map(viewerIds.map((uid, index) => [uid, index]))
-  const reactions = map('reactionByUid', value => {
-    const text = value.stringValue
-    if (typeof text !== 'string' || !text || text.length > 64 || Array.from(text).some(char => { const point = char.codePointAt(0)!; return point >= 0xD800 && point <= 0xDFFF })) throw new Error('Unsupported stored reaction')
-    return text
-  })
-  const date = (value: Record<string, unknown>, uid: string): MessagePosition => timestamp(value.timestampValue, uid)
-  const viewed = map('viewedAtByUid', date), reposted = map('repostByUid', date), forwarded = map('forwardByUid', date)
-  // Match the iOS row union. A lone viewedAt map key is not an extra viewer row.
-  const uids = new Set([...viewerIds, ...reactions.keys(), ...reposted.keys(), ...forwarded.keys()])
-  if (uids.size > 1000) throw new Error('Unsupported combined story audience size')
-  const compareTime = (a: MessagePosition, b: MessagePosition): number => a.seconds - b.seconds || a.nanoseconds - b.nanoseconds
-  const records = [...uids].map(uid => {
-    const times = [viewed.get(uid), reposted.get(uid), forwarded.get(uid)].filter((value): value is MessagePosition => value !== undefined)
-    const latest = times.reduce<MessagePosition | null>((value, time) => !value || compareTime(time, value) > 0 ? time : value, null)
-    return { uid, latest, index: viewerIndex.get(uid) ?? -1 }
-  }).sort((a, b) => {
-    if (a.latest && b.latest) { const difference = compareTime(b.latest, a.latest); if (difference) return difference }
-    else if (a.latest || b.latest) return a.latest ? -1 : 1
-    else if (a.index !== b.index) return b.index - a.index
-    return a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0
-  })
+import { childId, timestamp, type FirestoreDocument, type WireObject } from './firestore-values'
+
+// B408 S2 (contracts/B408-stories-access.md §9·§14): who saw this account's story is its `views` subcollection — one
+// document per viewer, `views/{viewer}` {viewedAt?, reaction?, repostedAt?, forwardedAt?}, read by the owner only — and the
+// counts are the server's `storyStats/{storyId}` {viewCount, reactionCount, forwardCount, repostCount, recentViewerIds}
+// (morse-story-feed.js countViews :179-203). tdesktop reads the viewers as a list (stories.getStoryViewsList,
+// data_stories.cpp:1478·1603) and the counts apart (stories.getStoriesViews :1674-1680). A person's row time is the latest
+// of their marks, newest first (iOS MorseStoryViewList :44-55).
+export const maxStoryViewRecords = 1000
+const time = (value: WireObject | undefined, id: string): number | null => {
+  const raw = (value as { timestampValue?: unknown } | undefined)?.timestampValue
+  return raw === undefined ? null : positionMilliseconds(timestamp(raw, id))
+}
+const count = (value: WireObject | undefined): number | null => {
+  const raw = (value as { integerValue?: unknown } | undefined)?.integerValue
+  const n = typeof raw === 'string' || typeof raw === 'number' ? Number(raw) : Number.NaN
+  return Number.isSafeInteger(n) && n >= 0 ? n : null
+}
+export function storyViewRecords(views: readonly FirestoreDocument[], viewsParent: string, stats: FirestoreDocument | null): StoryViewRecordData {
+  if (views.length > maxStoryViewRecords) throw new Error('Unsupported story audience size')
+  const rows = views.map(doc => {
+    const uid = identifier(childId(doc.name, viewsParent)), f = doc.fields
+    const reaction = (f.reaction as { stringValue?: unknown } | undefined)?.stringValue
+    if (reaction !== undefined && (typeof reaction !== 'string' || !reaction || reaction.length > 16)) throw new Error('Unsupported stored reaction')
+    const viewedAt = time(f.viewedAt, uid), repostedAt = time(f.repostedAt, uid), forwardedAt = time(f.forwardedAt, uid)
+    const times = [viewedAt, repostedAt, forwardedAt].filter((value): value is number => value !== null)
+    return { uid, viewed: viewedAt !== null, reaction: typeof reaction === 'string' ? reaction : null, reposted: repostedAt !== null, forwarded: forwardedAt !== null, latestAt: times.length ? Math.max(...times) : null }
+  }).sort((a, b) => (b.latestAt ?? -1) - (a.latestAt ?? -1) || (a.uid < b.uid ? -1 : a.uid > b.uid ? 1 : 0))
+  // The server's counts when it has made them; until the first view is counted, what the list holds.
+  const s = stats?.fields
+  const counted = { viewers: s ? count(s.viewCount) : null, reactions: s ? count(s.reactionCount) : null, reposts: s ? count(s.repostCount) : null, forwards: s ? count(s.forwardCount) : null }
   return {
-    rows: records.map(({ uid, latest }) => ({ uid, viewed: viewerIndex.has(uid), reaction: reactions.get(uid) ?? null, reposted: reposted.has(uid), forwarded: forwarded.has(uid), latestAt: latest ? positionMilliseconds(latest) : null })),
-    counts: { viewers: viewerIds.length, reactions: reactions.size, reposts: reposted.size, forwards: forwarded.size }, missing
+    rows,
+    counts: {
+      viewers: counted.viewers ?? rows.filter(row => row.viewed).length, reactions: counted.reactions ?? rows.filter(row => row.reaction).length,
+      reposts: counted.reposts ?? rows.filter(row => row.reposted).length, forwards: counted.forwards ?? rows.filter(row => row.forwarded).length
+    },
+    missing: []
   }
 }

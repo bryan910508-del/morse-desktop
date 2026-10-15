@@ -98,7 +98,7 @@ export class ChannelPostPictures {
     const limit = autoDownloadFor(this.auth, 'channel', maxImageBytes)
     if (limit <= 0) { entry.value = idleImage(entry); return }
     const signal = AbortSignal.any([this.auth.signal, entry.abort.signal, AbortSignal.timeout(45000)])
-    const bytes = await downloadChannelPostMedia(this.auth, entry.path, entry.postId, signal, () => this.validate(entry), Math.min(limit, maxImageBytes), () => {})
+    const bytes = await downloadChannelPostMedia(this.auth, entry.path, entry.postId, signal, () => this.validate(entry), Math.min(limit, maxImageBytes), () => {}, limit < maxImageBytes)
     try {
       signal.throwIfAborted(); this.validate(entry)
       this.accept(entry, bytes)

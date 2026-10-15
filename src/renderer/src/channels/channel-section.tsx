@@ -36,6 +36,7 @@ import { subscriberCountText } from '../../../shared/channel-subscriber-count'
 import { commentCountFor, editView, enqueueChannelOperation, likeView, removedPosts, useChannelOperations, useCommentNudges } from './channel-operations'
 import type { ChannelOperationItem } from '../../../shared/channel-operations'
 import { roomRestrictedNotice } from '../../../shared/sanctions'
+import { ChannelStoryRing } from './channel-stories'
 
 type Result = { outcome: 'saved' | 'rejected' | 'uncertain'; message: string }
 // ChannelDetailView.ViewMode: the pictures as a grid, the writing as cards.
@@ -463,11 +464,20 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
   // The channels tab is not always beside this screen (a chat-list inquiry row and a shared link open it on
   // their own), so it asks for the channel's picture itself. Every mounted scope of one surface adds to the
   // same list, so this never replaces what the tab is showing.
+  const storyList = useDesktop(state => state?.channelStories?.[channelId] ?? null)
+  useEffect(() => {
+    void window.morse.setChannelStoryScreen(accountUid, channelId).catch(() => {})
+    return () => { void window.morse.setChannelStoryScreen(accountUid, null).catch(() => {}) }
+  }, [accountUid, channelId])
   return <AvatarScope accountUid={accountUid} enabled surface="channels"><section className="channel-section" aria-label={name}>
     <header className={`top-bar${leftmost ? ' leftmost' : ''}`}>
       {oneColumn && <button className="icon-button" aria-label={tr('뒤로')} onClick={() => controller.closeChat()}><ArrowLeft size={20} /></button>}
+      {/* B408 S2 (tdesktop: the top bar's userpic shows a peer's stories and opens them): a channel with stories now has its
+          ring here, even one this account does not follow (getMorseChannelStories, channel-stories.ts setScreen). */}
+      {storyList && <ChannelStoryRing accountUid={accountUid} channel={{ id: channelId, name, avatar: channel?.avatar ?? null }} owned={channel?.owned === true} size={40}
+        onOpen={() => controller.toggleRight('info')} />}
       <button type="button" className="top-bar-peer" onClick={() => controller.toggleRight('info')}>
-        <PeerAvatar id={channelId} name={name} image={channel?.avatar ?? null} size={40} kind="channel" surface="channels" priority />
+        {!storyList && <PeerAvatar id={channelId} name={name} image={channel?.avatar ?? null} size={40} kind="channel" surface="channels" priority />}
         <span className="top-bar-title"><strong className="ellipsis">{name}</strong><span className="ellipsis">{channelSubtitle(channel)}</span></span>
       </button>
       <button className="icon-button" aria-label={tr('채널 정보')} onClick={() => controller.toggleRight('info')}><Info size={20} /></button>

@@ -12,13 +12,14 @@ export interface ChannelStory {
   expiresAt: number
   viewed: boolean
   reaction: string | null
-  viewCount: number
+  // B408 S2: the server's count (storyStats), for the channel's owner and admins only; null for everyone else.
+  viewCount: number | null
 }
 export interface ChannelStoryList { channelId: string; stories: ChannelStory[]; unread: boolean }
 export type ChannelStoriesSnapshot = Record<string, ChannelStoryList>
 export interface ChannelStoryMedia { url: string; audioUrl: string | null }
-// MorseStoryReaction.allowed
-export const channelStoryReactions = ['❤️', '👍', '🔥', '😂', '😮', '😢'] as const
+// MorseStoryReaction.allowed — the one list (peer-stories.ts).
+export { storyReactions as channelStoryReactions } from './peer-stories'
 // StoryService.storyTTL / maxCaptionLength
 export const channelStoryLifetime = 24 * 60 * 60 * 1000
 export const maxChannelStoryCaption = 2000

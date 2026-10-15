@@ -4250,5 +4250,17 @@
  "다른 앱이 마이크를 쓰고 있거나 마이크를 시작하지 못했어요. 다른 앱을 닫고 다시 시도해 주세요.": "Another app is using the microphone, or it couldn't start. Close other apps and try again.",
  "다른 앱이 카메라나 마이크를 쓰고 있거나 시작하지 못했어요. 다른 앱을 닫고 다시 시도해 주세요.": "Another app is using the camera or microphone, or they couldn't start. Close other apps and try again.",
  "녹음을 시작하지 못했어요. 마이크를 확인해 주세요.": "Couldn't start recording. Please check your microphone.",
- "녹화를 시작하지 못했어요. 카메라를 확인해 주세요.": "Couldn't start video recording. Please check your camera."
+ "녹화를 시작하지 못했어요. 카메라를 확인해 주세요.": "Couldn't start video recording. Please check your camera.",
+ "내 스토리는 내 스토리에서 확인해 주세요.": "Open your own stories from My Story.",
+ "스토리 설명의 링크를 다시 확인해 주세요.": "Check the link in the story caption again.",
+ "스토리가 바뀌었거나 끝났습니다. 다시 열어 주세요.": "This story changed or ended. Open it again.",
+ "스토리를 불러오지 못했습니다. 잠시 뒤 다시 열어 주세요.": "Couldn't load the stories. Open them again in a moment.",
+ "이 스토리에는 지금 반응할 수 없습니다.": "You can't react to this story right now.",
+ "영상 선택이 변경되었습니다.": "The selected video changed.",
+ "현재 사진 스토리를 다시 선택해 주세요.": "Choose the photo story again.",
+ "현재 영상 스토리를 다시 선택해 주세요.": "Choose the video story again.",
+ "현재 스토리 창에서 전체 웹 주소를 확인해 주세요.": "Check the full web address in the story window.",
+ " · 친한 친구": " · Close friends",
+ "링크를 다시 확인해 주세요.": "Check the link again.",
+ "스토리를 볼 사람을 다시 선택해 주세요.": "Choose whose stories to view again."
 }

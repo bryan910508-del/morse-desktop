@@ -6,17 +6,8 @@ import { AccountToolsApi } from '../api/account-tools'
 import { TwoStepSettingsApi } from '../api/two-step-settings'
 import { VoiceDraftStorage } from './voice-draft-storage'
 import { StoryReplyDraft } from './story-reply-draft'
-import { StoryViewReceipt } from './story-view-receipt'
-import { StoryReactionChange } from './story-reaction-change'
-import { ContactStoryReaction } from './contact-story-reaction'
-import { ContactStoryPhotoAudio } from './contact-story-photo-audio'
-import { ContactAudienceStoryVideo } from './contact-audience-story-video'
-import { ContactAudienceStoryPhoto } from './contact-audience-story-photo'
-import { ContactAudienceStories } from './contact-audience-stories'
-import { ContactStoryAudience } from './contact-story-audience'
-import { ContactPublicStoryVideo } from './contact-public-story-video'
-import { ContactPublicStoryPhoto } from './contact-public-story-photo'
-import { ContactPublicStories } from './contact-public-stories'
+import { PeerStories } from './peer-stories'
+import { PeerStoryPhoto, PeerStoryPhotoAudio, PeerStoryVideo } from './peer-story-media'
 import { StoryVideoUpload } from './story-video-upload'
 import { StoryPublication } from './story-publication'
 import type { StoryComposerPhotoTarget, StoryComposerPhotoWrite, StoryComposerPhotoReference, StoryComposerPhotoRecord } from '../../shared/story-composer-photo'
@@ -248,15 +239,11 @@ export class AccountSession {
   private readonly localReplies = new Map<string, string[]>()
   readonly voiceDraftStorage:VoiceDraftStorage
   readonly backgroundStorage: BackgroundStorage
-  readonly contactPublicStoryVideo: ContactPublicStoryVideo
-  readonly contactPublicStoryPhoto: ContactPublicStoryPhoto
-  readonly contactStoryReaction: ContactStoryReaction
-  readonly contactStoryPhotoAudio: ContactStoryPhotoAudio
-  readonly contactAudienceStoryVideo: ContactAudienceStoryVideo
-  readonly contactAudienceStoryPhoto: ContactAudienceStoryPhoto
-  readonly contactAudienceStories: ContactAudienceStories
-  readonly contactStoryAudience: ContactStoryAudience
-  readonly contactPublicStories: ContactPublicStories
+  // B408 S2: anyone's stories this account may see, and their media.
+  readonly peerStories: PeerStories
+  readonly peerStoryPhoto: PeerStoryPhoto
+  readonly peerStoryVideo: PeerStoryVideo
+  readonly peerStoryPhotoAudio: PeerStoryPhotoAudio
   readonly storyViewRecords: StoryViewRecords
   readonly storyHiddenAudience: StoryHiddenAudience
   readonly noteEditComparison: NoteEditComparison
@@ -276,8 +263,6 @@ export class AccountSession {
   private readonly typing: ChatTyping
   private readonly listTyping: DialogTyping
   private eventReminders: EventReminders | null = null
-  readonly storyViewReceipt: StoryViewReceipt
-  readonly storyReactionChange: StoryReactionChange
   readonly storyHiddenChange: StoryHiddenChange
   readonly storyPrivacyMove: StoryPrivacyMove
   readonly storyRemoval: StoryRemoval
@@ -398,7 +383,7 @@ export class AccountSession {
     this.discussionHistory = new ChannelDiscussionHistory(profile.uid, credentials.signal, () => { if (!this.closed && this.chatsCurrent && this.pinsCurrent) this.rebuild() })
     this.selfProfile = new SelfProfileSession(profile.uid, credentials, () => { if (!this.closed) events.changed() }, (command, validate) => this.delivery.profilePhotoState(command, validate),
       (peer, raw) => this.peerPhotos.remember(peer, raw))
-    this.contacts = new ContactsSession(profile.uid, credentials, () => { if (!this.closed) { this.renameDialogs(); this.dialogAvatars?.prune(); this.contactPublicStories?.prune(); this.contactStoryAudience?.prune(); this.contactAudienceStories?.prune(); this.contactAudienceStoryPhoto?.prune(); this.contactAudienceStoryVideo?.prune(); this.contactStoryPhotoAudio?.prune(); this.contactStoryReaction?.prune(); this.storyReactionChange?.prune(); this.storyViewReceipt?.prune(); this.contactPublicStoryPhoto?.prune(); this.contactPublicStoryVideo?.prune(); this.storyBarApi?.recheck(); events.changed() } }, (command, validate) => this.delivery.contactState(command, validate), (peer, raw) => this.peerPhotos.remember(peer, raw))
+    this.contacts = new ContactsSession(profile.uid, credentials, () => { if (!this.closed) { this.renameDialogs(); this.dialogAvatars?.prune(); events.changed() } }, (command, validate) => this.delivery.contactState(command, validate), (peer, raw) => this.peerPhotos.remember(peer, raw))
     this.channels = new ChannelsSession(profile.uid, credentials, () => { this.channelJoinDecisions?.prune(); this.channelAccess?.prune(); this.channelPhotoUpload?.prune(); this.channelHome?.listChanged(); if (!this.closed) events.changed() })
     this.ownStories = new OwnStories(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
     this.spaceNotes = new SpaceNotesReader(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
@@ -406,7 +391,12 @@ export class AccountSession {
     this.personalChannels = new PersonalChannels(profile.uid, credentials, () => { if (!this.closed) events.changed() })
     this.channelHome = new ChannelHome(profile.uid, credentials, { items: () => this.channels.snapshot.items, status: () => this.channels.listStatus, document: id => this.channels.currentDocument(id) },
       () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
-    this.channelStories = new ChannelStories(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() })
+    // B408 S2: followed channels' stories are in this account's feed (the stories row's), and its owner or admins read a
+    // channel's own.
+    this.channelStories = new ChannelStories(profile.uid, credentials, () => !this.closed && !this.locked, () => { if (!this.closed) events.changed() }, {
+      feedStories: (ownerType, ownerId) => this.storyBarApi.feedStories(ownerType, ownerId), mark: (ownerType, ownerId) => this.storyBarApi.mark(ownerType, ownerId),
+      noteRead: story => this.storyBarApi.noteRead(story), inFeed: storyPath => this.storyBarApi.inFeed(storyPath)
+    }, channelId => this.channelStoryRole(channelId))
     this.channelPublicPreview = new ChannelPublicPreview(profile.uid, credentials, () => !this.closed && !this.locked, request => this.channelDiscovery.selection(request), () => { if (!this.closed) events.changed() })
     this.contactDiscovery = new ContactDiscovery(profile.uid, credentials, () => !this.closed && !this.locked,
       () => { if (!this.closed) events.changed() }, () => this.contacts.refresh())
@@ -479,82 +469,26 @@ export class AccountSession {
     this.groupPhotoUpload = new GroupPhotoUpload(profile.uid, credentials, () => {
       if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('계정 연결과 화면 잠금을 확인해 주세요.'))
     }, (chatId, version) => this.groupPhotoUploadSource(chatId, version), (command, validate) => this.delivery.groupPhotoUploadState(command, validate), () => { if (!this.closed) events.changed() })
-    this.contactStoryAudience = new ContactStoryAudience(profile.uid, credentials, request => {
-      if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
-      return this.contacts.directPeer(request.profileRequestId).uid
-    }, () => { if (!this.closed) { this.contactAudienceStories?.prune(); this.contactAudienceStoryPhoto?.prune(); this.contactAudienceStoryVideo?.prune(); this.contactStoryPhotoAudio?.prune(); this.contactStoryReaction?.prune(); this.storyReactionChange?.prune(); this.storyViewReceipt?.prune(); events.changed() } })
-    this.contactAudienceStories = new ContactAudienceStories(profile.uid, credentials, request => {
-      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
-      const current = this.contactStoryAudience.storySource(request.audienceId, request.profileRequestId, request.privacy), peer = this.contacts.directPeer(request.profileRequestId)
-      if (current.uid !== peer.uid) throw new Error(tr('현재 청중과 연락처가 변경되었습니다.'))
-      return { ...peer, expiresAt: current.expiresAt }
-    })
-    this.contactAudienceStoryVideo = new ContactAudienceStoryVideo(profile.uid, credentials, request => this.contactAudienceStories.videoSource(request), request => {
-      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
-      return this.contactStoryAudience.storySource(request.audienceId, request.profileRequestId, request.privacy).uid
-    }, this.storyMedia, () => { if (!this.closed) events.changed() })
-    this.contactAudienceStoryPhoto = new ContactAudienceStoryPhoto(profile.uid, credentials, request => this.contactAudienceStories.photoSource(request), request => {
-      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
-      return this.contactStoryAudience.storySource(request.audienceId, request.profileRequestId, request.privacy).uid
-    }, this.storyMedia, () => { if (!this.closed) events.changed() })
-    this.contactPublicStories = new ContactPublicStories(profile.uid, credentials, request => {
-      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
-      return this.contacts.directPeer(request.profileRequestId)
-    })
-    this.contactPublicStoryPhoto = new ContactPublicStoryPhoto(profile.uid, credentials, request => this.contactPublicStories.photoSource(request), profileRequestId => {
-      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
-      return this.contacts.directPeer(profileRequestId).uid
-    }, this.storyMedia, () => { if (!this.closed) events.changed() })
-    this.contactPublicStoryVideo = new ContactPublicStoryVideo(profile.uid, credentials, request => this.contactPublicStories.videoSource(request), profileRequestId => {
-      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
-      return this.contacts.directPeer(profileRequestId).uid
-    }, this.storyMedia, () => { if (!this.closed) events.changed() })
-    this.contactStoryPhotoAudio = new ContactStoryPhotoAudio(profile.uid, credentials, request => {
-      const photo = { selectionId: request.selectionId, profileRequestId: request.profileRequestId, requestId: request.requestId, storyId: request.storyId, version: request.version, presentation: 'image' as const }
-      return request.privacy === 'everyone' ? this.contactPublicStories.photoSource(photo) : this.contactAudienceStories.photoSource({ ...photo, privacy: request.privacy, audienceId: request.audienceId! })
-    }, request => {
-      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
-      return request.privacy === 'everyone' ? this.contacts.directPeer(request.profileRequestId).uid : this.contactStoryAudience.storySource(request.audienceId!, request.profileRequestId, request.privacy).uid
-    }, () => { if (!this.closed) events.changed() })
-    this.contactStoryReaction = new ContactStoryReaction(profile.uid, credentials, request => request.privacy === 'everyone' ? this.contactPublicStories.reactionSource(request) : this.contactAudienceStories.reactionSource(request))
+    // B408 S2: a person's stories come from this account's feed (story-bar.ts), else getMorsePeerStories; their media
+    // from the addresses those name, and a view or reaction goes straight to the story's views/{me}.
+    this.peerStories = new PeerStories(profile.uid, credentials, {
+      feedStories: (ownerType, ownerId) => this.storyBarApi.feedStories(ownerType, ownerId), mark: (ownerType, ownerId) => this.storyBarApi.mark(ownerType, ownerId),
+      noteRead: story => this.storyBarApi.noteRead(story), inFeed: storyPath => this.storyBarApi.inFeed(storyPath)
+    }, () => { if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.')) }, () => events.storyStealth())
+    this.peerStoryPhoto = new PeerStoryPhoto(profile.uid, credentials, target => this.peerStories.detail(target), this.storyMedia, () => { if (!this.closed) events.changed() })
+    this.peerStoryVideo = new PeerStoryVideo(profile.uid, credentials, target => this.peerStories.detail(target), this.storyMedia, () => { if (!this.closed) events.changed() })
+    this.peerStoryPhotoAudio = new PeerStoryPhotoAudio(profile.uid, credentials, target => this.peerStories.detail(target), () => { if (!this.closed) events.changed() })
     this.storyReplyDraft = new StoryReplyDraft(profile.uid, credentials, network => {
       if (this.closed || this.locked || (network && this.connection !== 'ready')) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
     }, request => {
-      const source = request.privacy === 'everyone' ? this.contactPublicStories.reactionSource(request) : this.contactAudienceStories.reactionSource(request)
-      const peer = this.contacts.directPeer(request.profileRequestId)
-      if (peer.uid !== source.ownerId) throw new Error(tr('현재 스토리 작성자가 변경되었습니다.'))
-      return { ownerId: source.ownerId, ownerName: peer.displayName }
+      const story = this.peerStories.story(request)
+      if (story.privacy === 'channel') throw new Error(tr('현재 타인 스토리를 확인해 주세요.'))
+      return { ownerId: story.ownerId, ownerName: this.contacts.personName(story.ownerId) || tr('알 수 없는 사용자'), privacy: story.privacy, version: story.version, expiresAt: story.expiresAt, caption: story.caption }
     }, pending => { if (!this.contacts.ready || !this.contacts.has(pending.ownerId)) throw new Error(tr('현재 연락처를 확인해 주세요.')) },
     (id, validate) => this.delivery.storyReplySendKnown(id, validate), (pending, validate) => this.delivery.enqueueStoryReply(pending, validate),
     (pending, validate) => this.delivery.detachStoryReply(pending, validate),
     (command, validate) => this.delivery.storyReplyDraftState(command, validate), () => { if (!this.closed) events.changed() })
     void Promise.resolve().then(() => this.storyReplyDraft.refresh()).catch(() => {})
-    this.storyViewReceipt = new StoryViewReceipt(profile.uid, credentials, () => {
-      if (this.closed || this.locked) throw new Error(tr('현재 연결과 스토리 숨김 열람 설정을 확인해 주세요.'))
-    }, request => {
-      if (events.storyStealth()) throw new Error(tr('이 기기의 숨김 열람 설정이 켜져 있습니다.'))
-      const source = request.privacy === 'everyone' ? this.contactPublicStories.reactionSource(request) : this.contactAudienceStories.reactionSource(request)
-      const peer = this.contacts.directPeer(request.profileRequestId)
-      if (peer.uid !== source.ownerId) throw new Error(tr('현재 스토리 작성자가 변경되었습니다.'))
-      return { ownerId: source.ownerId, ownerName: peer.displayName }
-    }, request => {
-      if (!this.contacts.has(request.ownerId)) throw new Error(tr('현재 연락처를 다시 확인해 주세요.'))
-    }, request => {
-      if (events.storyStealth()) throw new Error(tr('이 기기의 숨김 열람 설정이 켜져 있습니다.'))
-      if (!this.contacts.has(request.ownerId)) throw new Error(tr('현재 연락처를 다시 확인해 주세요.'))
-    }, (command, validate) => this.delivery.storyViewReceiptState(command, validate), () => { if (!this.closed) events.changed() })
-    void Promise.resolve().then(() => this.storyViewReceipt.refresh()).catch(() => {})
-    this.storyReactionChange = new StoryReactionChange(profile.uid, credentials, () => {
-      if (this.closed || this.locked) throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
-    }, request => {
-      const source = request.privacy === 'everyone' ? this.contactPublicStories.reactionSource(request) : this.contactAudienceStories.reactionSource(request)
-      const peer = this.contacts.directPeer(request.profileRequestId)
-      if (peer.uid !== source.ownerId) throw new Error(tr('현재 스토리 작성자가 변경되었습니다.'))
-      return { ownerId: source.ownerId, ownerName: peer.displayName }
-    }, request => {
-      if (!this.contacts.has(request.ownerId)) throw new Error(tr('현재 연락처를 다시 확인해 주세요.'))
-    }, (command, validate) => this.delivery.storyReactionChangeState(command, validate), () => { if (!this.closed) events.changed() })
-    void Promise.resolve().then(() => this.storyReactionChange.refresh()).catch(() => {})
     this.storyViewRecords = new StoryViewRecords(profile.uid, credentials, request => { this.ownStories.captionDraftSource(request) })
     this.storyHiddenAudience = new StoryHiddenAudience(profile.uid, credentials, request => { this.ownStories.captionDraftSource(request) })
     this.noteEditComparison = new NoteEditComparison(profile.uid, credentials, () => {
@@ -692,8 +626,8 @@ export class AccountSession {
       uid => { try { return this.contacts.has(uid) ? this.contacts.closeFriendCandidate(uid).displayName : null } catch { return null } })
     this.channelMembershipApi = new ChannelMembershipApi(profile.uid, credentials, connected)
     this.channelDeletionApi = new ChannelDeletionApi(connected, () => firestoreChannelDeletion(credentials, connected))
-    this.storyBarApi = new StoryBarApi(profile.uid, credentials, () => { if (this.closed || this.locked) throw new Error(tr('계정 연결을 확인해 주세요.')) }, uid => this.contacts.has(uid),
-      uid => this.contacts.keepsMe(uid), result => { if (!this.closed && !this.locked) this.events.storyBar?.(result) })
+    this.storyBarApi = new StoryBarApi(profile.uid, credentials, () => { if (this.closed || this.locked) throw new Error(tr('계정 연결을 확인해 주세요.')) },
+      result => { if (!this.closed && !this.locked) this.events.storyBar?.(result) })
     this.accountTools = new AccountToolsApi(profile.uid, credentials, connected)
     this.twoStep = new TwoStepSettingsApi(profile.uid, credentials, connected)
     this.inquirySends = new InquirySends(profile.uid, credentials, connected, command => this.delivery.inquirySendState(command), () => { if (!this.closed) events.changed() })
@@ -794,7 +728,7 @@ export class AccountSession {
     if (this.chatsCurrent && this.pinsCurrent) this.rebuild()
     if (locked) { this.lockedPictures = this.dialogAvatars.drawnPictures(); this.dialogAvatars.clear(); this.storyMedia.clear() }
     this.voiceDraftStorage.invalidate();this.backgroundStorage.invalidate()
-    if (locked) { this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.hiddenUploads.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); this.groupName.pause(); this.groupAnnouncement.pause(); this.groupPhoto.clear(); this.groupPhotoEditor.pause(); this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause() }
+    if (locked) { this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.hiddenUploads.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.peerStories.pause(); this.peerStoryPhoto.pause(); this.peerStoryVideo.pause(); this.peerStoryPhotoAudio.pause(); this.groupName.pause(); this.groupAnnouncement.pause(); this.groupPhoto.clear(); this.groupPhotoEditor.pause(); this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause() }
     if (locked) { this.ownStories.pause(); this.spaceNotes.pause(); this.channelPublicPreview.pause(); this.channelPublicPreview.comments.forget(); this.channelDiscovery.pause(); this.contactDiscovery.pause(); this.participantAdd.pause(); this.dialogPins.pause(); this.manualUnread.pause(); this.draftReply.clear(); this.cancelForwardPreparation() }
     else if (this.selected && this.reader) this.draftReply.bind(this.selected.dialog, this.reader)
     // A post or a comment on its way goes on once the screen is open again.
@@ -2396,6 +2330,14 @@ export class AccountSession {
     void this.chatFlags.set(chatId, { archived: false }).then(() => this.syncDialogPreference(chatId)).catch(() => {})
   }
   // Only the channel's owner posts or removes its stories (firestore.rules isChannelOwner).
+  // B408 S2: whether this account owns or administers a channel, from the channel document it holds.
+  channelStoryRole(channelId: string): 'owner' | 'admin' | null {
+    const doc = this.closed ? null : this.channels.currentDocument(channelId)
+    if (!doc) return null
+    if (doc.fields.ownerId?.stringValue === this.profile.uid) return 'owner'
+    const admins = (doc.fields.adminIds as { arrayValue?: { values?: { stringValue?: unknown }[] } } | undefined)?.arrayValue?.values ?? []
+    return admins.some(value => value.stringValue === this.profile.uid) ? 'admin' : null
+  }
   ownsChannel(channelId: string): boolean {
     return !this.closed && this.channels.currentDocument(channelId)?.fields.ownerId?.stringValue === this.profile.uid
   }
@@ -3028,7 +2970,7 @@ export class AccountSession {
     if (this.closed) return
     this.keptHistories.clear(); this.settleListed(false)
     this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); void this.hiddenUploads.close(); this.hiddenRowLines.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.sendingMedia.clear(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stickerLibrary.close(); this.serverTranslator.close(); this.storyBarApi.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
-    this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.hiddenUploads.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReactionChange.pause(); this.storyViewReceipt.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.contactPublicStories.pause(); this.contactStoryAudience.pause(); this.contactAudienceStories.pause(); this.contactAudienceStoryPhoto.pause(); this.contactAudienceStoryVideo.pause(); this.contactStoryPhotoAudio.pause(); this.contactStoryReaction.pause(); this.contactPublicStoryPhoto.pause(); this.contactPublicStoryVideo.pause(); 
+    this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.hiddenUploads.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.peerStories.pause(); this.peerStoryPhoto.pause(); this.peerStoryVideo.pause(); this.peerStoryPhotoAudio.pause(); 
     await storyClose
     await noteClose
     await presenceClose
@@ -3036,23 +2978,16 @@ export class AccountSession {
     await this.voiceDraftStorage.close();await this.backgroundStorage.close()
     await this.postCreation.close()
     this.storyMedia.close()
-    await this.contactPublicStoryVideo.close()
-    await this.contactPublicStoryPhoto.close()
-    await this.contactStoryReaction.close()
-    await this.contactStoryPhotoAudio.close()
-    await this.contactAudienceStoryVideo.close()
-    await this.contactAudienceStoryPhoto.close()
-    await this.contactAudienceStories.close()
-    await this.contactStoryAudience.close()
-    await this.contactPublicStories.close()
+    await this.peerStoryVideo.close()
+    await this.peerStoryPhoto.close()
+    await this.peerStoryPhotoAudio.close()
+    this.peerStories.dispose()
     await this.storyViewRecords.close()
     await this.storyHiddenAudience.close()
     this.noteEditComparison.close()
     await this.storyVideoUpload.close()
     await this.storyPublication.close()
     await this.storyHiddenChange.close()
-    await this.storyReactionChange.close()
-    await this.storyViewReceipt.close()
     await this.storyReplyDraft.close()
     await this.storyPrivacyMove.close()
     await this.storyRemoval.close()

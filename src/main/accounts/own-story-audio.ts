@@ -3,12 +3,14 @@ import type { OwnStoryDetail } from '../../shared/own-stories'
 import type { OwnStoryAudioRequest, OwnStoryAudioSnapshot } from '../../shared/own-story-audio'
 import { positionMilliseconds } from '../../shared/model'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
-import { documents, type FirestoreDocument } from '../network/firestore-values'
+import { documents } from '../network/firestore-values'
 import { ownStoryCollections, ownStoryFromDocument } from '../network/own-story-document'
 import { ownStoryAudioPath } from '../media/own-story-audio-document'
 import { downloadOwnStoryAudio } from '../network/own-story-audio'
 import { channelMediaResponse } from '../media/channel-media-response'
 import { tr } from '../../shared/i18n'
+// B408 S2: someone else's story sound comes only from the address its feed copy names.
+export interface PeerStoryAudioOptions { prefix: '__peer-story-photo-audio-sound'; address(request: OwnStoryAudioRequest): string | null }
 interface Selection { request: OwnStoryAudioRequest; abort: AbortController; reader: FirestoreReader; token: string; path: string | null; watched: boolean; bytes: Buffer | null; mime: string; deadline: number }
 export class OwnStoryAudio {
   private selected: Selection | null = null
@@ -16,7 +18,7 @@ export class OwnStoryAudio {
   private job: Promise<void> | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
   private closed = false
-  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly source: (request: OwnStoryAudioRequest) => OwnStoryDetail, private readonly changed: () => void, private readonly options?: { prefix: '__contact-public-story-audio' | '__contact-audience-story-audio' | '__contact-story-photo-audio-sound'; inspect(doc: FirestoreDocument): void }) {}
+  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly source: (request: OwnStoryAudioRequest) => OwnStoryDetail, private readonly changed: () => void, private readonly options?: PeerStoryAudioOptions) {}
   private publish(): void { if (!this.closed) this.changed() }
   private validate(media: Selection, documentRequired = true): void {
     this.auth.signal.throwIfAborted(); media.abort.signal.throwIfAborted()
@@ -69,7 +71,6 @@ export class OwnStoryAudio {
             this.validate(media, false)
             const doc = rows.get(path)
             if (rows.size !== 1 || !doc || doc.name !== path) throw new Error('Story is absent')
-            this.options?.inspect(doc)
             const current = ownStoryFromDocument(doc, this.uid, source.privacy)
             if (current.version !== media.request.version || !['image', 'video'].includes(current.mediaType) || current.audio !== 'attached' || positionMilliseconds(current.expires) <= Date.now()) throw new Error('Story changed or expired')
             const audioPath = ownStoryAudioPath(doc, this.uid)
@@ -87,7 +88,10 @@ export class OwnStoryAudio {
     })
   }
   private async download(media: Selection, signal: AbortSignal): Promise<void> {
-    const path = await this.observe(media, signal)
+    const named = this.options ? this.options.address(media.request) : null
+    if (this.options && !named) throw new Error('Story audio address missing')
+    if (named) { media.path = named; media.watched = true }
+    const path = named ?? await this.observe(media, signal)
     signal.throwIfAborted(); this.validate(media)
     const payload = await downloadOwnStoryAudio(this.auth, path, media.request.storyId, this.uid, signal, () => this.validate(media), 15 * 1024 * 1024 - 1, (loaded, total) => {
       this.validate(media)

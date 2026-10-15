@@ -6,7 +6,7 @@ import type { OwnStoryVideoRequest, OwnStoryVideoSnapshot } from '../../shared/o
 import { positionMilliseconds } from '../../shared/model'
 import { mediaType } from '../media/media-type'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
-import { documents, type FirestoreDocument } from '../network/firestore-values'
+import { documents } from '../network/firestore-values'
 import { ownStoryCollections, ownStoryFromDocument } from '../network/own-story-document'
 import { ownStoryVideoPath } from '../media/own-story-video-document'
 import { downloadOwnStoryVideo } from '../network/own-story-video'
@@ -15,6 +15,8 @@ import { storyMediaKey, type StoryMediaCache } from './story-media-cache'
 import { mediaCacheFor } from './media-cache'
 import { recordStoryStep } from '../platform/story-diagnostics'
 import { tr } from '../../shared/i18n'
+// B408 S2: someone else's video and its sound come only from the addresses its feed copy names.
+export interface PeerStoryVideoOptions { prefix: '__peer-story-video'; cache?: StoryMediaCache; address(request: OwnStoryVideoRequest): { path: string | null; audioPath: string | null } }
 interface Selection { audioPath: string | null; audioBytes: Buffer | null; audioMime: string; request: OwnStoryVideoRequest; abort: AbortController; reader: FirestoreReader; token: string; path: string | null; watched: boolean; bytes: Buffer | null; mime: string; deadline: number }
 export class OwnStoryVideo {
   private selected: Selection | null = null
@@ -22,7 +24,7 @@ export class OwnStoryVideo {
   private job: Promise<void> | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
   private closed = false
-  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly source: (request: OwnStoryVideoRequest) => OwnStoryDetail, private readonly changed: () => void, private readonly options?: { prefix: '__contact-public-story-video' | '__contact-audience-story-video'; inspect(doc: FirestoreDocument): void; cache?: StoryMediaCache; address?: (request: OwnStoryVideoRequest) => { path: string | null; audioPath: string | null } }) {}
+  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly source: (request: OwnStoryVideoRequest) => OwnStoryDetail, private readonly changed: () => void, private readonly options?: PeerStoryVideoOptions) {}
   private publish(): void { if (!this.closed) this.changed() }
   private validate(media: Selection, documentRequired = true): void {
     this.auth.signal.throwIfAborted(); media.abort.signal.throwIfAborted()
@@ -92,7 +94,6 @@ export class OwnStoryVideo {
             this.validate(media, false)
             const doc = rows.get(path)
             if (rows.size !== 1 || !doc || doc.name !== path) throw new Error('Story is absent')
-            this.options?.inspect(doc)
             const current = ownStoryFromDocument(doc, this.uid, source.privacy)
             if (current.version !== media.request.version || current.mediaType !== 'video' || current.audio !== (media.request.mode === 'with-audio' ? 'attached' : 'none') || positionMilliseconds(current.expires) <= Date.now()) throw new Error('Story changed or expired')
             const videoPath = ownStoryVideoPath(doc, this.uid), audioPath = media.request.mode === 'with-audio' ? ownStoryAudioPath(doc, this.uid) : null
@@ -110,11 +111,12 @@ export class OwnStoryVideo {
     })
   }
   private async download(media: Selection, signal: AbortSignal): Promise<void> {
-    // The list already named where this video and its sound live, as stories.getPeerStories does for
-    // Telegram; the story is read again only when the list cannot say.
-    const named = this.options?.address?.(media.request)
+    // The feed copy already named where this video and its sound live, as stories.getPeerStories does for
+    // Telegram; only this account's own story is read again.
+    const named = this.options?.address(media.request)
     const paired = media.request.mode === 'with-audio'
     const ready = named?.path && (!paired || named.audioPath) && named.path !== named.audioPath
+    if (this.options && !ready) throw new Error('Story video address missing')
     if (ready) { media.path = named!.path; media.audioPath = paired ? named!.audioPath : null; media.watched = true }
     const path = ready ? media.path! : await this.observe(media, signal)
     signal.throwIfAborted(); this.validate(media)

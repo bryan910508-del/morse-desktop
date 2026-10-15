@@ -3,8 +3,9 @@ import { positionMilliseconds } from '../../shared/model'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
 import { documents } from '../network/firestore-values'
 import { ownStoryCollections, ownStoryFromDocument } from '../network/own-story-document'
-import { storyViewRecords } from '../network/story-view-records'
+import { maxStoryViewRecords, storyViewRecords } from '../network/story-view-records'
 import { tr } from '../../shared/i18n'
+import { serverNow } from '../network/server-clock'
 export class StoryViewRecords {
   private closed = false
   private owner: { id: string; abort: AbortController; reader: FirestoreReader } | null = null
@@ -27,9 +28,15 @@ export class StoryViewRecords {
         if (!doc) result = { outcome: 'absent', current: null, message: tr('이 공개 범위에서 현재 스토리 문서를 확인하지 못했습니다. 목록을 다시 불러와 주세요.') }
         else {
           const story = ownStoryFromDocument(doc, this.uid, request.privacy), expiresAt = positionMilliseconds(story.expires)
-          if (expiresAt <= Date.now()) result = { outcome: 'expired', current: null, message: tr('이 기기 시각 기준으로 스토리가 만료되었습니다.') }
+          if (expiresAt <= serverNow()) result = { outcome: 'expired', current: null, message: tr('이 기기 시각 기준으로 스토리가 만료되었습니다.') }
           else if (story.version !== request.version) result = { outcome: 'changed', current: null, message: tr('스토리가 목록 조회 이후 바뀌었습니다. 목록을 다시 읽고 선택해 주세요.') }
-          else result = { outcome: 'ready', current: { ...storyViewRecords(doc), expiresAt }, message: tr('조회 시점에 저장된 열람·반응 기록입니다. 이후 변경 여부를 실시간으로 확인하지 않습니다.') }
+          else {
+            // B408 S2: the viewers are the story's views and the counts the server's storyStats (story-view-records.ts).
+            const parent = `${documents}/users/${this.uid}/${ownStoryCollections[request.privacy]}/${request.storyId}`
+            const views = await owner.reader.query(parent, { from: [{ collectionId: 'views' }], orderBy: [{ field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: { value: maxStoryViewRecords + 1 } }, signal); validate()
+            const stats = await owner.reader.getDocument(`${documents}/users/${this.uid}/storyStats/${request.storyId}`, signal, validate); validate()
+            result = { outcome: 'ready', current: { ...storyViewRecords(views, `${parent}/views`, stats), expiresAt }, message: tr('조회 시점에 저장된 열람·반응 기록입니다. 이후 변경 여부를 실시간으로 확인하지 않습니다.') }
+          }
         }
       } catch { validate(); result = { outcome: 'unavailable', current: null, message: tr('열람·반응 기록을 확인하지 못했습니다. 잘못된 형식이나 합산 1,000명 초과 기록을 비어 있는 목록으로 표시하지 않습니다.') } }
       validate()

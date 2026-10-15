@@ -134,7 +134,7 @@ function ChannelStoryViewer({ accountUid, channel, owned, close }: { accountUid:
       <button type="button" className="story-tap next" aria-label={tr('다음')} tabIndex={-1} onClick={next} />
       {story?.caption && <p className="story-caption selectable">{story.caption}</p>}
       {story && (owned
-        ? <div className="story-reactions channel-story-owner"><Eye size={16} /><span>{tr('조회 {0}', [story.viewCount.toLocaleString()])}</span></div>
+        ? <div className="story-reactions channel-story-owner"><Eye size={16} /><span>{tr('조회 {0}', [(story.viewCount ?? 0).toLocaleString()])}</span></div>
         : <div className="story-reactions" role="group" aria-label={tr('반응')}>
           {channelStoryReactions.map(choice => <button key={choice} type="button" className={story.reaction === choice ? 'selected' : undefined} aria-pressed={story.reaction === choice}
             aria-label={tr('{0} 반응', [choice])} onClick={() => { void react(choice) }}>{choice}</button>)}

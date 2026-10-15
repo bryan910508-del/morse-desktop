@@ -1,5 +1,6 @@
 // Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
+import { PeerStoryRing, usePeerStoryEntry } from '../stories/peer-story-ring'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
 import { ArrowDown, ArrowLeft, Bookmark, Check, ChevronDown, Copy, Download, FolderOpen, EllipsisVertical, File as FileIcon, Flag, Forward, Images, Info, Link, Pencil, Pin, PinOff, Reply, RotateCcw, Search, Star, StarOff, Timer, Trash2, X } from 'lucide-react'
@@ -667,6 +668,9 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   // header names it the same, as Telegram gives Saved Messages one name and one bookmark everywhere.
   // Its stored chat title is whatever the client that made the room wrote there; iOS never shows it.
   const saved = chatId === `memo_${accountUid}`
+  // A 1:1 chat's other person, whose stories the header's picture shows (a secret chat keeps its picture hidden).
+  const storyPeer = dialog?.kind === 'direct' && !service && !saved ? dialog.participantUids.find(uid => uid !== accountUid) ?? null : null
+  const storyEntry = usePeerStoryEntry(accountUid, storyPeer)
   const title = saved ? tr('저장한 메시지') : dialog?.title ?? pending?.displayName ?? tr('대화')
   const typing = useTyping(chatId)
   const subtitle = !dialog ? pending ? tr('새 대화') : '' : shownConnection !== 'ready' ? linkLabel(shownConnection) : secret ? tr('비밀 대화') : service ? tr('서비스 알림') : typing ? tr('입력 중...') : group ? tr('참여자 {0}명', [dialog.participantUids.length]) : peerPresence?.text ?? ''
@@ -689,10 +693,15 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
         <button className="button flat" disabled={!canForwardSelection} onClick={() => { showShareBox(accountUid, selected); setSelection(null) }}><Forward size={18} />{tr('전달')}</button>
         <button className="button flat danger" disabled={!canDeleteSelection} onClick={() => { void removeMessages(selected) }}><Trash2 size={18} />{tr('삭제')}</button>
       </> : <>
+        {/* B408 S2: the other person's picture carries their stories' ring, and a press on it opens them (tdesktop
+            TopBarWidget); the name beside it still opens the chat's profile. */}
+        {storyEntry && dialog && storyPeer && <PeerStoryRing accountUid={accountUid} peerUid={storyPeer} name={dialog.title} entry={storyEntry}>
+          <PeerAvatar id={dialog.id} name={dialog.title} image={dialog.avatar} surface="dialogs" size={32} priority />
+        </PeerStoryRing>}
         <button type="button" className="top-bar-peer" onClick={() => { if (dialog) controller.toggleRight('info') }}>
           {/* A room of one's own has no one to show a picture of: the bookmark stands for it, and no photo is
               asked for (the account has no peer here, so every such request could only fail). */}
-          {saved ? <span className="avatar avatar-saved" style={{ width: 36, height: 36 }} aria-hidden="true"><Bookmark size={18} /></span>
+          {storyEntry && storyPeer ? null : saved ? <span className="avatar avatar-saved" style={{ width: 36, height: 36 }} aria-hidden="true"><Bookmark size={18} /></span>
             : dialog ? <PeerAvatar id={dialog.id} name={dialog.title} image={secret ? null : dialog.avatar} surface="dialogs" kind={secret ? 'secret' : undefined} size={36} priority /> : pending ? <PeerAvatar id={chatId} name={title} image={pending.avatar ?? null} surface="dialogs" size={36} priority /> : <Avatar name={title} size={36} />}
           <span className="top-bar-title"><strong className="top-bar-name"><span className="ellipsis">{title}</span>{titleOfficial && <OfficialMark kind={titleOfficial} size={15} className="title-official" />}</strong>{subtitle && <span className={`ellipsis${typing && subtitle === tr('입력 중...') ? ' typing' : peerPresence?.online && subtitle === peerPresence.text ? ' online' : ''}`}>{subtitle}</span>}</span>
         </button>

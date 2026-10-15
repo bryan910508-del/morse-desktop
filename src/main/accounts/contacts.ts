@@ -218,8 +218,6 @@ export class ContactsSession {
     if (!this.has(uid)) return undefined
     return this.profileNames.hasAnswer(uid) ? this.profileNames.photo(uid) : this.profileNames.remembered(uid)
   }
-  // B277: whether a person lists this account as a contact, from the contacts' own watch; null while not answered.
-  keepsMe(uid: string): boolean | null { return this.closed || this.locked ? null : this.profileNames.keeps(uid) }
   // A13 §9-2: the server's mark on the support account, read with the person's public profile.
   personOfficial(uid: string): import('../../shared/model').OfficialKind | null { return this.closed || this.locked ? null : this.profileNames.official(uid) }
   // Bumped whenever a name personName gives may have changed.

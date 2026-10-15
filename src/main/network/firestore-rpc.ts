@@ -1,18 +1,14 @@
 // Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { randomBytes } from 'node:crypto'
-import { channelStoryCreateWrite, channelStoryDeleteWrite, channelStoryReactionWrite, channelStoryViewedWrite } from './channel-story-write'
-import { writeStoryViewReceipt, StoryViewReceiptWriteFailure } from './story-view-receipt-write'
+import { channelStoryCreateWrite, channelStoryDeleteWrite } from './channel-story-write'
 import { writeDialogPreference, DialogPreferenceWriteFailure, type DialogPreferenceWrite } from './dialog-preference-write'
 import { writeStickerPackInstall, writeStickerPackUninstall, StickerPackInstallFailure } from './sticker-pack-install-write'
 import type { StickerPack } from '../../shared/sticker-packs'
-import type { StoryViewReceiptRequest } from '../../shared/story-view-receipt'
-import { writeStoryReaction, StoryReactionWriteFailure } from './story-reaction-write'
 import { recordStoryStep } from '../platform/story-diagnostics'
 import { recordConnectionStep, recordWatch } from '../platform/connection-diagnostics'
 import { reachability } from './reachability'
 import { grpcCode, grpcDelivery, serverAnswered } from './grpc-delivery'
-import type { StoryReactionChangeRequest } from '../../shared/story-reaction-change'
 import { writeStoryVideoPublication, StoryVideoPublicationFailure } from './story-video-publication-write'
 import type { StoryVideoPublicationCommitRequest } from '../../shared/story-video-publication-commit'
 import { writeStoryPublication, StoryPublicationFailure } from './story-publication-write'
@@ -558,42 +554,6 @@ export class FirestoreReader {
     try { await writeDialogPreference(this.client, metadata(authorization), uid, request, bounded, validate) }
     catch (error) { throw error instanceof DialogPreferenceWriteFailure ? error : new DialogPreferenceWriteFailure(true) }
   }
-  // The story is read on its own first, as a reaction's is: the receipt began as a transaction, whose
-  // own reads are refused from here, and the write that follows appends one id and sets one map key.
-  async writeStoryViewReceipt(uid: string, request: StoryViewReceiptRequest, signal: AbortSignal, validate: () => void): Promise<void> {
-    const bounded = AbortSignal.any([this.bounded(signal), AbortSignal.timeout(60000)])
-    let authorization: ReadAuthorization, current: FirestoreDocument
-    try {
-      bounded.throwIfAborted(); validate()
-      const doc = await this.getDocument(`${documents}/users/${request.ownerId}/${ownStoryCollections[request.privacy]}/${request.storyId}`, bounded, validate)
-      bounded.throwIfAborted(); validate()
-      if (!doc) throw new ReadFailure('data')
-      current = doc; authorization = await this.auth.authorize(bounded, false); bounded.throwIfAborted(); validate()
-    } catch (error) {
-      recordStoryStep('receipt-read-failed', error instanceof ReadFailure ? error.code : error instanceof Error ? error.message : '')
-      throw new StoryViewReceiptWriteFailure(false)
-    }
-    try { await writeStoryViewReceipt(this.client, metadata(authorization), uid, request, current, bounded, validate) }
-    catch (error) { throw error instanceof StoryViewReceiptWriteFailure ? error : new StoryViewReceiptWriteFailure(true) }
-  }
-  // The story is read on its own first, the way the hidden-audience change reads it: a plain read
-  // is allowed where a transaction's read is not, and the write that follows touches one map key.
-  async changeStoryReaction(uid: string, request: StoryReactionChangeRequest, signal: AbortSignal, validate: () => void): Promise<void> {
-    const bounded = AbortSignal.any([this.bounded(signal), AbortSignal.timeout(60000)])
-    let authorization: ReadAuthorization, current: FirestoreDocument
-    try {
-      bounded.throwIfAborted(); validate()
-      const doc = await this.getDocument(`${documents}/users/${request.ownerId}/${ownStoryCollections[request.privacy]}/${request.storyId}`, bounded, validate)
-      bounded.throwIfAborted(); validate()
-      if (!doc) throw new ReadFailure('data')
-      current = doc; authorization = await this.auth.authorize(bounded, false); bounded.throwIfAborted(); validate()
-    } catch (error) {
-      recordStoryStep('reaction-read-failed', error instanceof ReadFailure ? error.code : error instanceof Error ? error.message : '')
-      throw new StoryReactionWriteFailure(false)
-    }
-    try { await writeStoryReaction(this.client, metadata(authorization), uid, request, current, bounded, validate) }
-    catch (error) { throw error instanceof StoryReactionWriteFailure ? error : new StoryReactionWriteFailure(true) }
-  }
   async changeStoryHiddenAudience(uid: string, request: StoryHiddenChangeRequest, signal: AbortSignal, validate: () => void): Promise<void> {
     const bounded = AbortSignal.any([this.bounded(signal), AbortSignal.timeout(60000)])
     let authorization: ReadAuthorization, current: FirestoreDocument
@@ -840,12 +800,8 @@ export class FirestoreReader {
   async createChannelStory(channelId: string, storyId: string, fields: Record<string, WireObject>, signal: AbortSignal): Promise<void> {
     await this.commitWrites([channelStoryCreateWrite(channelId, storyId, fields)], signal)
   }
-  async markChannelStoryViewed(channelId: string, storyId: string, uid: string, signal: AbortSignal): Promise<void> {
-    await this.commitWrites([channelStoryViewedWrite(channelId, storyId, uid)], signal)
-  }
-  async setChannelStoryReaction(channelId: string, storyId: string, uid: string, emoji: string | null, signal: AbortSignal): Promise<void> {
-    await this.commitWrites([channelStoryReactionWrite(channelId, storyId, uid, emoji)], signal)
-  }
+  // B408 S2: a view record, a reaction or a read mark (story-views.ts), each its own commit.
+  async commitStoryWrite(write: WireObject, signal: AbortSignal): Promise<void> { await this.commitWrites([write], signal) }
   async deleteChannelStory(channelId: string, storyId: string, signal: AbortSignal): Promise<void> {
     await this.commitWrites([channelStoryDeleteWrite(channelId, storyId)], signal)
   }

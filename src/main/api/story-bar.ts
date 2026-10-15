@@ -6,30 +6,33 @@ import type { ListenTargets } from '../network/firestore-listen'
 import { documents, positionValue, type FirestoreDocument, type WireObject } from '../network/firestore-values'
 import { recordStoryStep } from '../platform/story-diagnostics'
 import { ownStoryCollections, ownStoryFromDocument } from '../network/own-story-document'
-import { storyHiddenFrom } from '../network/story-hidden-audience'
+import { feedStoryFromDocument, laterMark, readMarkId, storyRead, storyReadMarkFromDocument, type FeedStory, type StoryReadMark } from '../network/story-feed-document'
+import { serverNow } from '../network/server-clock'
 import { tr } from '../../shared/i18n'
 
 interface Tally { count: number; unseen: number; latestAt: number; expiresAt: number }
-// One listened list of one person's stories: what it last answered, kept while it listens again (Telegram R-59,
-// data_stories.cpp keeps what it has when a load fails) and dropped only when the server refuses it.
+// One listened list: what it last answered, kept while it listens again (Telegram R-59, data_stories.cpp keeps what it
+// has when a load fails) and dropped only when the server refuses it.
 interface Listened { stop(): void; docs: ReadonlyMap<string, FirestoreDocument>; answered: boolean; failed: boolean }
+type ListName = StoryPrivacy | 'feed' | 'marks'
 
-// Dialogs::Stories source, following iOS ChatListView.loadUserStories: each owner's active stories as the viewer may
-// list them — public stories for every contact, contacts-only stories when the owner lists this viewer, and all three
-// of this account's own.
-// B277 ②: Telegram's server pushes story changes (updateStory, updatePeerStories) and the client asks again only to
-// fill a gap. Morse has no such update, so each of those lists is a Firestore listen target, all over one stream
-// (ListenTargets): read once, then only what changes. Whether an owner lists this viewer is the contacts' own answer
-// (PeerProfiles watches users/X/contacts/{me}); when it turns false the contacts-only target goes first, before the
-// server would refuse it (firestore.rules stories: exists users/{owner}/contacts/{me}). A query keeps the stories that
-// expire after it was made, so every target is made again each hour, and the row drops a story as it expires.
+// Dialogs::Stories source. B408 S2 (contracts/B408-stories-access.md §14): the stories of others are the server's
+// choice — this account's `storyFeed` (story-feed-document.ts), one listen for everyone, as tdesktop reads the peers
+// stories.getAllStories and updateStory give it (data_stories.cpp:720-728, :240) — and what has been read of them is
+// the three apps' `storyReadMarks` (:289 updateReadStories). Only this account's own three lists are read where they
+// live (its own documents). Who stands in the row is the window's: contacts and 1:1 partners (review 10-15), in its
+// order; nobody's stories are asked for by person any more, so nothing is refused on the way.
+// A query of this account's own stories keeps the ones that expire after it was made, so those three are made again each
+// hour; the feed is read whole and a copy past its end is left out of the row as it expires.
 export const storyBarRearm = 60 * 60000
 export class StoryBarApi {
   private closed = false
   private locked = false
   private reader: Pick<FirestoreReader, 'close'> | null = null
   private listen: Pick<ListenTargets, 'add' | 'close' | 'tally' | 'size'> | null = null
-  private readonly owners = new Map<string, Map<StoryPrivacy, Listened>>()
+  private readonly lists = new Map<ListName, Listened>()
+  // Marks this device moved forward before the server's copy says so (iOS MorseStoryFeed.noteRead).
+  private readonly localMarks = new Map<string, StoryReadMark>()
   private order: string[] = []
   private cutoff = 0
   private rearmTimer: ReturnType<typeof setTimeout> | undefined
@@ -37,14 +40,12 @@ export class StoryBarApi {
   private notifyTimer: ReturnType<typeof setTimeout> | undefined
   private logTimer: ReturnType<typeof setTimeout> | undefined
 
-  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly allowed: () => void, private readonly isContact: (uid: string) => boolean,
-    // Whether a person lists this viewer as a contact — true, false, or null while it is not known yet.
-    private readonly keepsMe: (uid: string) => boolean | null = () => null,
-    // The row changed (a story came, went, expired or was seen).
+  constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly allowed: () => void,
+    // The row changed (a story came, went, expired or was read).
     private readonly notify: (result: StoryBarResult) => void = () => {},
     // The reads, over Firestore; a test gives its own.
     private readonly open: () => Pick<FirestoreReader, 'listenTargets' | 'close'> = () => new FirestoreReader(auth),
-    private readonly now: () => number = Date.now) {
+    private readonly now: () => number = serverNow) {
     auth.signal.addEventListener('abort', () => this.close(), { once: true })
   }
 
@@ -52,17 +53,22 @@ export class StoryBarApi {
   list(raw: unknown, force: boolean): Promise<StoryBarResult> {
     if (this.closed) throw new Error(tr('계정이 변경되었습니다.'))
     this.allowed()
-    const peers = storyBarPeers(raw).filter(uid => uid !== this.uid && this.isContact(uid)).slice(0, maxStoryBarPeers)
+    const peers = storyBarPeers(raw).filter(uid => uid !== this.uid).slice(0, maxStoryBarPeers)
     this.order = [this.uid, ...peers]
     this.bind(force)
     return Promise.resolve(this.result())
   }
 
-  // The contacts changed: who is one and who lists this viewer.
-  recheck(): void {
-    if (this.closed || this.locked || !this.listen) return
-    this.order = this.order.filter(owner => owner === this.uid || this.isContact(owner))
+  // B408 S2: one person's active stories as the row counts them, for a ring outside the row — the chat header's picture
+  // (tdesktop TopBarWidget userpic with PeerData::hasActiveStories / hasUnreadStories, both from the same peer state).
+  // Asking listens to the feed if nothing has yet; the answer changes as `notify` says the row did.
+  peerEntry(raw: unknown): StoryBarEntry | null {
+    if (this.closed) throw new Error(tr('계정이 변경되었습니다.'))
+    this.allowed()
+    const [owner] = storyBarPeers([raw])
+    if (!owner || owner === this.uid) return null
     this.bind(false)
+    return this.peer(owner, this.now())
   }
 
   // A locked app reads nothing and holds no stories; unlocked, the row listens again.
@@ -75,15 +81,43 @@ export class StoryBarApi {
 
   close(): void { this.closed = true; this.stopAll() }
 
-  private privacies(owner: string): StoryPrivacy[] {
-    if (owner === this.uid) return ['everyone', 'contacts', 'closeFriends']
-    return this.keepsMe(owner) === true ? ['everyone', 'contacts'] : ['everyone']
+  // B408 S2: one owner's stories in this account's feed, not yet ended, oldest first (iOS MorseStoryFeed.stories).
+  feedStories(ownerType: 'user' | 'channel', ownerId: string): FeedStory[] {
+    const at = this.now()
+    return this.feed().filter(story => story.ownerType === ownerType && story.ownerId === ownerId && story.expiresAt > at)
+      .sort((a, b) => a.createdAt - b.createdAt || (a.storyId < b.storyId ? -1 : a.storyId > b.storyId ? 1 : 0))
+  }
+  // Whether the feed holds this story — the server lets a view be written only then (firestore.rules storyViewWriteOk).
+  inFeed(storyPath: string): boolean { return this.feed().some(story => story.storyPath === storyPath) }
+  // Whether the feed has answered at all since it was opened.
+  get feedAnswered(): boolean { return this.lists.get('feed')?.answered === true }
+  mark(ownerType: 'user' | 'channel', ownerId: string): StoryReadMark | undefined {
+    const key = readMarkId(ownerType, ownerId), local = this.localMarks.get(key), stored = this.storedMarks().get(key)
+    if (!local) return stored
+    if (!stored) return local
+    return storyRead({ createdAt: local.maxReadCreatedAt, storyId: local.maxReadStoryId }, stored) ? stored : local
+  }
+  // A story was shown: the read mark moves to it if it is later (the caller writes the mark); true when it moved.
+  noteRead(story: Pick<FeedStory, 'ownerType' | 'ownerId' | 'createdAt' | 'storyId'>): boolean {
+    if (!laterMark(this.mark(story.ownerType, story.ownerId), story)) return false
+    this.localMarks.set(readMarkId(story.ownerType, story.ownerId), { ownerType: story.ownerType, ownerId: story.ownerId, maxReadCreatedAt: story.createdAt, maxReadStoryId: story.storyId })
+    this.changed()
+    return true
+  }
+
+  private feed(): FeedStory[] {
+    const out: FeedStory[] = []
+    for (const doc of this.lists.get('feed')?.docs.values() ?? []) { try { out.push(feedStoryFromDocument(doc, this.uid)) } catch { /* A malformed copy is not shown. */ } }
+    return out
+  }
+  private storedMarks(): Map<string, StoryReadMark> {
+    const marks = new Map<string, StoryReadMark>()
+    for (const doc of this.lists.get('marks')?.docs.values() ?? []) { try { const mark = storyReadMarkFromDocument(doc, this.uid); marks.set(readMarkId(mark.ownerType, mark.ownerId), mark) } catch { /* ignored */ } }
+    return marks
   }
 
   private bind(force: boolean): void {
     if (this.closed || this.locked) return
-    const wanted = new Set(this.order)
-    for (const [owner, lists] of this.owners) if (!wanted.has(owner)) { for (const list of lists.values()) list.stop(); this.owners.delete(owner) }
     if (!this.listen) {
       const reader = this.open()
       this.reader = reader
@@ -91,24 +125,18 @@ export class StoryBarApi {
       this.cutoff = this.now()
       this.rearmTimer = setTimeout(() => this.rearm(), storyBarRearm)
     }
-    for (const owner of this.order) {
-      let lists = this.owners.get(owner)
-      if (!lists) { lists = new Map(); this.owners.set(owner, lists) }
-      const privacies = this.privacies(owner)
-      // First what may no longer be listed, so the server never refuses it.
-      for (const [privacy, list] of lists) if (!privacies.includes(privacy)) { list.stop(); lists.delete(privacy); this.changed() }
-      for (const privacy of privacies) { const list = lists.get(privacy); if (!list || (force && list.failed)) this.start(owner, lists, privacy) }
-    }
+    const names: ListName[] = ['feed', 'marks', 'everyone', 'contacts', 'closeFriends']
+    for (const name of names) { const list = this.lists.get(name); if (!list || (force && list.failed)) this.start(name) }
   }
 
-  // Listens to one list from the present cutoff; the list it replaces stops only after, so the stream stays open.
-  private start(owner: string, lists: Map<StoryPrivacy, Listened>, privacy: StoryPrivacy): void {
+  // Listens to one list; the list it replaces stops only after, so the stream stays open.
+  private start(name: ListName): void {
     if (!this.listen) return
-    const previous = lists.get(privacy)
+    const previous = this.lists.get(name)
     const list: Listened = { stop: () => {}, docs: previous?.docs ?? new Map(), answered: false, failed: false }
-    lists.set(privacy, list)
-    const mine = (): boolean => this.owners.get(owner)?.get(privacy) === list
-    list.stop = this.listen.add(this.target(owner, privacy), {
+    this.lists.set(name, list)
+    const mine = (): boolean => this.lists.get(name) === list
+    list.stop = this.listen.add(this.target(name), {
       snapshot: docs => { if (!mine()) return; list.docs = docs; list.answered = true; list.failed = false; this.changed() },
       state: (state, error) => {
         if (!mine() || state !== 'error') return
@@ -116,24 +144,26 @@ export class StoryBarApi {
         if (error?.code === 'permission') list.docs = new Map()
         this.changed()
       }
-    }, 50)
+    }, name === 'feed' ? 2000 : name === 'marks' ? 1000 : 50)
     previous?.stop()
   }
 
-  private target(owner: string, privacy: StoryPrivacy): WireObject {
-    return { query: { parent: `${documents}/users/${owner}`, structuredQuery: {
-      from: [{ collectionId: ownStoryCollections[privacy] }],
+  private target(name: ListName): WireObject {
+    const parent = `${documents}/users/${this.uid}`
+    if (name === 'feed' || name === 'marks') return { query: { parent, structuredQuery: { from: [{ collectionId: name === 'feed' ? 'storyFeed' : 'storyReadMarks' }] } } }
+    return { query: { parent, structuredQuery: {
+      from: [{ collectionId: ownStoryCollections[name] }],
       where: { fieldFilter: { field: { fieldPath: 'expiresAt' }, op: 'GREATER_THAN', value: positionValue(positionAt(this.cutoff, '')) } },
       orderBy: [{ field: { fieldPath: 'expiresAt' }, direction: 'ASCENDING' }, { field: { fieldPath: 'createdAt' }, direction: 'ASCENDING' }, { field: { fieldPath: '__name__' }, direction: 'ASCENDING' }],
       limit: { value: 50 }
     } } }
   }
 
-  // Each hour every list is made again from now, so stories that expired leave the server's answer too.
+  // Each hour this account's own lists are made again from now, so its stories that expired leave the server's answer.
   private rearm(): void {
     if (this.closed || this.locked || !this.listen) return
     this.cutoff = this.now()
-    for (const [owner, lists] of this.owners) for (const privacy of [...lists.keys()]) this.start(owner, lists, privacy)
+    for (const name of ['everyone', 'contacts', 'closeFriends'] as const) this.start(name)
     this.rearmTimer = setTimeout(() => this.rearm(), storyBarRearm)
     this.log('rearm')
   }
@@ -143,7 +173,7 @@ export class StoryBarApi {
     this.notifyTimer = undefined; this.logTimer = undefined
     this.listen?.close(); this.reader?.close()
     this.listen = null; this.reader = null
-    this.owners.clear()
+    this.lists.clear(); this.localMarks.clear()
   }
 
   private changed(): void {
@@ -170,32 +200,32 @@ export class StoryBarApi {
 
   private result(): StoryBarResult {
     const at = this.now()
-    const entries = this.order.flatMap(owner => { const entry = this.entry(owner, at); return entry ? [entry] : [] })
-    const partial = this.order.some(owner => { const lists = this.owners.get(owner); return !lists || [...lists.values()].some(list => !list.answered) })
+    const entries = this.order.flatMap(owner => { const entry = owner === this.uid ? this.own(at) : this.peer(owner, at); return entry ? [entry] : [] })
+    const partial = [...this.lists.values()].some(list => !list.answered) || this.lists.size === 0
     return { entries, observedAt: at, partial }
   }
 
-  private entry(owner: string, at: number): StoryBarEntry | null {
+  private peer(owner: string, at: number): StoryBarEntry | null {
+    const stories = this.feed().filter(story => story.ownerType === 'user' && story.ownerId === owner && story.expiresAt > at)
+    if (!stories.length) return null
+    const mark = this.mark('user', owner)
+    return { uid: owner, count: stories.length, unseen: stories.filter(story => !storyRead(story, mark)).length,
+      latestAt: Math.max(...stories.map(story => story.createdAt)), expiresAt: Math.min(...stories.map(story => story.expiresAt)) }
+  }
+
+  private own(at: number): StoryBarEntry | null {
     const tally: Tally = { count: 0, unseen: 0, latestAt: 0, expiresAt: 0 }
-    for (const [privacy, list] of this.owners.get(owner) ?? []) this.tally(tally, list.docs.values(), owner, privacy, at)
-    return tally.count ? { uid: owner, ...tally } : null
-  }
-
-  private viewed(doc: FirestoreDocument): boolean {
-    const values = (doc.fields.viewerIds as { arrayValue?: { values?: unknown } } | undefined)?.arrayValue?.values
-    return Array.isArray(values) && values.some(value => typeof value === 'object' && value !== null && (value as { stringValue?: unknown }).stringValue === this.uid)
-  }
-
-  private tally(target: Tally, docs: Iterable<FirestoreDocument>, owner: string, privacy: StoryPrivacy, at: number): void {
-    for (const doc of docs) {
-      try {
-        const story = ownStoryFromDocument(doc, owner, privacy), expiresAt = positionMilliseconds(story.expires)
-        if (expiresAt <= at || (owner !== this.uid && storyHiddenFrom(doc).hiddenFrom.includes(this.uid))) continue
-        target.count++
-        target.latestAt = Math.max(target.latestAt, positionMilliseconds(story.created))
-        target.expiresAt = target.expiresAt ? Math.min(target.expiresAt, expiresAt) : expiresAt
-        if (owner !== this.uid && !this.viewed(doc)) target.unseen++
-      } catch { /* A malformed story is not shown in the row. */ }
+    for (const privacy of ['everyone', 'contacts', 'closeFriends'] as const) {
+      for (const doc of this.lists.get(privacy)?.docs.values() ?? []) {
+        try {
+          const story = ownStoryFromDocument(doc, this.uid, privacy), expiresAt = positionMilliseconds(story.expires)
+          if (expiresAt <= at) continue
+          tally.count++
+          tally.latestAt = Math.max(tally.latestAt, positionMilliseconds(story.created))
+          tally.expiresAt = tally.expiresAt ? Math.min(tally.expiresAt, expiresAt) : expiresAt
+        } catch { /* A malformed story is not shown in the row. */ }
+      }
     }
+    return tally.count ? { uid: this.uid, ...tally } : null
   }
 }

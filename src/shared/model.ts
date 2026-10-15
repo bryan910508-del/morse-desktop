@@ -411,16 +411,11 @@ export interface DesktopSnapshot {
   channelStories: import('./channel-stories').ChannelStoriesSnapshot | null
   appUpdate: import('./app-updates').AppUpdateSnapshot
   versionGate: import('./app-updates').AppVersionGateSnapshot
-  contactStoryPhotoAudio: import('./contact-story-photo-audio').ContactStoryPhotoAudioSnapshot | null
-  contactAudienceStoryVideo: import('./contact-audience-story-video').ContactAudienceStoryVideoSnapshot | null
-  contactAudienceStoryPhoto: import('./contact-audience-story-photo').ContactAudienceStoryPhotoSnapshot | null
-  contactStoryAudience: import('./contact-story-audience').ContactStoryAudienceSnapshot | null
-  contactPublicStoryVideo: import('./contact-public-story-video').ContactPublicStoryVideoSnapshot | null
-  contactPublicStoryPhoto: import('./contact-public-story-photo').ContactPublicStoryPhotoSnapshot | null
+  peerStoryPhoto: import('./peer-stories').PeerStoryPhotoSnapshot | null
+  peerStoryVideo: import('./peer-stories').PeerStoryVideoSnapshot | null
+  peerStoryPhotoAudio: import('./peer-stories').PeerStoryPhotoAudioSnapshot | null
   storyPublication: import('./story-publication').StoryPublicationSnapshot | null
   storyReplyDraft: import('./story-reply-draft').StoryReplyDraftSnapshot | null
-  storyViewReceipt: import('./story-view-receipt').StoryViewReceiptSnapshot | null
-  storyReactionChange: import('./story-reaction-change').StoryReactionChangeSnapshot | null
   storyHiddenChange: import('./story-hidden-change').StoryHiddenChangeSnapshot | null
   storyPrivacyMove: import('./story-privacy-move').StoryPrivacyMoveSnapshot | null
   storyRemoval: import('./story-removal').StoryRemovalSnapshot | null
@@ -497,6 +492,7 @@ export interface DesktopBridge {
   leaveChannel(accountUid: string, channelId: string): Promise<'done' | 'unconfirmed'>
   deleteChannel(accountUid: string, channelId: string): Promise<'done' | 'unconfirmed'>
   storyBar(accountUid: string, peers: string[], force: boolean): Promise<import('./story-bar').StoryBarResult>
+  peerStoryEntry(accountUid: string, peerUid: string): Promise<import('./story-bar').StoryBarEntry | null>
   clearChatHistory(accountUid: string, chatId: string): Promise<'done' | 'unconfirmed'>
   // B327: cleared for this account on all its devices; the row stays.
   clearChatHistoryForMe(accountUid: string, chatId: string): Promise<'done' | 'unconfirmed'>
@@ -656,12 +652,6 @@ export interface DesktopBridge {
   refreshStoryReplyDraft(accountUid: string): Promise<void>
   prepareStoryReplyDraft(accountUid: string, request: import('./story-reply-draft').StoryReplyDraftPrepare): Promise<void>
   storyReplyDraftAction(accountUid: string, action: import('./story-reply-draft').StoryReplyDraftAction): Promise<void>
-  refreshStoryViewReceipt(accountUid: string): Promise<void>
-  prepareStoryViewReceipt(accountUid: string, request: import('./story-view-receipt').StoryViewReceiptPrepare): Promise<void>
-  storyViewReceiptAction(accountUid: string, action: import('./story-view-receipt').StoryViewReceiptAction): Promise<void>
-  refreshStoryReactionChange(accountUid: string): Promise<void>
-  prepareStoryReactionChange(accountUid: string, request: import('./story-reaction-change').StoryReactionChangePrepare): Promise<void>
-  storyReactionChangeAction(accountUid: string, action: import('./story-reaction-change').StoryReactionChangeAction): Promise<void>
   refreshStoryHiddenChange(accountUid: string): Promise<void>
   refreshStoryPrivacyMove(accountUid: string): Promise<void>
   refreshStoryRemoval(accountUid: string): Promise<void>
@@ -733,35 +723,23 @@ export interface DesktopBridge {
   closeOwnStoryVideo(accountUid: string, selectionId: string): Promise<void>
   openOwnStoryPhoto(accountUid: string, request: import('./own-story-photo').OwnStoryPhotoRequest): Promise<void>
   closeOwnStoryPhoto(accountUid: string, selectionId: string): Promise<void>
-  readContactStoryReaction(accountUid: string, request: import('./contact-story-reaction').ContactStoryReactionRequest): Promise<import('./contact-story-reaction').ContactStoryReactionResult>
-  closeContactStoryReaction(accountUid: string, id: string): Promise<void>
-  openContactStoryPhotoAudio(accountUid: string, request: import('./contact-story-photo-audio').ContactStoryPhotoAudioRequest): Promise<void>
-  closeContactStoryPhotoAudio(accountUid: string, id: string): Promise<void>
-  openContactAudienceStoryVideo(accountUid: string, request: import('./contact-audience-story-video').ContactAudienceStoryVideoRequest): Promise<void>
-  preloadContactAudienceStoryVideo(accountUid: string, request: import('./contact-audience-story-video').ContactAudienceStoryVideoRequest): Promise<void>
-  closeContactAudienceStoryVideo(accountUid: string, id: string): Promise<void>
-  openContactAudienceStoryPhoto(accountUid: string, request: import('./contact-audience-story-photo').ContactAudienceStoryPhotoRequest): Promise<void>
-  preloadContactAudienceStoryPhoto(accountUid: string, request: import('./contact-audience-story-photo').ContactAudienceStoryPhotoRequest): Promise<void>
-  closeContactAudienceStoryPhoto(accountUid: string, id: string): Promise<void>
-  readContactAudienceStories(accountUid: string, request: import('./contact-audience-stories').ContactAudienceStoriesRequest): Promise<import('./contact-audience-stories').ContactAudienceStoriesResult>
-  pageContactAudienceStories(accountUid: string, request: import('./contact-audience-stories').ContactAudienceStoriesPageRequest): Promise<import('./contact-audience-stories').ContactAudienceStoriesResult>
-  closeContactAudienceStories(accountUid: string, id: string): Promise<void>
-  openContactStoryAudience(accountUid: string, request: import('./contact-story-audience').ContactStoryAudienceRequest): Promise<void>
-  closeContactStoryAudience(accountUid: string, id: string): Promise<void>
-  openContactPublicStoryVideo(accountUid: string, request: import('./contact-public-story-video').ContactPublicStoryVideoRequest): Promise<void>
-  preloadContactPublicStoryVideo(accountUid: string, request: import('./contact-public-story-video').ContactPublicStoryVideoRequest): Promise<void>
-  closeContactPublicStoryVideo(accountUid: string, selectionId: string): Promise<void>
-  openContactPublicStoryPhoto(accountUid: string, request: import('./contact-public-story-photo').ContactPublicStoryPhotoRequest): Promise<void>
-  preloadContactPublicStoryPhoto(accountUid: string, request: import('./contact-public-story-photo').ContactPublicStoryPhotoRequest): Promise<void>
-  closeContactPublicStoryPhoto(accountUid: string, selectionId: string): Promise<void>
-  readContactPublicStories(accountUid: string, request: import('./contact-public-stories').ContactPublicStoriesRequest): Promise<import('./contact-public-stories').ContactPublicStoriesResult>
-  pageContactPublicStories(accountUid: string, request: import('./contact-public-stories').ContactPublicStoriesPageRequest): Promise<import('./contact-public-stories').ContactPublicStoriesResult>
-  closeContactPublicStories(accountUid: string, id: string): Promise<void>
+  openPeerStories(accountUid: string, request: import('./peer-stories').PeerStoriesRequest): Promise<import('./peer-stories').PeerStoriesResult>
+  closePeerStories(accountUid: string, id: string): Promise<void>
+  peerStorySeen(accountUid: string, target: import('./peer-stories').PeerStoryTarget): Promise<void>
+  readPeerStoryReaction(accountUid: string, target: import('./peer-stories').PeerStoryTarget): Promise<string | null>
+  setPeerStoryReaction(accountUid: string, request: import('./peer-stories').PeerStoryReaction): Promise<string | null>
+  openPeerStoryLink(accountUid: string, request: import('./peer-stories').PeerStoryLink): Promise<void>
+  openPeerStoryPhoto(accountUid: string, request: import('./peer-stories').PeerStoryPhotoRequest): Promise<void>
+  preloadPeerStoryPhoto(accountUid: string, request: import('./peer-stories').PeerStoryPhotoRequest): Promise<void>
+  closePeerStoryPhoto(accountUid: string, selectionId: string): Promise<void>
+  openPeerStoryVideo(accountUid: string, request: import('./peer-stories').PeerStoryVideoRequest): Promise<void>
+  preloadPeerStoryVideo(accountUid: string, request: import('./peer-stories').PeerStoryVideoRequest): Promise<void>
+  closePeerStoryVideo(accountUid: string, selectionId: string): Promise<void>
+  openPeerStoryPhotoAudio(accountUid: string, request: import('./peer-stories').PeerStoryPhotoAudioRequest): Promise<void>
+  closePeerStoryPhotoAudio(accountUid: string, selectionId: string): Promise<void>
   openOwnStories(accountUid: string, request: import('./own-stories').OwnStoriesRequest): Promise<void>
   pageOwnStories(accountUid: string, request: import('./own-stories').OwnStoriesPageRequest): Promise<void>
   closeOwnStories(accountUid: string, requestId: string): Promise<void>
-  openContactAudienceStoryLink(accountUid: string, request: import('./contact-audience-story-link').ContactAudienceStoryLinkRequest): Promise<void>
-  openContactPublicStoryLink(accountUid: string, request: import('./contact-public-story-link').ContactPublicStoryLinkRequest): Promise<void>
   openStoryCaptionLink(accountUid: string, request: import('./story-caption-link').StoryCaptionLinkRequest): Promise<void>
   selectOwnStory(accountUid: string, request: import('./own-stories').OwnStorySelection): Promise<void>
   openSpaceNotes(accountUid: string, requestId: string): Promise<void>
@@ -845,6 +823,7 @@ export interface DesktopBridge {
   closeChannelHome(accountUid: string): Promise<void>
   refreshChannelHome(accountUid: string): Promise<void>
   setVisibleChannelStories(accountUid: string, channelIds: string[]): Promise<void>
+  setChannelStoryScreen(accountUid: string, channelId: string | null): Promise<void>
   channelStoryMedia(accountUid: string, channelId: string, storyId: string): Promise<import('./channel-stories').ChannelStoryMedia>
   markChannelStoryViewed(accountUid: string, channelId: string, storyId: string): Promise<void>
   reactToChannelStory(accountUid: string, channelId: string, storyId: string, emoji: string): Promise<string | null>

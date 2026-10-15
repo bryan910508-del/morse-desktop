@@ -8,12 +8,11 @@ import { storyReplySendRequest, type StoryReplySendRequest, type StoryReplySendR
 import { outgoingText } from '../../shared/validation'
 import { storyReplyTextTarget, storyReplyTextWrite, type StoryReplyTextTarget, type StoryReplyTextWrite, type StoryReplyTextRecord } from '../../shared/story-reply-text'
 import { storyReplyDraftPrepare, storyReplyDraftRequest, storyReplyDraftAction, type StoryReplyDraftPrepare, type StoryReplyDraftAction, type StoryReplyDraftSnapshot, type PendingStoryReplyDraft } from '../../shared/story-reply-draft'
-import { positionMilliseconds } from '../../shared/model'
 import type { StoryReplyDraftCommand } from '../storage/story-reply-draft-table'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
-import { ownStoryCollections, ownStoryFromDocument } from '../network/own-story-document'
-import { documents } from '../network/firestore-values'
-import { storyHiddenFrom } from '../network/story-hidden-audience'
+import type { StoryPrivacy } from '../../shared/own-stories'
+import { feedCopyPath } from '../network/story-feed-document'
+import { serverNow } from '../network/server-clock'
 import { tr } from '../../shared/i18n'
 export class StoryReplyDraft {
   private closed = false
@@ -21,12 +20,13 @@ export class StoryReplyDraft {
   private abort: AbortController | null = null
   private value: StoryReplyDraftSnapshot = { status: 'loading', busy: false, pending: null, message: '' }
   constructor(private readonly uid: string, private readonly auth: ReadCredentials, private readonly allowed: (network: boolean) => void,
-    private readonly source: (request: StoryReplyDraftPrepare) => { ownerId: string; ownerName: string },
+    private readonly source: (request: StoryReplyDraftPrepare) => { ownerId: string; ownerName: string; privacy: StoryPrivacy; version: string; expiresAt: number; caption: string },
     private readonly sendAllowed: (pending: PendingStoryReplyDraft) => void,
     private readonly sendKnown: (id: string, validate: () => void) => Promise<StoryReplySendReceipt | null>,
     private readonly enqueue: (pending: PendingStoryReplyDraft, validate: () => void) => Promise<StoryReplySendReceipt>,
     private readonly detachDraft: (pending: PendingStoryReplyDraft, validate: () => void) => Promise<StoryReplyDetachReceipt>,
-    private readonly store: <T>(command: StoryReplyDraftCommand | StoryReplySendCommand | StoryReplyDetachCommand, validate: () => void) => Promise<T>, private readonly changed: () => void) {}
+    private readonly store: <T>(command: StoryReplyDraftCommand | StoryReplySendCommand | StoryReplyDetachCommand, validate: () => void) => Promise<T>, private readonly changed: () => void,
+    private readonly now: () => number = serverNow) {}
   private validate(network = false): void { if (this.closed) throw new Error(tr('계정이 변경되었습니다.')); this.auth.signal.throwIfAborted(); this.allowed(network) }
   get snapshot(): StoryReplyDraftSnapshot { return { ...this.value, pending: this.value.pending ? { ...this.value.pending } : null } }
   pause(): void { this.abort?.abort() }
@@ -41,20 +41,17 @@ export class StoryReplyDraft {
   prepare(input: StoryReplyDraftPrepare): Promise<void> {
     const request = storyReplyDraftPrepare(input)
     if (this.value.status !== 'ready' || this.value.pending) throw new Error(tr('이전 스토리 답장 준비 기록을 먼저 확인해 주세요.'))
+    // B408 S2: the story is the one the viewer has open — this account's copy of it, or what getMorsePeerStories gave —
+    // so nothing is read again here (tdesktop replies to the story it shows, Media::Stories::ReplyArea).
     this.validate(true); const selected = this.source(request)
+    if (selected.ownerId === this.uid) throw new Error(tr('현재 타인 스토리를 확인해 주세요.'))
     return this.run(async operationSignal => {
       const signal = AbortSignal.any([operationSignal, this.auth.signal, AbortSignal.timeout(35000)])
-      const validate = (): void => { signal.throwIfAborted(); this.validate(true); if (JSON.stringify(this.source(request)) !== JSON.stringify(selected)) throw new Error(tr('선택한 스토리 또는 연락처가 변경되었습니다.')) }
-      const reader = new FirestoreReader(this.auth)
-      try {
-        validate(); const doc = await reader.getDocument(`${documents}/users/${selected.ownerId}/${ownStoryCollections[request.privacy]}/${request.storyId}`, signal, validate); validate()
-        if (!doc || selected.ownerId === this.uid) throw new Error(tr('현재 타인 스토리를 확인해 주세요.'))
-        const story = ownStoryFromDocument(doc, selected.ownerId, request.privacy), expiresAt = positionMilliseconds(story.expires)
-        if (story.version !== request.version || expiresAt <= Date.now() || storyHiddenFrom(doc).hiddenFrom.includes(this.uid)) throw new Error(tr('스토리 버전이나 접근 조건이 바뀌었습니다.'))
-        const retained = storyReplyDraftRequest({ id: request.id, viewerId: this.uid, ...selected, storyId: request.storyId, privacy: request.privacy, version: request.version, expiresAt, captionPreview: Array.from(story.caption).slice(0, 160).join('') })
-        const pending = await this.store<PendingStoryReplyDraft>({ kind: 'story-reply-draft-prepare', request: retained }, () => { validate(); if (expiresAt <= Date.now()) throw new Error(tr('스토리가 만료되었습니다.')) })
-        signal.throwIfAborted(); this.validate(); this.value.pending = pending; this.value.status = 'ready'; this.value.message = tr('답장할 스토리 출처와 작성자를 이 기기에 보관했습니다. 메시지를 보내지 않았습니다.')
-      } finally { reader.close() }
+      const validate = (): void => { signal.throwIfAborted(); this.validate(); if (JSON.stringify(this.source(request)) !== JSON.stringify(selected)) throw new Error(tr('선택한 스토리 또는 연락처가 변경되었습니다.')); if (selected.expiresAt <= this.now()) throw new Error(tr('스토리가 만료되었습니다.')) }
+      validate()
+      const retained = storyReplyDraftRequest({ id: request.id, viewerId: this.uid, ownerId: selected.ownerId, ownerName: selected.ownerName, storyId: request.storyId, privacy: selected.privacy, version: selected.version, expiresAt: selected.expiresAt, captionPreview: Array.from(selected.caption).slice(0, 160).join('') })
+      const pending = await this.store<PendingStoryReplyDraft>({ kind: 'story-reply-draft-prepare', request: retained }, validate)
+      signal.throwIfAborted(); this.validate(); this.value.pending = pending; this.value.status = 'ready'; this.value.message = tr('답장할 스토리 출처와 작성자를 이 기기에 보관했습니다. 메시지를 보내지 않았습니다.')
     })
   }
   readText(input: StoryReplyTextTarget): Promise<StoryReplyTextRecord> {
@@ -109,18 +106,20 @@ export class StoryReplyDraft {
         let result: Pick<StoryReplySourceReview, 'outcome' | 'current'>
         try {
           validate()
-          const doc = await reader.getDocument(`${documents}/users/${before.ownerId}/${ownStoryCollections[before.privacy]}/${before.storyId}`, signal, validate); validate()
+          const doc = await reader.getDocument(feedCopyPath(this.uid, before.ownerId, before.storyId), signal, validate); validate()
           if (!doc) result = { outcome: 'absent', current: null }
           else {
+            // A copy is written again whenever the server feeds it, so its time is not the story's: what the
+            // reply names — when it ends and what it says — is what is compared.
             const current = replyCurrentSource(before, doc)
-            result = current.expiresAt <= Date.now() ? { outcome: 'expired', current: null } : { current, outcome: current.version === before.version && current.expiresAt === before.expiresAt && current.captionPreview === before.captionPreview ? 'unchanged' : 'changed' }
+            result = current.expiresAt <= this.now() ? { outcome: 'expired', current: null } : { current, outcome: current.expiresAt === before.expiresAt && current.captionPreview === before.captionPreview ? 'unchanged' : 'changed' }
           }
         } catch { local(); result = { outcome: 'unavailable', current: null } }
         const after = await this.store<PendingStoryReplyDraft | null>({ kind: 'story-reply-draft-read' }, local); local()
         if (JSON.stringify(before) !== JSON.stringify(after)) throw new Error(tr('비교 중 저장본이 변경되었습니다.'))
-        if (result.current && result.current.expiresAt <= Date.now()) result = { outcome: 'expired', current: null }
+        if (result.current && result.current.expiresAt <= this.now()) result = { outcome: 'expired', current: null }
         this.value.pending = after; this.value.status = 'ready'
-        return { ...request, ...result, observedAt: Date.now() }
+        return { ...request, ...result, observedAt: this.now() }
       } finally { reader.close() }
     })
   }
@@ -134,11 +133,11 @@ export class StoryReplyDraft {
       const replay = pending.revision === request.revision && pending.version === request.current.version && pending.expiresAt === request.current.expiresAt && pending.captionPreview === request.current.captionPreview
       if (replay) { this.value.pending = pending; this.value.status = 'ready'; return pending }
       if (pending.revision !== request.expected) throw new Error(tr('답장 저장 버전이 변경되었습니다.'))
-      const validate = (): void => { local(); this.validate(true); this.sendAllowed(pending); if (request.current.expiresAt <= Date.now()) throw new Error(tr('스토리가 만료되었습니다.')) }
+      const validate = (): void => { local(); this.validate(true); this.sendAllowed(pending); if (request.current.expiresAt <= this.now()) throw new Error(tr('스토리가 만료되었습니다.')) }
       const reader = new FirestoreReader(this.auth)
       try {
         validate()
-        const doc = await reader.getDocument(`${documents}/users/${pending.ownerId}/${ownStoryCollections[pending.privacy]}/${pending.storyId}`, signal, validate); validate()
+        const doc = await reader.getDocument(feedCopyPath(this.uid, pending.ownerId, pending.storyId), signal, validate); validate()
         if (!doc || JSON.stringify(replyCurrentSource(pending, doc)) !== JSON.stringify(request.current)) throw new Error(tr('검토한 현재 스토리 출처가 변경되었습니다. 다시 비교해 주세요.'))
         const next = await this.store<PendingStoryReplyDraft>({ kind: 'story-reply-source-rebase', request }, validate)
         local(); this.value.pending = next; this.value.status = 'ready'; this.value.message = tr('답장 본문을 유지하고 기기에 저장한 출처를 갱신했습니다. 메시지는 보내지 않았습니다.')
@@ -164,15 +163,14 @@ export class StoryReplyDraft {
       if (!pending || pending.id !== request.id || pending.revision !== request.revision) throw new Error(tr('보낼 답장 저장본이 변경되었습니다.'))
       outgoingText(pending.text)
       const signal = AbortSignal.any([operationSignal, this.auth.signal, AbortSignal.timeout(35000)])
-      const validate = (): void => { signal.throwIfAborted(); this.validate(true); this.sendAllowed(pending); if (pending.expiresAt <= Date.now()) throw new Error(tr('스토리가 만료되었습니다.')) }
+      const validate = (): void => { signal.throwIfAborted(); this.validate(true); this.sendAllowed(pending); if (pending.expiresAt <= this.now()) throw new Error(tr('스토리가 만료되었습니다.')) }
       const reader = new FirestoreReader(this.auth)
       try {
         validate()
-        const path = `${documents}/users/${pending.ownerId}/${ownStoryCollections[pending.privacy]}/${pending.storyId}`
-        const doc = await reader.getDocument(path, signal, validate); validate()
-        if (!doc || doc.name !== path) throw new Error(tr('현재 스토리를 확인하지 못했습니다.'))
-        const story = ownStoryFromDocument(doc, pending.ownerId, pending.privacy)
-        if (story.version !== pending.version || positionMilliseconds(story.expires) !== pending.expiresAt || storyHiddenFrom(doc).hiddenFrom.includes(this.uid)) throw new Error(tr('스토리 버전이나 접근 조건이 바뀌었습니다.'))
+        // The story is still this account's to see while its copy is in the feed (B408 S2).
+        const doc = await reader.getDocument(feedCopyPath(this.uid, pending.ownerId, pending.storyId), signal, validate); validate()
+        if (!doc) throw new Error(tr('현재 스토리를 확인하지 못했습니다.'))
+        if (replyCurrentSource(pending, doc).expiresAt !== pending.expiresAt) throw new Error(tr('스토리 버전이나 접근 조건이 바뀌었습니다.'))
         const receipt = await this.enqueue(pending, validate)
         local(); this.value.pending = null; this.value.status = 'ready'; this.value.message = tr('이 기기의 전송 대기열에 답장을 등록했습니다. 서버 수신 결과는 대화의 전송 상태에서 확인해 주세요.')
         return receipt

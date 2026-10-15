@@ -13,8 +13,6 @@ import { storyReplyWire } from './story-reply-wire'
 import type { PendingStoryReplyDraft } from '../../shared/story-reply-draft'
 import type { StoryReplySendReceipt } from '../../shared/story-reply-send'
 import type { StoryReplyDraftCommand } from '../storage/story-reply-draft-table'
-import type { StoryViewReceiptCommand } from '../storage/story-view-receipt-table'
-import type { StoryReactionChangeCommand } from '../storage/story-reaction-change-table'
 import type { StoryPublicationCommand } from '../storage/story-publication-table'
 import type { StoryComposerPhotoCommand } from '../storage/story-composer-photos'
 import type { StoryComposerDraftCommand } from '../storage/story-composer-drafts'
@@ -576,8 +574,6 @@ export class OutboxPump {
   }
   commentCreationState<T>(command: CommentCreationCommand, validate: () => void): Promise<T> { return this.store<T>(command, validate) }
   storyReplyDraftState<T>(command: StoryReplyDraftCommand | StoryReplySendCommand | StoryReplyDetachCommand, validate: () => void): Promise<T> { return this.store<T>(command, validate) }
-  storyViewReceiptState<T>(command: StoryViewReceiptCommand, validate: () => void): Promise<T> { return this.store<T>(command, validate) }
-  storyReactionChangeState<T>(command: StoryReactionChangeCommand, validate: () => void): Promise<T> { return this.store<T>(command, validate) }
   storyHiddenChangeState<T>(command: StoryHiddenChangeCommand, validate: () => void): Promise<T> { return this.store<T>(command, validate) }
   storyPrivacyMoveState<T>(command: StoryPrivacyMoveCommand, validate: () => void): Promise<T> { return this.store<T>(command, validate) }
   storyRemovalState<T>(command: StoryRemovalCommand, validate: () => void): Promise<T> { return this.store<T>(command, validate) }

@@ -21,8 +21,9 @@ async function download(credentials: ReadCredentials, resource: MediaResource, s
   const path = resource.path!
   // storage.rules: a channel post's objects are read only after authorizeMorseMediaRead grants them.
   if (resource.grantPostId) {
+    // A limit under the cap is the person's automatic download limit (photo-previews.ts): weighed before the bytes (B360).
     return downloadChannelPostMedia(credentials, path, resource.grantPostId, signal, current, maxBytes,
-      (loaded: number, total: number) => { touch(); progress(loaded, total || null) })
+      (loaded: number, total: number) => { touch(); progress(loaded, total || null) }, maxBytes < maxReceivedMediaBytes)
   }
   const endpoint = `https://firebasestorage.googleapis.com/v0/b/${storageBucket}/o/${encodeURIComponent(path)}?alt=media`
   let response: Response | undefined

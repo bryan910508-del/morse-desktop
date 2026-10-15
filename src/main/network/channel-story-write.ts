@@ -5,7 +5,6 @@ import { channelStoryLifetime } from '../../shared/channel-stories'
 // The writes StoryService makes on channels/{channelId}/stories, built apart so tests can send them through the
 // real Firestore descriptor: an explicit time must be {seconds, nanos}, and a query limit an Int32Value.
 const storyName = (channelId: string, storyId: string): string => `${documents}/channels/${channelId}/stories/${storyId}`
-const ownKey = (uid: string): string => `\`${uid}\``
 
 export function channelStoriesQuery(now: number, limit: number): WireObject {
   return {
@@ -17,18 +16,6 @@ export function channelStoriesQuery(now: number, limit: number): WireObject {
 }
 export function channelStoryCreateWrite(channelId: string, storyId: string, fields: Record<string, WireObject>): WireObject {
   return { update: { name: storyName(channelId, storyId), fields }, currentDocument: { exists: false } }
-}
-// StoryService.markViewed: viewerIds arrayUnion + viewedAtByUid.{uid} serverTimestamp.
-export function channelStoryViewedWrite(channelId: string, storyId: string, uid: string): WireObject {
-  return { transform: { document: storyName(channelId, storyId), fieldTransforms: [
-    { fieldPath: 'viewerIds', appendMissingElements: { values: [{ stringValue: uid }] } },
-    { fieldPath: `viewedAtByUid.${ownKey(uid)}`, setToServerValue: 'REQUEST_TIME' }
-  ] }, currentDocument: { exists: true } }
-}
-// StoryService.setReaction: reactionByUid.{uid} set, or deleted when it is taken back.
-export function channelStoryReactionWrite(channelId: string, storyId: string, uid: string, emoji: string | null): WireObject {
-  const fields: Record<string, WireObject> = emoji === null ? {} : { reactionByUid: { mapValue: { fields: { [uid]: { stringValue: emoji } } } } }
-  return { update: { name: storyName(channelId, storyId), fields }, updateMask: { fieldPaths: [`reactionByUid.${ownKey(uid)}`] }, currentDocument: { exists: true } }
 }
 export function channelStoryDeleteWrite(channelId: string, storyId: string): WireObject {
   return { delete: storyName(channelId, storyId) }
