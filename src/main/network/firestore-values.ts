@@ -1,6 +1,7 @@
 import { autoDeleteSecondsValue } from '../../shared/chat-auto-delete'
 import { autoDeleteNoticeText, autoDeleteWirePrefix, type AutoDeleteNotice } from '../../shared/auto-delete-notice'
 import { chatListPreviewText } from '../../shared/chat-list-preview'
+import { memberServiceKinds, memberServiceText, type MemberServiceEvent, type MemberServiceKind } from '../../shared/member-service'
 import { messageStorySource } from './message-story-source'
 import type { ChatMessage, DialogSummary, ForwardInfo, MessagePoll, MessagePosition } from '../../shared/model'
 import { forwardInfoFrom } from '../../shared/forward'
@@ -19,7 +20,10 @@ export interface FirestoreDocument { name: string; fields: Record<string, WireOb
 // morse-history-clear.js:102-104); the next notice writes both again.
 // topExpiresAt (B163 ④): when the message the row shows is to be deleted (lastMessageDeleteAt, ms) — the row stops
 // showing it then, before the server's line follows.
-export interface ReadDialog { summary: DialogSummary; cutoff: MessagePosition | null; participantNames: Record<string, string>; accountUid: string; noticeless?: boolean; topExpiresAt?: number }
+export interface ReadDialog { summary: DialogSummary; cutoff: MessagePosition | null; participantNames: Record<string, string>; accountUid: string; noticeless?: boolean; topExpiresAt?: number
+  // B440a: the room's newest line is a member service line (lastSystemEvent); its words are drawn again once contact
+  // names are known (session.ts applyNames).
+  memberEvent?: MemberServiceEvent }
 export const database = 'projects/talky-a38c3/databases/(default)'
 export const documents = `${database}/documents`
 export const pageSize = 80
@@ -183,10 +187,13 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
   let preview = displayField(f, 'lastMessage', 100000)
   const noticeless = service && !preview && f.lastSystemEvent === undefined
   const autoDeleteLine = service ? null : autoDeleteLineText(f)
+  const memberLine = kind === 'group' ? memberEventOfLine(f) : null
   const expires = kind === 'secret' ? null : timeField(f, 'lastMessageDeleteAt', id), topExpiresAt = expires ? positionMilliseconds(expires) : null
   if (kind === 'secret') preview = tr('비밀 대화')
   else if (preview.startsWith('__deleted__:') || (cutoff && top && withinCutoff(top, cutoff))) preview = ''
   else if (autoDeleteLine !== null) preview = autoDeleteLine
+  // B440a §2-2: tdesktop draws a service message's own words in the chat list (HistoryItem::toPreview, :4797-4812).
+  else if (memberLine) preview = memberServiceText(memberLine, uid => participantNames[uid] ?? '')
   else if (preview.startsWith(autoDeleteWirePrefix)) preview = ''
   else if (preview === '__TALKY_SECRET__') preview = tr('비밀 메시지')
   // A media label is stored in whatever language wrote it, and shown in this window's own; the kind the
@@ -208,7 +215,7 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
     // isArchived / isMuted in the shared room document are another person's choice as often as this one's;
     // this device's own flags are applied by the session (ChatFlags).
     pinned: false, pinVersion: '', archived: false, muted: false,
-    discussion: boolField(f, 'isChannelDiscussion'), channelId: stringField(f, 'channelId', 160) || undefined, autoDeleteSeconds: autoDeleteSecondsValue(numberField(f, 'autoDeleteSeconds')), autoDeleteMyOnly: boolField(f, 'autoDeleteMyOnly'), createdBy: stringField(f, 'createdBy', 160), pinnedForAll: pinnedMessageIds(f), unseenReaction: unseenReaction(f, uid), forum: kind === 'group' ? forumState(f) : undefined }, cutoff, participantNames, accountUid: uid, ...(noticeless ? { noticeless: true } : {}),
+    discussion: boolField(f, 'isChannelDiscussion'), channelId: stringField(f, 'channelId', 160) || undefined, autoDeleteSeconds: autoDeleteSecondsValue(numberField(f, 'autoDeleteSeconds')), autoDeleteMyOnly: boolField(f, 'autoDeleteMyOnly'), createdBy: stringField(f, 'createdBy', 160), pinnedForAll: pinnedMessageIds(f), unseenReaction: unseenReaction(f, uid), forum: kind === 'group' ? forumState(f) : undefined }, cutoff, participantNames, accountUid: uid, ...(noticeless ? { noticeless: true } : {}), ...(memberLine ? { memberEvent: memberLine } : {}),
     ...(topExpiresAt !== null ? { topExpiresAt } : {}) }
 }
 // B291 (contract «서버 가지» 17:2x): a channel post's mirror is the channel's, not its writer's; then lastSenderId says
@@ -323,6 +330,7 @@ function messagePoll(f: Record<string, WireObject>): MessagePoll | undefined {
   const kind = ['text', 'image', 'video', 'voice', 'file', 'sticker', 'channelPost', 'location', 'event', 'poll'].includes(rawKind) ? rawKind : 'unsupported'
   const senderId = stringField(f, 'senderId', 160)
   const system = !notice && (messageFlag(f, 'isSystem') || text.startsWith(autoDeleteWirePrefix))
+  const member = system && dialog.summary.kind === 'group' ? memberEventOfMessage(f) : null
   if (!senderId && !system) throw new ReadFailure('data')
   const replyId = encrypted || system ? '' : stringField(f, 'replyToId', 160).trim() || stringField(f, 'reply_to', 160).trim()
   if (replyId) identifier(replyId)
@@ -337,8 +345,9 @@ function messagePoll(f: Record<string, WireObject>): MessagePoll | undefined {
     ...(notice ? { notice } : {}),
     // B113: a notice reads in this window's language (the language changes only with a restart, so drawn here it is drawn
     // as it is shown); its text is the server's fallback for a kind this build does not know.
-    kind: kind as ChatMessage['kind'], text: encrypted ? '' : system ? autoDeleteNoticeText(autoDeleteNoticeFields(f), text) || tr('시스템 메시지') : notice ? systemNoticeText(notice, text) : ['image', 'video', 'voice', 'file', 'sticker'].includes(kind) ? '' : text,
+    kind: kind as ChatMessage['kind'], text: encrypted ? '' : member ? memberServiceText(member, uid => dialog.participantNames[uid] ?? '') : system ? autoDeleteNoticeText(autoDeleteNoticeFields(f), text) || tr('시스템 메시지') : notice ? systemNoticeText(notice, text) : ['image', 'video', 'voice', 'file', 'sticker'].includes(kind) ? '' : text,
     ...(card?.channelId && card.postId ? { channelPost: card } : {}),
+    ...(member ? { memberService: member.kind } : {}),
     attachments, mediaMetadata: encrypted || system ? null : messageMediaMetadata(doc, kind, attachments.length, circular),
     caption: encrypted || system ? '' : mediaCaption(doc, kind),
     position, serverConfirmed: true, encrypted, silent: messageFlag(f, 'isSilent'), circular, state: 'sent', edited: messageFlag(f, 'isEdited'),
@@ -350,7 +359,8 @@ function messagePoll(f: Record<string, WireObject>): MessagePoll | undefined {
     ...(kind === 'sticker' && !encrypted ? stickerReference(f) : {}),
     ...(!encrypted && !system ? messageForward(f) : {}),
     readEligible: Boolean(senderId) && !encrypted && stringField(f, 'status', 32) !== 'failed' &&
-      (!system || kind === 'channelPost') && (!declaredChat || roomNames(dialog).includes(declaredChat)) }
+      // B440a §2-3: a member service line counts as unread, as Telegram counts a received service message.
+      (!system || kind === 'channelPost' || member !== null) && (!declaredChat || roomNames(dialog).includes(declaredChat)) }
 }
 // B263: the «Forwarded from» header the server wrote (forwardInfo map; its date a Timestamp), as a ChatMessage carries it.
 export function messageForward(f: Record<string, WireObject>): { forward?: ForwardInfo } {
@@ -396,6 +406,28 @@ export function autoDeleteLineText(f: Record<string, WireObject>): string | null
   // The period as written: one this app does not offer reads as the plain sentence below, never as «turned off».
   const notice = { actorName: stringField(event, 'actorName', 512).trim(), seconds: Math.trunc(numberField(event, 'seconds')), myOnly: boolField(event, 'myOnly') }
   return autoDeleteNoticeText(notice, '') || tr('자동 삭제 설정이 바뀌었어요.')
+}
+// B440a (server contract §2-1·§2-2): a member service line's people — from the message (systemKind, systemActorUid,
+// systemTargetUids, systemNames) or from the chat's copy of its newest one (lastSystemEvent {kind, actorUid, targetUids,
+// names}). Anything malformed reads as no member line, which leaves the line as an unknown system message.
+function memberEvent(kind: string, actor: string, targets: WireObject | undefined, names: Record<string, WireObject>): MemberServiceEvent | null {
+  if (!memberServiceKinds.has(kind)) return null
+  try {
+    const values = ((targets?.arrayValue as { values?: WireObject[] } | undefined)?.values ?? []).slice(0, 100)
+    const targetUids = values.map(value => identifier(String(value.stringValue ?? '')))
+    if (!targetUids.length) return null
+    const actorUid = identifier(actor)
+    const copied = Object.fromEntries([actorUid, ...targetUids].flatMap(uid => { const name = displayField(names, uid, 64); return name ? [[uid, name]] : [] }))
+    return { kind: kind as MemberServiceKind, actorUid, targetUids, names: copied }
+  } catch { return null }
+}
+export function memberEventOfMessage(f: Record<string, WireObject>): MemberServiceEvent | null {
+  return memberEvent(stringField(f, 'systemKind', 64), stringField(f, 'systemActorUid', 160), f.systemTargetUids, mapField(f, 'systemNames'))
+}
+export function memberEventOfLine(f: Record<string, WireObject>): MemberServiceEvent | null {
+  const kind = stringField(f, 'lastMessageType', 64), event = mapField(f, 'lastSystemEvent')
+  if (stringField(event, 'kind', 64) !== kind) return null
+  return memberEvent(kind, stringField(event, 'actorUid', 160), event.targetUids, mapField(event, 'names'))
 }
 export function autoDeleteNoticeFields(f: Record<string, WireObject>): AutoDeleteNotice | null {
   if (stringField(f, 'systemKind', 64) !== 'autoDeletePolicy') return null

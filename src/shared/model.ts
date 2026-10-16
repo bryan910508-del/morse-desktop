@@ -250,6 +250,8 @@ export interface ChatMessage {
   edited: boolean
   version: string
   system: boolean
+  // B440a: a group's member service line (memberAdded, memberRemoved, memberLeft, groupOwnerChanged).
+  memberService?: string
   // A channel post mirrored into the channel's discussion room (server onChannelPostCreated).
   // The shape the post was published in (PostAspectRatio: 원본 / 1:1 / 4:5 / 16:9), so its picture in the
   // discussion room keeps its place before it is drawn. «원본» has none until the picture itself says.

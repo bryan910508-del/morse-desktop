@@ -79,7 +79,7 @@ export class AccountNotifications {
     const preferences = this.host.preferences()
     if (channelPost ? !preferences.notifyChannel : dialog.summary.kind === 'group' ? !preferences.notifyGroup : !preferences.notifyPersonal) return 'kind-off'
     if (!preferences.inAppNotifications && this.host.appActive()) return 'in-app-off'
-    if (!message || message.senderId === this.uid || message.encrypted || (message.system && !channelPost) || !message.readEligible || message.kind === 'unsupported') return 'not-notifiable'
+    if (!message || message.senderId === this.uid || message.encrypted || (message.system && !channelPost && !message.memberService) || !message.readEligible || message.kind === 'unsupported') return 'not-notifiable'
     if (readCovers(dialog.summary.readPositions[this.uid], readCursor(message.position))) return 'read-position'
     if (suppressForeground && this.host.foreground(chatId)) return 'foreground'
     return message

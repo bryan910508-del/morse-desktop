@@ -4263,5 +4263,10 @@
  "전화번호와 실명을 받지 않아요. 가입할 때 받는 사용자 ID로 쓰고, 복구 코드로 다른 기기에서 계정을 되찾을 수 있어요. Apple·Google로 로그인할 때 받는 정보는 개인정보처리방침에 적혀 있어요.": "We don't ask for your phone number or real name. You get a user ID when you sign up, and a recovery code lets you restore your account on other devices. What we receive when you sign in with Apple or Google is described in the Privacy Policy.",
  "전화번호와 실명을 묻지 않아요. 사용자 ID는 가입할 때 자동으로 만들어지고, 복구 코드 한 줄로 다른 기기에서 계정을 되찾을 수 있어요.": "We don't ask for your phone number or real name. Your user ID is created when you sign up, and one recovery code restores your account on other devices.",
  "초대 링크로 가입": "Join with an invite link",
- "구독자에게는 구독자 수만 보여요": "Subscribers see only the subscriber count"
+ "구독자에게는 구독자 수만 보여요": "Subscribers see only the subscriber count",
+ "{0}님이 들어왔어요": "{0} joined the group",
+ "{0}님이 {1}님을 초대했어요": "{0} added {1}",
+ "{0}님이 {1}님을 내보냈어요": "{0} removed {1}",
+ "{0}님이 나갔어요": "{0} left the group",
+ "{0}님이 이제 그룹 주인이에요": "{0} is now the group owner"
 }

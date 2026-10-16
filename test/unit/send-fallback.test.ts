@@ -36,7 +36,7 @@ test('a socket that cannot send within five seconds: the same message goes throu
   assert.equal(socketWaitMs, 5000)
   assert.deepEqual(await sendWithFallback(wire, signal(), path, callable), ack)
   assert.deepEqual(waits, [5000])
-  assert.deepEqual(calls, [{ name: 'sendMorseMessage', data: { ...wire } }], 'the socket\'s own body, the same id')
+  assert.deepEqual(calls, [{ name: 'sendMorseMessage', data: { ...wire, fallbackReason: 'not-registered' } }], 'the socket\'s own body, the same id, and why (B441)')
 })
 
 test('a socket send with no answer in fifteen seconds goes again by the callable under the same id, which takes it once', async () => {
@@ -72,7 +72,7 @@ test('a read the socket cannot carry goes through markMorseRead and is read as t
   const { path, callable, calls } = paths({ sendable: false }, async () =>
     ({ ok: true, persistedByServer: true, chatId: 'chat1', readerId: 'me', alreadyExisted: false, lastReadAt: 1700000000000, unreadCount: 0, messageId: 'm9' }))
   const answer = await markReadWithFallback('chat1', 'me', target, signal(), path, callable)
-  assert.deepEqual(calls, [{ name: 'markMorseRead', data: { chatId: 'chat1', messageId: 'm9' } }])
+  assert.deepEqual(calls, [{ name: 'markMorseRead', data: { chatId: 'chat1', messageId: 'm9', fallbackReason: 'not-registered' } }])
   assert.deepEqual(answer.cursor, { at: 1700000000000, id: 'm9' })
   const bySocket = paths({ sendable: true, markRead: async () => answer }, async () => { throw new Error('callable used') })
   assert.equal(await markReadWithFallback('chat1', 'me', target, signal(), bySocket.path, bySocket.callable), answer)

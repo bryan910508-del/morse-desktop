@@ -13,6 +13,7 @@ import { mediaCacheFor } from './media-cache'
 import { autoDownloadFor } from './auto-download-limits'
 import { downloadOwnStoryPhoto } from '../network/own-story-photo'
 import { recordStoryStep } from '../platform/story-diagnostics'
+import { memberServiceText } from '../../shared/member-service'
 import { StoryVideoUpload } from './story-video-upload'
 import { StoryPublication } from './story-publication'
 import type { StoryComposerPhotoTarget, StoryComposerPhotoWrite, StoryComposerPhotoReference, StoryComposerPhotoRecord } from '../../shared/story-composer-photo'
@@ -1298,6 +1299,9 @@ export class AccountSession {
       const name = this.contacts.personName(uid)
       if (name) value.participantNames[uid] = name
     }
+    // B440a: a member service line in the row is drawn again with these names — and a contact's name for one no longer
+    // in the room (removed, left), before the copy the line carries.
+    if (value.memberEvent) value.summary.preview = memberServiceText(value.memberEvent, uid => value.participantNames[uid] || this.contacts.personName(uid) || '').slice(0, 300)
     if (summary.kind !== 'direct' || summary.id.startsWith('memo_') || summary.title === deleted) return
     const peer = summary.participantUids.find(uid => uid !== this.profile.uid)
     const name = peer ? this.contacts.personName(peer) : ''

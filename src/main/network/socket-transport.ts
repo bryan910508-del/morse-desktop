@@ -1,7 +1,7 @@
 import { io, type Socket } from 'socket.io-client'
 import type { ChatMessage, ConnectionState, MessagePosition, SendAcknowledgement, SendWire } from '../../shared/model'
 import type { ReadAcknowledgement } from '../../shared/read-receipts'
-import { committedReadAck, committedSendAck, floodWaitDelay, incomingMessage, NotEmitted, ProtocolFailure, serverContract } from './contracts'
+import { committedReadAck, committedSendAck, floodWaitDelay, incomingMessage, NotEmitted, ProtocolFailure, serverContract, SocketUnanswered } from './contracts'
 import { registrationDelay, registrationOutcome } from './registration-outcome'
 import { tr } from '../../shared/i18n'
 import { reachability } from './reachability'
@@ -333,10 +333,16 @@ export class SocketMessageTransport {
       const body: unknown = await new Promise((resolve, reject) => {
         cancel = () => reject(new ProtocolFailure(unanswered))
         signal.addEventListener('abort', cancel, { once: true })
-        pending.then(resolve, reject)
+        // socket.io-client 4.8 answers an unanswered request with one of two errors: its own 15 s timer
+        // (socket.js:306) or the socket closing (`_clearAcks` :487).
+        pending.then(resolve, (error: unknown) => {
+          const text = error instanceof Error ? error.message : ''
+          reject(new SocketUnanswered(unanswered, text === 'operation has timed out' ? 'ack-timeout' : text === 'socket has been disconnected' ? 'disconnected' : 'other'))
+        })
         if (signal.aborted) cancel()
       }).finally(() => signal.removeEventListener('abort', cancel))
-      if (signal.aborted || generation !== this.generation || socket !== this.socket) throw new ProtocolFailure(tr('연결이 변경되었습니다.'))
+      if (signal.aborted) throw new ProtocolFailure(tr('연결이 변경되었습니다.'))
+      if (generation !== this.generation || socket !== this.socket) throw new SocketUnanswered(tr('연결이 변경되었습니다.'), 'disconnected')
       const wait = floodWaitDelay(body)
       if (wait === null) return body
       this.events.step?.('flood-wait', `${event}:${wait}`)

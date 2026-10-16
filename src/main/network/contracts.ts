@@ -15,6 +15,12 @@ export const serverContract = Object.freeze({
 })
 
 export class ProtocolFailure extends Error {}
+// B441: a socket request that left and got no answer — its ACK timed out, or the socket went (or was replaced) before
+// it came. The reason goes with the callable that carries the request instead (`fallbackReason`, server
+// morse-send-fallback.js FALLBACK_REASONS).
+export class SocketUnanswered extends ProtocolFailure {
+  constructor(message: string, readonly reason: 'ack-timeout' | 'disconnected' | 'other') { super(message) }
+}
 export class NotEmitted extends Error {}
 export class MessageMutationFailure extends Error {
   constructor(message: string, readonly definitive = false) { super(message) }

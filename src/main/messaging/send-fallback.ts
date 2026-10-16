@@ -1,6 +1,6 @@
 // Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
-import { committedReadAck, committedSendAck, NotEmitted, ProtocolFailure, ServerRejection } from '../network/contracts'
+import { committedReadAck, committedSendAck, NotEmitted, ProtocolFailure, ServerRejection, SocketUnanswered } from '../network/contracts'
 import { MorseCallableFailure } from '../network/morse-callable'
 import type { MessagePosition, SendAcknowledgement, SendWire } from '../../shared/model'
 import type { ReadAcknowledgement } from '../../shared/read-receipts'
@@ -59,15 +59,25 @@ async function socketReady(socket: SocketPath, network: NetworkPath, signal: Abo
   }
 }
 
-async function socketFirst<T>(socket: SocketPath, signal: AbortSignal, bySocket: () => Promise<T>, byCallable: () => Promise<T>,
+// B441 (reports/server/2026-10-16-b441-fallback-reason.md §2, the three apps' one table): why the callable carries it —
+// the socket was not registered to send, its answer did not come in time, or it went before the answer came.
+export type FallbackReason = 'not-registered' | 'ack-timeout' | 'disconnected' | 'other'
+export function fallbackReason(error: unknown): FallbackReason {
+  if (error instanceof NotEmitted) return 'not-registered'
+  if (error instanceof SocketUnanswered) return error.reason
+  return 'other'
+}
+
+async function socketFirst<T>(socket: SocketPath, signal: AbortSignal, bySocket: () => Promise<T>, byCallable: (reason: FallbackReason) => Promise<T>,
   what: 'send' | 'read', note?: PathNote, network: NetworkPath = systemNetwork): Promise<T> {
+  let reason: FallbackReason = 'not-registered'
   if (await socketReady(socket, network, signal)) {
     try { return await bySocket() }
-    catch (error) { if (error instanceof ServerRejection || signal.aborted) throw error }
+    catch (error) { if (error instanceof ServerRejection || signal.aborted) throw error; reason = fallbackReason(error) }
     note?.(`${what} socket-failed`)
   } else note?.(`${what} socket-not-ready`)
   signal.throwIfAborted()
-  try { return await byCallable() }
+  try { return await byCallable(reason) }
   catch (error) {
     if (!(error instanceof MorseCallableFailure)) throw error
     throw error.delivery === 'not-sent' ? new NotEmitted(tr('연결을 기다리고 있습니다.')) : new ProtocolFailure(tr('전송 결과를 확인해야 합니다.'))
@@ -77,8 +87,8 @@ async function socketFirst<T>(socket: SocketPath, signal: AbortSignal, bySocket:
 export function sendWithFallback(wire: SendWire, signal: AbortSignal, socket: SocketPath, callable: CallablePath, note?: PathNote,
   network?: NetworkPath): Promise<SendAcknowledgement> {
   return socketFirst(socket, signal, () => socket.send(wire, signal),
-    async () => {
-      const sentAt = Date.now(), ack = committedSendAck(await callable('sendMorseMessage', { ...wire }, signal), wire)
+    async reason => {
+      const sentAt = Date.now(), ack = committedSendAck(await callable('sendMorseMessage', { ...wire, fallbackReason: reason }, signal), wire)
       // B409-2: the server's date for the message it took, as on the socket (server-clock.ts).
       if (!ack.alreadyExisted) serverClock.answered(sentAt, Date.now(), ack.createdAt)
       return ack
@@ -88,5 +98,5 @@ export function sendWithFallback(wire: SendWire, signal: AbortSignal, socket: So
 export function markReadWithFallback(chatId: string, readerId: string, target: MessagePosition, signal: AbortSignal, socket: SocketPath,
   callable: CallablePath, note?: PathNote, network?: NetworkPath): Promise<ReadAcknowledgement> {
   return socketFirst(socket, signal, () => socket.markRead(chatId, target, signal),
-    async () => committedReadAck(await callable('markMorseRead', { chatId, messageId: target.id }, signal), chatId, readerId, target), 'read', note, network)
+    async reason => committedReadAck(await callable('markMorseRead', { chatId, messageId: target.id, fallbackReason: reason }, signal), chatId, readerId, target), 'read', note, network)
 }
