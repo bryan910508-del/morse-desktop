@@ -15,6 +15,7 @@ import { BackupCodeBox } from '../boxes/backup-code-box'
 import { tr } from '../../../shared/i18n'
 import { QrSignInPanel } from './qr-sign-in'
 import { PasswordStepPanel } from './password-step'
+import { installUpdate, useUpdateReady } from '../window/update-bar'
 
 const noStates: AccountAuthState[] = []
 
@@ -74,6 +75,13 @@ function SavedAccountRow({ state }: { state: AccountAuthState }) {
     <button className="icon-button small" type="button" aria-label={tr('다시 연결')} title={tr('다시 연결')} disabled={working} onClick={() => { void reconnect() }}>{working ? <Spinner size={16} /> : <RotateCw size={18} />}</button>
     <button className="icon-button small" type="button" aria-label={tr('저장된 로그인 지우기')} title={tr('지우기')} disabled={working} onClick={() => { void forget() }}><Trash2 size={18} /></button>
   </div>
+}
+
+// B456, Intro::Widget::checkUpdateStatus (intro_widget.cpp:316-340, placed top right :845-849): a downloaded version is
+// offered on the sign-in screen too — the updater runs before any account is connected (main/index.ts appUpdates.start).
+export function IntroUpdate() {
+  const ready = useUpdateReady()
+  return ready ? <button type="button" className="button flat intro-update" onClick={installUpdate}>{tr('업데이트')}</button> : null
 }
 
 // Intro::Widget: connect with a recovery code or create an account; with an account already

@@ -7,7 +7,7 @@ import { useShortcut } from '../app/shortcuts'
 import { LayerHost, ToastHost } from '../ui/layers'
 import { MenuHost } from '../ui/popup-menu'
 import { AvatarScope } from '../ui/avatar'
-import { Intro } from '../auth/intro'
+import { Intro, IntroUpdate } from '../auth/intro'
 import { DialogsWidget } from '../dialogs/dialogs-widget'
 import { HistoryWidget } from '../history/history-widget'
 import { ChatSearchPanel } from '../history/chat-search'
@@ -24,6 +24,7 @@ import { MainMenu } from './main-menu'
 import { LockScreen } from './lock-screen'
 import { UpdateRequiredScreen } from './update-required'
 import { chatGone } from './chat-gone'
+import { UpdateBar } from './update-bar'
 import { tr } from '../../../shared/i18n'
 
 // window.style: columnMinimalWidthLeft/MaximalWidthLeft/MinimalWidthMain/MinimalWidthThird/MaximalWidthThird.
@@ -51,7 +52,7 @@ export function MainWindow() {
   const adding = useDesktop(snapshot => snapshot?.addingAccount ?? false)
   if (blocked) return <><UpdateRequiredScreen /><ToastHost /></>
   if (locked) return <><LockScreen /><LayerHost /><ToastHost /></>
-  if (!accountUid || adding) return <><Intro /><LayerHost /><MenuHost /><ToastHost /></>
+  if (!accountUid || adding) return <><Intro /><IntroUpdate /><LayerHost /><MenuHost /><ToastHost /></>
   return <SessionWindow key={accountUid} accountUid={accountUid} />
 }
 
@@ -156,6 +157,7 @@ function SessionWindow({ accountUid }: { accountUid: string }) {
     <div className={`window${oneColumn ? ' one-column' : ''}`}>
       {showLeft && <aside className="column-left" data-region style={oneColumn ? undefined : { width: left }}>
         {notes ? <NotesWidget accountUid={accountUid} /> : channels ? <ChannelsWidget accountUid={accountUid} /> : <DialogsWidget accountUid={accountUid} />}
+        <UpdateBar />
       </aside>}
       {showLeft && showMain && <ColumnResizer left={left} />}
       {showMain && <main className="column-main" data-region>

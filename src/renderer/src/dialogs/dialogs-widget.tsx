@@ -221,7 +221,6 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
   }).length])), [customFolders, listed, accountUid, contactSet])
 
   const inquiryRows = useDesktop(snapshot => snapshot?.inquiryRows) ?? noInquiryRows
-  const updateReady = useDesktop(snapshot => snapshot?.appUpdate?.status === 'ready')
   // MorseNotesListPreview: the newest note once the notes list has been read, else «나만 볼 수 있어요».
   const latestNote = useDesktop(snapshot => snapshot?.spaceNotes?.status === 'ready' ? snapshot.spaceNotes.rows[0] ?? null : null)
   const rowState = useInquiryRowStates(accountUid)
@@ -506,8 +505,6 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
           })}
         </div>}
     </div>
-    {/* Dialogs::Widget «Update Telegram»: shown once the new version has been downloaded; restarting installs it. */}
-    {updateReady && <button type="button" className="dialogs-update" onClick={() => { void window.morse.installAppUpdate().catch(() => {}) }}>{tr('Morse 업데이트')}</button>}
   </div>
 }
 

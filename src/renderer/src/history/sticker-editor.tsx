@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Package, Plus, Star } from 'lucide-react'
-import { maxStickerBytes, stickerKind, stickerSidePx, type StickerItem } from '../../../shared/stickers'
+import { maxStickerBytes, maxStickerVideoSeconds, stickerKind, stickerSidePx, stickerVideoRange, type StickerItem } from '../../../shared/stickers'
 import { maxStickerPackItems, maxStickerPackTitle, type StickerPack } from '../../../shared/sticker-packs'
 import { useDesktop } from '../app/store'
 import { controller } from '../app/ui'
@@ -11,15 +11,15 @@ import { tr } from '../../../shared/i18n'
 
 type Source =
   | { kind: 'still'; bitmap: ImageBitmap; url: string; original: Uint8Array; cut: boolean; width: number; height: number }
-  | { kind: 'animated'; bytes: Uint8Array; url: string; video: boolean; width: number; height: number }
+  | { kind: 'animated'; bytes: Uint8Array; url: string; video: boolean; width: number; height: number; duration: number }
 
-// The size of an MP4's picture, turned upright as Chromium plays it.
-function videoSize(url: string): Promise<{ width: number; height: number }> {
+// The size of an MP4's picture, turned upright as Chromium plays it, and its length in seconds.
+function videoSize(url: string): Promise<{ width: number; height: number; duration: number }> {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video')
     const done = (): void => { video.onloadedmetadata = video.onerror = null; video.removeAttribute('src'); video.load() }
     video.muted = true; video.preload = 'metadata'
-    video.onloadedmetadata = () => { const size = { width: video.videoWidth, height: video.videoHeight }; done(); if (size.width && size.height) resolve(size); else reject(new Error('size')) }
+    video.onloadedmetadata = () => { const size = { width: video.videoWidth, height: video.videoHeight, duration: Number.isFinite(video.duration) ? video.duration : 0 }; done(); if (size.width && size.height) resolve(size); else reject(new Error('size')) }
     video.onerror = () => { done(); reject(new Error('video')) }
     video.src = url
   })
@@ -73,6 +73,11 @@ export type MadeSticker = { kind: 'favourite'; sticker: StickerItem } | { kind: 
 function StickerEditor({ accountUid, close, done }: { accountUid: string; close(): void; done(sticker: MadeSticker | null): void }) {
   // B51: background removal needs Vision's subject mask (macOS 14); elsewhere the button is left out.
   const canCutout = useDesktop(snapshot => snapshot?.onDevice.backgroundRemoval ?? false)
+  // B458: a video longer than five seconds keeps the part from a chosen start (iOS MorseStickerEditor's start slider); with
+  // no helper to cut it (Windows) it is refused when chosen.
+  const canTrim = useDesktop(snapshot => snapshot?.onDevice.videoTrim ?? false)
+  const [start, setStart] = useState(0)
+  const preview = useRef<HTMLVideoElement>(null)
   const [source, setSource] = useState<Source | null>(null), [still, setStill] = useState<Source | null>(null)
   const [zoom, setZoom] = useState(1), [x, setX] = useState(50), [y, setY] = useState(50)
   const [busy, setBusy] = useState(false), [error, setError] = useState('')
@@ -92,16 +97,17 @@ function StickerEditor({ accountUid, close, done }: { accountUid: string; close(
       if (kind === 'gif' || kind === 'mp4') {
         if (bytes.length > maxStickerBytes) { setError(tr('10MB 이하 파일을 선택해 주세요.')); return }
         const url = await previewURL(bytes)
-        let size: { width: number; height: number }
-        if (kind === 'gif') { const first = await createImageBitmap(new Blob([bytes], { type: 'image/gif' })); size = { width: first.width, height: first.height }; first.close() }
+        let size: { width: number; height: number; duration: number }
+        if (kind === 'gif') { const first = await createImageBitmap(new Blob([bytes], { type: 'image/gif' })); size = { width: first.width, height: first.height, duration: 0 }; first.close() }
         else size = await videoSize(url)
+        if (kind === 'mp4' && !canTrim && size.duration > maxStickerVideoSeconds) { setError(tr('5초 이하 영상을 선택해 주세요.')); return }
         setSource({ kind: 'animated', bytes, url, video: kind === 'mp4', ...size })
       } else {
         const bitmap = await createImageBitmap(new Blob([bytes]), { imageOrientation: 'from-image' })
         const next: Source = { kind: 'still', bitmap, url: await previewURL(bytes), original: bytes, cut: false, width: bitmap.width, height: bitmap.height }
         setSource(next); setStill(next)
       }
-      setZoom(1); setX(50); setY(50)
+      setZoom(1); setX(50); setY(50); setStart(0)
     } catch { setError(tr('이 사진 파일을 열지 못했습니다. 다른 사진을 선택해 주세요.')) }
   }
   async function cutout(): Promise<void> {
@@ -116,6 +122,18 @@ function StickerEditor({ accountUid, close, done }: { accountUid: string; close(
     finally { setBusy(false) }
   }
   const frame = 280
+  // A length the page could not read sends no part: main keeps the first five seconds.
+  const part = source?.kind === 'animated' && source.video && source.duration > 0 ? stickerVideoRange(source.duration, start) : null
+  const longVideo = source?.kind === 'animated' && source.video && source.duration > maxStickerVideoSeconds
+  // The preview plays only that part, round again from its start.
+  useEffect(() => {
+    const video = preview.current
+    if (!video || !part) return
+    video.currentTime = part.start
+    const loop = (): void => { if (video.currentTime < part.start || video.currentTime >= part.start + part.seconds) video.currentTime = part.start }
+    video.addEventListener('timeupdate', loop)
+    return () => video.removeEventListener('timeupdate', loop)
+  }, [part?.start, part?.seconds, source])
   const cropSide = source ? Math.min(source.width, source.height) / zoom : 0
   const scale = cropSide ? frame / cropSide : 0
   // The chosen square in the source's pixels.
@@ -140,7 +158,7 @@ function StickerEditor({ accountUid, close, done }: { accountUid: string; close(
     try {
       let bytes: Uint8Array
       if (source.kind === 'animated') {
-        const cropped = await window.morse.stickerCropAnimated(accountUid, source.bytes, source.video ? 'mp4' : 'gif', square)
+        const cropped = await window.morse.stickerCropAnimated(accountUid, source.bytes, source.video ? 'mp4' : 'gif', square, part ?? undefined)
         bytes = cropped ? new Uint8Array(cropped) : source.bytes
       } else {
         const canvas = new OffscreenCanvas(stickerSidePx, stickerSidePx), context = canvas.getContext('2d')
@@ -176,7 +194,7 @@ function StickerEditor({ accountUid, close, done }: { accountUid: string; close(
       : <>
         {source.kind === 'animated' && source.video
           ? <div className="crop-frame square sticker-crop sticker-crop-video" role="img" aria-label={tr('끌어서 스티커 위치 조정')} onPointerDown={drag} style={{ width: frame, height: frame }}>
-            <video src={source.url} autoPlay loop muted playsInline style={{
+            <video ref={preview} src={source.url} autoPlay loop muted playsInline style={{
               width: source.width * scale, height: source.height * scale,
               left: -(source.width - cropSide) * x / 100 * scale, top: -(source.height - cropSide) * y / 100 * scale
             }} />
@@ -186,6 +204,9 @@ function StickerEditor({ accountUid, close, done }: { accountUid: string; close(
             backgroundSize: `${source.width / cropSide * 100}% ${source.height / cropSide * 100}%`, backgroundPosition: `${x}% ${y}%`
           }} />}
         <label className="crop-zoom"><span>{tr('확대')}</span><input type="range" min={1} max={3} step={0.01} value={zoom} disabled={busy} onChange={event => setZoom(Number(event.target.value))} /></label>
+        {longVideo && part && <label className="crop-zoom sticker-video-part"><span>{tr('{0} – {1}초', [part.start.toFixed(1), (part.start + part.seconds).toFixed(1)])}</span>
+          <input type="range" aria-label={tr('시작 지점')} min={0} max={Math.max(0, source.duration - maxStickerVideoSeconds)} step={0.1} value={part.start} disabled={busy}
+            onChange={event => setStart(Number(event.target.value))} /></label>}
         <div className="sticker-editor-actions">
           {source.kind === 'still' && (source.cut ? <button type="button" className="button secondary" disabled={busy} onClick={() => { if (still) setSource(still) }}>{tr('원본 복원')}</button>
             : canCutout && <button type="button" className="button secondary" disabled={busy} onClick={() => { void cutout() }}>{tr('배경 제거')}</button>)}

@@ -7,15 +7,15 @@ import { onDeviceFeatures, translationMessage } from '../../src/shared/translati
 const both = { translate: true, media: true }
 
 test('each feature is on only where its helper can run', () => {
-  assert.deepEqual(onDeviceFeatures('darwin', '25.4.0', both), { translation: true, voiceToText: true, backgroundRemoval: true }, 'macOS 26')
-  assert.deepEqual(onDeviceFeatures('darwin', '24.6.0', both), { translation: false, voiceToText: true, backgroundRemoval: true }, 'macOS 15')
-  assert.deepEqual(onDeviceFeatures('darwin', '22.6.0', both), { translation: false, voiceToText: true, backgroundRemoval: false }, 'macOS 13')
-  assert.deepEqual(onDeviceFeatures('win32', '10.0.26100', both), { translation: false, voiceToText: false, backgroundRemoval: false }, 'Windows')
+  assert.deepEqual(onDeviceFeatures('darwin', '25.4.0', both), { translation: true, voiceToText: true, backgroundRemoval: true, videoTrim: true }, 'macOS 26')
+  assert.deepEqual(onDeviceFeatures('darwin', '24.6.0', both), { translation: false, voiceToText: true, backgroundRemoval: true, videoTrim: true }, 'macOS 15')
+  assert.deepEqual(onDeviceFeatures('darwin', '22.6.0', both), { translation: false, voiceToText: true, backgroundRemoval: false, videoTrim: true }, 'macOS 13')
+  assert.deepEqual(onDeviceFeatures('win32', '10.0.26100', both), { translation: false, voiceToText: false, backgroundRemoval: false, videoTrim: false }, 'Windows')
 })
 
 test('a helper that is missing or was given up on turns its features off', () => {
   assert.deepEqual(onDeviceFeatures('darwin', '25.0.0', { translate: false, media: true }).translation, false)
-  assert.deepEqual(onDeviceFeatures('darwin', '25.0.0', { translate: true, media: false }), { translation: true, voiceToText: false, backgroundRemoval: false })
+  assert.deepEqual(onDeviceFeatures('darwin', '25.0.0', { translate: true, media: false }), { translation: true, voiceToText: false, backgroundRemoval: false, videoTrim: false })
 })
 
 test('the note does not speak of «this Mac» on a device that is not one', () => {

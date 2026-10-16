@@ -6,6 +6,8 @@
    380×480 (window.style windowMinWidth/windowMinHeight). */
 .intro { position: fixed; inset: 0; display: grid; overflow-y: auto; background: var(--window-bg) }
 .intro-drag { position: fixed; top: 0; left: 0; right: 0; height: 40px; -webkit-app-region: drag }
+/* B456: st::introSettingsSkip from the top right, above the drag strip. */
+.intro-update { position: fixed; top: 8px; right: 16px; z-index: 1; -webkit-app-region: no-drag }
 .intro-step { width: min(360px, calc(100vw - 48px)); margin: auto; display: grid; justify-items: center; gap: 12px; padding: 32px 0; text-align: center }
 .intro-logo { width: 88px; height: 88px; margin-bottom: 6px; border-radius: 22px }
 .intro-step h1 { margin: 0; font-size: var(--t-title2); font-weight: 700; color: var(--text) }

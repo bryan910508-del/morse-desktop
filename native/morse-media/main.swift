@@ -165,7 +165,7 @@ func cropGIF(_ data: Data, rect: CGRect, side: Int) throws -> Data {
 }
 
 // The same for an MP4: the picture turned upright, cut to the square and drawn at the sticker size, without sound.
-func cropVideo(_ data: Data, rect: CGRect, side: Int) async throws -> Data {
+func cropVideo(_ data: Data, rect: CGRect, side: Int, start: Double, seconds: Double) async throws -> Data {
     let folder = FileManager.default.temporaryDirectory
     let input = folder.appendingPathComponent("morse-sticker-\(UUID().uuidString).mp4"), output = folder.appendingPathComponent("morse-sticker-\(UUID().uuidString).mp4")
     try data.write(to: input, options: [.atomic])
@@ -176,15 +176,17 @@ func cropVideo(_ data: Data, rect: CGRect, side: Int) async throws -> Data {
     let rate = try await track.load(.nominalFrameRate)
     let upright = try await uprightSize(track)
     let area = rect.intersection(CGRect(origin: .zero, size: upright))
-    guard !area.isNull, area.width >= 1, duration.seconds > 0 else { throw HelperFailure.failed }
+    guard !area.isNull, area.width >= 1, duration.seconds > start, seconds > 0 else { throw HelperFailure.failed }
+    // B458: the chosen part only (the app sends start and length, at most five seconds), as iOS MorseStickerMedia.cropVideo.
+    let part = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600), duration: CMTime(seconds: min(seconds, duration.seconds - start), preferredTimescale: 600))
     let composition = AVMutableComposition()
     guard let videoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else { throw HelperFailure.failed }
-    try videoTrack.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: track, at: .zero)
+    try videoTrack.insertTimeRange(part, of: track, at: .zero)
     let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: videoTrack)
     let scale = CGFloat(side) / area.width
     layer.setTransform(transform.concatenating(CGAffineTransform(translationX: -area.minX, y: -area.minY)).concatenating(CGAffineTransform(scaleX: scale, y: scale)), at: .zero)
     let instruction = AVMutableVideoCompositionInstruction()
-    instruction.timeRange = CMTimeRange(start: .zero, duration: duration)
+    instruction.timeRange = CMTimeRange(start: .zero, duration: part.duration)
     instruction.layerInstructions = [layer]
     let videoComposition = AVMutableVideoComposition()
     videoComposition.renderSize = CGSize(width: side, height: side)
@@ -272,7 +274,7 @@ struct MorseMedia {
                         let rect = CGRect(x: request["x"] as? Double ?? 0, y: request["y"] as? Double ?? 0, width: request["size"] as? Double ?? 0, height: request["size"] as? Double ?? 0)
                         let side = min(1024, max(64, request["side"] as? Int ?? 512))
                         do {
-                            let cropped = op == "crop-gif" ? try cropGIF(data, rect: rect, side: side) : try await cropVideo(data, rect: rect, side: side)
+                            let cropped = op == "crop-gif" ? try cropGIF(data, rect: rect, side: side) : try await cropVideo(data, rect: rect, side: side, start: request["start"] as? Double ?? 0, seconds: request["seconds"] as? Double ?? 0)
                             await output.send(["id": id, "status": "ok", "data": cropped.base64EncodedString()])
                         } catch { await output.send(["id": id, "status": "failed"]) }
                     } else if op == "cutout" {

@@ -5,6 +5,25 @@ export interface StickerItem { id: string; kind: StickerKind; size: number; url:
 export const maxStickerBytes = 10 * 1024 * 1024
 export const maxStickers = 200
 export const stickerSidePx = 512
+// B458 (user 10-16): a video sticker is made at most 5 seconds long, one number in the three apps — the part from a chosen
+// start, as iOS MorseStickerMedia.cropVideo keeps its part (tdesktop: kVideoStickerMaxDuration, sticker_creator_box.cpp:57,
+// is Telegram's server rule). A GIF keeps every frame, as on iOS; a received sticker plays as it is.
+export const maxStickerVideoSeconds = 5
+// The part of a `duration`-second video a sticker keeps: from `start`, held inside the video, for at most five seconds.
+export function stickerVideoRange(duration: number, start: number): { start: number; seconds: number } {
+  const length = Number.isFinite(duration) && duration > 0 ? duration : 0
+  const from = Math.min(Math.max(0, Number.isFinite(start) ? start : 0), Math.max(0, length - maxStickerVideoSeconds))
+  return { start: from, seconds: Math.min(maxStickerVideoSeconds, length - from) }
+}
+// The part main takes from the window for an MP4: a start at or after 0 and a length of at most five seconds; none sent
+// is the first five. Anything else is refused.
+export function stickerVideoPart(raw: unknown): { start: number; seconds: number } | null {
+  if (raw === undefined || raw === null) return { start: 0, seconds: maxStickerVideoSeconds }
+  if (typeof raw !== 'object') return null
+  const { start, seconds } = raw as Record<string, unknown>
+  if (typeof start !== 'number' || typeof seconds !== 'number' || !Number.isFinite(start) || !Number.isFinite(seconds)) return null
+  return start >= 0 && start <= 24 * 3600 && seconds > 0 && seconds <= maxStickerVideoSeconds ? { start, seconds } : null
+}
 // A sticker of this device's library, drawn by its id (the SHA-256 of its bytes).
 export const stickerLibraryURL = (id: string): string => `morse://app/__sticker/${id}`
 // B264: the picture a sticker this device sends is drawn from — the library's or an installed set's address — and whether

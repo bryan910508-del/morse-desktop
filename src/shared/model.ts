@@ -971,7 +971,7 @@ export interface DesktopBridge {
   addSticker(accountUid: string, bytes: Uint8Array): Promise<string>
   stickerCutout(accountUid: string, bytes: Uint8Array): Promise<Uint8Array>
   // The square of a GIF or MP4 sticker, cut by the Mac media helper; null where the helper is not available.
-  stickerCropAnimated(accountUid: string, bytes: Uint8Array, kind: 'gif' | 'mp4', square: { x: number; y: number; size: number }): Promise<Uint8Array | null>
+  stickerCropAnimated(accountUid: string, bytes: Uint8Array, kind: 'gif' | 'mp4', square: { x: number; y: number; size: number }, part?: { start: number; seconds: number }): Promise<Uint8Array | null>
   transcribeVoice(accountUid: string, bytes: Uint8Array): Promise<import('./transcript').TranscriptResult>
   removeSticker(accountUid: string, id: string): Promise<'done'>
   // B210: a recent sticker out of the server's list (saveRecentSticker unsave), and a sticker message into the favourites.

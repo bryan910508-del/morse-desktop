@@ -4,13 +4,15 @@ import { autoDownloadChoiceLabel, autoDownloadChoices, autoDownloadSourceLabel }
 import { changeBackupCode, deleteAccount, showBlockedUsersBox, showPrivacyRuleBox, showSessionsBox } from './security-boxes'
 import { TwoStepEntry } from './two-step-box'
 import { useEffect, useState, type ReactNode } from 'react'
-import { ArrowLeft, AtSign, Forward, Bell, Camera, ChevronRight, FileText, FolderOpen, HardDrive, Image as ImageIcon, Info, LogOut, Megaphone, MessageSquare, Palette, Shield, Star, Trash2, User, X, Clock3, KeyRound, ShieldOff, Timer, Lock, BatteryLow, Download, Lightbulb, CircleHelp, ShieldCheck, Users, QrCode as QrCodeIcon, Crown, CircleCheck, Globe, History, ImagePlus, Keyboard } from 'lucide-react'
+import { ArrowLeft, AtSign, Forward, Bell, Camera, ChevronRight, FileText, FolderOpen, HardDrive, Image as ImageIcon, Info, LogOut, Megaphone, MessageSquare, Palette, Shield, Star, Trash2, User, X, Clock3, KeyRound, ShieldOff, Timer, Lock, BatteryLow, Download, Lightbulb, CircleHelp, ShieldCheck, Users, QrCode as QrCodeIcon, Crown, CircleCheck, Globe, History, ImagePlus, Keyboard, RefreshCw } from 'lucide-react'
 import type { Preferences, ThemePreference } from '../../../shared/model'
 import type { BackgroundStorageSnapshot } from '../../../shared/background-storage'
 import type { ContactPhotoStorage } from '../../../shared/contact-photo'
 import type { VoiceDraftStorageSnapshot } from '../../../shared/voice-draft-storage'
 import { maxProfileNameLength } from '../../../shared/profile-name'
 import { desktop, useDesktop } from '../app/store'
+import { updateReady } from '../../../shared/app-updates'
+import { installUpdate } from '../window/update-bar'
 import { showShortcutsBox } from '../boxes/shortcuts-box'
 import { gplURL, releaseSourceURL } from '../../../shared/app-release'
 import { linkedParts } from '../ui/linked-text'
@@ -80,6 +82,15 @@ function UpdateStatus() {
       ? <button type="button" className="button primary" onClick={() => { void window.morse.installAppUpdate().catch(() => {}) }}>{tr('재시작해 업데이트')}</button>
       : <button type="button" className="button secondary" disabled={update.status === 'checking' || update.status === 'downloading'} onClick={() => { void window.morse.checkAppUpdate().catch(() => {}) }}>{tr('업데이트 확인')}</button>}
   </div>
+}
+
+// B456: tdesktop opens Settings beside the chat list (SessionNavigation::showSettings → showSection,
+// window_session_controller.cpp:1484-1496), so the bar under the list stays at hand. Here Settings covers the window, so its
+// first page makes the same offer while a downloaded version waits. «Morse Desktop 정보» keeps the full status.
+function ReadyUpdateEntry() {
+  const version = useDesktop(state => updateReady(state?.appUpdate) ? state?.appUpdate.version ?? '' : null)
+  if (version === null) return null
+  return <Entry icon={<RefreshCw size={20} />} label={tr('Morse 업데이트')} detail={tr('새 버전 {0} 준비됨', [version])} chevron={false} onClick={installUpdate} />
 }
 
 // Settings::Information: photo, name, bio, Morse ID and the personal channel.
@@ -425,6 +436,7 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
     </header>
     <div className="settings-body">
       {page === 'main' && <>
+        <ReadyUpdateEntry />
         <button type="button" className="settings-profile editable" onClick={() => setPage('profile')}>
           <Avatar name={name || 'M'} url={profile?.photo.status === 'ready' ? profile.photo.url : null} size={64} />
           <span className="settings-profile-text"><strong className="ellipsis">{name}</strong>{userId && <span>@{userId}</span>}</span>

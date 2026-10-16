@@ -146,7 +146,7 @@ import { searchQuery, sharedMediaFilter } from '../shared/search'
 import { maxForumCategoryName } from '../shared/forum'
 import { postLikersRequest } from '../shared/post-likers'
 import { reportRequest } from '../shared/reports'
-import { maxStickerBytes, stickerSidePx } from '../shared/stickers'
+import { maxStickerBytes, stickerSidePx, stickerVideoPart } from '../shared/stickers'
 import { bioEdit } from '../shared/profile'
 import { profileNameEdit } from '../shared/profile-name'
 import { profilePhotoClear } from '../shared/profile-photo-clear'
@@ -2000,14 +2000,17 @@ function registerIPC(): void {
     throw new Error(result.status === 'no-subject' ? tr('분리할 피사체를 찾지 못했습니다.') : result.status === 'unavailable' ? tr('이 Mac에서는 배경 제거를 사용할 수 없어요.') : tr('처리하지 못했습니다. 다시 시도해 주세요.'))
   })
   // «스티커 만들기» for a GIF or MP4: the chosen square, every frame kept, at the sticker size.
-  handle('sticker-crop-animated', async (uid, bytes, kind, square) => {
+  handle('sticker-crop-animated', async (uid, bytes, kind, square, part) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     accounts.requireActive(identifier(uid))
     if (!(bytes instanceof Uint8Array) || !bytes.byteLength || bytes.byteLength > maxStickerBytes || (kind !== 'gif' && kind !== 'mp4')) throw new Error(tr('스티커 파일을 확인해 주세요.'))
     const value = square as Record<string, unknown> | null
     const numbers = value && typeof value === 'object' ? [value.x, value.y, value.size] : []
     if (numbers.length !== 3 || numbers.some(number => typeof number !== 'number' || !Number.isFinite(number) || number < 0 || number > 16384) || (value!.size as number) < 1) throw new Error(tr('스티커 파일을 확인해 주세요.'))
-    const cropped = await mediaHelper.cropAnimated(bytes, kind, { x: value!.x as number, y: value!.y as number, size: value!.size as number }, stickerSidePx)
+    // B458: an MP4 keeps only its part, at most five seconds.
+    const range = kind === 'mp4' ? stickerVideoPart(part) : null
+    if (kind === 'mp4' && !range) throw new Error(tr('스티커 파일을 확인해 주세요.'))
+    const cropped = await mediaHelper.cropAnimated(bytes, kind, { x: value!.x as number, y: value!.y as number, size: value!.size as number }, stickerSidePx, range)
     if (cropped) return cropped
     if (process.platform === 'darwin') throw new Error(tr('처리하지 못했습니다. 다시 시도해 주세요.'))
     return null

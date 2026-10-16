@@ -53,3 +53,24 @@ test('B104 (a): a history that moved on since the window looked asks nothing', a
   const history = await opened([doc(1, peer)])
   assert.equal(history.bottomReadTarget(history.snapshot.revision + 1), null)
 })
+
+// B452: what the server counts unread is what is read (talky-server morse-read-marker.js systemLineCounts: a post copy,
+// an auto-delete notice, B440a's member lines). A room ending with an auto-delete notice was read only to the line
+// before it, and the server's count kept the notice.
+const service = (index: number, fields: Record<string, unknown>): FirestoreDocument => ({
+  name: `${documents}/chats/${chatId}/messages/m${index}`, updateTime: { seconds: '1', nanos: 0 },
+  fields: { createdAt: { timestampValue: { seconds: String(1_750_000_000 + index), nanos: 0 } }, type: { stringValue: 'text' }, isSystem: { booleanValue: true }, ...fields }
+} as unknown as FirestoreDocument)
+
+test('B452: an auto-delete notice at the bottom is read to — by its kind, or by its stored mark — with no sender', async () => {
+  let history = await opened([doc(1, peer), service(2, { systemKind: { stringValue: 'autoDeletePolicy' }, text: { stringValue: '__TALKY_AUTODEL__:x' } })])
+  assert.equal(history.bottomReadTarget(history.snapshot.revision)?.id, 'm2')
+  history = await opened([doc(1, peer), service(2, { senderId: { stringValue: peer }, text: { stringValue: '__TALKY_AUTODEL__:x' } })])
+  assert.equal(history.bottomReadTarget(history.snapshot.revision)?.id, 'm2', 'an older notice, known by its text')
+})
+
+test('B452: another service line the server does not count is still passed over', async () => {
+  const history = await opened([doc(1, peer), service(2, { senderId: { stringValue: peer }, systemKind: { stringValue: 'somethingElse' }, text: { stringValue: 'x' } })])
+  assert.equal(history.bottomReadTarget(history.snapshot.revision)?.id, 'm1')
+  assert.equal(history.snapshot.messages.find(message => message.id === 'm2')?.readEligible, false)
+})

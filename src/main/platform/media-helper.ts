@@ -98,9 +98,10 @@ export class MediaHelper {
     }
     return { status: reply.status === 'too-long' || reply.status === 'unavailable' ? reply.status : 'failed' }
   }
-  // «스티커 만들기» for a GIF or an MP4: the square at (x, y) with side `size`, drawn at `side` pixels.
-  async cropAnimated(data: Uint8Array, kind: 'gif' | 'mp4', square: { x: number; y: number; size: number }, side: number): Promise<Uint8Array | null> {
-    const reply = await this.call(kind === 'gif' ? 'crop-gif' : 'crop-mp4', data, { x: square.x, y: square.y, size: square.size, side }, 120000)
+  // «스티커 만들기» for a GIF or an MP4: the square at (x, y) with side `size`, drawn at `side` pixels; an MP4 only its part
+  // from `range.start` for `range.seconds` (B458).
+  async cropAnimated(data: Uint8Array, kind: 'gif' | 'mp4', square: { x: number; y: number; size: number }, side: number, range: { start: number; seconds: number } | null): Promise<Uint8Array | null> {
+    const reply = await this.call(kind === 'gif' ? 'crop-gif' : 'crop-mp4', data, { x: square.x, y: square.y, size: square.size, side, ...(kind === 'mp4' && range ? range : {}) }, 120000)
     return reply.status === 'ok' && typeof reply.data === 'string' ? new Uint8Array(Buffer.from(reply.data, 'base64')) : null
   }
   close(): void {

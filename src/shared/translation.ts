@@ -12,10 +12,11 @@ export const maxTranslationText = 10000
 // Darwin 25), background removal Vision's subject mask (macOS 14, Darwin 23), voice to text Speech on any Mac Desktop
 // runs on. Windows has none of them yet: Telegram translates on its server there (R-63), Morse Windows translation is
 // still to come. A feature that cannot work is left out or says so, instead of failing without a word.
-export interface OnDeviceFeatures { translation: boolean; voiceToText: boolean; backgroundRemoval: boolean }
+// videoTrim (B458): the Mac media helper cuts a sticker video to its chosen part; where there is none, a longer video is refused.
+export interface OnDeviceFeatures { translation: boolean; voiceToText: boolean; backgroundRemoval: boolean; videoTrim: boolean }
 export function onDeviceFeatures(platform: string, kernelRelease: string, helpers: { translate: boolean; media: boolean }): OnDeviceFeatures {
   const darwin = platform === 'darwin' ? Number.parseInt(kernelRelease, 10) || 0 : 0
-  return { translation: darwin >= 25 && helpers.translate, voiceToText: darwin > 0 && helpers.media, backgroundRemoval: darwin >= 23 && helpers.media }
+  return { translation: darwin >= 25 && helpers.translate, voiceToText: darwin > 0 && helpers.media, backgroundRemoval: darwin >= 23 && helpers.media, videoTrim: darwin > 0 && helpers.media }
 }
 // B343: where a translation is made — tdesktop CreateTranslateProvider (lang/translate_provider.cpp:34-46, v7.3.0 42f8a36d;
 // v7.3.1 changes no translation file): this device's own translation when it can, else the server's. Morse asks the

@@ -358,9 +358,14 @@ function messagePoll(f: Record<string, WireObject>): MessagePoll | undefined {
     ...(kind === 'poll' ? { poll: messagePoll(f) } : {}),
     ...(kind === 'sticker' && !encrypted ? stickerReference(f) : {}),
     ...(!encrypted && !system ? messageForward(f) : {}),
-    readEligible: Boolean(senderId) && !encrypted && stringField(f, 'status', 32) !== 'failed' &&
-      // B440a §2-3: a member service line counts as unread, as Telegram counts a received service message.
-      (!system || kind === 'channelPost' || member !== null) && (!declaredChat || roomNames(dialog).includes(declaredChat)) }
+    // B452: what the server counts as unread is what is read — its systemLineCounts (talky-server morse-read-marker.js:53-54:
+    // a post copy, an auto-delete notice, and B440a's member lines) — as iOS countsAsUnreadMessage keeps one rule
+    // (MorseAccountMessageDatabase.swift:102-116) and tdesktop reads to the last server message whatever it is
+    // (Histories::readInbox, data_histories.cpp:175-203). A service line may have no sender; the server takes any
+    // message of the room as the read mark.
+    readEligible: !encrypted && stringField(f, 'status', 32) !== 'failed' &&
+      (system ? kind === 'channelPost' || member !== null || stringField(f, 'systemKind', 64) === 'autoDeletePolicy' || text.startsWith(autoDeleteWirePrefix) : Boolean(senderId)) &&
+      (!declaredChat || roomNames(dialog).includes(declaredChat)) }
 }
 // B263: the «Forwarded from» header the server wrote (forwardInfo map; its date a Timestamp), as a ChatMessage carries it.
 export function messageForward(f: Record<string, WireObject>): { forward?: ForwardInfo } {
