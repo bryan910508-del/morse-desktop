@@ -99,6 +99,7 @@ export function incomingMessage(raw: unknown, exactPosition?: MessagePosition): 
     serverConfirmed: true, encrypted: body.isEncrypted === true, state: 'sent', readEligible: false,
     replyToId: typeof body.replyToId === 'string' ? identifier(body.replyToId) : undefined,
     edited: body.isEdited === true, version: '', system: body.isSystem === true, reactions: [],
+    ...(body.wasScheduled === true ? { wasScheduled: true } : {}),
     // B263 §4-5: newMessage carries the server's forwardInfo as written, its date in ms.
     ...(body.isEncrypted !== true && body.isSystem !== true && forwardInfoFrom(body.forwardInfo) ? { forward: forwardInfoFrom(body.forwardInfo)! } : {})
   }

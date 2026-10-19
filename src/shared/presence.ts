@@ -19,6 +19,22 @@ export function peerPresence(raw: unknown): PeerPresence {
   return typeof value.t === 'number' && Number.isFinite(value.t) && value.t > 0 ? { s: 'present', t: Math.floor(value.t) } : { s: 'hidden' }
 }
 
+// B467 — a message that arrives live is its sender's activity at its time, as Telegram counts it (TI
+// AccountStateManagementUtils.swift:4196-4206 recordPeerActivityTimestamp → UpdatePeers.swift:491-512
+// updatePeerPresenceLastActivities; tdesktop History::addNewItem → UserData::madeAction, history.cpp:1692,
+// data_user.cpp:548-561). The three apps' rule: only a last seen shown as a moment (present) older than the message moves
+// to the message's time; online, a hidden («recently») or a rough value stays as the server wrote it, so the person's
+// privacy setting still decides. Null: nothing to change.
+export function presenceAfterMessage(value: PeerPresence | undefined, at: number): PeerPresence | null {
+  const seconds = Math.floor(at / 1000)
+  return value?.s === 'present' && value.t !== undefined && seconds > value.t ? { s: 'present', t: seconds } : null
+}
+// A copy from the server after a message moved a last seen forward (the server raises it too, B467b): two moments keep
+// the later; any other status is the copy's.
+export function presenceFromCopy(current: PeerPresence | undefined, copy: PeerPresence): PeerPresence {
+  return current?.s === 'present' && copy.s === 'present' && current.t !== undefined && copy.t !== undefined && current.t > copy.t ? current : copy
+}
+
 const timeFormat = new Intl.DateTimeFormat(locale(), { timeStyle: 'short' })
 const dateFormat = new Intl.DateTimeFormat(locale(), { dateStyle: 'short' })
 function dayStart(ms: number): number { const date = new Date(ms); date.setHours(0, 0, 0, 0); return date.getTime() }

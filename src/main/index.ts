@@ -3405,6 +3405,7 @@ else {
         },
         connection: (uid, state) => accounts.connection(uid, state),
         notificationHint: (uid, hint) => accounts.get(uid)?.notificationHint(hint),
+        peerMessage: (uid, senderId, at) => accounts.get(uid)?.peerMessage(senderId, at),
         reactionUpdated: (uid, body) => accounts.get(uid)?.reactionUpdated(body),
         closed: (uid, purge) => { accounts.close(uid, purge); updatePresence() },
         maxAccounts: () => maxAccounts(),

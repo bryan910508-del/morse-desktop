@@ -63,8 +63,9 @@ export function buildInquiryRows(uid: string, subscriber: Iterable<FirestoreDocu
     remember(channelId, f)
     const roomAt = time(f, 'lastMessageAt'), left = remaining(id, roomAt), mark = cleared(id, left?.lastMessageAt ?? roomAt)
     if (mark === 'row') continue
+    // B474: a cleared room keeps its place by its time, and shows neither a line nor the time (DialogSummary.topCleared).
     rows.push({ id: subscriberRowId(id), kind: 'subscriber', channelId, inquiryId: id, title: channelName(f), preview: mark ? '' : left ? left.preview : preview(f),
-      lastMessageAt: left?.lastMessageAt ?? roomAt, unread: Math.max(0, Math.trunc(numberField(f, 'unreadForSubscriber'))), rooms: 1 })
+      lastMessageAt: left?.lastMessageAt ?? roomAt, ...(mark ? { cleared: true as const } : {}), unread: Math.max(0, Math.trunc(numberField(f, 'unreadForSubscriber'))), rooms: 1 })
   }
   const folders = new Map<string, InquiryRow>()
   for (const doc of owner) {
@@ -78,13 +79,14 @@ export function buildInquiryRows(uid: string, subscriber: Iterable<FirestoreDocu
     const current = folders.get(channelId)
     if (!current) {
       folders.set(channelId, { id: ownerRowId(channelId), kind: 'ownerFolder', channelId, inquiryId: null, title: channelName(f),
-        preview: line, lastMessageAt: at, unread, rooms: 1 })
+        preview: line, lastMessageAt: at, ...(mark ? { cleared: true as const } : {}), unread, rooms: 1 })
       continue
     }
     current.rooms += 1
     current.unread += unread
     if (at !== null && (current.lastMessageAt === null || at > current.lastMessageAt)) {
       current.lastMessageAt = at; current.preview = line; current.title = channelName(f)
+      if (mark) current.cleared = true; else delete current.cleared
     }
   }
   rows.push(...folders.values())

@@ -294,6 +294,7 @@ export class ChannelInquiries {
             if (clear && (summary.lastMessageAt === null || summary.lastMessageAt <= clear.cutoff)) {
               if (clear.removeRow) continue
               summary.lastMessage = ''
+              summary.cleared = true
             }
             if (role === 'owner' && summary.channelId === state.request.channelId) {
               items.push(summary)

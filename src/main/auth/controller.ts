@@ -4,6 +4,7 @@ import { generateKeyPairSync, randomInt } from 'node:crypto'
 import type { AuthenticationSnapshot, PasswordStep, QrSignIn } from '../../shared/auth'
 import { morseUserId, morseUserIdAlphabet, normalizeBackupCode, qrLoginLink, type AccountCreationResult } from '../../shared/auth'
 import type { AccountProfile, ConnectionState } from '../../shared/model'
+import { positionMilliseconds } from '../../shared/model'
 import type { NotificationHint } from '../../shared/notifications'
 import type { AccountAuthorization } from '../messaging/outbox'
 import { NotEmitted } from '../network/contracts'
@@ -56,6 +57,8 @@ export interface AuthenticatedAccountHooks {
   connection(uid: string, state: ConnectionState): void
   closed(uid: string, purge: boolean): void
   notificationHint(uid: string, hint: NotificationHint): void
+  // B467: a person's message arrived live over the socket, at `at` ms — their activity then.
+  peerMessage?(uid: string, senderId: string, at: number): void
   // A message's full reaction state from the socket (reactionUpdated).
   reactionUpdated(uid: string, body: unknown): void
   // A session this device leaves behind, to be ended with its own credential (auth/session-enders.ts), and the list
@@ -570,6 +573,9 @@ export class AuthenticationController {
       message: message => {
         if (this.owner === owner && !controller.signal.aborted && owner.established && message.senderId !== record.profile.uid) {
           this.accounts.notificationHint(record.profile.uid, { chatId: message.chatId, id: message.id })
+          // B467: not a service line, not a channel's post copy (its sender is the channel) and not one the server sent at a
+          // time set before (server B467b leaves those out too).
+          if (!message.system && message.kind !== 'channelPost' && !message.wasScheduled) this.accounts.peerMessage?.(record.profile.uid, message.senderId, positionMilliseconds(message.position))
         }
       },
       // A lapsed connection also stops every Firestore read's authorization, so each

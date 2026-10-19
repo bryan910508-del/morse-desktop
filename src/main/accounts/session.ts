@@ -131,7 +131,7 @@ import { ChannelStories } from './channel-stories'
 import { DiscussionAvatars } from './discussion-avatars'
 import { PersonalChannels } from './personal-channel'
 import { PhotoPreviews } from '../media/photo-previews'
-import { HiddenChats, decodeHistoryClears, emptyRevokedDirect, withLocalDeletion } from './hidden-chats'
+import { HiddenChats, decodeHistoryClears, emptyRevokedDirect, markClearedTop, withLocalDeletion } from './hidden-chats'
 import { millisDown } from '../../shared/history-clears'
 import { HiddenMessages } from './hidden-messages'
 import { ChatFlags } from './chat-flags'
@@ -1347,6 +1347,7 @@ export class AccountSession {
       // B154 §2-3: Telegram's 777000 leaves the list with its last message and comes back with the next one.
       if (value.noticeless) unlisted.add(value.summary.id)
       withLocalDeletion(value, this.hiddenChats.cutoff(value.summary.id))
+      markClearedTop(value)
       this.topicDeletions.apply(value.summary)
       this.applyNames(value)
       this.chatFlags.apply(value.summary)
@@ -2656,6 +2657,8 @@ export class AccountSession {
     this.channelInquiries.activity()
   }
   notificationHint(hint: NotificationHint): void { this.notifications.receive(hint) }
+  // B467: the sender of a message that arrived live, for their last seen (presence.ts messageSeen).
+  peerMessage(senderId: string, at: number): void { if (!this.closed) this.presence.messageSeen(senderId, at) }
   notificationPreferencesChanged(): void { this.notifications.pause(); this.notifications.resume('preferences') }
   async outgoing(chatId: string): Promise<OutgoingSnapshot> { return this.delivery.snapshot(chatId) }
   inquirySendItems(): ReturnType<InquirySends['items']> { return this.inquirySends.items() }

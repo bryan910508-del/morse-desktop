@@ -67,6 +67,7 @@ export class AuthenticationDomain {
       connection: (account, state) => this.hooks.connection(account, state),
       closed: (account, purge) => this.hooks.closed(account, purge),
       notificationHint: (account, hint) => this.hooks.notificationHint(account, hint),
+      peerMessage: (account, senderId, at) => this.hooks.peerMessage?.(account, senderId, at),
       reactionUpdated: (account, body) => this.hooks.reactionUpdated(account, body),
       endSession: entry => this.enders.add(entry),
       endSessionsNow: () => this.enders.runNow(),

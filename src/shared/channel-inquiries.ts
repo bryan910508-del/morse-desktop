@@ -15,7 +15,8 @@ export type InquiryMessageKind = 'text' | 'image' | 'video' | 'voice' | 'file' |
 export interface InquirySendItem { id: string; inquiryId: string; kind: InquiryMessageKind; text: string; at: number; state: 'sending' | 'failed' | 'sent'; reason: string; busy: boolean
   // B269: its media, drawn as a chat's message on its way is (LocalOutgoing.media).
   media?: import('./delivery').LocalMedia }
-export interface InquirySummary { id: string; peerUid: string; channelId: string; channelName: string; peerName: string; lastMessage: string; lastMessageAt: number | null; unread: number; photo?: import('./group-photo').GroupPhotoImage | null }
+// cleared (B474): this account's «나에게만» boundary covers the newest message — the row keeps its place without a line or a time.
+export interface InquirySummary { id: string; peerUid: string; channelId: string; channelName: string; peerName: string; lastMessage: string; lastMessageAt: number | null; unread: number; cleared?: true; photo?: import('./group-photo').GroupPhotoImage | null }
 export interface InquiryMessageItem { id: string; own: boolean; senderType: InquiryRole; kind: InquiryMessageKind; text: string; label: string; createdAt: number | null; edited: boolean
   // The message this one answers, and a few words of it, as a chat's reply carries (HistoryMessageReply).
   replyToId?: string; reply?: import('./model').ReplyPreview
@@ -199,6 +200,8 @@ export interface InquiryRow {
   title: string
   preview: string
   lastMessageAt: number | null
+  // B474: the line shown is an emptied one (DialogSummary.topCleared): no time is drawn; the row still sorts by lastMessageAt.
+  cleared?: true
   unread: number
   rooms: number
   photo?: import('./group-photo').GroupPhotoImage | null
@@ -220,7 +223,7 @@ export function ownedChannelDiscussion(dialog: Pick<import('./model').DialogSumm
 }
 
 // What a channel's own discussion room adds to its row.
-export interface DiscussionFold { channelId: string; title: string; preview: string; at: number | null; unread: number }
+export interface DiscussionFold { channelId: string; title: string; preview: string; at: number | null; cleared?: true; unread: number }
 // iOS MorseChatListDialogProvider.buildOwnerChat: the channel's row counts the discussion room's unread messages
 // as well as its inquiries', and shows the discussion's newest message when that is the newer of the two. A
 // channel whose rooms have no inquiries at all still has its row (ownerInquirySummariesMerged).
@@ -232,12 +235,13 @@ export function foldOwnedDiscussions(rows: readonly InquiryRow[], discussions: r
     const row = byChannel.get(discussion.channelId)
     if (!row) {
       folded.push({ id: ownerRowId(discussion.channelId), kind: 'ownerFolder', channelId: discussion.channelId, inquiryId: null,
-        title: discussion.title, preview: discussion.preview, lastMessageAt: discussion.at, unread: discussion.unread, rooms: 0 })
+        title: discussion.title, preview: discussion.preview, lastMessageAt: discussion.at, ...(discussion.cleared ? { cleared: true as const } : {}), unread: discussion.unread, rooms: 0 })
       continue
     }
     row.unread += discussion.unread
     if (discussion.at !== null && (row.lastMessageAt === null || discussion.at > row.lastMessageAt)) {
       row.lastMessageAt = discussion.at; row.preview = discussion.preview
+      if (discussion.cleared) row.cleared = true; else delete row.cleared
     }
   }
   return folded.sort((a, b) => (b.lastMessageAt ?? 0) - (a.lastMessageAt ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))

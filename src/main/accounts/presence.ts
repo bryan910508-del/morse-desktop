@@ -3,7 +3,7 @@ import { deleteApp, initializeApp, type FirebaseApp } from '@firebase/app'
 import { _initStandalone, goOffline, onDisconnect, onValue, ref, serverTimestamp, update, type Database } from '@firebase/database'
 import type { FirebaseAuthInternal } from '@firebase/auth-interop-types'
 import type { FirebaseAppCheckInternal } from '@firebase/app-check-interop-types'
-import { peerPresence, type PeerPresence } from '../../shared/presence'
+import { peerPresence, presenceAfterMessage, presenceFromCopy, type PeerPresence } from '../../shared/presence'
 import type { ReadCredentials } from '../network/firestore-rpc'
 import { callMorseFunction } from '../network/morse-callable'
 import { PresenceHold } from './presence-hold'
@@ -153,7 +153,7 @@ export class AccountPresence {
             const value = this.held.receive(id, peerPresence(snapshot.val()))
             if (!value) return
             // Most recently read last, so the oldest remembered values give way first.
-            this.values.delete(id); this.values.set(id, value); this.changed()
+            this.remember(id, value); this.changed()
           }, () => {}))
         }
         void this.resolve(added)
@@ -171,7 +171,7 @@ export class AccountPresence {
         const result = await callMorseFunction(this.credentials, 'resolvePeerPresences', { targetUids: batch }, this.credentials.signal)
         const presences = result.presences && typeof result.presences === 'object' ? result.presences as Record<string, unknown> : {}
         let changed = false
-        for (const id of batch) if (!this.closed && this.watched.has(id) && id in presences) { this.values.delete(id); this.values.set(id, this.held.answered(id, peerPresence(presences[id]))); changed = true }
+        for (const id of batch) if (!this.closed && this.watched.has(id) && id in presences) { this.remember(id, this.held.answered(id, peerPresence(presences[id]))); changed = true }
         if (changed) this.changed()
       }
     } catch { /* The Realtime Database value stays authoritative. */ }
@@ -181,10 +181,22 @@ export class AccountPresence {
         this.resolving.delete(id)
         const copy = this.held.settled(id)
         if (!copy || !this.watched.has(id)) continue
-        this.values.delete(id); this.values.set(id, copy); changed = true
+        this.remember(id, copy); changed = true
       }
       if (changed && !this.closed) this.changed()
     }
+  }
+  // A server copy over what is shown: a moment a message moved forward is not taken back by an older one (B467).
+  private remember(id: string, copy: PeerPresence): void {
+    const value = presenceFromCopy(this.values.get(id), copy)
+    this.values.delete(id); this.values.set(id, value)
+  }
+  // B467: a person on screen sent a message that arrived live (the socket's newMessage) at `at` ms.
+  messageSeen(peerUid: string, at: number): void {
+    if (this.closed || !this.watched.has(peerUid)) return
+    const next = presenceAfterMessage(this.values.get(peerUid), at)
+    if (!next) return
+    this.values.delete(peerUid); this.values.set(peerUid, next); this.changed()
   }
   snapshot(): Record<string, PeerPresence> { return Object.fromEntries([...this.values].map(([id, value]) => [id, { ...value }])) }
 

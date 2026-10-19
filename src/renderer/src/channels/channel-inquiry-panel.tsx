@@ -55,7 +55,7 @@ function InquiryList({ accountUid, channelId }: { accountUid: string; channelId:
   const room = discussion ? <button type="button" className="inquiry-row" onClick={() => controller.openChat(discussion.id)}>
     <PeerAvatar id={discussion.id} name={discussion.title} image={discussion.avatar} size={42} surface="dialogs" />
     <span className="inquiry-row-body">
-      <span className="inquiry-row-line"><strong className="ellipsis">{tr('토론방')}</strong><time>{dialogTime(positionTime(discussion.top))}</time></span>
+      <span className="inquiry-row-line"><strong className="ellipsis">{tr('토론방')}</strong><time>{discussion.topCleared ? '' : dialogTime(positionTime(discussion.top))}</time></span>
       <span className="inquiry-row-line"><span className="inquiry-row-preview ellipsis">{discussion.preview || tr('메시지 없음')}</span>
         {discussion.unreadCount > 0 && <span className="inquiry-row-badge">{discussion.unreadCount > 999 ? '999+' : discussion.unreadCount}</span>}</span>
     </span>
@@ -73,7 +73,7 @@ function InquiryListRow({ accountUid, channelId, item }: { accountUid: string; c
     <UserAvatar uid={item.peerUid} name={item.peerName} size={42} image={item.photo} />
     <span className="inquiry-row-body">
       <span className="inquiry-row-line"><strong className="ellipsis">{item.peerName}</strong>
-        {sends.failed && <CircleAlert size={14} className="dialog-row-failed" aria-label={tr('보내지 못한 메시지가 있습니다')} />}<time>{dialogTime(item.lastMessageAt)}</time></span>
+        {sends.failed && <CircleAlert size={14} className="dialog-row-failed" aria-label={tr('보내지 못한 메시지가 있습니다')} />}<time>{item.cleared ? '' : dialogTime(item.lastMessageAt)}</time></span>
       <span className="inquiry-row-line"><span className="inquiry-row-preview ellipsis">{item.lastMessage || tr('메시지')}</span>
         {sends.sending && <Clock3 size={12} className="dialog-row-sending" aria-label={tr('보내는 중')} />}
         {item.unread > 0 && <span className="inquiry-row-badge">{item.unread > 999 ? '999+' : item.unread}</span>}</span>

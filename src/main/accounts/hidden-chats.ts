@@ -164,6 +164,14 @@ export function withLocalDeletion(dialog: ReadDialog, deleted: MessagePosition |
   if (!dialog.summary.top || withinCutoff(dialog.summary.top, deleted)) dialog.summary.preview = ''
 }
 
+// B474: once every boundary is on the row (the room's, a discussion's policy, then withLocalDeletion's), whether it
+// covers the newest message — the one place DialogSummary.topCleared is decided. Telegram's cleared chat keeps its
+// place with an empty item and no date (dialogs_layout.cpp:807); the row's line was emptied by the same boundary.
+export function markClearedTop(dialog: ReadDialog): void {
+  if (dialog.cutoff && dialog.summary.top && withinCutoff(dialog.summary.top, dialog.cutoff)) dialog.summary.topCleared = true
+  else delete dialog.summary.topCleared
+}
+
 // A private room whose history was deleted for everyone and that has nothing after that boundary has no last
 // message: Telegram does not list such a chat (Postbox ChatListIndexTable.includedIndex returns nil without a top
 // message; tdesktop History::shouldBeInChatList). iOS: MorseChatDialogMembership.shouldOmitRevokedDirectFromList.

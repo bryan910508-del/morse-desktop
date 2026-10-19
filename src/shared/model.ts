@@ -190,6 +190,11 @@ export interface DialogSummary {
   // Topics this device is deleting; `failed` once it stopped and waits to be asked again.
   forumDeleting?: { id: string; failed: boolean }[]
   top: MessagePosition | null
+  // B474: a boundary (this account's «나에게만» clear, the room's «기록 모두 지우기», a discussion's history policy) covers
+  // the row's newest message. Telegram keeps that message as an empty «history cleared» item at its own date
+  // (History::clear → applyEditionToHistoryCleared, history.cpp:4480-4486), so the row keeps its place and draws no
+  // date (dialogs_layout.cpp:807 paints PaintDialogDate only for a non-empty item). The row still sorts by `top`.
+  topCleared?: true
   // B291: the row's newest message is this account's (chats.lastSenderId, and not a channel post's mirror —
   // lastSenderType 'channel_post'), and its id (lastMessageId); what the row's send state is drawn from
   // (row-send-state.ts). Absent on a line the server wrote before it kept them.
@@ -250,6 +255,9 @@ export interface ChatMessage {
   edited: boolean
   version: string
   system: boolean
+  // B467: sent by the server at a time set before (a scheduled or «when online» message, server wasScheduled) — not its
+  // sender's activity at that time.
+  wasScheduled?: boolean
   // B440a: a group's member service line (memberAdded, memberRemoved, memberLeft, groupOwnerChanged).
   memberService?: string
   // A channel post mirrored into the channel's discussion room (server onChannelPostCreated).

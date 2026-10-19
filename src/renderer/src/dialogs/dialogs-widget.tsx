@@ -105,7 +105,7 @@ function InquiryDialogRow({ accountUid, inquiry, style, index, onMenu }: { accou
         {local.muted && <BellOff size={13} className="dialog-row-status" aria-label={tr('알림 꺼짐')} />}
         <span className="dialog-row-end">
           <RowStateMark state={sends.sending ? 'sending' : sends.failed ? 'failed' : 'none'} />
-          <span className="dialog-row-time">{dialogTime(inquiry.lastMessageAt)}</span>
+          <span className="dialog-row-time">{inquiry.cleared ? '' : dialogTime(inquiry.lastMessageAt)}</span>
         </span>
       </span>
       <span className="dialog-row-line">
@@ -155,7 +155,8 @@ const DialogRow = memo(function DialogRow({ dialog, active, style, index, flags,
         {dialog.muted && <BellOff size={13} className="dialog-row-status" aria-label={tr('알림 꺼짐')} />}
         <span className="dialog-row-end">
           <RowStateMark state={rowSendState({ secret, draft: Boolean(draft), sending: dialog.sends?.sending, failed: dialog.sends?.failed })} />
-          <span className="dialog-row-time">{dialogTime(positionTime(dialog.top))}</span>
+          {/* B474: an emptied row keeps its place without a date (dialogs_layout.cpp:807). */}
+          <span className="dialog-row-time">{dialog.topCleared ? '' : dialogTime(positionTime(dialog.top))}</span>
         </span>
       </span>
       <span className="dialog-row-line">
@@ -246,7 +247,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       const owned = archived ? '' : ownedChannelDiscussion(dialog, accountUid)
       if (owned) {
         if (!dialog.archived) discussions.push({ channelId: owned, title: dialog.title, preview: dialog.preview,
-          at: positionTime(dialog.top), unread: effectiveUnreadCount(dialog) })
+          at: positionTime(dialog.top), ...(dialog.topCleared ? { cleared: true as const } : {}), unread: effectiveUnreadCount(dialog) })
         continue
       }
       if (!matches(dialog.title)) continue
