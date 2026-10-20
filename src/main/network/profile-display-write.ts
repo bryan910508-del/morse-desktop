@@ -97,8 +97,12 @@ export async function writeProfileDisplay(client: DisplayClient, auth: Metadata,
         if (group.collection === 'chats') {
           const members = object(doc.fields.participantUids?.arrayValue).values
           if (!Array.isArray(members) || !members.some(value => object(value).stringValue === uid)) throw new Error('Chat membership changed')
+          // B478: only the rooms whose copy this account may write take it. The official notices chat (type 'system',
+          // chats/system_{uid} with participantUids [uid, 'morse-system']) is refused by the rules (chats update: type !=
+          // 'system'), and a kind this build does not know may be too; either one used to stop the whole edit, the
+          // account's own profile included. They are passed over, as a discussion room is.
           const kind = stringField(doc.fields, 'type', 32)
-          if (!['direct', 'group', 'secret'].includes(kind)) throw new Error('Unsupported profile target')
+          if (!['direct', 'group', 'secret'].includes(kind)) return
           if (id.startsWith('channel_discuss_') || stringField(doc.fields, 'channelId', 160) || boolField(doc.fields, 'isChannelDiscussion')) return
           if (boolField(mapField(mapField(doc.fields, 'participantInfo'), uid), 'accountDeleted')) throw new Error('Withdrawn profile cache')
           fields = { participantInfo: { mapValue: { fields: { [uid]: { mapValue: { fields: { [field]: { stringValue: value } } } } } } } }
