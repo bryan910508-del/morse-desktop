@@ -33,6 +33,11 @@ export function recordCrashStep(step: string, detail = ''): void {
   })
 }
 
+// B483: settles once every line recorded so far is on disk, or failed to get there. The quit waits for it before the
+// app ends (index.ts before-quit), so a line recorded while shutting down is kept; the unit tests read the log after
+// it instead of after a fixed time.
+export function crashStepsWritten(): Promise<void> { return tail.then(() => {}, () => {}) }
+
 // Only the single running instance calls this, before the app is ready.
 export function startCrashRecording(): void {
   try { crashReporter.start({ uploadToServer: false, compress: true }) } catch { /* Recording stays best effort. */ }

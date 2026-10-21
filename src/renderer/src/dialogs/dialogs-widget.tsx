@@ -30,7 +30,7 @@ import { chatListDraft } from '../../../shared/chat-list-preview'
 import { rowSendState, type RowSendState } from '../../../shared/row-send-state'
 import { loadChatFolders, receiveChatFolders, toggleChatPinnedInFolder, useChatFolders } from '../app/chat-folders'
 import { removeChatFolder, showFolderEditBox, showFolderPickerBox, showFoldersBox } from '../boxes/chat-folder-boxes'
-import { StoriesRow } from '../stories/stories-row'
+import { StoriesRow, useStoryBar } from '../stories/stories-row'
 import { tr } from '../../../shared/i18n'
 import { linkLabel, useShownConnection } from '../app/connection'
 import { useListTyping } from '../app/typing'
@@ -225,6 +225,9 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
   // MorseNotesListPreview: the newest note once the notes list has been read, else «나만 볼 수 있어요».
   const latestNote = useDesktop(snapshot => snapshot?.spaceNotes?.status === 'ready' ? snapshot.spaceNotes.rows[0] ?? null : null)
   const rowState = useInquiryRowStates(accountUid)
+  // B482: the chat list's story row, the archive's row of hidden stories and the archive line read one answer.
+  const storyBar = useStoryBar(accountUid)
+  const hiddenStories = storyBar.hidden.length
   const rows = useMemo<Row[]>(() => {
     const needle = searchFold(query)
     const matches = (title: string): boolean => !needle || searchFold(title).includes(needle)
@@ -232,7 +235,8 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
     if (!archived && !needle && folder === 'all') {
       const stored = listed.filter(dialog => dialog.archived)
       const storedInquiries = inquiryRows.filter(row => rowState(row.id).archived)
-      if (stored.length || storedInquiries.length) result.push({ kind: 'archive', count: stored.length + storedInquiries.length,
+      // B482: hidden stories alone keep the archive line, as Telegram's archive shows its stories row (TA :12336-12345).
+      if (stored.length || storedInquiries.length || hiddenStories) result.push({ kind: 'archive', count: stored.length + storedInquiries.length,
         unread: stored.filter(dialog => effectiveUnreadCount(dialog) > 0).length + storedInquiries.filter(row => row.unread > 0 || rowState(row.id).unread).length })
       // iOS ChatListView's notes row (MorseDialogRow.memo), pinned at the top by default.
       result.push({ kind: 'notes' })
@@ -283,7 +287,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       result.sort((a, b) => { const x = key(a), y = key(b); return x === y ? 0 : x < y ? -1 : 1 })
     }
     return result
-  }, [listed, pending, inquiryRows, rowState, query, folder, archived, overridesVersion, custom, contactSet, accountUid, unlistedDirects, contactItems])
+  }, [listed, pending, inquiryRows, rowState, query, folder, archived, overridesVersion, custom, contactSet, accountUid, unlistedDirects, contactItems, hiddenStories])
 
   // B49: a person found without a row opens as their 1:1 — the room that left the list, else a new chat with the contact.
   async function openPerson(person: NoChatPerson): Promise<void> {
@@ -453,7 +457,8 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       {lockEnabled && !query && <button className="icon-button" aria-label={tr('앱 잠그기')} title={tr('앱 잠그기')} onClick={() => { void window.morse.appLock.lock() }}><Lock size={20} /></button>}
     </div>
     {connectionLabel && <div className="dialogs-connection" role="status">{shownConnection !== 'waiting-network' && <Spinner size={12} />}{connectionLabel}</div>}
-    {!query && !archived && <StoriesRow accountUid={accountUid} />}
+    {!query && !archived && <StoriesRow bar={storyBar} />}
+    {!query && archived && <StoriesRow bar={storyBar} kind="archive" />}
     {!query && !archived && <div className="dialogs-folders" role="tablist" aria-label={tr('대화 폴더')}>
       {folders.map(tab => <button key={tab.id} role="tab" type="button" className="dialogs-folder" aria-selected={folder === tab.id} onClick={() => controller.setFolder(tab.id)}
         onContextMenu={event => { event.preventDefault(); folderMenu(null, pointFor(event, event.currentTarget)) }}>

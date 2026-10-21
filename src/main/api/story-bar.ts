@@ -11,12 +11,13 @@ import { serverNow } from '../network/server-clock'
 import { feedStoryPicturePath } from '../accounts/story-media-paths'
 import type { PreloadCandidate } from '../accounts/story-preloader'
 import { tr } from '../../shared/i18n'
+import { maxStoryPeers, storyPeerFromDocument, storyPeerHideWrite, storyPeerUnhideWrite, type StoryPeer } from '../network/story-peers-document'
 
 interface Tally { count: number; unseen: number; latestAt: number; expiresAt: number }
 // One listened list: what it last answered, kept while it listens again (Telegram R-59, data_stories.cpp keeps what it
 // has when a load fails) and dropped only when the server refuses it.
 interface Listened { stop(): void; docs: ReadonlyMap<string, FirestoreDocument>; answered: boolean; failed: boolean }
-type ListName = StoryPrivacy | 'feed' | 'marks'
+type ListName = StoryPrivacy | 'feed' | 'marks' | 'peers'
 
 // Dialogs::Stories source. B408 S2 (contracts/B408-stories-access.md §14): the stories of others are the server's
 // choice — this account's `storyFeed` (story-feed-document.ts), one listen for everyone, as tdesktop reads the peers
@@ -38,6 +39,8 @@ export class StoryBarApi {
   // B423: stories whose media the server says is gone (tdesktop Stories::_deleted, data_stories.cpp:909), by path. Their
   // copies are left out of everything the feed gives until the server takes the copy away too.
   private readonly deleted = new Set<string>()
+  // B482: whose stories this device has just hidden or shown again, until the server's storyPeers says the same.
+  private readonly localHidden = new Map<string, boolean>()
   private order: string[] = []
   private cutoff = 0
   private rearmTimer: ReturnType<typeof setTimeout> | undefined
@@ -50,7 +53,12 @@ export class StoryBarApi {
     private readonly notify: (result: StoryBarResult) => void = () => {},
     // The reads, over Firestore; a test gives its own.
     private readonly open: () => Pick<FirestoreReader, 'listenTargets' | 'close'> = () => new FirestoreReader(auth),
-    private readonly now: () => number = serverNow) {
+    private readonly now: () => number = serverNow,
+    // B482: one write to this account's storyPeers; a test gives its own.
+    private readonly write: (write: WireObject, signal: AbortSignal) => Promise<void> = async (write, signal) => {
+      const reader = new FirestoreReader(auth)
+      try { await reader.commitStoryWrite(write, signal) } finally { reader.close() }
+    }) {
     auth.signal.addEventListener('abort', () => this.close(), { once: true })
   }
 
@@ -81,7 +89,7 @@ export class StoryBarApi {
   preloadCandidates(): PreloadCandidate[] {
     if (this.closed || this.locked) return []
     const at = this.now()
-    const entries = this.order.filter(owner => owner !== this.uid).flatMap(owner => { const entry = this.peer(owner, at); return entry ? [entry] : [] })
+    const entries = this.order.filter(owner => owner !== this.uid).flatMap(owner => { const entry = this.peer(owner, at); return entry && !entry.hidden ? [entry] : [] })
       .sort((a, b) => Number(b.unseen > 0) - Number(a.unseen > 0) || b.latestAt - a.latestAt)
     return entries.flatMap(entry => {
       const stories = this.feedStories('user', entry.uid), mark = this.mark('user', entry.uid)
@@ -89,6 +97,37 @@ export class StoryBarApi {
       const path = story ? feedStoryPicturePath(story) : null
       return story && path ? [{ path, ownerId: story.ownerId, storyId: story.storyId, storyPath: story.storyPath }] : []
     })
+  }
+
+  // B482 (tdesktop FillSourceMenu → Stories::toggleHidden, dialogs/ui/dialogs_stories_content.cpp:261-277,
+  // data/data_stories.cpp:1310-1330): a person's stories leave the chat list's row for the archive's, or come back. The
+  // row moves at once; the server's storyPeers takes over when it says the same, and a refused write moves it back.
+  async setHidden(raw: unknown, hidden: boolean): Promise<void> {
+    if (this.closed) throw new Error(tr('계정이 변경되었습니다.'))
+    this.allowed()
+    const [owner] = storyBarPeers([raw])
+    if (!owner || owner === this.uid) throw new Error(tr('스토리를 숨길 사람을 다시 선택해 주세요.'))
+    const stored = this.storedPeers()
+    if (hidden && !stored.has(owner) && stored.size >= maxStoryPeers) throw new Error(tr('스토리를 숨긴 사람이 너무 많습니다. 먼저 몇 명의 숨김을 풀어 주세요.'))
+    const before = this.localHidden.get(owner)
+    this.localHidden.set(owner, hidden); this.changed()
+    try {
+      await this.write(hidden ? storyPeerHideWrite(this.uid, 'user', owner) : storyPeerUnhideWrite(this.uid, 'user', owner, stored.get(owner)), this.auth.signal)
+    } catch {
+      if (this.localHidden.get(owner) === hidden) { if (before === undefined) this.localHidden.delete(owner); else this.localHidden.set(owner, before) }
+      this.changed()
+      throw new Error(hidden ? tr('스토리를 숨기지 못했습니다. 잠시 후 다시 시도해 주세요.') : tr('스토리 숨김을 풀지 못했습니다. 잠시 후 다시 시도해 주세요.'))
+    }
+  }
+  private hiddenOwner(owner: string): boolean {
+    return this.localHidden.get(owner) ?? this.storedPeers().get(owner)?.hidden ?? false
+  }
+  private storedPeers(): Map<string, StoryPeer> {
+    const peers = new Map<string, StoryPeer>()
+    for (const doc of this.lists.get('peers')?.docs.values() ?? []) {
+      try { const peer = storyPeerFromDocument(doc, this.uid); if (peer.ownerType === 'user') peers.set(peer.ownerId, peer) } catch { /* A malformed entry hides nothing. */ }
+    }
+    return peers
   }
 
   // A locked app reads nothing and holds no stories; unlocked, the row listens again.
@@ -156,7 +195,7 @@ export class StoryBarApi {
       this.cutoff = this.now()
       this.rearmTimer = setTimeout(() => this.rearm(), storyBarRearm)
     }
-    const names: ListName[] = ['feed', 'marks', 'everyone', 'contacts', 'closeFriends']
+    const names: ListName[] = ['feed', 'marks', 'peers', 'everyone', 'contacts', 'closeFriends']
     for (const name of names) { const list = this.lists.get(name); if (!list || (force && list.failed)) this.start(name) }
   }
 
@@ -171,6 +210,11 @@ export class StoryBarApi {
       snapshot: docs => {
         if (!mine()) return
         list.docs = docs; list.answered = true; list.failed = false
+        // B482: a hide or show this device made is the server's once its storyPeers says the same.
+        if (name === 'peers' && this.localHidden.size) {
+          const stored = this.storedPeers()
+          for (const [owner, hidden] of this.localHidden) if ((stored.get(owner)?.hidden ?? false) === hidden) this.localHidden.delete(owner)
+        }
         // A deleted story whose copy the server has taken away is forgotten, as a story parsed again is (:597).
         if (name === 'feed' && this.deleted.size) {
           const held = new Set<string>()
@@ -185,13 +229,13 @@ export class StoryBarApi {
         if (error?.code === 'permission') list.docs = new Map()
         this.changed()
       }
-    }, name === 'feed' ? 2000 : name === 'marks' ? 1000 : 50)
+    }, name === 'feed' ? 2000 : name === 'marks' || name === 'peers' ? 1000 : 50)
     previous?.stop()
   }
 
   private target(name: ListName): WireObject {
     const parent = `${documents}/users/${this.uid}`
-    if (name === 'feed' || name === 'marks') return { query: { parent, structuredQuery: { from: [{ collectionId: name === 'feed' ? 'storyFeed' : 'storyReadMarks' }] } } }
+    if (name === 'feed' || name === 'marks' || name === 'peers') return { query: { parent, structuredQuery: { from: [{ collectionId: name === 'feed' ? 'storyFeed' : name === 'marks' ? 'storyReadMarks' : 'storyPeers' }] } } }
     return { query: { parent, structuredQuery: {
       from: [{ collectionId: ownStoryCollections[name] }],
       where: { fieldFilter: { field: { fieldPath: 'expiresAt' }, op: 'GREATER_THAN', value: positionValue(positionAt(this.cutoff, '')) } },
@@ -214,7 +258,7 @@ export class StoryBarApi {
     this.notifyTimer = undefined; this.logTimer = undefined
     this.listen?.close(); this.reader?.close()
     this.listen = null; this.reader = null
-    this.lists.clear(); this.localMarks.clear()
+    this.lists.clear(); this.localMarks.clear(); this.localHidden.clear()
   }
 
   private changed(): void {
@@ -251,7 +295,8 @@ export class StoryBarApi {
     if (!stories.length) return null
     const mark = this.mark('user', owner)
     return { uid: owner, count: stories.length, unseen: stories.filter(story => !storyRead(story, mark)).length,
-      latestAt: Math.max(...stories.map(story => story.createdAt)), expiresAt: Math.min(...stories.map(story => story.expiresAt)) }
+      latestAt: Math.max(...stories.map(story => story.createdAt)), expiresAt: Math.min(...stories.map(story => story.expiresAt)),
+      ...(this.hiddenOwner(owner) ? { hidden: true as const } : {}) }
   }
 
   private own(at: number): StoryBarEntry | null {

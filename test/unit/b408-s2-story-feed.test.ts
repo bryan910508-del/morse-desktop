@@ -57,7 +57,8 @@ test('B408 S2: the row listens to this account\'s feed, its read marks and its o
   try {
     const { api, live } = bar()
     await api.list(['a', 'b', 'c'], false)
-    assert.deepEqual([...live.keys()].sort(), ['me/closeFriendStories', 'me/publicStories', 'me/stories', 'me/storyFeed', 'me/storyReadMarks'])
+    // B482: and this account's own storyPeers (whose stories it keeps in the archive's row).
+    assert.deepEqual([...live.keys()].sort(), ['me/closeFriendStories', 'me/publicStories', 'me/stories', 'me/storyFeed', 'me/storyPeers', 'me/storyReadMarks'])
     assert.equal(live.get('me/storyFeed')!.query.where, undefined, 'the feed is read whole (copies are not removed at their end; the row leaves them out)')
     api.close()
   } finally { mock.timers.reset() }

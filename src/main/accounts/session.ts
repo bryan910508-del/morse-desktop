@@ -695,6 +695,8 @@ export class AccountSession {
     this.inquiryRows = new InquiryRows(profile.uid, credentials, connected, () => { if (!this.closed) events.changed() },
       rooms => { if (!this.closed && !this.locked) this.inquiryNotifications.observe(rooms) },
       { count: inquiryId => this.hiddenMessages.count(inquiryQueueChatId(inquiryId)), has: (inquiryId, messageId) => this.hiddenMessages.has(inquiryQueueChatId(inquiryId), messageId) })
+    // B484: a room the lists no longer hold and the server says is gone takes what this device was still sending into it.
+    this.inquiryRows.listed = (ids, exists) => { if (!this.closed && !this.locked) void this.inquirySends.forgetGoneRooms(ids, exists).catch(() => {}) }
     this.folders = new ChatFolderWatch(profile.uid, credentials, connected, () => { if (!this.closed) events.changed() })
     // A mute or archive chosen on another device of this account replaces what this device holds.
     this.dialogPreferences = new DialogPreferenceWatch(profile.uid, credentials, connected, (chatId, patch) => {

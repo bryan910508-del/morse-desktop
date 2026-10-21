@@ -930,7 +930,7 @@ export class FirestoreReader {
       if (bounded.aborted) cancel()
     })
   }
-  async saveProfileDisplay(uid: string, change: ProfileDisplayEdit, signal: AbortSignal, validate: () => void, beforeCommit?: () => Promise<void>): Promise<number> {
+  async saveProfileDisplay(uid: string, change: ProfileDisplayEdit, signal: AbortSignal, validate: () => void, beforeCommit?: () => Promise<void>): Promise<void> {
     const bounded = AbortSignal.any([this.bounded(signal), AbortSignal.timeout(90000)])
     let authorization: ReadAuthorization
     try { bounded.throwIfAborted(); validate(); authorization = await this.auth.authorize(bounded, false); bounded.throwIfAborted(); validate() }

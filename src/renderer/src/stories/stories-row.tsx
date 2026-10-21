@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Plus } from 'lucide-react'
+import { Eye, EyeOff, MessageCircle, Plus, UserRound } from 'lucide-react'
 import type { ContactSummary } from '../../../shared/contacts'
 import type { DialogSummary } from '../../../shared/model'
 import { maxStoryBarPeers, mergeStoryBar, type StoryBarEntry, type StoryBarResult } from '../../../shared/story-bar'
@@ -11,15 +11,28 @@ import { showStoryComposer } from './story-composer'
 import { showStoryViewer } from './story-viewer'
 import '../styles/stories.css'
 import { tr } from '../../../shared/i18n'
+import { controller } from '../app/ui'
+import { errorText } from '../app/format'
+import { popupMenu, pointFor } from '../ui/popup-menu'
 
 const noContacts: ContactSummary[] = []
 
 
-// Dialogs::Stories: add story, my stories, then contacts with active stories (unseen first).
-export function StoriesRow({ accountUid }: { accountUid: string }) {
+// Dialogs::Stories source for the chat list: who stands in the row and what main says of their stories. One hook for
+// the chat list's row, the archive's row (B482, tdesktop's NotHidden / Hidden lists) and the archive line, so all three
+// read the same answer.
+export interface StoryBar {
+  accountUid: string
+  mine: StoryBarEntry | null
+  shown: StoryBarEntry[]
+  hidden: StoryBarEntry[]
+  contacts: Map<string, ContactSummary>
+  partners: Map<string, DialogSummary>
+  refresh(): void
+}
+export function useStoryBar(accountUid: string): StoryBar {
   const contacts = useDesktop(state => state?.contacts?.status === 'ready' ? state.contacts.items : noContacts)
   const dialogs = useDesktop(state => state?.dialogs)
-  const self = useDesktop(state => state?.selfProfile ?? null)
   // B408 S2 (review 10-15, the three apps alike — iOS ChatListView.userStoryPartnerIds): the row is this account's
   // contacts and the other side of each 1:1 or secret chat; whose stories this account may see is the server's (main's
   // storyFeed). The chats first, as they are ordered, then the contacts.
@@ -56,39 +69,72 @@ export function StoriesRow({ accountUid }: { accountUid: string }) {
     if (connection === 'ready' && !wasReady.current) setReload(value => value + 1)
     wasReady.current = connection === 'ready'
   }, [connection])
+  const byUid = useMemo(() => new Map(contacts.map(contact => [contact.uid, contact])), [contacts])
+  return useMemo(() => {
+    const people = entries.filter(entry => entry.uid !== accountUid && (byUid.has(entry.uid) || partners.has(entry.uid)))
+      .sort((a, b) => Number(b.unseen > 0) - Number(a.unseen > 0) || b.latestAt - a.latestAt)
+    return { accountUid, mine: entries.find(entry => entry.uid === accountUid) ?? null, shown: people.filter(entry => !entry.hidden),
+      hidden: people.filter(entry => entry.hidden), contacts: byUid, partners, refresh: () => setReload(value => value + 1) }
+  }, [entries, accountUid, byUid, partners])
+}
+
+// B482 (tdesktop FillSourceMenu, dialogs/ui/dialogs_stories_content.cpp:219-280): a person's menu in either row —
+// write to them, their profile, and their stories hidden away to the archive's row or shown again.
+function storyPeerMenu(bar: StoryBar, uid: string, name: string, hidden: boolean, point: { x: number; y: number }): void {
+  const dialog = bar.partners.get(uid)
+  const toggle = (to: boolean): void => {
+    void window.morse.setStoryPeerHidden(bar.accountUid, uid, to)
+      .then(() => controller.toast(to ? tr('{0}님의 스토리를 보관함으로 옮겼어요.', [name]) : tr('{0}님의 스토리를 다시 대화 목록에 보여요.', [name]), 'default',
+        { label: tr('되돌리기'), run: () => { void window.morse.setStoryPeerHidden(bar.accountUid, uid, !to).catch(reason => controller.toast(errorText(reason, tr('되돌리지 못했습니다.')), 'error')) } }))
+      .catch(reason => controller.toast(errorText(reason, to ? tr('스토리를 숨기지 못했습니다. 잠시 후 다시 시도해 주세요.') : tr('스토리 숨김을 풀지 못했습니다. 잠시 후 다시 시도해 주세요.')), 'error'))
+  }
+  popupMenu.open(point, [
+    dialog ? { label: tr('메시지 보내기'), icon: <MessageCircle size={18} />, onSelect: () => controller.openChat(dialog.id) } : null,
+    { label: tr('프로필 보기'), icon: <UserRound size={18} />, onSelect: () => controller.openPersonInfo(uid, name) },
+    hidden ? { label: tr('스토리 숨김 풀기'), icon: <Eye size={18} />, onSelect: () => toggle(false) }
+      : { label: tr('스토리 숨기기'), icon: <EyeOff size={18} />, onSelect: () => toggle(true) }
+  ])
+}
+
+// Dialogs::Stories: add story, my stories, then contacts with active stories (unseen first). `archive` is the archive
+// screen's row of the people whose stories this account hid (B482); it has no «add» or «mine».
+export function StoriesRow({ bar, kind = 'main' }: { bar: StoryBar; kind?: 'main' | 'archive' }) {
+  const accountUid = bar.accountUid
+  const self = useDesktop(state => state?.selfProfile ?? null)
   // B416 B: while the row is on screen in a visible window, main fetches its to-open stories ahead (story-preloader.ts;
   // tdesktop turns its preloading on while the chat list exists, dialogs_inner_widget.cpp:587).
   useEffect(() => {
+    if (kind !== 'main') return
     const say = (shown: boolean): void => { void window.morse.setStoryRowShown(accountUid, shown).catch(() => {}) }
     const visibility = (): void => say(!document.hidden)
     say(!document.hidden)
     document.addEventListener('visibilitychange', visibility)
     return () => { document.removeEventListener('visibilitychange', visibility); say(false) }
-  }, [accountUid])
-  const byUid = useMemo(() => new Map(contacts.map(contact => [contact.uid, contact])), [contacts])
-  const mine = entries.find(entry => entry.uid === accountUid) ?? null
-  const rows = entries.filter(entry => entry.uid !== accountUid && (byUid.has(entry.uid) || partners.has(entry.uid)))
-    .sort((a, b) => Number(b.unseen > 0) - Number(a.unseen > 0) || b.latestAt - a.latestAt)
+  }, [accountUid, kind])
+  const mine = kind === 'main' ? bar.mine : null
+  const rows = kind === 'main' ? bar.shown : bar.hidden
   if (!rows.length && !mine) return null
   const order = rows.map(entry => entry.uid)
-  const refresh = (): void => setReload(value => value + 1)
   return <AvatarScope accountUid={accountUid} enabled surface="contacts">
-    <div className="stories-row" role="list" aria-label={tr('스토리')}>
-      <button type="button" role="listitem" className="story-peer add" aria-label={tr('스토리 올리기')} onClick={() => showStoryComposer(accountUid, refresh)}>
+    <div className={`stories-row${kind === 'archive' ? ' archive' : ''}`} role="list" aria-label={kind === 'archive' ? tr('숨긴 스토리') : tr('스토리')}>
+      {kind === 'main' && <button type="button" role="listitem" className="story-peer add" aria-label={tr('스토리 올리기')} onClick={() => showStoryComposer(accountUid, bar.refresh)}>
         <span className="story-ring"><span className="story-add-icon"><Plus size={22} /></span></span>
         <span className="story-peer-name ellipsis">{tr('스토리 추가')}</span>
-      </button>
-      {mine && <button type="button" role="listitem" className="story-peer own" aria-label={tr('내 스토리')} onClick={() => showOwnStoryViewer(accountUid, refresh)}>
+      </button>}
+      {mine && <button type="button" role="listitem" className="story-peer own" aria-label={tr('내 스토리')} onClick={() => showOwnStoryViewer(accountUid, bar.refresh)}>
         <span className="story-ring"><Avatar name={self?.profile?.displayName || tr('나')} url={self?.photo.status === 'ready' ? self.photo.url : null} size={42} /></span>
         <span className="story-peer-name ellipsis">{tr('내 스토리')}</span>
       </button>}
       {rows.map((entry, index) => {
         // A contact by its contact entry; someone met only in a chat by that chat's name and picture.
-        const contact = byUid.get(entry.uid), dialog = partners.get(entry.uid)
+        const contact = bar.contacts.get(entry.uid), dialog = bar.partners.get(entry.uid)
         const name = contact?.displayName ?? dialog?.title ?? ''
+        const menu = (point: { x: number; y: number }): void => storyPeerMenu(bar, entry.uid, name, Boolean(entry.hidden), point)
         return <button key={entry.uid} type="button" role="listitem" className={`story-peer${entry.unseen ? ' unseen' : ''}`}
           aria-label={tr('{0} 스토리{1}', [name, entry.unseen ? tr(', 새 스토리 있음') : ''])}
-          onClick={() => showStoryViewer(accountUid, order, index, refresh)}>
+          onClick={() => showStoryViewer(accountUid, order, index, bar.refresh)}
+          onContextMenu={event => { event.preventDefault(); menu(pointFor(event, event.currentTarget)) }}
+          onKeyDown={event => { if ((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') { event.preventDefault(); menu(pointFor(null, event.currentTarget)) } }}>
           <span className="story-ring">{contact ? <ContactAvatar contact={contact} size={42} />
             : <PeerAvatar id={dialog!.id} name={name} image={dialog!.kind === 'secret' ? null : dialog!.avatar} size={42} surface="dialogs" />}</span>
           <span className="story-peer-name ellipsis">{name}</span>

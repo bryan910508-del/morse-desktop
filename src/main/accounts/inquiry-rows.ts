@@ -112,6 +112,9 @@ export class InquiryRows {
   // The newest message left in rooms whose newest messages are deleted here, read once per room time and hidden count.
   private readonly remaining = new Map<string, { key: string; value: { preview: string; lastMessageAt: number | null } | null }>()
   private readonly reading = new Set<string>()
+  // B484: told the rooms both lists hold once each has answered in this run, with a way to ask whether a room is there.
+  listed: ((ids: ReadonlySet<string>, exists: (inquiryId: string) => Promise<boolean>) => void) | null = null
+  private answered = { subscriber: false, owner: false }
 
   constructor(private readonly uid: string, private readonly auth: ReadCredentials,
     private readonly allowed: () => void, private readonly changed: () => void,
@@ -128,7 +131,7 @@ export class InquiryRows {
     this.reader ??= new FirestoreReader(this.auth)
     const reader = this.reader
     this.running = true
-    const watch = (field: 'subscriberId' | 'channelOwnerId', limit: number, rows: Map<string, FirestoreDocument>): void => {
+    const watch = (field: 'subscriberId' | 'channelOwnerId', limit: number, rows: Map<string, FirestoreDocument>, side: 'subscriber' | 'owner'): void => {
       this.stops.push(reader.watch({ query: { parent: documents, structuredQuery: { from: [{ collectionId: 'channelInquiries' }],
         where: { fieldFilter: { field: { fieldPath: field }, op: 'EQUAL', value: { stringValue: this.uid } } },
         orderBy: [{ field: { fieldPath: 'lastMessageAt' }, direction: 'DESCENDING' }, { field: { fieldPath: '__name__' }, direction: 'DESCENDING' }],
@@ -139,19 +142,29 @@ export class InquiryRows {
           for (const [name, doc] of next) rows.set(name, doc)
           this.choosePhotos()
           try { this.noticed(this.notices()) } catch { /* A banner is never worth losing the list over. */ }
+          this.answered[side] = true
+          this.tellListed(reader)
           this.changed()
         },
         // A dropped listener leaves the rows that are already on screen; the next snapshot replaces them.
         state: () => {}
       }, limit, 8 * 1024 * 1024))
     }
-    watch('subscriberId', maxSubscriberRooms, this.subscriber)
-    watch('channelOwnerId', maxOwnerRooms, this.owner)
+    watch('subscriberId', maxSubscriberRooms, this.subscriber, 'subscriber')
+    watch('channelOwnerId', maxOwnerRooms, this.owner, 'owner')
+  }
+  private tellListed(reader: FirestoreReader): void {
+    if (!this.listed || !this.answered.subscriber || !this.answered.owner) return
+    const ids = new Set([...this.subscriber.keys(), ...this.owner.keys()].map(name => name.slice(name.lastIndexOf('/') + 1)))
+    try {
+      this.listed(ids, async inquiryId => (await reader.getDocument(`${documents}/channelInquiries/${inquiryId}`, this.auth.signal)) !== null)
+    } catch { /* The queue is asked again with the next list. */ }
   }
   pause(): void {
     for (const stop of this.stops) stop()
     this.stops = []; this.running = false
     this.subscriber.clear(); this.owner.clear(); this.addresses.clear(); this.visible = []
+    this.answered = { subscriber: false, owner: false }
     this.photos.clear()
     this.reader?.close(); this.reader = null
   }

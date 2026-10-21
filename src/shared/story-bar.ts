@@ -3,7 +3,8 @@ import { tr } from './i18n'
 
 // Dialogs::Stories row: active stories of me and my contacts (iOS chat list story bar).
 export const maxStoryBarPeers = 40
-export interface StoryBarEntry { uid: string; count: number; unseen: number; latestAt: number; expiresAt: number }
+// hidden (B482): this account keeps the person's stories in the archive's row, not the chat list's.
+export interface StoryBarEntry { uid: string; count: number; unseen: number; latestAt: number; expiresAt: number; hidden?: true }
 export interface StoryBarResult { entries: StoryBarEntry[]; observedAt: number; partial: boolean }
 
 export function storyBarPeers(raw: unknown): string[] {

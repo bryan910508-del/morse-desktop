@@ -118,11 +118,32 @@ export class InquirySends {
     this.retries.delete(id)
     await this.reload(); this.publish()
   }
-  // A room that was deleted takes what was still going into it.
+  // A room that was deleted takes what was still going into it (TA deleteDialog takes a dialog's sending messages with
+  // it). B484: the one place for it, entered when this device deletes the room (channel-inquiries.ts deleteRoom), when
+  // the server's lists no longer hold a room and the server says it is gone (forgetGoneRooms), and when sending into it
+  // is answered that the room is missing (attempt).
   async forgetRoom(inquiryId: string): Promise<void> {
-    if (!this.rows.some(row => row.inquiryId === inquiryId)) return
+    const gone = this.rows.filter(row => row.inquiryId === inquiryId)
+    if (!gone.length) return
     await this.store({ kind: 'inquiry-send-forget-room', inquiryId })
+    for (const row of gone) { this.retries.delete(row.id); this.sendingMedia?.forget(row.id) }
     await this.reload(); this.publish()
+  }
+  // B484: rooms this device still has messages for and that the server's room lists (InquiryRows) no longer hold — deleted
+  // on another device or by the other side while this one was off or elsewhere. A room may also have been pushed out of
+  // a full list, so each is read once and forgotten only when the server says it is not there; an unanswered read keeps
+  // it for the next list. A room deleted and made again under the same id before this device hears of it keeps what was
+  // queued, as Telegram's chat does when it learns of the deletion only after it was opened again.
+  private readonly checking = new Set<string>()
+  async forgetGoneRooms(listed: ReadonlySet<string>, exists: (inquiryId: string) => Promise<boolean>): Promise<void> {
+    if (!this.loaded) return
+    const candidates = [...new Set(this.rows.map(row => row.inquiryId))].filter(id => !listed.has(id) && !this.checking.has(id))
+    for (const inquiryId of candidates) {
+      this.checking.add(inquiryId)
+      try { if (!await exists(inquiryId)) await this.forgetRoom(inquiryId) }
+      catch { /* Not known: kept, and asked again with the next list. */ }
+      finally { this.checking.delete(inquiryId) }
+    }
   }
   // The connection went: what is in flight stops and waits as it is.
   pause(): void {
@@ -228,6 +249,12 @@ export class InquirySends {
       if (refused && error instanceof MorseCallableFailure && stickerReferenceRefusals.has(error.reason) && typeof row.message.stickerId === 'string') {
         this.retries.delete(row.id)
         await this.stickerToBytes(row, error.reason)
+        return
+      }
+      // B484: the room is not there any more (sendMorseInquiryMessage «Inquiry missing»): what was going into it goes
+      // with it, instead of staying as failed messages of a room that does not exist.
+      if (refused && stage === 'send' && error instanceof MorseCallableFailure && error.status === 'NOT_FOUND') {
+        await this.forgetRoom(row.inquiryId)
         return
       }
       if (refused) {

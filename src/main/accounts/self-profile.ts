@@ -202,8 +202,9 @@ export class SelfProfileSession {
     const task = (async (): Promise<ProfileNameSaveResult> => {
       let result: ProfileNameSaveResult
       try {
-        const count = await reader.saveProfileDisplay(this.uid, change, controller.signal, validate)
-        result = { status: 'saved', message: change.kind === 'name' ? tr('이름과 조회된 관련 정보 {0}곳의 이름을 함께 저장했습니다.', [count]) : tr('현재 프로필과 조회된 관련 정보 {0}곳에서 사진 표시를 제거했습니다. 기존 사진 파일과 모바일 기록은 보존됩니다.', [count]) }
+        await reader.saveProfileDisplay(this.uid, change, controller.signal, validate)
+        // B481 ③: only this account's profile is written; the copies others read follow from the server (1–7 s).
+        result = { status: 'saved', message: change.kind === 'name' ? tr('이름을 저장했습니다. 대화 상대에게는 잠시 뒤 바뀐 이름이 보여요.') : tr('프로필 사진을 제거했습니다. 기존 사진 파일과 모바일 기록은 보존됩니다.') }
       } catch (error) {
         result = { status: error instanceof ProfileDisplayWriteFailure && !error.uncertain ? 'rejected' : 'uncertain',
           message: error instanceof ProfileDisplayWriteFailure ? error.message : tr('프로필 변경 결과를 확인하지 못했습니다. 서버 정보를 다시 불러와 주세요.') }

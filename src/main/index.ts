@@ -157,7 +157,7 @@ import { contactDetailsEdit } from '../shared/contact-details'
 import { contactPhotoBinding, contactPhotoEdit, contactPhotoRemoval } from '../shared/contact-photo'
 import { replyBinding } from '../shared/reply-draft'
 import { fullscreenAllowed } from './platform/fullscreen-permission'
-import { markCleanExit, startCrashRecording, takeCrashNotice } from './platform/crash-diagnostics'
+import { crashStepsWritten, markCleanExit, startCrashRecording, takeCrashNotice } from './platform/crash-diagnostics'
 import { applicationMenuShown, composingKey, shortcutAccelerator, shortcutFor, shortcuts, viewerZoomKey, windowShortcutFor, type ShortcutCommand, type WindowCommand } from '../shared/shortcuts'
 import { NativeContextMenus, type ContextMenuItem } from './platform/context-menus'
 import { WindowState } from './platform/window-state'
@@ -561,6 +561,12 @@ function registerIPC(): void {
   handle('story-bar', (uid, peers, force) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).storyBarApi.list(peers, force === true)
+  })
+  // B482: «스토리 숨기기» / «숨김 풀기» from the row's menu.
+  handle('story-peer-hidden', (uid, peerUid, hidden) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    if (typeof hidden !== 'boolean') throw new Error(tr('스토리를 숨길 사람을 다시 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).storyBarApi.setHidden(peerUid, hidden)
   })
   handle('peer-story-entry', (uid, peerUid) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
@@ -3353,7 +3359,9 @@ else {
         dialog.showErrorBox('Morse', tr('작성 중인 내용의 저장을 확인하지 못했습니다. 내용을 복사해 보관한 뒤 다시 종료해 주세요.'))
         return
       }
-      try { await windowState?.save(); translator.close(); mediaHelper.close(); await authentication?.close(); accounts.closeAll(); await accounts.flush(); await settings?.flush() }
+      try { await windowState?.save(); translator.close(); mediaHelper.close(); await authentication?.close(); accounts.closeAll(); await accounts.flush(); await settings?.flush()
+        // B483: what ended a helper or a window while closing reaches crash-check.log before the app is gone (a second at most).
+        await Promise.race([crashStepsWritten(), new Promise(resolve => setTimeout(resolve, 1000))]) }
       catch { dialog.showErrorBox('Morse', tr('종료 중 저장소 오류가 발생했습니다. 다음 실행 시 저장 상태를 확인해 주세요.')) }
       finally { shutdown = 'done'; desktopShell.close(); appUpdates.close(); markCleanExit(); if (appUpdates.requested) appUpdates.install(); else app.quit() }
     })()

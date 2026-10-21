@@ -11,7 +11,7 @@ interface Owner {
   validate(version?: string): void
   changed(): void
   completed(): void
-  apply(id: string, url: string, version: string, signal: AbortSignal, beforeCommit: () => Promise<void>): Promise<number>
+  apply(id: string, url: string, version: string, signal: AbortSignal, beforeCommit: () => Promise<void>): Promise<void>
 }
 export class ProfilePhotoUpload {
   private record: ProfileUploadRecord | null = null
@@ -114,9 +114,8 @@ export class ProfilePhotoUpload {
           this.owner.validate(request.version)
           const confirmed = await uploadProfilePhoto(this.auth, this.uid, photo, signal, async () => { throw new Error(tr('업로드했던 사진이 없습니다.')) }, () => {}, validate)
           if (confirmed !== photo.url) throw new Error(tr('사진 URL이 변경되었습니다. 대기 작업을 정리한 뒤 다시 선택해 주세요.'))
-          let count: number
           try {
-            count = await this.owner.apply(photo.id, photo.url, request.version, signal, async () => {
+            await this.owner.apply(photo.id, photo.url, request.version, signal, async () => {
               await this.change({ kind: 'profile-upload-state', id: photo.id, from: 'ready', stage: 'committing' }, () => { validate(); this.owner.validate(request.version) })
             })
           } catch (error) {
@@ -128,7 +127,8 @@ export class ProfilePhotoUpload {
           // Preserve committing until history retention and pending cleanup commit together.
           try { await this.change({ kind: 'profile-upload-finalize', id: photo.id }) }
           catch { throw new Error(tr('서버는 사진 적용을 확인했지만 이 기기의 사진 기록 저장을 확인하지 못했습니다. 다시 적용하지 말고 앱을 다시 열어 서버 프로필을 확인해 주세요.')) }
-          this.message = tr('현재 프로필과 조회된 관련 정보 {0}곳에 사진을 함께 적용했습니다.', [count])
+          // B481 ③: the copies others read follow from the server (1–7 s).
+          this.message = tr('프로필 사진을 바꿨습니다.')
           this.owner.completed()
         }
       } finally { photo.bytes.fill(0); if (this.abort === controller) this.abort = null }

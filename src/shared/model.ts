@@ -506,6 +506,8 @@ export interface DesktopBridge {
   leaveChannel(accountUid: string, channelId: string): Promise<'done' | 'unconfirmed'>
   deleteChannel(accountUid: string, channelId: string): Promise<'done' | 'unconfirmed'>
   storyBar(accountUid: string, peers: string[], force: boolean): Promise<import('./story-bar').StoryBarResult>
+  // B482: a person's stories go to the archive's row (hidden) or back to the chat list's.
+  setStoryPeerHidden(accountUid: string, peerUid: string, hidden: boolean): Promise<void>
   peerStoryEntry(accountUid: string, peerUid: string): Promise<import('./story-bar').StoryBarEntry | null>
   clearChatHistory(accountUid: string, chatId: string): Promise<'done' | 'unconfirmed'>
   // B327: cleared for this account on all its devices; the row stays.
