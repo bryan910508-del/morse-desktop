@@ -500,6 +500,7 @@ const bridge: DesktopBridge = {
   pinMessage: (uid, request) => ipcRenderer.invoke('morse:pin-message', uid, request),
   jumpPinned: (uid, chatId, messageId) => ipcRenderer.invoke('morse:jump-pinned', uid, chatId, messageId),
   openTranslationSettings: () => ipcRenderer.invoke('morse:open-translation-settings'),
+  openDeviceSettings: device => ipcRenderer.invoke('morse:open-device-settings', device),
   peerBarHidden: (uid, peerUid) => ipcRenderer.invoke('morse:peer-bar-hidden', uid, peerUid),
   hidePeerBar: (uid, peerUid) => ipcRenderer.invoke('morse:hide-peer-bar', uid, peerUid),
   operatorMail: (uid, sanction, until) => ipcRenderer.invoke('morse:operator-mail', uid, sanction, until),

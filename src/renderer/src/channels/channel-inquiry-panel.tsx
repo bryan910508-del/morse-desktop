@@ -121,6 +121,9 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
     return () => { void window.morse.closeInquiryThread(accountUid, requestId).catch(() => {}) }
   }, [accountUid, inquiryId, requestId])
   const thread = useDesktop(state => { const value = state?.channelInquiries?.thread; return value?.requestId === requestId ? value : null })
+  // B493: the room was deleted while open — it closes, and only it (ui.ts closeInquiryRoom).
+  const gone = thread?.gone === true
+  useEffect(() => { if (gone) controller.closeInquiryRoom(inquiryId) }, [gone, inquiryId])
   // The channel's own picture, the one its row in the chat list already holds.
   const channelPhoto = useDesktop(state => state?.inquiryRows?.find(row => row.channelId === channelId)?.photo ?? null)
   const enterToSend = useDesktop(state => state?.preferences.enterToSend ?? true)

@@ -71,10 +71,22 @@ export function useUi<T>(select: (state: UiState) => T): T {
   return useSyncExternalStore(subscribe, get)
 }
 
+// B493: the room is on screen now — in the main column, or as the third column beside its channel (also under a person
+// opened from it).
+function inquiryShown(channelId: string, thread: string): boolean {
+  const inquiry = state.inquiry
+  if (!inquiry || inquiry.channelId !== channelId || inquiry.thread !== thread) return false
+  if (state.chatId === null && state.channelId === null) return true
+  return state.channelId === channelId && (state.right === 'inquiry' || (state.right === 'person' && state.person?.back === 'inquiry'))
+}
+
 // Window::SessionController: navigation is immediate. Editors persist their
 // own drafts continuously, so switching chats never waits for a dialog.
 export const controller = {
   openChat(chatId: string): void {
+    // B493 (tdesktop MainWidget::showHistory, mainwidget.cpp:1508-1538, :1578-1631): the chat already shown is not opened
+    // again — nothing beside it closes, the composer takes the focus.
+    if (state.section === 'chats' && state.chatId === chatId && state.inquiry === null) { set({ mainMenu: false, composerFocus: state.composerFocus + 1 }); return }
     set({ section: 'chats', chatId, channelId: null, noteId: null, inquiry: null, mainMenu: false, right: state.right === 'info' ? 'info' : null, composerFocus: state.composerFocus + 1 })
   },
   closeChat(): void { set({ chatId: null, channelId: null, inquiry: null, right: null }) },
@@ -95,6 +107,8 @@ export const controller = {
   // A room opened from the chat list is that conversation alone, and it is where a conversation goes: the
   // main column. The channel screen does not come with it.
   openInquiryRoom(channelId: string, thread: string | null): void {
+    // B493: a room already on screen — the main column's, or the third column beside its channel — stays as it is.
+    if (thread !== null && inquiryShown(channelId, thread)) { set({ mainMenu: false }); return }
     set({ section: 'chats', inquiry: { channelId, thread, fromList: thread === null }, chatId: null, channelId: null, noteId: null, mainMenu: false, right: null })
   },
   // Its picture and name lead to the channel, as iOS ChannelInquiryChatView.handleProfileTap does for the
@@ -114,6 +128,18 @@ export const controller = {
   },
   closePerson(back: boolean): void { set({ right: back ? state.person?.back ?? null : null, person: null }) },
   closeInquiry(): void { set({ right: null, inquiry: null }) },
+  // B493 (tdesktop Application::closeChatFromWindows, core/application.cpp:1740-1761, and the third column that goes with
+  // its chat, mainwidget.cpp:3037-3039): a deleted room closes, and only it — in the main column with the panel beside it,
+  // in a channel's third column that column alone, the channel staying. A room opened from the owner's list goes back to
+  // that list. Anything else on screen stays.
+  closeInquiryRoom(inquiryId: string): void {
+    const inquiry = state.inquiry
+    if (!inquiry || inquiry.thread !== inquiryId) return
+    const main = state.chatId === null && state.channelId === null
+    const roomPanel = main || state.right === 'inquiry' || (state.right === 'person' && state.person?.back === 'inquiry')
+    const right: RightPanel = !roomPanel ? state.right : inquiry.fromList && !main ? 'inquiry' : null
+    set({ inquiry: inquiry.fromList ? { ...inquiry, thread: null } : null, right, person: right === 'person' ? state.person : null })
+  },
   toggleRight(panel: Exclude<RightPanel, null>): void { set({ right: state.right === panel ? null : panel }) },
   setQuery(dialogsQuery: string): void { set({ dialogsQuery }) },
   focusSearch(): void { set({ section: 'chats', mainMenu: false, searchFocus: state.searchFocus + 1 }) },

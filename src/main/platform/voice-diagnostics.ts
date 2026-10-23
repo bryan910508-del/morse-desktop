@@ -28,11 +28,11 @@ export function recordVoiceStep(step: string, detail = ''): void {
 const codes: [string, string][] = [
   ['현재 문의 창에서', 'window-not-focused-or-locked'], ['현재 대화 창에서', 'window-not-focused-or-locked'],
   ['현재 음성 녹음을 먼저 닫아', 'another-recording-open'], ['문의를 다시 열어', 'inquiry-not-open'], ['문의를 다시 선택', 'inquiry-not-open'],
-  ['계정 연결을 확인', 'not-connected'], ['계정이 변경', 'account-changed'], ['마이크 접근을 허용', 'macos-refused-microphone'],
+  ['계정 연결을 확인', 'not-connected'], ['계정이 변경', 'account-changed'], ['device-denied:microphone', 'refused-microphone'], ['device-declined:microphone', 'declined-microphone'],
   ['마이크 권한을 먼저', 'grant-not-ready'], ['녹음 준비 상태가 다릅니다', 'grant-not-reserved'], ['음성 녹음이 종료되었거나', 'grant-gone'],
   ['녹음 상태를 다시', 'not-recording'], ['M4A 형식', 'not-m4a'], ['녹음 크기', 'recording-size'], ['업로드', 'upload'],
   ['음성 메시지를 보내지 못했습니다', 'send-callable'], ['0.5초에서 60초', 'duration'], ['음성 파형', 'waveform'], ['보관한 음성', 'saved-draft-open'],
-  ['현재 대화를 확인', 'chat-not-open'], ['화면 잠금', 'locked'], ['카메라 접근을 허용', 'macos-refused-camera'], ['영상 메시지의 형식', 'not-mp4'],
+  ['현재 대화를 확인', 'chat-not-open'], ['화면 잠금', 'locked'], ['device-denied:camera', 'refused-camera'], ['device-declined:camera', 'declined-camera'], ['영상 메시지의 형식', 'not-mp4'],
   ['영상 메시지를 보내지 못했습니다', 'send-callable'], ['0.5초에서 60초 사이의 영상', 'duration'], ['첫 텍스트 메시지를 보낸 뒤', 'chat-not-started'], ['현재 첨부를 보내거나', 'attachment-open'],
   ['대화를 다시 선택', 'chat-not-open']
 ]

@@ -353,7 +353,10 @@ export class ChannelInquiries {
       state.roomStop = reader.watch({ documents: { documents: [doc.name] } }, this.auth.signal, {
         snapshot: rows => {
           const room = rows.get(doc.name)
-          if (this.thread !== state || !room) return
+          if (this.thread !== state) return
+          // B493: the room was deleted (here, on another device or by the other side) — the window closes it, and only it
+          // (tdesktop Application::closeChatFromWindows). What this device was still sending into it is taken by B484.
+          if (!room) { if (!state.value.gone) { state.value = { ...state.value, gone: true }; this.changed() } return }
           try {
             const current = decodeInquiry(room, this.uid, this.mine.get(state.request.inquiryId)?.cutoff ?? null)
             state.inquiry = { ...current, cutoff: current.cutoff }

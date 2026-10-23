@@ -10,7 +10,9 @@ import { recordRendererVoiceStep, recordVoiceStep, voiceErrorCode } from '../../
 const file = join(tmpdir(), 'voice-check.log')
 
 test('a refusal is written as its code, never as its message', () => {
-  assert.equal(voiceErrorCode(new Error('시스템 설정에서 Morse의 마이크 접근을 허용해 주세요.')), 'macos-refused-microphone')
+  assert.equal(voiceErrorCode(new Error('device-denied:microphone')), 'refused-microphone')
+  assert.equal(voiceErrorCode(new Error('device-denied:camera')), 'refused-camera')
+  assert.equal(voiceErrorCode(new Error('device-declined:microphone')), 'declined-microphone')
   assert.equal(voiceErrorCode(new Error('문의를 다시 열어 주세요.')), 'inquiry-not-open')
   assert.equal(voiceErrorCode(new Error('음성 녹음이 종료되었거나 대화가 변경되었습니다.')), 'grant-gone')
   assert.equal(voiceErrorCode(new Error('사진 업로드 권한을 확인하지 못했습니다. channel1_user9')), 'upload')

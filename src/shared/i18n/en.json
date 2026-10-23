@@ -1887,8 +1887,6 @@
  "시스템": "System",
  "시스템 메시지": "System message",
  "시스템 설정 따르기": "Use system setting",
- "시스템 설정에서 Morse의 마이크 접근을 허용해 주세요.": "Allow Morse to access the microphone in System Settings.",
- "시스템 설정에서 Morse의 카메라 접근을 허용해 주세요.": "Allow Morse to access the camera in System Settings.",
  "시스템 아이콘을 정리하지 못했습니다.": "Couldn't clean up the system icon.",
  "시스템 알림을 표시하지 못했습니다. 알림 허용 상태와 앱 설치 상태를 확인해 주세요.": "Couldn't show a system notification. Please check that notifications are allowed and the app is installed.",
  "시스템 트레이를 만들지 못했습니다. 창을 닫으면 앱이 종료됩니다.": "Couldn't create the system tray icon. Closing the window will quit the app.",
@@ -4218,8 +4216,6 @@
  "마이크를 찾을 수 없어요. 마이크가 연결돼 있는지 확인해 주세요.": "No microphone was found. Check that a microphone is connected.",
  "카메라나 마이크를 찾을 수 없어요. 연결돼 있는지, Windows 설정 › 개인 정보 및 보안 › 카메라·마이크에서 데스크톱 앱의 사용이 켜져 있는지 확인해 주세요.": "No camera or microphone was found. Check that they are connected and that Windows Settings › Privacy & security › Camera and Microphone let desktop apps use them.",
  "카메라나 마이크를 찾을 수 없어요. 연결돼 있는지 확인해 주세요.": "No camera or microphone was found. Check that they are connected.",
- "Windows 설정 › 개인 정보 및 보안 › 마이크에서 데스크톱 앱의 마이크 사용을 켜 주세요.": "Turn on microphone access for desktop apps in Windows Settings › Privacy & security › Microphone.",
- "Windows 설정 › 개인 정보 및 보안 › 카메라·마이크에서 데스크톱 앱의 사용을 켜 주세요.": "Turn on camera and microphone access for desktop apps in Windows Settings › Privacy & security › Camera and Microphone.",
  "다른 앱이 마이크를 쓰고 있거나 마이크를 시작하지 못했어요. 다른 앱을 닫고 다시 시도해 주세요.": "Another app is using the microphone, or it couldn't start. Close other apps and try again.",
  "다른 앱이 카메라나 마이크를 쓰고 있거나 시작하지 못했어요. 다른 앱을 닫고 다시 시도해 주세요.": "Another app is using the camera or microphone, or they couldn't start. Close other apps and try again.",
  "녹음을 시작하지 못했어요. 마이크를 확인해 주세요.": "Couldn't start recording. Please check your microphone.",
@@ -4269,5 +4265,8 @@
  "스토리 숨기기": "Hide stories",
  "숨긴 스토리": "Hidden stories",
  "{0}님의 스토리를 보관함으로 옮겼어요.": "{0}'s stories were moved to the archive.",
- "{0}님의 스토리를 다시 대화 목록에 보여요.": "{0}'s stories are shown in the chat list again."
+ "{0}님의 스토리를 다시 대화 목록에 보여요.": "{0}'s stories are shown in the chat list again.",
+ "음성 메시지를 보내려면 마이크 접근이 필요해요. 설정에서 마이크를 허용해 주세요.": "Morse needs microphone access so you can send voice messages. Allow Microphone in Settings.",
+ "영상 메시지를 보내려면 카메라와 마이크 접근이 필요해요. 설정에서 카메라와 마이크를 허용해 주세요.": "Morse needs camera and microphone access so you can send video messages. Allow Camera and Microphone in Settings.",
+ "이 컴퓨터에서는 설정을 열 수 없습니다.": "Settings can't be opened on this computer."
 }

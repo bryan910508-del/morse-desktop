@@ -18,8 +18,9 @@ test('a missing device says to check the microphone; on Windows also the privacy
 })
 
 test('refused, busy and any other device failure each have their words; the app\'s own errors are left as they are', () => {
-  assert.equal(captureProblem(domError('NotAllowedError'), 'audio', 'macOS'), '시스템 설정에서 Morse의 마이크 접근을 허용해 주세요.')
-  assert.match(captureProblem(domError('NotAllowedError'), 'audio', 'Windows')!, /데스크톱 앱의 마이크 사용을 켜 주세요/)
+  // B487b: a refusal has one wording on both systems (device-access.ts); main's gate says it before the device opens.
+  assert.equal(captureProblem(domError('NotAllowedError'), 'audio', 'macOS'), '음성 메시지를 보내려면 마이크 접근이 필요해요. 설정에서 마이크를 허용해 주세요.')
+  assert.equal(captureProblem(domError('NotAllowedError'), 'audio', 'Windows'), captureProblem(domError('NotAllowedError'), 'audio', 'macOS'))
   assert.match(captureProblem(domError('NotReadableError'), 'audio', 'Windows')!, /다른 앱이 마이크를/)
   assert.equal(captureProblem(domError('InvalidStateError'), 'audio', 'Windows'), '녹음을 시작하지 못했어요. 마이크를 확인해 주세요.', 'tdesktop lng_record_audio_problem')
   assert.equal(captureProblem(new Error('현재 대화를 확인해 주세요.'), 'audio', 'Windows'), null)
@@ -27,7 +28,7 @@ test('refused, busy and any other device failure each have their words; the app\
 })
 
 test('Windows 11 names the settings page «개인 정보 및 보안»', () => {
-  for (const name of ['NotFoundError', 'NotAllowedError']) for (const media of ['audio', 'video'] as const) assert.match(captureProblem(domError(name), media, 'Windows')!, /Windows 설정 › 개인 정보 및 보안 › /)
+  for (const name of ['NotFoundError']) for (const media of ['audio', 'video'] as const) assert.match(captureProblem(domError(name), media, 'Windows')!, /Windows 설정 › 개인 정보 및 보안 › /)
 })
 
 test('no English device words: every message has its English and Russian', () => {

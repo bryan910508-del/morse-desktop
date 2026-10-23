@@ -204,6 +204,8 @@ export interface AccountEvents {
   forwardProgress(progress: ForwardProgress): void
   // B277 ②: the stories row changed (story-bar.ts listens to it).
   storyBar?(result: StoryBarResult): void
+  // B488: this account's own name or userId as its profile was just read (tdesktop Session's user, main_session.cpp:205).
+  ownProfile?(profile: AccountProfile): void
 }
 
 // Authentication alone owns Socket.IO registration. Server history remains
@@ -339,6 +341,19 @@ export class AccountSession {
   readonly media: MediaSession
   readonly files: OpenedFiles
   readonly selfProfile: SelfProfileSession
+  // B488: the account's name as Settings::AccountsList draws it — its session's own user as last read (tdesktop
+  // settings_information.cpp:803-818; a user keeps its name through a reconnect), else what its sign-in saved. The one
+  // rule for every list of accounts.
+  private ownName: AccountProfile | null = null
+  get account(): AccountProfile { return { ...(this.ownName ?? this.profile) } }
+  private tellOwnProfile(): void {
+    // Its first callbacks can come while it is still being made, before it is this session's.
+    const own = (this.selfProfile as SelfProfileSession | undefined)?.snapshot
+    if (!own || own.status !== 'ready' || !own.profile) return
+    if (this.ownName?.userId === own.profile.userId && this.ownName.displayName === own.profile.displayName) return
+    this.ownName = { uid: this.profile.uid, userId: own.profile.userId, displayName: own.profile.displayName }
+    this.events.ownProfile?.({ ...this.ownName })
+  }
   readonly contacts: ContactsSession
   private readonly discussionHistory: ChannelDiscussionHistory
   readonly channels: ChannelsSession
@@ -390,7 +405,7 @@ export class AccountSession {
       () => !this.closed && !this.locked && this.connection === 'ready' && Boolean(this.reader),
       () => { if (this.closed) return; if (this.chatsCurrent && this.pinsCurrent) this.rebuild(); else this.events.changed() })
     this.discussionHistory = new ChannelDiscussionHistory(profile.uid, credentials.signal, () => { if (!this.closed && this.chatsCurrent && this.pinsCurrent) this.rebuild() })
-    this.selfProfile = new SelfProfileSession(profile.uid, credentials, () => { if (!this.closed) events.changed() }, (command, validate) => this.delivery.profilePhotoState(command, validate),
+    this.selfProfile = new SelfProfileSession(profile.uid, credentials, () => { if (!this.closed) { this.tellOwnProfile(); events.changed() } }, (command, validate) => this.delivery.profilePhotoState(command, validate),
       (peer, raw) => this.peerPhotos.remember(peer, raw))
     this.contacts = new ContactsSession(profile.uid, credentials, () => { if (!this.closed) { this.renameDialogs(); this.dialogAvatars?.prune(); events.changed() } }, (command, validate) => this.delivery.contactState(command, validate), (peer, raw) => this.peerPhotos.remember(peer, raw))
     this.channels = new ChannelsSession(profile.uid, credentials, () => { this.channelJoinDecisions?.prune(); this.channelAccess?.prune(); this.channelPhotoUpload?.prune(); this.channelHome?.listChanged(); if (!this.closed) events.changed() })

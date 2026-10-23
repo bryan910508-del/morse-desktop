@@ -50,7 +50,12 @@ interface CredentialOwner {
   rejection: string
   // A15-5: the sign-in watch (sign-in-watch.ts) is asking the server now.
   checking?: boolean
+  // B488: this account's saved sign-in is written one write after another (writeRecord), and a new name waits a second.
+  writing: Promise<void>
+  nameWrite?: ReturnType<typeof setTimeout>
 }
+// B488: tdesktop writes the account's own user a second after it changes (storage_account.cpp:52, :625-628).
+export const profileWriteDelayMs = 1000
 
 export interface AuthenticatedAccountHooks {
   activated(profile: AccountProfile, credentials: AccountAuthorization): void
@@ -583,7 +588,7 @@ export class AuthenticationController {
       // getDifference); a renewal in place keeps them running. Nothing else to request here.
       needsReconciliation: () => {}
     }, this.seams.openSocket)
-    owner = { controller, record, tokens, established: false, rejection: '', refresh: null, transport }
+    owner = { controller, record, tokens, established: false, rejection: '', refresh: null, transport, writing: Promise.resolve() }
     this.owner = owner
     // A15-5 (§31, user «권장대로» 10-03 18:3x): the account opens on the session the server has just confirmed
     // (startMorseDeviceSession above, the same answer the socket's registration asks for: revoked, banned, too old) and
@@ -594,7 +599,7 @@ export class AuthenticationController {
     // window (tdesktop window/window_connecting_widget.cpp:31, 307-345; history/view/history_view_top_bar_widget.cpp
     // :276-296, 770-786).
     progress.stage = 'save'
-    await this.vault.save(record)
+    await this.writeRecord(owner)
     this.assertCurrent(controller)
     owner.established = true
     // A15: sending no longer waits for the socket — a message the socket cannot carry goes through the callable
@@ -725,10 +730,9 @@ export class AuthenticationController {
     const task = (async () => {
       const tokens = await this.requireAPI().refresh(owner.tokens.refreshToken, owner.record.profile.uid, owner.record.authTime, owner.controller.signal)
       if (this.owner !== owner || owner.controller.signal.aborted) throw new AuthenticationFailure('cancelled')
-      const record = { ...owner.record, refreshToken: tokens.refreshToken }
-      await this.vault.save(record)
+      await this.writeRecord(owner, { refreshToken: tokens.refreshToken })
       if (this.owner !== owner || owner.controller.signal.aborted) throw new AuthenticationFailure('cancelled')
-      owner.record = record; owner.tokens = tokens
+      owner.tokens = tokens
       return tokens.idToken
     })()
     owner.refresh = task
@@ -743,9 +747,44 @@ export class AuthenticationController {
       throw failure
     } finally { if (owner.refresh === task) owner.refresh = null }
   }
+  // B488: the one way an open account's saved sign-in is written. tdesktop writes the session's user as it is when the
+  // write runs (storage_account.cpp:636-680), never a copy taken earlier: each write here is built when its turn comes,
+  // from the record as it is then, so a token renewal and a new name never put back each other's old value.
+  private writeRecord(owner: CredentialOwner, change: Partial<Pick<SavedCredential, 'refreshToken' | 'authTime'>> = {}): Promise<void> {
+    const task = owner.writing.then(async () => {
+      if (this.owner !== owner || owner.controller.signal.aborted) throw new AuthenticationFailure('cancelled')
+      await this.vault.save({ ...owner.record, ...change })
+      owner.record = { ...owner.record, ...change }
+    })
+    owner.writing = task.catch(() => {})
+    return task
+  }
+  // B488 (tdesktop main_session.cpp:205-224): the open account's session read its own profile. Its name and userId are
+  // taken at once — the accounts list and the next sign-in screen show them — and the saved sign-in follows a second
+  // later (writeMapDelayed), so a quick run of changes is one write and an unchanged name is none. A write that fails
+  // leaves one line in connection-check.log and nothing else: the next write of this record (a token renewal, the next
+  // name, or the next start reading the profile again) carries the name.
+  profileSeen(profile: AccountProfile): void {
+    const owner = this.owner
+    if (!owner?.established || owner.controller.signal.aborted || profile.uid !== owner.record.profile.uid) return
+    const saved = owner.record.profile, userId = profile.userId, displayName = profile.displayName || profile.userId
+    if (!userId || userId.length > 160 || displayName.length > 512) { recordConnectionStep('profile-save', 'invalid'); return }
+    if (saved.userId === userId && saved.displayName === displayName) return
+    owner.record = { ...owner.record, profile: { uid: saved.uid, userId, displayName } }
+    this.known = { ...owner.record.profile }
+    if (this.value.account?.uid === saved.uid) { this.value = { ...this.value, account: { ...owner.record.profile } }; this.changed() }
+    if (owner.nameWrite) clearTimeout(owner.nameWrite)
+    owner.nameWrite = setTimeout(() => {
+      owner.nameWrite = undefined
+      this.writeRecord(owner).catch(error => {
+        if (this.owner === owner && !owner.controller.signal.aborted) recordConnectionStep('profile-save', `failed ${asAuthFailure(error).code}`)
+      })
+    }, profileWriteDelayMs)
+  }
   private detach(purge = true): CredentialOwner | null {
     const owner = this.owner
     this.owner = null
+    if (owner?.nameWrite) clearTimeout(owner.nameWrite)
     if (owner) this.accounts.closed(owner.record.profile.uid, purge)
     owner?.controller.abort()
     owner?.transport.stop()

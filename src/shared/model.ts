@@ -972,6 +972,8 @@ export interface DesktopBridge {
   pinMessage(accountUid: string, request: import('./pinned-messages').PinMessageRequest): Promise<'done'>
   jumpPinned(accountUid: string, chatId: string, messageId: string): Promise<HistorySnapshot>
   openTranslationSettings(): Promise<void>
+  // B487b: the system's page for a refused microphone or camera.
+  openDeviceSettings(device: 'microphone' | 'camera'): Promise<void>
   peerBarHidden(accountUid: string, peerUid: string): Promise<boolean>
   hidePeerBar(accountUid: string, peerUid: string): Promise<void>
   operatorMail(accountUid: string, sanction: import('./sanctions').Sanction, until?: number | null): Promise<void>

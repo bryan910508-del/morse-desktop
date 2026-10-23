@@ -14,7 +14,7 @@ export class AccountRegistry {
   constructor(private readonly events: (uid: string) => AccountEvents) {}
   get active(): AccountSession | null { return this.activeUid ? this.sessions.get(this.activeUid) ?? null : null }
   get all(): AccountSession[] { return [...this.sessions.values()] }
-  get profiles(): AccountProfile[] { return this.all.map(session => ({ ...session.profile })) }
+  get profiles(): AccountProfile[] { return this.all.map(session => session.account) }
   get(uid: string): AccountSession | null { return this.sessions.get(uid) ?? null }
   // Only verified authentication calls activation. IPC cannot create sessions.
   activate(profile: AccountProfile, credentials: AccountAuthorization, directory: string, makeActive: boolean): void {

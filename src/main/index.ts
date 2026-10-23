@@ -3,6 +3,8 @@
 import { autoDeleteMonthOptions, blockTarget, inviteToken, privacyKey, privacyRule, sessionTtlDays, signInSessionId } from '../shared/account-tools'
 import { roundVideoFacts, roundVideoSendRequest, roundVideoSide } from '../shared/round-video'
 import type { CaptureMedia } from './platform/voice-captures'
+import { deviceAccess } from './platform/device-access'
+import { deviceSettingsAddress } from '../shared/device-access'
 import { recordRendererVoiceStep, recordVoiceStep, voiceErrorCode } from './platform/voice-diagnostics'
 import { recordBadgeStep } from './platform/badge-diagnostics'
 import { chatFolderInput, chatFolderOrder } from '../shared/chat-folders'
@@ -232,6 +234,7 @@ const accounts = new AccountRegistry(uid => ({
   files: openedFileSystem,
   forwardProgress: progress => emit({ type: 'forward-progress', accountUid: uid, progress }),
   storyBar: result => { if (!screenLocked) emit({ type: 'story-bar-changed', accountUid: uid, result }) },
+  ownProfile: profile => authentication?.profileSeen(uid, profile),
   actions: (chatId, actions) => emit({ type: 'actions-changed', accountUid: uid, chatId, actions }),
   changed: () => { contextMenus.prune(); void publish() },
   history: (chatId, history) => { contextMenus.prune(); emit({ type: 'history-changed', accountUid: uid, chatId, history }) },
@@ -395,8 +398,6 @@ async function snapshot(): Promise<DesktopSnapshot> {
   const active = accounts.active
   const dialogs = active?.dialogs() ?? []
   const selfProfile = active?.selfProfile.snapshot ?? null
-  const profile = selfProfile?.status === 'ready' ? selfProfile.profile : null
-  const profiles = accounts.profiles.map(account => profile?.uid === account.uid ? { ...account, userId: profile.userId, displayName: profile.displayName } : account)
   // While the passcode lock is shown the renderer receives no chats, contacts or profile.
   const appLocked = Boolean(appLock?.locked)
   return {
@@ -408,7 +409,7 @@ async function snapshot(): Promise<DesktopSnapshot> {
     translationRoute: appLocked ? 'none' : translationRouteOf(active),
     serverClockOffset: serverClock.offset(),
     swipeBack: swipeBackEnabled(),
-    accounts: profiles, activeAccountUid: active?.profile.uid ?? null, selfProfile: appLocked ? null : selfProfile, contacts: appLocked ? null : active?.contactsSnapshot() ?? null,
+    accounts: accounts.profiles, activeAccountUid: active?.profile.uid ?? null, selfProfile: appLocked ? null : selfProfile, contacts: appLocked ? null : active?.contactsSnapshot() ?? null,
     channels: screenLocked ? null : active?.channels.snapshot ?? null,
     personalChannels: screenLocked ? null : active?.personalChannels.snapshot ?? null,
     contactSearch: appLocked ? null : active?.contactDiscovery.snapshot ?? null, pendingDirects: appLocked || !active ? [] : active.pendingDirects().map(item => ({ ...item, displayName: active.dialogAvatars.peerName(item.chatId) || item.displayName, avatar: active.dialogAvatars.snapshot(item.chatId), official: active.dialogAvatars.peerOfficial(item.chatId) ?? undefined })), participants: appLocked ? null : active?.participants ?? null,
@@ -873,12 +874,13 @@ function registerIPC(): void {
       validate(); voiceCaptures.permissionReady(capture); return grant
     } catch (error) { voiceCaptures.clear(capture.id); throw error }
   }
-  // macOS asks once per device kind; a video message needs the camera as well as the microphone.
-  const askForRecording = async (media: CaptureMedia): Promise<void> => {
-    if (process.platform !== 'darwin') return
-    if (!(await systemPreferences.askForMediaAccess('microphone'))) throw new Error(tr('시스템 설정에서 Morse의 마이크 접근을 허용해 주세요.'))
-    if (media === 'video' && !(await systemPreferences.askForMediaAccess('camera'))) throw new Error(tr('시스템 설정에서 Morse의 카메라 접근을 허용해 주세요.'))
-  }
+  // B487b: the system's answer for the devices a recording needs (platform/device-access.ts); a video message needs the
+  // camera as well as the microphone.
+  const askForRecording = (media: CaptureMedia): Promise<void> => deviceAccess(media, {
+    platform: process.platform,
+    status: device => systemPreferences.getMediaAccessStatus(device),
+    ask: device => systemPreferences.askForMediaAccess(device)
+  })
   handle('activate-inquiry-voice', (uid, raw) => {
     try {
       const account = accounts.requireActive(identifier(uid)), target = inquiryVoiceTarget(raw)
@@ -2738,6 +2740,12 @@ function registerIPC(): void {
   })
   // System Settings › General › Language & Region › Translation Languages
   handle('open-translation-settings', () => shell.openExternal('x-apple.systempreferences:com.apple.Localization-Settings.extension'))
+  // B487b: «설정 열기» after a refused microphone or camera — the system's page for that device, chosen here only.
+  handle('open-device-settings', device => {
+    const address = device === 'microphone' || device === 'camera' ? deviceSettingsAddress(device, process.platform) : null
+    if (!address) throw new Error(tr('이 컴퓨터에서는 설정을 열 수 없습니다.'))
+    return shell.openExternal(address)
+  })
   // A10 §4 «자세히·이의 제기» / «도움»: a new mail to the operator naming the account, the app and the system (Telegram
   // SendToBannedHelp). Any saved account may ask — a banned one is not connected.
   handle('operator-mail', (uid, sanction, until) => {
@@ -2835,12 +2843,12 @@ function countsInBadge(session: { readStatus: string }): boolean { return sessio
 function accountStates(): AccountAuthState[] {
   const activeUid = accounts.active?.profile.uid ?? null
   return authentication.states().map(state => {
-    const session = accounts.get(state.uid), profile = session?.selfProfile.snapshot.profile
+    const session = accounts.get(state.uid), own = session?.account
     // B353: the same count as the Dock's, for this account (accountBadgeState, tdesktop unreadWithMentionsBadge).
     const badge = session && countsInBadge(session) ? accountBadgeState(state.uid, session.dialogs(), settings?.preferences.badgeMode ?? 'messages') : { count: 0, muted: false }
     // Each account's own photo, as Settings::AccountsList paints every account's userpic.
     const photo = session?.selfProfile.snapshot.photo
-    return { ...state, userId: profile?.userId || state.userId, displayName: profile?.displayName || state.displayName, connected: Boolean(session), active: state.uid === activeUid, unread: badge.count, unreadMuted: badge.muted,
+    return { ...state, userId: own?.userId || state.userId, displayName: own?.displayName || state.displayName, connected: Boolean(session), active: state.uid === activeUid, unread: badge.count, unreadMuted: badge.muted,
       photo: photo?.status === 'ready' ? photo.url : null }
   })
 }

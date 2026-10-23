@@ -265,6 +265,8 @@ export class AuthenticationDomain {
     const pending = this.pendingUid ? this.controllers.get(this.pendingUid) : undefined
     if (pending && !pending.connected) await pending.cancel()
   }
+  // B488: an open account's session read its own profile; that account's sign-in keeps its name and userId.
+  profileSeen(uid: string, profile: AccountProfile): void { this.controllers.get(uid)?.profileSeen(profile) }
   restore(uid: string): Promise<void> {
     const controller = this.controllers.get(uid)
     if (!controller) throw new AuthenticationFailure('unavailable')

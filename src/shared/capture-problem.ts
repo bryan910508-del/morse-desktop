@@ -1,4 +1,5 @@
 import { tr } from './i18n'
+import { deviceDeniedText } from './device-access'
 
 // Windows PC check 9 (user 10-14 17:3x, no microphone connected): pressing record showed Chromium's own words,
 // «Requested device not found», twice. tdesktop never shows a device error as it is: a recording that cannot start says
@@ -28,10 +29,8 @@ export function captureProblem(error: unknown, media: CaptureMedia, platform: st
       ? tr('카메라나 마이크를 찾을 수 없어요. 연결돼 있는지, Windows 설정 › 개인 정보 및 보안 › 카메라·마이크에서 데스크톱 앱의 사용이 켜져 있는지 확인해 주세요.')
       : tr('카메라나 마이크를 찾을 수 없어요. 연결돼 있는지 확인해 주세요.')
   }
-  if (refused.has(name)) {
-    if (media === 'audio') return windows ? tr('Windows 설정 › 개인 정보 및 보안 › 마이크에서 데스크톱 앱의 마이크 사용을 켜 주세요.') : tr('시스템 설정에서 Morse의 마이크 접근을 허용해 주세요.')
-    return windows ? tr('Windows 설정 › 개인 정보 및 보안 › 카메라·마이크에서 데스크톱 앱의 사용을 켜 주세요.') : tr('시스템 설정에서 Morse의 카메라 접근을 허용해 주세요.')
-  }
+  // B487b: a refusal is worded in one place (device-access.ts); the system's own refusal is caught before this, in main.
+  if (refused.has(name)) return deviceDeniedText(media)
   if (busy.has(name)) return media === 'audio'
     ? tr('다른 앱이 마이크를 쓰고 있거나 마이크를 시작하지 못했어요. 다른 앱을 닫고 다시 시도해 주세요.')
     : tr('다른 앱이 카메라나 마이크를 쓰고 있거나 시작하지 못했어요. 다른 앱을 닫고 다시 시도해 주세요.')

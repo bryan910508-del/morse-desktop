@@ -46,6 +46,8 @@ export interface InquiryThreadSnapshot {
   scheduled: import('./deferred-send').DeferredItem[]
   // How far the other side has read what this account sent (a chat's outboxRead).
   outboxRead: import('./read-receipts').ReadCursor | null
+  // B493: the room was there and is gone (deleted by either side, here or elsewhere).
+  gone?: true
 }
 export interface ChannelInquiriesSnapshot { list: InquiryListSnapshot | null; thread: InquiryThreadSnapshot | null }
 export interface InquiryListRequest { requestId: string; channelId: string }
