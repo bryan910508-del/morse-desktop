@@ -18,7 +18,8 @@ import { trackWrite } from '../app/drafts'
 import { Spinner, TextField } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
 import { popupMenu, pointFor, type MenuEntry } from '../ui/popup-menu'
-import { translationMenuEntry } from '../app/translations'
+import { deleteInquiryRoom } from './inquiry-delete'
+import { learnTranslationGates, translationMenuEntry } from '../app/translations'
 import { showInquiryThread } from './channel-ui'
 import { UserAvatar } from '../ui/user-avatar'
 import { ActionRow, ContactProfile } from '../info/info-panel'
@@ -69,7 +70,10 @@ function InquiryList({ accountUid, channelId }: { accountUid: string; channelId:
 // and a clock under the time while one is on its way, as a chat's row does.
 function InquiryListRow({ accountUid, channelId, item }: { accountUid: string; channelId: string; item: import('../../../shared/channel-inquiries').InquirySummary }) {
   const sends = useInquirySendState(accountUid, item.id)
-  return <button type="button" className="inquiry-row" onClick={() => showInquiryThread(channelId, item.id)}>
+  // B495: the owner's row offers «문의 삭제» as the asking side's row in the chat list does (inquiry-delete.ts).
+  return <button type="button" className="inquiry-row" onClick={() => showInquiryThread(channelId, item.id)}
+    onContextMenu={event => { event.preventDefault(); popupMenu.open(pointFor(event, event.currentTarget), [
+      { label: tr('문의 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void deleteInquiryRoom(accountUid, item.id, item.peerName) } }]) }}>
     <UserAvatar uid={item.peerUid} name={item.peerName} size={42} image={item.photo} />
     <span className="inquiry-row-body">
       <span className="inquiry-row-line"><strong className="ellipsis">{item.peerName}</strong>
@@ -372,10 +376,14 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
   }
   // B343b: «번역» as a chat's menu has it, from the one function and path (translationMenuEntry), under the room's key.
   const translationRoute = useDesktop(state => state?.translationRoute)
+  // B-menu-now: opened at once with what is known; the room's latest messages ask their language answer beforehand.
   const openMenu = (item: InquiryMessageItem, point: { x: number; y: number }): void => {
-    void translationMenuEntry(accountUid, inquiryQueueChatId(inquiryId), inquiryChatMessage(item, inquiryId), 'inquiry', translationRoute, false)
-      .then(translate => showMenu(item, point, translate), () => showMenu(item, point, null))
+    showMenu(item, point, translationMenuEntry(accountUid, inquiryQueueChatId(inquiryId), inquiryChatMessage(item, inquiryId), 'inquiry', translationRoute, false))
   }
+  const textKey = items.slice(-100).map(item => `${item.id}:${item.text?.length ?? 0}`).join(',')
+  useEffect(() => {
+    if (ready) learnTranslationGates(accountUid, inquiryQueueChatId(inquiryId), items.slice(-100).map(item => inquiryChatMessage(item, inquiryId)), 'inquiry', translationRoute)
+  }, [ready, textKey, accountUid, inquiryId, translationRoute])
   const showMenu = (item: InquiryMessageItem, point: { x: number; y: number }, translate: MenuEntry): void => {
     const pinned = pinnedIds.includes(item.id)
     // The attachment this message can hand over, as a chat hands one over (Telegram «Save As…»).
@@ -438,7 +446,9 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
         { label: thread?.autoDeleteSeconds ? autoDeleteSummary(thread.autoDeleteSeconds) : tr('자동 삭제'), icon: <Timer size={18} />,
           onSelect: () => showInquiryAutoDeleteBox(accountUid, { requestId, inquiryId }, { seconds: thread?.autoDeleteSeconds ?? 0 }) },
         'separator',
-        { label: tr('대화 기록 모두 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void clear() } }
+        { label: tr('대화 기록 모두 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void clear() } },
+        // B495: the room itself, for both sides (inquiry-delete.ts).
+        { label: tr('문의 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void deleteInquiryRoom(accountUid, inquiryId, thread?.title || tr('1:1 문의')) } }
       ])}><EllipsisVertical size={20} /></button>
       <button className="icon-button" aria-label={tr('문의 닫기')} onClick={() => controller.closeInquiry()}><X size={20} /></button>
       </>}

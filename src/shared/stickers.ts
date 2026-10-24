@@ -9,6 +9,13 @@ export const stickerSidePx = 512
 // start, as iOS MorseStickerMedia.cropVideo keeps its part (tdesktop: kVideoStickerMaxDuration, sticker_creator_box.cpp:57,
 // is Telegram's server rule). A GIF keeps every frame, as on iOS; a received sticker plays as it is.
 export const maxStickerVideoSeconds = 5
+// B472b (one rule in the three apps): a received MP4 sticker with no length, or a single frame, is shown as that frame and
+// not repeated. A looping video of length 0 restarts without a pause (Chromium: seek after seek, tens of thousands in
+// seconds); Telegram Desktop's reader keeps its loop to the clock instead (media_clip_ffmpeg.cpp:148-161). The length is
+// Infinity before it is known and then 0, so only a finite length above one frame's time moves.
+export function stickerMoves(duration: number): boolean {
+  return Number.isFinite(duration) && duration > 0.05
+}
 // The part of a `duration`-second video a sticker keeps: from `start`, held inside the video, for at most five seconds.
 export function stickerVideoRange(duration: number, start: number): { start: number; seconds: number } {
   const length = Number.isFinite(duration) && duration > 0 ? duration : 0

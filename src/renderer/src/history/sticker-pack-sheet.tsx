@@ -5,6 +5,7 @@ import { controller } from '../app/ui'
 import { errorText } from '../app/format'
 import { Spinner } from '../ui/controls'
 import { Box } from '../ui/layers'
+import { StickerVideo } from './sticker-video'
 import { tr } from '../../../shared/i18n'
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { deletePack, packStickerMenu } from './sticker-actions'
@@ -12,7 +13,7 @@ import { deletePack, packStickerMenu } from './sticker-actions'
 // One sticker of a set, drawn as the bubble draws it (iOS MorseStickerSetItemView).
 export function StickerPackItemView({ pack, item }: { pack: StickerPack; item: StickerPackItem }) {
   const url = stickerPackItemURL(pack.id, item.id)
-  return item.kind === 'mp4' ? <video src={url} autoPlay loop muted playsInline /> : <img src={url} alt={item.emoji || tr('스티커')} draggable={false} loading="lazy" />
+  return item.kind === 'mp4' ? <StickerVideo src={url} /> : <img src={url} alt={item.emoji || tr('스티커')} draggable={false} loading="lazy" />
 }
 
 // Telegram StickerPackScreen, as iOS MorseStickerPackSheet: the set's title and count, its stickers, and one

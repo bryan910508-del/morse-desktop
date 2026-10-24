@@ -86,18 +86,45 @@ export function toggleTranslation(accountUid: string, chatId: string, message: C
 // tdesktop offers it in any room, for any sender (history_view_context_menu.cpp:1901-1909). `room` is the translation
 // key: a chat's id, or an inquiry room's inquiryQueueChatId (shared/translation.ts translationRoom). On this device's
 // route the language gate decides first; the server's route offers it and answers «same language» itself.
-export async function translationMenuEntry(accountUid: string, room: string, message: ChatMessage, roomKind: string | undefined,
-  route: TranslationRoute | undefined, auto: boolean): Promise<MenuEntry> {
+// B-menu-now: the menu is made at once, from what is already known, as tdesktop decides «Translate» while it builds the
+// menu (history_view_context_menu.cpp:1901-1910, Ui::SkipTranslate translate_box.cpp:491-520). On the server's route it
+// is offered; on this device's route the language answer is asked while the message is on screen (learnTranslationGates)
+// and kept per message — not yet known, «번역» is left out, as tdesktop leaves it out when it cannot tell.
+export function translationMenuEntry(accountUid: string, room: string, message: ChatMessage, roomKind: string | undefined,
+  route: TranslationRoute | undefined, auto: boolean): MenuEntry {
   if (!menuTranslatable(message, roomKind) || !translationAvailable(route)) return null
   const shown = translationShown(accountUid, room, message.id, message.text, auto)
-  if (!shown && !await offerTranslation(accountUid, room, message.id)) return null
+  if (!shown && !translationOffered(accountUid, room, message, route)) return null
   return { label: shown ? tr('원문 보기') : tr('번역'), icon: createElement(Languages, { size: 18 }), onSelect: () => { void toggleTranslation(accountUid, room, message, auto) } }
 }
-// The menu offers «번역» only for text in another language; a slow answer leaves it out.
-export async function offerTranslation(accountUid: string, chatId: string, messageId: string): Promise<boolean> {
-  try {
-    return await Promise.race([window.morse.translationGate(accountUid, chatId, messageId), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 800))])
-  } catch { return false }
+// What this device's language helper said for a message's text, kept while that text stays (main keeps it by text too).
+const gateAnswers = new Map<string, { source: string; differs: boolean }>(), gateAsking = new Set<string>()
+const maxGateAnswers = 2000
+function translationOffered(accountUid: string, room: string, message: ChatMessage, route: TranslationRoute | undefined): boolean {
+  if (route === 'server') return true
+  const answer = gateAnswers.get(keyOf(accountUid, room, message.id))
+  if (answer?.source === message.text) return answer.differs
+  learnTranslationGates(accountUid, room, [message], undefined, route)
+  return false
+}
+// The messages on screen ask once each, a couple at a time, so the menu finds its answer when it is opened.
+export function learnTranslationGates(accountUid: string, room: string, messages: ChatMessage[], roomKind: string | undefined, route: TranslationRoute | undefined): void {
+  if (route !== 'device') return
+  for (const message of messages) {
+    if (!menuTranslatable(message, roomKind)) continue
+    const key = keyOf(accountUid, room, message.id), source = message.text
+    if (gateAnswers.get(key)?.source === source || gateAsking.has(key)) continue
+    gateAsking.add(key)
+    queue.push(async () => {
+      try {
+        const differs = await window.morse.translationGate(accountUid, room, message.id).catch(() => null)
+        if (differs === null) return
+        if (gateAnswers.size >= maxGateAnswers) gateAnswers.delete(gateAnswers.keys().next().value!)
+        gateAnswers.set(key, { source, differs })
+      } finally { gateAsking.delete(key) }
+    })
+  }
+  pump()
 }
 
 function pump(): void {

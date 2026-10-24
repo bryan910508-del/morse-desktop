@@ -22,6 +22,7 @@ import { Spinner } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
 import { DeleteChoice } from '../ui/delete-choice'
 import { trackWrite } from '../app/drafts'
+import { deleteInquiryRoom } from '../channels/inquiry-delete'
 import { showClearHistoryBox } from './clear-history-box'
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { OfficialMark } from '../ui/official-mark'
@@ -317,13 +318,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
   }
   async function removeInquiry(inquiry: InquiryRow): Promise<void> {
     if (!inquiry.inquiryId) return
-    if (!await confirmBox({ title: inquiry.title, text: tr('이 문의를 삭제하면 상대방의 목록과 기록에서도 사라지고 되돌릴 수 없어요.'), confirm: tr('모두에게 삭제'), danger: true })) return
-    // B493: as a chat's delete closes it first (runDelete, tdesktop DeleteMessagesBox::deleteAndClear).
-    controller.closeInquiryRoom(inquiry.inquiryId)
-    try {
-      const result = await trackWrite(window.morse.deleteInquiryRoom(accountUid, inquiry.inquiryId))
-      controller.toast(result === 'done' ? tr('문의를 삭제했습니다.') : tr('삭제 결과를 확인하고 있습니다. 잠시 후 목록을 확인해 주세요.'))
-    } catch (reason) { controller.toast(errorText(reason, tr('문의를 삭제하지 못했습니다.')), 'error') }
+    await deleteInquiryRoom(accountUid, inquiry.inquiryId, inquiry.title)
   }
 
   function openMenu(dialog: DialogSummary, point: { x: number; y: number }): void {

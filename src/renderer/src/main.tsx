@@ -1,4 +1,5 @@
 import { Component, useEffect, useLayoutEffect, type PropsWithChildren } from 'react'
+import { accountShown, notificationArrived, type NotificationTarget, type PendingNotification } from './app/notification-open'
 import { createRoot } from 'react-dom/client'
 import './styles/tokens.css'
 import './styles/base.css'
@@ -27,8 +28,12 @@ function takeOpenLink(): void {
   }).catch(() => {})
 }
 
-// A notification of another account opens its chat after the window switches to that account.
-let pendingNotificationChat: { accountUid: string; chatId: string; at: number } | null = null
+// A notification of another account opens its chat or inquiry room after the window switches to that account.
+let pendingNotification: PendingNotification | null = null
+function openNotificationTarget(target: NotificationTarget | null): void {
+  if (target?.kind === 'chat') controller.openChat(target.chatId)
+  else if (target?.kind === 'inquiry') controller.openInquiryRoom(target.channelId, target.inquiryId)
+}
 
 class ErrorBoundary extends Component<PropsWithChildren, { failed: boolean }> {
   state = { failed: false }
@@ -62,8 +67,8 @@ function App() {
   useEffect(() => installShortcuts(platform), [platform])
   useEffect(() => {
     controller.resetAccount()
-    const pending = pendingNotificationChat
-    if (pending && pending.accountUid === account) { pendingNotificationChat = null; if (Date.now() - pending.at < 15000) controller.openChat(pending.chatId) }
+    const next = accountShown(pendingNotification, account, Date.now())
+    pendingNotification = next.pending; openNotificationTarget(next.open)
   }, [account])
   // A morse:// or talky:// link opens like the same link pressed in a message, once an account is open.
   useEffect(() => { if (ready && account) takeOpenLink() }, [ready, account])
@@ -86,13 +91,12 @@ function App() {
     // B348: a picture that could not be drawn is told by its error's name (badge-check.log), not dropped here.
     else if (event.type === 'draw-app-badge') void drawAppBadge(event.count, event.muted, event.pixels, event.target).then(url => window.morse.appBadgeDrawn(event.key, url),
       reason => window.morse.appBadgeFailed(event.key, reason instanceof Error ? reason.name : typeof reason)).catch(() => {})
-    else if (event.type === 'open-notification-chat') {
-      if (desktop.value?.activeAccountUid === event.accountUid) controller.openChat(event.chatId)
-      else pendingNotificationChat = { accountUid: event.accountUid, chatId: event.chatId, at: Date.now() }
-    }
-    // A 1:1 inquiry room opens beside its channel, the way its row in the list opens it.
-    else if (event.type === 'open-notification-inquiry') {
-      if (desktop.value?.activeAccountUid === event.accountUid) controller.openInquiryRoom(event.channelId, event.inquiryId)
+    else if (event.type === 'open-notification-chat' || event.type === 'open-notification-inquiry') {
+      // A 1:1 inquiry room opens the way its row in the list opens it.
+      const target: NotificationTarget = event.type === 'open-notification-chat' ? { kind: 'chat', chatId: event.chatId } : { kind: 'inquiry', channelId: event.channelId, inquiryId: event.inquiryId }
+      const next = notificationArrived(desktop.value?.activeAccountUid ?? null, event.accountUid, target, Date.now())
+      if (next.pending) pendingNotification = next.pending
+      openNotificationTarget(next.open)
     }
   }), [])
   if (!ready) return <div className="boot"><img src="/morse.png" alt="" />{failure ? <p>{failure}</p> : <span className="spinner" style={{ width: 22, height: 22 }} />}</div>

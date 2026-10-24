@@ -56,7 +56,8 @@ import { deleteMessage, overlayMessage, reconcileActions, reconcileMessages, tog
 import { useVisibleRead } from './visible-read'
 import { useScrollDate } from './scroll-date'
 import { followsBottom, keepBottomOnResize, keepsBottomOnChange } from './keep-bottom'
-import { autoTranslate, translationMenuEntry } from '../app/translations'
+import { autoTranslate, learnTranslationGates, translationMenuEntry } from '../app/translations'
+import { stickerFavouriteNow } from './sticker-favourite'
 import { usePresence } from '../app/presence'
 import { useTyping } from '../app/typing'
 import { PinnedBar, togglePin } from './pinned-bar'
@@ -306,6 +307,13 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   useEffect(() => {
     if (autoTranslateOn && historyReady) autoTranslate(accountUid, chatId, translatableOnScreen, desktop.value?.translationRoute === 'server')
   }, [autoTranslateOn, historyReady, translatableKey, accountUid, chatId])
+  // B-menu-now: the language answer of the text on screen, one's own too, so its menu opens at once (translations.ts).
+  const menuTextOnScreen = virtual.getVirtualItems().flatMap(item => { const entry = entries[item.index]; return entry?.kind === 'message' ? [entry.message] : [] })
+  const menuTextKey = menuTextOnScreen.map(message => `${message.id}:${message.text.length}`).join(',')
+  const translationRoute = useDesktop(snapshot => snapshot?.translationRoute)
+  useEffect(() => {
+    if (historyReady) learnTranslationGates(accountUid, chatId, menuTextOnScreen, dialogRef.current?.kind, translationRoute)
+  }, [historyReady, menuTextKey, accountUid, chatId, translationRoute])
   // HistoryWidget paints a chat only after its rows are measured and scrolled into place,
   // so opening it does not show rows jumping from estimated heights.
   const [settled, setSettled] = useState(false)
@@ -518,11 +526,9 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     const deletable = Boolean(message.version)
     const removable = deletable && canDelete(messageDeletion(message, owner, accountUid))
     // Message menu «번역»: text in another language, one's own too (B356); chosen again, the original returns.
-    // A sticker's menu waits a moment for whether it is a favourite (its bytes hashed once per message); not known by
-    // then, it offers the add, which for a favourite only moves it to the front.
-    let faved: { id: string; favourite: boolean } | null = null
+    // B-menu-now: the menu opens at once with what is known (translations.ts, sticker-favourite.ts) — nothing is waited for.
     const open = (translate: MenuEntry): void => {
-      const favourite = faved
+      const favourite = message.kind === 'sticker' && savable ? stickerFavouriteNow(accountUid, chatId, message.id, message.version, desktop.value?.stickers) : null
       const copyLink: MenuEntry | null = link ? { label: link.email ? tr('이메일 복사') : tr('링크 복사'), icon: <Link size={18} />, onSelect: () => { const copied = copyText(link.email ? link.url.replace(/^mailto:/, '') : link.url); controller.toast(copied ? tr('복사했습니다.') : tr('복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null
       const copyMessage: MenuEntry | null = text && !message.encrypted ? { label: tr('텍스트 복사'), icon: <Copy size={18} />, onSelect: () => { const copied = copyText(text); controller.toast(copied ? tr('복사했습니다.') : tr('복사하지 못했습니다.'), copied ? 'default' : 'error') } } : null
       // B113: a notice of the official notice chat offers copying (A13-5 §3-2), and B154 §2-1 one «삭제» (Telegram lets
@@ -569,12 +575,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       popupMenu.open(point, entries, { header: mutable ? <ReactionStrip accountUid={accountUid} mine={message.reactions.filter(item => item.selected).map(item => item.emoji)}
         onPick={emoji => { popupMenu.close(); void toggleReaction(accountUid, message, emoji) }} /> : undefined })
     }
-    const proceed = (): void => {
-      void translationMenuEntry(accountUid, chatId, message, owner?.kind, desktop.value?.translationRoute, autoTranslateRef.current).then(open, () => open(null))
-    }
-    if (message.kind !== 'sticker' || !savable || !message.version) { proceed(); return }
-    void Promise.race([window.morse.stickerMessageFavourite(accountUid, chatId, message.id, message.version).catch(() => null), new Promise<null>(resolve => setTimeout(() => resolve(null), 600))])
-      .then(state => { faved = state; proceed() })
+    open(translationMenuEntry(accountUid, chatId, message, owner?.kind, desktop.value?.translationRoute, autoTranslateRef.current))
   }, [accountUid, chatId, selectReply, removeMessages, copyMessages])
   const openLocalMenu = useCallback((item: LocalOutgoing, point: { x: number; y: number }) => {
     // Pressed a moment ago and not yet in the queue: nothing to retry or cancel there yet.

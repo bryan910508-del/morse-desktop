@@ -4,6 +4,7 @@ import emojis from './emoji-data.json'
 import { recentStickerRow, type StickerItem } from '../../../shared/stickers'
 import type { StickerPack } from '../../../shared/sticker-packs'
 import { StickerPackItemView } from './sticker-pack-sheet'
+import { StickerVideo } from './sticker-video'
 import { useDesktop } from '../app/store'
 import { popupMenu, pointFor, type MenuEntry } from '../ui/popup-menu'
 import { showStickerEditor } from './sticker-editor'
@@ -89,5 +90,5 @@ export function EntityPanel({ accountUid, onEmoji, onSticker, onPackSticker, onC
 }
 
 function LibrarySticker({ item }: { item: StickerItem }) {
-  return item.kind === 'mp4' ? <video src={item.url} autoPlay loop muted playsInline /> : <img src={item.url} alt={tr('스티커')} draggable={false} loading="lazy" />
+  return item.kind === 'mp4' ? <StickerVideo src={item.url} /> : <img src={item.url} alt={tr('스티커')} draggable={false} loading="lazy" />
 }

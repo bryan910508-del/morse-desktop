@@ -104,7 +104,10 @@ test('the room closes itself when gone, the list\'s delete closes it first, and 
   const read = (path: string) => readFileSync(join(__dirname, '../../src', path), 'utf8')
   const panel = read('renderer/src/channels/channel-inquiry-panel.tsx'), list = read('renderer/src/dialogs/dialogs-widget.tsx'), sends = read('main/accounts/inquiry-sends.ts')
   assert.match(panel, /const gone = thread\?\.gone === true\n  useEffect\(\(\) => \{ if \(gone\) controller\.closeInquiryRoom\(inquiryId\) \}, \[gone, inquiryId\]\)/)
-  assert.match(list, /confirm: tr\('모두에게 삭제'\), danger: true \}\)\) return\n    \/\/ B493[^\n]*\n    controller\.closeInquiryRoom\(inquiry\.inquiryId\)\n    try \{/)
+  // B495 moved the delete into one shared function (inquiry-delete.ts); the list's row uses it.
+  const shared = readFileSync(join(__dirname, '../../src/renderer/src/channels/inquiry-delete.ts'), 'utf8')
+  assert.match(shared, /confirm: tr\('모두에게 삭제'\), danger: true \}\)\) return\n  controller\.closeInquiryRoom\(inquiryId\)\n  try \{/)
+  assert.match(list, /await deleteInquiryRoom\(accountUid, inquiry\.inquiryId, inquiry\.title\)/)
   assert.match(sends, /NOT_FOUND/, 'a send answered «not found» still lets its room go (B484)')
   assert.match(sends, /forgetGoneRooms/)
 })

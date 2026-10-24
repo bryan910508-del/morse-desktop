@@ -3,6 +3,8 @@
 import { memo, useEffect, useRef, useState, type MouseEvent, type ReactElement } from 'react'
 import { Camera, Check, CircleAlert, Clock3, Download, File as FileIcon, Image as ImageIcon, LockKeyhole, Megaphone, MessageSquareText, MessageSquareWarning, Mic, NotebookPen, Pause, Play, X } from 'lucide-react'
 import type { ChatMessage, ReplyPreview } from '../../../shared/model'
+import { StickerVideo } from './sticker-video'
+import { learnStickerId } from './sticker-favourite'
 import { deliveryFailed, type LocalOutgoing } from '../../../shared/delivery'
 import type { MessageStorySource } from '../../../shared/message-story-source'
 import { positionMilliseconds } from '../../../shared/model'
@@ -291,13 +293,15 @@ function StickerView({ accountUid, chatId, message, local }: { accountUid: strin
   // Telegram OpenChatMessage → StickerPackScreen: a tap opens the sticker's set, never a photo viewer. One on its way
   // (B269) has no copy on the server yet to name its set.
   if (local) return <div className="sticker-view" data-sticker-url={ready?.url}>
-    {ready ? ready.video ? <video src={ready.url} autoPlay loop muted playsInline /> : <img src={ready.url} alt={tr('스티커')} draggable={false} />
+    {ready ? ready.video ? <StickerVideo src={ready.url} /> : <img src={ready.url} alt={tr('스티커')} draggable={false} />
       : failed ? <span className="sticker-missing">{tr('스티커')}</span> : null}
   </div>
+  // B-menu-now: the pointer coming over it learns whether it is a favourite, for its menu (sticker-favourite.ts).
   return <div className="sticker-view" data-sticker-url={ready?.url} role="button" tabIndex={0} title={tr('스티커팩 보기')}
+    onPointerEnter={() => learnStickerId(accountUid, chatId, message.id, message.version)}
     onClick={event => { event.stopPropagation(); showStickerPackSheet(accountUid, chatId, message.id, message.version) }}
     onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); showStickerPackSheet(accountUid, chatId, message.id, message.version) } }}>
-    {ready ? ready.video ? <video src={ready.url} autoPlay loop muted playsInline /> : <img src={ready.url} alt={tr('스티커')} draggable={false} />
+    {ready ? ready.video ? <StickerVideo src={ready.url} /> : <img src={ready.url} alt={tr('스티커')} draggable={false} />
       : failed ? <span className="sticker-missing">{tr('스티커')}</span> : <Spinner size={20} />}
   </div>
 }

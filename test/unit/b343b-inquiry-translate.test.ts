@@ -38,18 +38,22 @@ const calls: unknown[][] = []
 const text = (id: string): ChatMessage => ({ id, chatId: 'x', senderId: 'peer', kind: 'text', text: 'Good evening' } as unknown as ChatMessage)
 
 test('the menu row is the same for a chat and an inquiry room, and goes under the room\'s key', async () => {
-  const { translationMenuEntry } = await import('../../src/renderer/src/app/translations')
-  const chat = await translationMenuEntry('acc', 'chat1', text('a'), 'direct', 'device', false)
-  const inquiry = await translationMenuEntry('acc', 'sub_inq_Q1', text('b'), 'inquiry', 'device', false)
+  const { learnTranslationGates, translationMenuEntry } = await import('../../src/renderer/src/app/translations')
+  // B-menu-now: the answer is learned while the message is on screen, and the menu reads it at once.
+  learnTranslationGates('acc', 'chat1', [text('a')], 'direct', 'device')
+  learnTranslationGates('acc', 'sub_inq_Q1', [text('b')], 'inquiry', 'device')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  const chat = translationMenuEntry('acc', 'chat1', text('a'), 'direct', 'device', false)
+  const inquiry = translationMenuEntry('acc', 'sub_inq_Q1', text('b'), 'inquiry', 'device', false)
   assert.deepEqual([(chat as { label: string }).label, (inquiry as { label: string }).label], ['번역', '번역'])
   assert.deepEqual(calls.filter(call => call[0] === 'gate').map(call => call[2]), ['chat1', 'sub_inq_Q1'], 'the device gate asks under the room key')
   ;(inquiry as { onSelect(): void }).onSelect()
   await new Promise(resolve => setTimeout(resolve, 20))
   assert.deepEqual(calls.filter(call => call[0] === 'translate').map(call => call[2]), ['sub_inq_Q1'])
-  assert.equal(await translationMenuEntry('acc', 'chat2', text('c'), 'secret', 'device', false), null, 'not in a secret chat')
-  assert.equal(await translationMenuEntry('acc', 'chat2', text('c'), 'direct', 'none', false), null, 'not where nothing translates')
+  assert.equal(translationMenuEntry('acc', 'chat2', text('c'), 'secret', 'device', false), null, 'not in a secret chat')
+  assert.equal(translationMenuEntry('acc', 'chat2', text('c'), 'direct', 'none', false), null, 'not where nothing translates')
   // On the server's route main's gate answers yes (index.ts translation-gate) and the server judges the language.
-  assert.ok(await translationMenuEntry('acc', 'sub_inq_Q1', text('d'), 'inquiry', 'server', false))
+  assert.ok(translationMenuEntry('acc', 'sub_inq_Q1', text('d'), 'inquiry', 'server', false))
 })
 
 test('one path: both menus call translationMenuEntry, main reads the open inquiry with the one rule, «전체번역» stays off there', () => {
