@@ -83,8 +83,8 @@ import { object } from '../../shared/validation'
 import { MessageMutationFailure, NotEmitted } from './contracts'
 import type { PublicContact } from './contact-lookup'
 import { createParticipantContact, type ContactCreateFields } from './participant-contact-write'
-import type { DialogPinRequest } from '../../shared/dialog-pins'
-import { DialogPinWriteFailure, writeDialogPin } from './dialog-pin-write'
+import type { DialogPinOrderRequest, DialogPinRequest } from '../../shared/dialog-pins'
+import { DialogPinWriteFailure, writeDialogPin, writeDialogPinOrder } from './dialog-pin-write'
 import type { GroupNameEdit } from '../../shared/group-name'
 import { GroupNameWriteFailure, writeGroupName } from './group-name-write'
 import type { GroupPhotoClear } from '../../shared/group-photo'
@@ -676,6 +676,17 @@ export class FirestoreReader {
       bounded.throwIfAborted(); doc = source()
     } catch { throw new DialogPinWriteFailure(false) }
     try { await writeDialogPin(this.client, metadata(authorization), uid, request, rank, doc, bounded) }
+    catch (error) { throw error instanceof DialogPinWriteFailure ? error : new DialogPinWriteFailure(true) }
+  }
+  async setDialogPinOrder(uid: string, request: DialogPinOrderRequest, signal: AbortSignal, source: () => FirestoreDocument[]): Promise<void> {
+    const bounded = AbortSignal.any([this.bounded(signal), AbortSignal.timeout(60000)])
+    let authorization: ReadAuthorization, docs: FirestoreDocument[]
+    try {
+      bounded.throwIfAborted(); source()
+      authorization = await this.auth.authorize(bounded, false)
+      bounded.throwIfAborted(); docs = source()
+    } catch { throw new DialogPinWriteFailure(false) }
+    try { await writeDialogPinOrder(this.client, metadata(authorization), uid, request, docs, bounded) }
     catch (error) { throw error instanceof DialogPinWriteFailure ? error : new DialogPinWriteFailure(true) }
   }
   async addParticipantContact(uid: string, chatId: string, peerUid: string, signal: AbortSignal, resolve: (doc?: FirestoreDocument) => ContactCreateFields): Promise<'added' | 'exists'> {

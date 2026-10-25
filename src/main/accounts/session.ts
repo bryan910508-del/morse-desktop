@@ -84,7 +84,7 @@ import type { ParticipantAddRequest, ParticipantAddResult, ParticipantsSnapshot 
 import { participantSnapshot, roomContactFields } from './participants'
 import { ParticipantContactAdd, type ChatContactTarget } from './participant-contact-add'
 import { DialogPins } from './dialog-pins'
-import type { DialogPinRequest } from '../../shared/dialog-pins'
+import type { DialogPinOrderRequest, DialogPinRequest } from '../../shared/dialog-pins'
 import { ManualUnread } from './manual-unread'
 import { clearsUnreadMark, effectiveUnreadCount, type ManualUnreadRequest } from '../../shared/manual-unread'
 import type { ContactCreateFields } from '../network/participant-contact-write'
@@ -444,7 +444,8 @@ export class AccountSession {
       })
     this.groupPhotoEditor = new GroupPhotoEditor(credentials, (request, exact) => this.groupPhotoSource(request, exact, true))
     this.groupAnnouncement = new GroupAnnouncementEditor(credentials, (request, exact) => this.groupAnnouncementSource(request, exact))
-    this.dialogPins = new DialogPins(profile.uid, credentials, (request, exact) => this.pinSource(request, exact), () => { if (!this.closed) events.changed() })
+    this.dialogPins = new DialogPins(profile.uid, credentials, (request, exact) => this.pinSource(request, exact), () => { if (!this.closed) events.changed() },
+      request => this.pinOrderSource(request))
     // The account's value once it has been read; until then this device's old preference, which the read adopts.
     const newChatAutoDelete = (): { seconds: number } => {
       return { seconds: this.accountAutoDeleteSeconds ?? events.notifications.preferences().autoDeleteDefaultSeconds }
@@ -1128,6 +1129,16 @@ export class AccountSession {
     if (exact && ((doc && !documentVersion(doc)) || (doc ? documentVersion(doc) : '') !== request.version || current.pinned === request.pinned)) throw new Error(tr('고정 상태가 변경되었습니다. 최신 목록에서 다시 선택해 주세요.'))
     return doc
   }
+  // B502: every chat of a new pin order is one of mine, still pinned, from the same pin copy the order was made on.
+  private pinOrderSource(request: DialogPinOrderRequest): FirestoreDocument[] {
+    return request.chats.map(chat => {
+      const current = this.contextDialog(chat.chatId)
+      if (this.locked || !current || current.kind === 'secret' || current.id === `memo_${this.profile.uid}` || !current.participantUids.includes(this.profile.uid)) throw new Error(tr('현재 대화와 연결 상태를 확인해 주세요.'))
+      const doc = this.pinRows.get(`${documents}/users/${this.profile.uid}/dialogStates/${chat.chatId}`)
+      if (!doc || !current.pinned || documentVersion(doc) !== chat.version) throw new Error(tr('고정 상태가 변경되었습니다. 최신 목록에서 다시 선택해 주세요.'))
+      return doc
+    })
+  }
   private manualUnreadSource(request: ManualUnreadRequest, exact: boolean): void {
     const current = this.contextDialog(request.chatId)
     if (this.locked || !current || current.kind === 'secret' || current.id === `memo_${this.profile.uid}` || !current.participantUids.includes(this.profile.uid)) throw new Error(tr('현재 대화와 연결 상태를 확인해 주세요.'))
@@ -1375,6 +1386,8 @@ export class AccountSession {
       if (unseen && this.seenReactions.get(value.summary.id) === `${unseen.messageId}:${unseen.reactionVersion}`) delete value.summary.unseenReaction
       value.summary.pinned = pins.get(value.summary.id)?.pinned ?? false
       value.summary.pinVersion = pins.get(value.summary.id)?.version ?? ''
+      // B502: the window orders pinned chats and pinned inquiry rows on one clock (iOS pinnedAt), so it needs the rank.
+      value.summary.pinRank = value.summary.pinned ? pins.get(value.summary.id)?.rank ?? 0 : 0
       index.set(value.summary.id, value)
     }
     if (skipped) recordHistoryStep('dialog-skipped', String(skipped))

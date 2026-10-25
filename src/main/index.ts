@@ -139,7 +139,7 @@ import { actionRequest } from '../shared/message-actions'
 import { forwardRequest, forwardSource } from '../shared/forward'
 import { forwardBatchRequest } from '../shared/forward-batch'
 import { participantAddRequest, chatContactRequest } from '../shared/participants'
-import { dialogPinRequest } from '../shared/dialog-pins'
+import { dialogPinOrderRequest, dialogPinRequest } from '../shared/dialog-pins'
 import { manualUnreadRequest } from '../shared/manual-unread'
 import { mediaRequest } from '../shared/media'
 import { maxAlbumPhotos, videoFacts } from '../shared/uploads'
@@ -1157,6 +1157,10 @@ function registerIPC(): void {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 고정을 변경해 주세요.'))
     return accounts.requireActive(identifier(uid)).dialogPins.set(dialogPinRequest(request))
   })
+  handle('set-dialog-pin-order', (uid, request) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 고정을 변경해 주세요.'))
+    return accounts.requireActive(identifier(uid)).dialogPins.reorder(dialogPinOrderRequest(request))
+  })
   handle('check-dialog-pin', (uid, chatId) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 고정 상태를 확인해 주세요.'))
     return accounts.requireActive(identifier(uid)).dialogPins.check(identifier(chatId))
@@ -1680,6 +1684,10 @@ function registerIPC(): void {
   handle('open-space-notes', (uid, requestId) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     accounts.requireActive(identifier(uid)).spaceNotes.open(identifier(requestId))
+  })
+  handle('space-notes-preview', uid => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).spaceNotes.listPreview()
   })
   handle('close-space-notes', (uid, requestId) => {
     if (accounts.active?.profile.uid === identifier(uid)) accounts.active.spaceNotes.dismiss(identifier(requestId))

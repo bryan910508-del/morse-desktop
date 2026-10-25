@@ -23,7 +23,7 @@ import type { ForwardProgress, ForwardRequest, ForwardSource, ForwardTarget } fr
 import type { MediaMetadata } from './media-metadata'
 import type { ForwardBatchRequest } from './forward-batch'
 import type { ParticipantAddRequest, ParticipantAddResult, ParticipantsSnapshot } from './participants'
-import type { DialogPinRequest, DialogPinSnapshot } from './dialog-pins'
+import type { DialogPinOrderRequest, DialogPinRequest, DialogPinSnapshot } from './dialog-pins'
 import type { ManualUnreadRequest, ManualUnreadSnapshot } from './manual-unread'
 import { defaultChatBackground, type BackgroundPhotoScope, type ChatBackground, type ChatBackgroundEdit, type ChatBackgroundRecord } from './chat-background'
 import type { ProfileNameEdit, ProfileNameSaveResult } from './profile-name'
@@ -165,6 +165,8 @@ export interface DialogSummary {
   readSync: ReadSyncState
   pinned: boolean
   pinVersion: string
+  // B502: the pin's rank (0 while unpinned); pinned rows are ordered by it, highest first.
+  pinRank?: number
   muted: boolean
   archived: boolean
   discussion?: boolean
@@ -626,6 +628,7 @@ export interface DesktopBridge {
   setManualUnread(accountUid: string, request: ManualUnreadRequest): Promise<void>
   checkManualUnread(accountUid: string, chatId: string): Promise<void>
   setDialogPin(accountUid: string, request: DialogPinRequest): Promise<void>
+  setDialogPinOrder(accountUid: string, request: DialogPinOrderRequest): Promise<void>
   checkDialogPin(accountUid: string, chatId: string): Promise<void>
   openParticipants(accountUid: string, chatId: string, requestId: string): Promise<void>
   closeParticipants(accountUid: string, requestId: string): Promise<void>
@@ -760,6 +763,7 @@ export interface DesktopBridge {
   selectOwnStory(accountUid: string, request: import('./own-stories').OwnStorySelection): Promise<void>
   openSpaceNotes(accountUid: string, requestId: string): Promise<void>
   closeSpaceNotes(accountUid: string, requestId: string): Promise<void>
+  spaceNotesPreview(accountUid: string): Promise<import('./space-notes').NotesListPreview | null>
   selectSpaceNote(accountUid: string, request: import('./space-notes').SpaceNoteSelection): Promise<void>
   // resting: not seen only because the window is hidden, with a channel surface open in it (its reads rest, what they showed stays).
   setChannelsVisible(accountUid: string, visible: boolean, resting?: boolean): Promise<void>

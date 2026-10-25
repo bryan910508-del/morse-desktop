@@ -16,7 +16,7 @@ import { tr } from '../../../shared/i18n'
 // answered (saved) and a copy newer than the one the request was made on has come, that copy is what the row shows,
 // whatever it says. Every answer writes that copy: the chat for the mark (setMorseChatUnread tx.update), this
 // account's dialogStates document for a pin (writeDialogPin) — so a newer copy always follows the answer.
-interface Flag { value: boolean; id: string; version: string; answered?: boolean }
+interface Flag { value: boolean; id: string; version: string; answered?: boolean; at?: number }
 interface Override { pinned?: Flag; unread?: Flag }
 const overrides = new Map<string, Override>()
 const checked = new Set<string>()
@@ -55,7 +55,7 @@ export function dialogFlags(dialog: DialogSummary): { pinned: boolean; unread: n
 
 export async function setPinned(accountUid: string, dialog: DialogSummary, pinned: boolean): Promise<void> {
   const id = crypto.randomUUID()
-  overrides.set(dialog.id, { ...overrides.get(dialog.id), pinned: { value: pinned, id, version: dialog.pinVersion } }); touch()
+  overrides.set(dialog.id, { ...overrides.get(dialog.id), pinned: { value: pinned, id, version: dialog.pinVersion, at: Date.now() / 1000 } }); touch()
   try { await window.morse.setDialogPin(accountUid, { id, chatId: dialog.id, pinned, version: dialog.pinVersion }) }
   catch (error) { clear(dialog.id, 'pinned', id); controller.toast(errorText(error, tr('고정 상태를 바꾸지 못했습니다.')), 'error') }
 }
@@ -67,8 +67,44 @@ export async function setUnread(accountUid: string, dialog: DialogSummary, marke
   catch (error) { clear(dialog.id, 'unread', id); controller.toast(errorText(error, tr('읽음 표시를 바꾸지 못했습니다.')), 'error') }
 }
 
+// B502: a dropped order shows at once, the way a pin does: each chat stands at the rank it was given until a pin copy
+// newer than the one the order was made on has come after the answer (or the chat is no longer pinned there).
+interface Order { rank: number; id: string; version: string; answered?: boolean }
+const orders = new Map<string, Order>()
+function clearOrder(id: string): void {
+  let changed = false
+  for (const [chatId, order] of orders) if (order.id === id) { orders.delete(chatId); changed = true }
+  if (changed) touch()
+}
+// Where a chat stands among the pinned rows, highest first, on the clock inquiry rows use (pinnedAt).
+export function pinRank(dialog: DialogSummary): number {
+  const order = orders.get(dialog.id)
+  if (order) return order.rank
+  const flag = overrides.get(dialog.id)?.pinned
+  if (flag?.value && !dialog.pinned && !overtaken(overrides.get(dialog.id), 'pinned', dialog)) return flag.at ?? Infinity
+  return dialog.pinRank ?? 0
+}
+// A pin or an order of this chat not yet settled keeps a new drag from starting over it.
+export function pinUnsettled(dialog: DialogSummary): boolean {
+  return Boolean(overrides.get(dialog.id)?.pinned || orders.has(dialog.id))
+}
+export async function setPinOrder(accountUid: string, chats: readonly { dialog: DialogSummary; rank: number }[]): Promise<void> {
+  if (!chats.length) return
+  const id = crypto.randomUUID()
+  for (const { dialog, rank } of chats) orders.set(dialog.id, { rank, id, version: dialog.pinVersion })
+  touch()
+  try {
+    await window.morse.setDialogPinOrder(accountUid, { id, chats: chats.map(({ dialog, rank }) => ({ chatId: dialog.id, version: dialog.pinVersion, rank })) })
+    let changed = false
+    for (const order of orders.values()) if (order.id === id && !order.answered) { order.answered = true; changed = true }
+    if (changed) touch()
+  } catch (error) { clearOrder(id); controller.toast(errorText(error, tr('고정 순서를 바꾸지 못했습니다.')), 'error') }
+}
+
 export function reconcileDialogs(dialogs: readonly DialogSummary[]): void {
   for (const dialog of dialogs) {
+    const order = orders.get(dialog.id)
+    if (order && (!dialog.pinned || (order.answered && versionNewer(dialog.pinVersion, order.version)))) { orders.delete(dialog.id); touch() }
     const override = overrides.get(dialog.id)
     if (!override) continue
     if (override.pinned && (override.pinned.value === dialog.pinned || overtaken(override, 'pinned', dialog))) clear(dialog.id, 'pinned')

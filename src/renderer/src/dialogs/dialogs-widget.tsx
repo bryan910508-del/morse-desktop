@@ -26,10 +26,13 @@ import { deleteInquiryRoom } from '../channels/inquiry-delete'
 import { showClearHistoryBox } from './clear-history-box'
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { OfficialMark } from '../ui/official-mark'
-import { dialogFlags, reconcileDialogs, reconcilePin, reconcileUnread, setPinned, setUnread, useDialogOverrides } from './dialog-overrides'
+import { dialogFlags, pinRank, pinUnsettled, reconcileDialogs, reconcilePin, reconcileUnread, setPinned, setPinOrder, setUnread, useDialogOverrides } from './dialog-overrides'
+import { droppedRanks, moved, usePinnedDrag, type PinnedRange } from './pinned-reorder'
+import { learnNotesPreview, notesRowState, refreshNotesPreview, setNotesPinned, setNotesPinnedAt, useNotesRowState } from './notes-row-state'
+import { notesListPreview } from '../../../shared/space-notes'
 import { chatListDraft } from '../../../shared/chat-list-preview'
 import { rowSendState, type RowSendState } from '../../../shared/row-send-state'
-import { loadChatFolders, receiveChatFolders, toggleChatPinnedInFolder, useChatFolders } from '../app/chat-folders'
+import { loadChatFolders, receiveChatFolders, saveChatFolder, toggleChatPinnedInFolder, useChatFolders } from '../app/chat-folders'
 import { removeChatFolder, showFolderEditBox, showFolderPickerBox, showFoldersBox } from '../boxes/chat-folder-boxes'
 import { StoriesRow, useStoryBar } from '../stories/stories-row'
 import { tr } from '../../../shared/i18n'
@@ -40,6 +43,8 @@ import { openContactChat } from '../app/contacts'
 
 const noDialogs: DialogSummary[] = []
 const noPending: PendingDirect[] = []
+// dialogs.style defaultDialogRow height; the list places every row on it.
+const rowHeight = 62
 const noContacts: ContactSummary[] = []
 const noInquiryRows: InquiryRow[] = []
 const noUnlisted: UnlistedDirect[] = []
@@ -223,13 +228,18 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
   }).length])), [customFolders, listed, accountUid, contactSet])
 
   const inquiryRows = useDesktop(snapshot => snapshot?.inquiryRows) ?? noInquiryRows
-  // MorseNotesListPreview: the newest note once the notes list has been read, else «나만 볼 수 있어요».
-  const latestNote = useDesktop(snapshot => snapshot?.spaceNotes?.status === 'ready' ? snapshot.spaceNotes.rows[0] ?? null : null)
+  // B503 (iOS MorseNotesListPreview): the notes row's line and time are the first note, read when the list shows, when
+  // the notes screen closes, and from the notes list itself while it is open on its first page; kept on this device.
+  const notes = useNotesRowState(accountUid)
+  const notesPage = useDesktop(snapshot => snapshot?.activeAccountUid === accountUid && snapshot.spaceNotes?.status === 'ready' && snapshot.spaceNotes.page.number === 1 ? snapshot.spaceNotes.rows : null)
+  useEffect(() => { if (notesPage) learnNotesPreview(accountUid, notesListPreview(notesPage)) }, [accountUid, notesPage])
+  const section = useUi(state => state.section)
+  useEffect(() => { if (section !== 'notes') refreshNotesPreview(accountUid) }, [accountUid, section])
   const rowState = useInquiryRowStates(accountUid)
   // B482: the chat list's story row, the archive's row of hidden stories and the archive line read one answer.
   const storyBar = useStoryBar(accountUid)
   const hiddenStories = storyBar.hidden.length
-  const rows = useMemo<Row[]>(() => {
+  const { rows, pinnedRange } = useMemo<{ rows: Row[]; pinnedRange: PinnedRange | null }>(() => {
     const needle = searchFold(query)
     const matches = (title: string): boolean => !needle || searchFold(title).includes(needle)
     const result: Row[] = []
@@ -239,8 +249,6 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       // B482: hidden stories alone keep the archive line, as Telegram's archive shows its stories row (TA :12336-12345).
       if (stored.length || storedInquiries.length || hiddenStories) result.push({ kind: 'archive', count: stored.length + storedInquiries.length,
         unread: stored.filter(dialog => effectiveUnreadCount(dialog) > 0).length + storedInquiries.filter(row => row.unread > 0 || rowState(row.id).unread).length })
-      // iOS ChatListView's notes row (MorseDialogRow.memo), pinned at the top by default.
-      result.push({ kind: 'notes' })
       for (const item of pending) result.push({ kind: 'pending', pending: item })
     } else if (needle && !archived) for (const item of pending) if (matches(item.displayName)) result.push({ kind: 'pending', pending: item })
     const context = { uid: accountUid, contacts: contactSet }, inCustom = custom && !archived && !needle ? custom : null
@@ -260,6 +268,11 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       else if (!needle && (dialog.archived !== archived || !inFolder(dialog, folder))) continue
       ;(!inCustom && dialogFlags(dialog).pinned ? pinnedChats : timedChats).push({ kind: 'dialog', dialog })
     }
+    // B503: the notes row (MorseDialogRow.memo) stands with the pinned rows while pinned — its default — and among the
+    // chats by its newest note once unpinned (MorseChatListDialogProvider makeMemoItem / sortDialogItems :516-528). It is
+    // shown where iOS shows it: the whole list, not a folder, the archive or a search.
+    const notesRows: Row[] = []
+    if (!archived && !needle && folder === 'all') (notes.pinned ? pinnedChats : notesRows).push({ kind: 'notes' })
     // ChatListView keeps inquiry rooms beside the chats and orders them together by latest message. They
     // belong to no folder, and what this device made of them — pinned, muted, marked unread, put away —
     // is kept here (inquiry-row-state), as iOS keeps it in UserDefaults.
@@ -271,8 +284,15 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       return [{ kind: 'inquiry' as const, inquiry: row }]
     }) : []
     const at = (row: Row): number => row.kind === 'inquiry' ? row.inquiry.lastMessageAt ?? -Infinity
-      : row.kind === 'dialog' ? positionTime(row.dialog.top) ?? -Infinity : -Infinity
-    result.push(...pinnedChats, ...(inquiries.length ? [...timedChats, ...inquiries].sort((a, b) => at(b) - at(a)) : timedChats))
+      : row.kind === 'dialog' ? positionTime(row.dialog.top) ?? -Infinity : row.kind === 'notes' ? notes.at ?? -Infinity : -Infinity
+    // B502: pinned chats and pinned inquiry rows stand in one order, highest rank first — a chat's pin rank and a row's
+    // pinnedAt are the same clock (iOS sorts both by pinnedAt; ChatListView+Table.swift:686-699).
+    const pinRankOf = (row: Row): number => row.kind === 'dialog' ? pinRank(row.dialog) : row.kind === 'inquiry' ? rowState(row.inquiry.id).pinnedAt
+      : row.kind === 'notes' ? notes.pinnedAt : 0
+    pinnedChats.sort((a, b) => { const x = pinRankOf(a), y = pinRankOf(b); return x === y ? 0 : x > y ? -1 : 1 })
+    let pinnedRange: PinnedRange | null = needle ? null : { start: result.length, end: result.length + pinnedChats.length }
+    const besideChats = [...inquiries, ...notesRows]
+    result.push(...pinnedChats, ...(besideChats.length ? [...timedChats, ...besideChats].sort((a, b) => at(b) - at(a)) : timedChats))
     // B49: searching also finds the people with no row — a 1:1 that left the list (contact or not) and a contact with
     // no 1:1 — after the chats, as Telegram's search shows its contactsNoChatsList (shared/dialog-search.ts).
     if (needle && !archived && !inCustom) {
@@ -286,9 +306,10 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       const rank = new Map(inCustom.pinnedChatIds.map((id, index) => [id, index]))
       const key = (row: Row): number => row.kind === 'dialog' ? rank.get(row.dialog.id) ?? Infinity : Infinity
       result.sort((a, b) => { const x = key(a), y = key(b); return x === y ? 0 : x < y ? -1 : 1 })
+      pinnedRange = { start: 0, end: result.filter(row => key(row) !== Infinity).length }
     }
-    return result
-  }, [listed, pending, inquiryRows, rowState, query, folder, archived, overridesVersion, custom, contactSet, accountUid, unlistedDirects, contactItems, hiddenStories])
+    return { rows: result, pinnedRange }
+  }, [listed, pending, inquiryRows, rowState, query, folder, archived, overridesVersion, custom, contactSet, accountUid, unlistedDirects, contactItems, hiddenStories, notes])
 
   // B49: a person found without a row opens as their 1:1 — the room that left the list, else a new chat with the contact.
   async function openPerson(person: NoChatPerson): Promise<void> {
@@ -296,7 +317,34 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
     try { controller.openChat(await window.morse.openUnlistedDirect(accountUid, person.chatId)) }
     catch (reason) { controller.toast(errorText(reason, tr('대화를 열지 못했습니다.')), 'error') }
   }
-  const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => scroll.current, estimateSize: () => 62, overscan: 10, getItemKey: index => rowKey(rows[index]!) })
+  // B502: the pinned rows are dragged into a new order (pinned-reorder.ts); the order is saved once, when let go — in a
+  // folder of mine as its pinned list, elsewhere as the pins' ranks (chats) and pinnedAt (inquiry rows), top first.
+  const pinned = pinnedRange && pinnedRange.end - pinnedRange.start >= 2 ? rows.slice(pinnedRange.start, pinnedRange.end) : []
+  // A folder's pinned list is the folder's own; elsewhere each chat's pin is written, which a secret chat or a pin not yet
+  // settled cannot take.
+  const inFolderPins = Boolean(custom && !archived)
+  const draggable = !query && status === 'ready' && pinned.every(row => row.kind !== 'dialog' || inFolderPins || (row.dialog.kind !== 'secret' && !pinUnsettled(row.dialog)))
+  function dropPinned(from: number, to: number): void {
+    if (!pinnedRange) return
+    const next = moved(rows.slice(pinnedRange.start, pinnedRange.end), from - pinnedRange.start, to - pinnedRange.start)
+    if (custom && inFolderPins) {
+      const ids = next.flatMap(row => row.kind === 'dialog' ? [row.dialog.id] : [])
+      void saveChatFolder(accountUid, { ...custom, pinnedChatIds: [...ids, ...custom.pinnedChatIds.filter(id => !ids.includes(id))] }, false)
+      return
+    }
+    const ranks = droppedRanks(next.map(row => row.kind === 'dialog' ? pinRank(row.dialog) : row.kind === 'inquiry' ? rowState(row.inquiry.id).pinnedAt
+      : row.kind === 'notes' ? notes.pinnedAt : 0))
+    const chats: { dialog: DialogSummary; rank: number }[] = []
+    next.forEach((row, index) => {
+      if (row.kind === 'dialog') chats.push({ dialog: row.dialog, rank: ranks[index]! })
+      else if (row.kind === 'inquiry') setInquiryRowState(accountUid, row.inquiry.id, { pinnedAt: ranks[index]! })
+      // The notes row's place is this device's, never the account's pin ranks.
+      else if (row.kind === 'notes') setNotesPinnedAt(accountUid, ranks[index]!)
+    })
+    void setPinOrder(accountUid, chats)
+  }
+  const { drag, onPointerDown, rowStyle } = usePinnedDrag({ scroll, range: pinnedRange, size: rowHeight, enabled: draggable, onDrop: dropPinned })
+  const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => scroll.current, estimateSize: () => rowHeight, overscan: 10, getItemKey: index => rowKey(rows[index]!) })
 
   // iOS gives an inquiry row the same swipe actions a chat row has, all kept on the device that set them
   // (ChatListView+Table.inquirySwipeContext → ChatListLocalStateStore); a desktop keeps them behind the
@@ -321,6 +369,15 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
     await deleteInquiryRoom(accountUid, inquiry.inquiryId, inquiry.title)
   }
 
+  // B503: the notes row's menu, as Telegram's Saved Messages row has one (tdesktop Filler::fillContextMenuActions,
+  // window_peer_menu.cpp:1906-; addTogglePin :544-): open it, pin or unpin it — never archive it (CanArchive :4674-4676).
+  function openNotesMenu(point: { x: number; y: number }): void {
+    const pinnedNow = notesRowState(accountUid).pinned
+    popupMenu.open(point, [
+      { label: tr('노트 열기'), icon: <StickyNote size={18} />, onSelect: () => controller.showNotes() },
+      { label: pinnedNow ? tr('고정 해제') : tr('고정'), icon: pinnedNow ? <PinOff size={18} /> : <Pin size={18} />, onSelect: () => setNotesPinned(accountUid, !pinnedNow) }
+    ])
+  }
   function openMenu(dialog: DialogSummary, point: { x: number; y: number }): void {
     const flags = dialogFlags(dialog), secret = dialog.kind === 'secret'
     const unread = flags.unread > 0 || flags.marked
@@ -471,9 +528,9 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       {status !== 'ready' && !rows.length ? <div className="dialogs-empty" role="status">
         {status === 'loading' ? <Spinner size={22} /> : <><p>{message || tr('대화 목록을 불러오지 못했습니다.')}</p><button className="button secondary" onClick={() => { void window.morse.refreshDialogs(accountUid).catch(() => {}) }}>{tr('다시 불러오기')}</button></>}
       </div> : !rows.length ? <div className="dialogs-empty">{query ? <p>{tr('‘{0}’에 맞는 대화가 없습니다.', [query])}</p> : <><strong>{folder === 'all' ? tr('아직 대화가 없습니다') : tr('이 폴더에 대화가 없습니다')}</strong></>}</div>
-        : <div className="dialogs-virtual" style={{ height: virtual.getTotalSize() }}>
+        : <div className={`dialogs-virtual${drag ? ' reordering' : ''}`} style={{ height: virtual.getTotalSize() }} onPointerDown={onPointerDown}>
           {virtual.getVirtualItems().map(item => {
-            const row = rows[item.index]!, style: CSSProperties = { transform: `translateY(${item.start}px)` }
+            const row = rows[item.index]!, style: CSSProperties = rowStyle(item.index, item.start)
             if (row.kind === 'dialog') return <DialogRow key={item.key} dialog={row.dialog} active={row.dialog.id === selected} style={style} index={item.index} flags={dialogFlags(row.dialog)} onMenu={openMenu} />
             // A subscriber row opens its room; an owner row opens that channel's inquiry list.
             if (row.kind === 'inquiry') return <InquiryDialogRow key={item.key} accountUid={accountUid} inquiry={row.inquiry} style={style} index={item.index} onMenu={openInquiryMenu} />
@@ -491,11 +548,14 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
                 <span className="dialog-row-line"><span className="dialog-row-preview ellipsis">{row.person.chatId ? tr('지난 대화 · 다시 열기') : tr('연락처 · 대화 없음')}</span></span>
               </span>
             </button>
-            if (row.kind === 'notes') return <button key={item.key} type="button" className="dialog-row" style={style} data-row={item.index} onClick={() => controller.showNotes()}>
+            if (row.kind === 'notes') return <button key={item.key} type="button" className="dialog-row" style={style} data-row={item.index} onClick={() => controller.showNotes()}
+              onContextMenu={event => { event.preventDefault(); openNotesMenu(pointFor(event, event.currentTarget)) }}
+              onKeyDown={event => { if ((event.key === 'F10' && event.shiftKey) || event.key === 'ContextMenu') { event.preventDefault(); openNotesMenu(pointFor(null, event.currentTarget)) } }}>
               <span className="avatar avatar-notes" style={{ width: 46, height: 46 }}><StickyNote size={22} /></span>
               <span className="dialog-row-body">
-                <span className="dialog-row-line"><span className="dialog-row-name ellipsis">{tr('노트')}</span>{latestNote && <span className="dialog-row-time">{dialogTime(positionTime(latestNote.updated))}</span>}</span>
-                <span className="dialog-row-line"><span className="dialog-row-preview ellipsis">{latestNote ? latestNote.title || latestNote.preview || tr('나만 볼 수 있어요') : tr('나만 볼 수 있어요')}</span></span>
+                <span className="dialog-row-line"><span className="dialog-row-name ellipsis">{tr('노트')}</span>{notes.at !== null && <span className="dialog-row-time">{dialogTime(notes.at)}</span>}</span>
+                <span className="dialog-row-line"><span className="dialog-row-preview ellipsis">{notes.line || tr('나만 볼 수 있어요')}</span>
+                  {notes.pinned && <Pin size={14} className="dialog-row-status" aria-label={tr('고정됨')} />}</span>
               </span>
             </button>
             return <button key={item.key} type="button" className="dialog-row" style={style} data-row={item.index} onClick={() => controller.setArchived(true)}>

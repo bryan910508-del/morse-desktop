@@ -4,7 +4,7 @@ import type { NotePageSearch, NotePageSearchResult } from '../../shared/space-no
 import type { NoteEditDraftStart, NoteEditDraft } from '../../shared/space-note-edit-drafts'
 import { NotePinEditor } from './space-note-pin'
 import type { NotePinRequest } from '../../shared/space-note-pin'
-import type { SpaceNoteDetail, SpaceNoteRow, SpaceNoteSelection, SpaceNotesSnapshot, SpaceNotesPageRequest } from '../../shared/space-notes'
+import { notesListPreview, type NotesListPreview, type SpaceNoteDetail, type SpaceNoteRow, type SpaceNoteSelection, type SpaceNotesSnapshot, type SpaceNotesPageRequest } from '../../shared/space-notes'
 import { comparePosition, type MessagePosition } from '../../shared/model'
 import { identifier } from '../../shared/validation'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
@@ -67,6 +67,19 @@ export class SpaceNotesReader {
     return { ...request, scanned: this.notes.size, hits }
   }
   open(requestId: string): void { this.openPage(requestId, null, [], 1) }
+  // B503 (iOS MorseNotesListPreview.refreshFromServer): the chat list's notes row, read once when the list shows and
+  // when the notes screen closes — the 24 newest notes, and of them the first in the notes' own order. A note this
+  // build cannot read is left out, as the notes list leaves nothing half-read on screen.
+  async listPreview(): Promise<NotesListPreview | null> {
+    if (this.closed || this.auth.signal.aborted || !this.allowed()) throw new Error(tr('현재 계정 연결과 잠금을 확인해 주세요.'))
+    const reader = new FirestoreReader(this.auth)
+    try {
+      const rows = await reader.query(`${documents}/users/${this.uid}`, { from: [{ collectionId: 'spaceNotes' }],
+        orderBy: [{ field: { fieldPath: 'updatedAt' }, direction: 'DESCENDING' }], limit: { value: 24 } }, this.auth.signal)
+      if (rows.length > 24) throw new Error('Note preview limit exceeded')
+      return notesListPreview(rows.flatMap(doc => { try { return [noteFromDocument(doc, this.uid)] } catch { return [] } }))
+    } finally { reader.close() }
+  }
   page(request: SpaceNotesPageRequest): void {
     const owner = this.owner
     if (this.closed || this.auth.signal.aborted || !this.allowed() || !owner || owner.abort.signal.aborted || owner.requestId !== request.requestId || this.value.status !== 'ready') throw new Error(tr('현재 노트 페이지를 다시 불러와 주세요.'))

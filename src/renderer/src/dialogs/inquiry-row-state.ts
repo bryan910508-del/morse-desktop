@@ -3,8 +3,10 @@ import { useSyncExternalStore } from 'react'
 // iOS ChatListLocalStateStore: an inquiry row's notifications, pin, unread mark and archive are kept on
 // the device that set them (UserDefaults there, this store here). The room document has no place for
 // them — its fields are the conversation, shared with the other side — so these never leave this window.
-export interface InquiryRowState { muted: boolean; pinned: boolean; unread: boolean; archived: boolean }
-export const noInquiryRowState: InquiryRowState = { muted: false, pinned: false, unread: false, archived: false }
+// B502: pinnedAt is the moment the row was pinned (or the rank a drag gave it), in seconds, on the clock a chat's pin
+// rank uses, so pinned chats and pinned inquiry rows stand in one order (iOS ChatListInquiryPinStore pinnedAt).
+export interface InquiryRowState { muted: boolean; pinned: boolean; unread: boolean; archived: boolean; pinnedAt: number }
+export const noInquiryRowState: InquiryRowState = { muted: false, pinned: false, unread: false, archived: false, pinnedAt: 0 }
 
 const key = (accountUid: string): string => `morse.inquiryRows.${accountUid}`
 const listeners = new Set<() => void>()
@@ -26,8 +28,9 @@ const rows = new Map<string, InquiryRowState>()
 function read(accountUid: string, id: string): InquiryRowState {
   const stored = all(accountUid)[id], mapKey = `${accountUid}\n${id}`
   const value: InquiryRowState = { ...noInquiryRowState, ...(stored ?? {}) }
+  if (typeof value.pinnedAt !== 'number' || !Number.isFinite(value.pinnedAt) || !value.pinned) value.pinnedAt = 0
   const held = rows.get(mapKey)
-  if (held && held.muted === value.muted && held.pinned === value.pinned && held.unread === value.unread && held.archived === value.archived) return held
+  if (held && held.muted === value.muted && held.pinned === value.pinned && held.unread === value.unread && held.archived === value.archived && held.pinnedAt === value.pinnedAt) return held
   rows.set(mapKey, value)
   return value
 }
@@ -37,8 +40,11 @@ export function inquiryRowState(accountUid: string, id: string): InquiryRowState
 export function setInquiryRowState(accountUid: string, id: string, patch: Partial<InquiryRowState>): void {
   const value = { ...all(accountUid) }
   const next: Partial<InquiryRowState> = { ...(value[id] ?? {}), ...patch }
+  // A row pinned now goes on top of the pinned rows; one let go keeps no time.
+  if (patch.pinned === true && patch.pinnedAt === undefined && !value[id]?.pinned) next.pinnedAt = Date.now() / 1000
+  if (!next.pinned) delete next.pinnedAt
   // Nothing stored for a row that is in its ordinary state.
-  for (const name of ['muted', 'pinned', 'unread', 'archived'] as const) if (!next[name]) delete next[name]
+  for (const name of ['muted', 'pinned', 'unread', 'archived', 'pinnedAt'] as const) if (!next[name]) delete next[name]
   if (Object.keys(next).length) value[id] = next; else delete value[id]
   cache = { account: accountUid, value }
   try { localStorage.setItem(key(accountUid), JSON.stringify(value)) } catch { /* per-device convenience only */ }

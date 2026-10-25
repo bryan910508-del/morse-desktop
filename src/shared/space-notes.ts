@@ -1,10 +1,17 @@
 import { identifier, object } from './validation'
-import type { MessagePosition } from './model'
+import { comparePosition, type MessagePosition } from './model'
 import { tr } from './i18n'
 export interface SpaceNoteRow { id: string; version: string; title: string; preview: string; updated: MessagePosition; created: MessagePosition | null; pinned: boolean | null }
 export interface SpaceNoteDetail extends SpaceNoteRow { body: string }
 export interface SpaceNotesPage { number: number; canPrevious: boolean; older: { noteId: string; version: string } | null }
 export interface SpaceNotesSnapshot { revision: string | null; page: SpaceNotesPage; requestId: string | null; status: 'idle' | 'loading' | 'ready' | 'error'; message: string; limited: boolean; rows: SpaceNoteRow[]; selected: SpaceNoteDetail | null }
+// B503: what the chat list's notes row shows and sorts by once unpinned — the first note in the notes' own order
+// (pinned first, then newest; iOS SpaceNote.sortedForDisplay → MorseNotesListPreview.update), or nothing.
+export interface NotesListPreview { updated: MessagePosition; line: string }
+export function notesListPreview(notes: readonly Pick<SpaceNoteRow, 'title' | 'preview' | 'updated' | 'pinned'>[]): NotesListPreview | null {
+  const first = [...notes].sort((a, b) => Number(b.pinned === true) - Number(a.pinned === true) || comparePosition(b.updated, a.updated))[0]
+  return first ? { updated: { ...first.updated }, line: first.title || first.preview } : null
+}
 export interface SpaceNoteSelection { requestId: string; noteId: string | null; version: string | null }
 export function spaceNoteSelection(raw: unknown): SpaceNoteSelection {
   const v = object(raw)

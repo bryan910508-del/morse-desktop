@@ -1,4 +1,4 @@
-import type { DialogPinRequest, DialogPinSnapshot } from '../../shared/dialog-pins'
+import type { DialogPinOrderRequest, DialogPinRequest, DialogPinSnapshot } from '../../shared/dialog-pins'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
 import { DialogPinWriteFailure } from '../network/dialog-pin-write'
 import { boolField, documentVersion, documents, numberField, stringField, type FirestoreDocument, type WireObject } from '../network/firestore-values'
@@ -20,15 +20,18 @@ export class DialogPins {
   private readonly attempts = new Map<string, Attempt>()
   private latest: Attempt | null = null
   private active: { attempt: Attempt; abort: AbortController; task: Promise<void> } | null = null
+  // B502: an order being saved. It runs alone: no pin starts under it, and it does not start under a pin.
+  private ordering: { id: string; abort: AbortController; task: Promise<void> } | null = null
   private closed = false
   constructor(private readonly uid: string, private readonly auth: ReadCredentials,
     private readonly source: (request: DialogPinRequest, exact: boolean) => FirestoreDocument | undefined,
-    private readonly changed: () => void) {}
+    private readonly changed: () => void,
+    private readonly orderSource: (request: DialogPinOrderRequest) => FirestoreDocument[] = () => { throw new Error('No pin order source') }) {}
   get snapshot(): DialogPinSnapshot | null { return this.latest ? { ...this.latest.value } : null }
-  canChange(chatId: string): boolean { return !this.closed && !this.active && this.attempts.get(chatId)?.value.state !== 'uncertain' }
-  needsCheck(chatId: string): boolean { return !this.closed && !this.active && this.attempts.get(chatId)?.value.state === 'uncertain' }
+  canChange(chatId: string): boolean { return !this.closed && !this.active && !this.ordering && this.attempts.get(chatId)?.value.state !== 'uncertain' }
+  needsCheck(chatId: string): boolean { return !this.closed && !this.active && !this.ordering && this.attempts.get(chatId)?.value.state === 'uncertain' }
   private publish(): void { if (!this.closed) this.changed() }
-  pause(): void { this.active?.abort.abort() }
+  pause(): void { this.active?.abort.abort(); this.ordering?.abort.abort() }
   prune(): void {
     if (!this.active) return
     try { this.source(this.active.attempt.request, false) } catch { this.pause() }
@@ -81,9 +84,25 @@ export class DialogPins {
       } catch { /* The saved record may be unavailable while locking or closing. */ }
     } finally { reader?.close() }
   }
+  // B502: the pinned chats' new order, saved once when the row is let go. A pin whose answer is still unknown, or one
+  // being saved, keeps the order from starting; the window shows the order at once and goes back to the list if this fails.
+  reorder(request: DialogPinOrderRequest): Promise<void> {
+    if (this.closed) throw new Error(tr('계정을 다시 연결해 주세요.'))
+    if (this.ordering?.id === request.id) return this.ordering.task
+    if (this.active || this.ordering || request.chats.some(chat => this.attempts.get(chat.chatId)?.value.state === 'uncertain')) throw new Error(tr('진행 중인 저장과 이전 고정 결과를 먼저 확인해 주세요.'))
+    this.orderSource(request)
+    const abort = new AbortController()
+    const task = (async () => {
+      const reader = new FirestoreReader(this.auth)
+      try { await reader.setDialogPinOrder(this.uid, request, abort.signal, () => this.orderSource(request)) }
+      finally { reader.close() }
+    })().finally(() => { if (this.ordering?.abort === abort) this.ordering = null })
+    this.ordering = { id: request.id, abort, task }
+    return task
+  }
   check(chatId: string): Promise<void> {
     const attempt = this.attempts.get(chatId)
-    if (this.closed || this.active || !attempt) throw new Error(tr('고정 요청과 연결 상태를 확인해 주세요.'))
+    if (this.closed || this.active || this.ordering || !attempt) throw new Error(tr('고정 요청과 연결 상태를 확인해 주세요.'))
     this.source(attempt.request, false)
     const abort = new AbortController()
     this.latest = attempt; attempt.value.checking = true
@@ -108,5 +127,5 @@ export class DialogPins {
     } catch { attempt.value.message = tr('고정 상태를 조회하지 못했습니다. 자동으로 다시 저장하지 않습니다. 연결 후 다시 확인해 주세요.') }
     finally { reader?.close() }
   }
-  async close(): Promise<void> { this.closed = true; this.pause(); await this.active?.task; this.attempts.clear(); this.latest = null }
+  async close(): Promise<void> { this.closed = true; this.pause(); await this.active?.task; await this.ordering?.task.catch(() => {}); this.attempts.clear(); this.latest = null }
 }

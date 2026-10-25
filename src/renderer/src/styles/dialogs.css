@@ -29,6 +29,9 @@
 }
 .dialog-row:hover { background: var(--card-pressed) }
 .dialog-row.active { background: var(--accent); color: #fff }
+/* B502: while pinned rows are dragged they are opaque, so the dragged one passes over the others cleanly. */
+.dialogs-virtual.reordering .dialog-row { background: var(--card) }
+.dialogs-virtual.reordering .dialog-row.active { background: var(--accent) }
 .dialog-row-body { flex: 1; min-width: 0; display: grid; gap: 4px }
 .dialog-row-line { display: flex; align-items: center; gap: 5px; min-width: 0; height: 20px }
 /* B111: the name takes its text's width (giving way when long) and what follows it — the «공식» mark, the muted mark —
