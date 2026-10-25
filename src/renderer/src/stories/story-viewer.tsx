@@ -3,6 +3,7 @@ import { firstStoryCaptionLink } from '../../../shared/story-caption-link'
 import { useEffect, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, Flag, Pause, Play, Send, Volume2, VolumeX, X } from 'lucide-react'
 import { showReportBox } from '../boxes/report-box'
+import { useStoryCovered } from './story-covered'
 import type { DesktopSnapshot } from '../../../shared/model'
 import { storyReactions, type PeerStoryRow } from '../../../shared/peer-stories'
 import { composingKey } from '../../../shared/shortcuts'
@@ -207,7 +208,9 @@ function StoryViewer({ accountUid, peers, startIndex, close }: { accountUid: str
   const chatName = useDesktop(state => uid ? state?.dialogs?.find(dialog => (dialog.kind === 'direct' || dialog.kind === 'secret') && dialog.participantUids.includes(uid))?.title ?? '' : '')
   const item = peer?.items[itemIndex] ?? null
   const key = item ? `${peer!.requestId}:${item.id}` : null
-  const stopped = paused || hidden || reacting || typing || replying || Boolean(reply)
+  // B497: a menu or a box over the viewer holds the story, and letting go of it carries on (story-covered.ts).
+  const covered = useStoryCovered()
+  const stopped = paused || hidden || reacting || typing || replying || Boolean(reply) || covered
 
   const next = (): void => {
     if (!peer) return
@@ -340,7 +343,7 @@ function StoryViewer({ accountUid, peers, startIndex, close }: { accountUid: str
         <button className="icon-button small" aria-label={paused ? tr('재생') : tr('일시 정지')} onClick={() => setPaused(value => !value)}>{paused ? <Play size={18} /> : <Pause size={18} />}</button>
         {item?.audio === 'attached' && <button className="icon-button small" aria-label={muted ? tr('소리 켜기') : tr('소리 끄기')} onClick={() => setMuted(value => !value)}>{muted ? <VolumeX size={18} /> : <Volume2 size={18} />}</button>}
         {/* A10 §3-1 (Telegram stories.report): the story itself, owned by this person. */}
-        {peer && item && <button className="icon-button small" aria-label={tr('스토리 신고')} onClick={() => { setPaused(true); showReportBox(accountUid, { type: 'story', targetId: item.id, ownerType: 'user', ownerId: peer.uid }, tr('스토리 신고')) }}><Flag size={18} /></button>}
+        {peer && item && <button className="icon-button small" aria-label={tr('스토리 신고')} onClick={() => { showReportBox(accountUid, { type: 'story', targetId: item.id, ownerType: 'user', ownerId: peer.uid }, tr('스토리 신고')) }}><Flag size={18} /></button>}
       </header>
       <div className="story-stage">
         {error ? <div className="media-viewer-loading" role="alert"><p>{error}</p></div>

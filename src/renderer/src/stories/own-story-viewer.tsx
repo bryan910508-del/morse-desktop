@@ -17,6 +17,7 @@ import { PeerPicker } from '../boxes/peer-picker'
 import { Avatar } from '../ui/avatar'
 import { Spinner } from '../ui/controls'
 import { Box, confirmBox } from '../ui/layers'
+import { useStoryCovered } from './story-covered'
 import { popupMenu, pointFor } from '../ui/popup-menu'
 import { storyAgo, storyKind, StoryMediaView, usePageHidden, useStoryProgress, type StoryKind, type StoryMediaSource } from './story-viewer'
 import { UserAvatar } from '../ui/user-avatar'
@@ -169,7 +170,9 @@ function OwnStoryViewer({ accountUid, close }: { accountUid: string; close(): vo
   const pageKey = (row: OwnStoryRow): string => `${row.privacy}:${row.id}`
   const row = rows?.[index] ?? null
   const key = selected ? `${selected.requestId}:${selected.row.id}` : null
-  const stopped = paused || hidden || busy
+  // B497: a menu or a box over the viewer holds the story, and letting go of it carries on (story-covered.ts).
+  const covered = useStoryCovered()
+  const stopped = paused || hidden || busy || covered
 
   const openList = async (privacy: StoryPrivacy): Promise<OwnPage> => {
     const previous = list.current
@@ -320,7 +323,6 @@ function OwnStoryViewer({ accountUid, close }: { accountUid: string; close(): vo
   function editCaption(): void {
     const target = selected, detail = desktop.value?.ownStories?.selected
     if (!target || busy || !detail || detail.id !== target.row.id) return
-    setPaused(true)
     showTextEditBox({ title: tr('스토리 설명'), label: tr('설명'), initial: detail.caption, maxLength: 2000, multiline: true, save: async caption => {
       const draftTarget = { storyId: target.row.id, privacy: target.row.privacy }
       const existing = await window.morse.readStoryCaptionDraft(accountUid, draftTarget)
@@ -348,7 +350,6 @@ function OwnStoryViewer({ accountUid, close }: { accountUid: string; close(): vo
   function editHidden(): void {
     const target = selected
     if (!target || busy) return
-    setPaused(true)
     controller.showLayer(closeBox => <HiddenAudienceBox accountUid={accountUid} initial={target} refresh={refreshSelection} close={closeBox} />, { onClose: () => setReload(value => value + 1) })
   }
   const openMenu = (point: { x: number; y: number }): void => {
@@ -396,7 +397,7 @@ function OwnStoryViewer({ accountUid, close }: { accountUid: string; close(): vo
       <button type="button" className="story-tap previous" aria-label={tr('이전')} tabIndex={-1} onClick={previous} />
       <button type="button" className="story-tap next" aria-label={tr('다음')} tabIndex={-1} onClick={next} />
       {selected && <div className="story-owner-bar">
-        <button type="button" className="story-owner-views" disabled={!views} onClick={() => { if (views) { setPaused(true); controller.showLayer(closeBox => <ViewersBox result={views} contacts={contacts} close={closeBox} />, { onClose: () => setPaused(false) }) } }}>
+        <button type="button" className="story-owner-views" disabled={!views} onClick={() => { if (views) controller.showLayer(closeBox => <ViewersBox result={views} contacts={contacts} close={closeBox} />) }}>
           <Eye size={18} />{views?.current ? tr('{0}명', [views.current.counts.viewers.toLocaleString(locale())]) : tr('조회')}
         </button>
         <span className="story-owner-privacy">{privacyIcons[selected.row.privacy]}{storyPrivacyNames[selected.row.privacy]}</span>

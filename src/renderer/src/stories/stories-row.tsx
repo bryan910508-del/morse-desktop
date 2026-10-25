@@ -78,13 +78,21 @@ export function useStoryBar(accountUid: string): StoryBar {
   }, [entries, accountUid, byUid, partners])
 }
 
+// The line after hiding or showing someone's stories names them, as tdesktop's Stories::toggleHidden puts the person's
+// name in it (data/data_stories.cpp:1334-1346). Its person always has a name; here a row's name comes from the contact
+// or the chat, and when neither has one the line says the same without a name rather than «님의 …» with none.
+export function storyHiddenText(name: string, hidden: boolean): string {
+  if (!name.trim()) return hidden ? tr('스토리를 보관함으로 옮겼어요.') : tr('스토리를 다시 대화 목록에 보여요.')
+  return hidden ? tr('{0}님의 스토리를 보관함으로 옮겼어요.', [name]) : tr('{0}님의 스토리를 다시 대화 목록에 보여요.', [name])
+}
+
 // B482 (tdesktop FillSourceMenu, dialogs/ui/dialogs_stories_content.cpp:219-280): a person's menu in either row —
 // write to them, their profile, and their stories hidden away to the archive's row or shown again.
 function storyPeerMenu(bar: StoryBar, uid: string, name: string, hidden: boolean, point: { x: number; y: number }): void {
   const dialog = bar.partners.get(uid)
   const toggle = (to: boolean): void => {
     void window.morse.setStoryPeerHidden(bar.accountUid, uid, to)
-      .then(() => controller.toast(to ? tr('{0}님의 스토리를 보관함으로 옮겼어요.', [name]) : tr('{0}님의 스토리를 다시 대화 목록에 보여요.', [name]), 'default',
+      .then(() => controller.toast(storyHiddenText(name, to), 'default',
         { label: tr('되돌리기'), run: () => { void window.morse.setStoryPeerHidden(bar.accountUid, uid, !to).catch(reason => controller.toast(errorText(reason, tr('되돌리지 못했습니다.')), 'error')) } }))
       .catch(reason => controller.toast(errorText(reason, to ? tr('스토리를 숨기지 못했습니다. 잠시 후 다시 시도해 주세요.') : tr('스토리 숨김을 풀지 못했습니다. 잠시 후 다시 시도해 주세요.')), 'error'))
   }
