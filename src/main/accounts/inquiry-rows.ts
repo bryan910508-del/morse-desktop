@@ -44,9 +44,14 @@ export interface HiddenInquiryMessages { count(inquiryId: string): number; has(i
 // ChatListView's rows for these rooms: one per inquiry for a subscriber, one folder per channel for
 // an owner (ChannelInquirySummary gathers that channel's rooms). `addresses` keeps each channel's
 // cached picture address, taken from the newest room that carries one.
+// The rooms one gone check reads at most; the window keeps state for few rooms, and asks again for the rest later.
+export const goneCheckLimit = 20
 export function buildInquiryRows(uid: string, subscriber: Iterable<FirestoreDocument>, owner: Iterable<FirestoreDocument>, remaining: RemainingLine = () => null,
   mine: MyInquiryClear = () => null): { rows: InquiryRow[]; addresses: Map<string, string> } {
-  // What a room shows after this account's boundary: its line, or nothing when the row goes.
+  // What a room shows after this account's boundary: its line, or nothing when the row goes. B484b: a room with no
+  // message yet is placed by when it was made (its createdAt, which all three apps write), so a room made again under an
+  // id after this account cleared the old one is a new room, not one still inside the old boundary — as tdesktop's
+  // boundary is a place in that chat's history and what comes after it shows (History::clearUpTill, history.cpp:4518-4540).
   const cleared = (id: string, at: number | null): 'row' | 'line' | null => {
     const clear = mine(id)
     if (!clear || (at !== null && at > clear.cutoff)) return null
@@ -61,7 +66,7 @@ export function buildInquiryRows(uid: string, subscriber: Iterable<FirestoreDocu
     const f = doc.fields, channelId = stringField(f, 'channelId', 160), id = doc.name.slice(doc.name.lastIndexOf('/') + 1)
     if (!channelId || !id || stringField(f, 'subscriberId', 160) !== uid) continue
     remember(channelId, f)
-    const roomAt = time(f, 'lastMessageAt'), left = remaining(id, roomAt), mark = cleared(id, left?.lastMessageAt ?? roomAt)
+    const roomAt = time(f, 'lastMessageAt'), left = remaining(id, roomAt), mark = cleared(id, left?.lastMessageAt ?? roomAt ?? time(f, 'createdAt'))
     if (mark === 'row') continue
     // B474: a cleared room keeps its place by its time, and shows neither a line nor the time (DialogSummary.topCleared).
     rows.push({ id: subscriberRowId(id), kind: 'subscriber', channelId, inquiryId: id, title: channelName(f), preview: mark ? '' : left ? left.preview : preview(f),
@@ -73,7 +78,7 @@ export function buildInquiryRows(uid: string, subscriber: Iterable<FirestoreDocu
     if (!channelId || stringField(f, 'channelOwnerId', 160) !== uid) continue
     remember(channelId, f)
     const id = doc.name.slice(doc.name.lastIndexOf('/') + 1), roomAt = time(f, 'lastMessageAt'), left = id ? remaining(id, roomAt) : null
-    const at = left?.lastMessageAt ?? roomAt, mark = id ? cleared(id, at) : null
+    const at = left?.lastMessageAt ?? roomAt, mark = id ? cleared(id, at ?? time(f, 'createdAt')) : null
     if (mark === 'row') continue
     const line = mark ? '' : left ? left.preview : preview(f), unread = Math.max(0, Math.trunc(numberField(f, 'unreadForOwner')))
     const current = folders.get(channelId)
@@ -159,6 +164,22 @@ export class InquiryRows {
     try {
       this.listed(ids, async inquiryId => (await reader.getDocument(`${documents}/channelInquiries/${inquiryId}`, this.auth.signal)) !== null)
     } catch { /* The queue is asked again with the next list. */ }
+  }
+  // B484 (tdesktop Session::deleteConversationLocally, data_session.cpp:1699-1726): which of these rooms are gone, so the
+  // window drops what it kept on this device for them. Gone is known only once both lists have answered in this run, the
+  // room is in neither, and reading it finds nothing; a room pushed out of a full list is still there when read, and a
+  // read that fails knows nothing. `answered` is false until both lists have answered, so the window asks again later.
+  async gone(ids: readonly string[]): Promise<{ answered: boolean; gone: string[] }> {
+    const reader = this.reader
+    if (this.closed || this.locked || !reader || !this.answered.subscriber || !this.answered.owner) return { answered: false, gone: [] }
+    const listed = new Set([...this.subscriber.keys(), ...this.owner.keys()].map(name => name.slice(name.lastIndexOf('/') + 1)))
+    const gone: string[] = []
+    for (const inquiryId of [...new Set(ids)].slice(0, goneCheckLimit)) {
+      if (listed.has(inquiryId)) continue
+      try { if ((await reader.getDocument(`${documents}/channelInquiries/${inquiryId}`, this.auth.signal)) === null) gone.push(inquiryId) }
+      catch { /* Not known: kept, and asked again in a later run. */ }
+    }
+    return { answered: true, gone }
   }
   pause(): void {
     for (const stop of this.stops) stop()

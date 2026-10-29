@@ -140,6 +140,7 @@ const bridge: DesktopBridge = {
   addChatContact: (uid, request) => ipcRenderer.invoke('morse:add-chat-contact', uid, request),
   addInquiryContact: (uid, request) => ipcRenderer.invoke('morse:add-inquiry-contact', uid, request),
   deleteInquiryRoom: (uid, inquiryId) => ipcRenderer.invoke('morse:delete-inquiry-room', uid, inquiryId),
+  goneInquiries: (uid, inquiryIds) => ipcRenderer.invoke('morse:gone-inquiries', uid, inquiryIds),
   saveGroupName: (uid, request) => ipcRenderer.invoke('morse:save-group-name', uid, request),
   refreshChannelJoinDecisions: uid => ipcRenderer.invoke('morse:refresh-channel-join-decisions', uid),
   prepareChannelJoinDecision: (uid, request) => ipcRenderer.invoke('morse:prepare-channel-join-decision', uid, request),

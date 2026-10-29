@@ -9,6 +9,7 @@ import type { DialogSummary } from '../../../shared/model'
 import { foldOwnedDiscussions, ownedChannelDiscussion, type DiscussionFold, type InquiryRow } from '../../../shared/channel-inquiries'
 import { useInquirySendState } from '../channels/inquiry-sends'
 import { inquiryRowState, setInquiryRowState, useInquiryRowState, useInquiryRowStates } from './inquiry-row-state'
+import { useGoneInquiryRows } from './gone-inquiry-rows'
 import { leaveDiscussionRoom } from '../channels/discussion-leave'
 import type { PendingDirect } from '../../../shared/delivery'
 import { effectiveUnreadCount } from '../../../shared/manual-unread'
@@ -228,6 +229,7 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
   }).length])), [customFolders, listed, accountUid, contactSet])
 
   const inquiryRows = useDesktop(snapshot => snapshot?.inquiryRows) ?? noInquiryRows
+  useGoneInquiryRows(accountUid, inquiryRows)
   // B503 (iOS MorseNotesListPreview): the notes row's line and time are the first note, read when the list shows, when
   // the notes screen closes, and from the notes list itself while it is open on its first page; kept on this device.
   const notes = useNotesRowState(accountUid)

@@ -11,6 +11,7 @@ import { chatFolderInput, chatFolderOrder } from '../shared/chat-folders'
 import { autoDeleteSecondsValue, canChangeAutoDelete } from '../shared/chat-auto-delete'
 import { recordContactStep } from './platform/contact-diagnostics'
 import { inquiryAttachmentRequest, inquiryAutoDeleteRequest, inquiryContactRequest, inquiryForwardRequest, inquiryIdentifier, inquiryReplyTo, inquiryScheduleRequest, inquiryVoiceRequest, inquiryVoiceTarget, inquiryEditRequest, inquiryListRequest, inquiryPhotoRequest, inquiryPinRequest, inquiryReactionRequest, inquirySendRequest, inquiryTargetRequest, inquiryThreadRequest } from '../shared/channel-inquiries'
+import { goneCheckLimit } from './accounts/inquiry-rows'
 import { voiceDraftStorageNavigation, voiceDraftStorageRemoval } from '../shared/voice-draft-storage'
 import { ownStoriesPageRequest } from '../shared/own-stories'
 import { voiceDraftWrite, voiceDraftReference, type VoiceDraftRecord, type VoiceDraftSource } from '../shared/voice-draft'
@@ -2385,6 +2386,12 @@ function registerIPC(): void {
   handle('add-chat-contact', (uid, request) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
     return accounts.requireActive(identifier(uid)).addChatContact(chatContactRequest(request))
+  })
+  // B484: which rooms the window kept device state for are gone (InquiryRows.gone).
+  handle('gone-inquiries', (uid, raw) => {
+    if (screenLocked) return { answered: false, gone: [] }
+    if (!Array.isArray(raw) || raw.length > goneCheckLimit) throw new Error(tr('문의 목록을 다시 확인해 주세요.'))
+    return accounts.requireActive(identifier(uid)).inquiryRows.gone(raw.map(inquiryIdentifier))
   })
   handle('delete-inquiry-room', (uid, inquiryId) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 삭제해 주세요.'))

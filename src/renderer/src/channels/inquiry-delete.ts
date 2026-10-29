@@ -3,6 +3,8 @@ import { trackWrite } from '../app/drafts'
 import { errorText } from '../app/format'
 import { controller } from '../app/ui'
 import { confirmBox } from '../ui/layers'
+import { subscriberRowId } from '../../../shared/channel-inquiries'
+import { forgetInquiryRows } from '../dialogs/inquiry-row-state'
 
 // B495: «문의 삭제», one way from every place that offers it — the asking side's row in the chat list, the owner's
 // «1:1 문의» list, and the room's own «더 보기», for both sides (tdesktop offers «Delete chat» on a row and in a chat's
@@ -14,6 +16,9 @@ export async function deleteInquiryRoom(accountUid: string, inquiryId: string, t
   controller.closeInquiryRoom(inquiryId)
   try {
     const result = await trackWrite(window.morse.deleteInquiryRoom(accountUid, inquiryId))
+    // B484 (tdesktop deleteConversationLocally): the room is gone, and what this device kept for its row goes with it. An
+    // answer not yet known leaves it for the gone check after the lists (gone-inquiry-rows.ts).
+    if (result === 'done') forgetInquiryRows(accountUid, [subscriberRowId(inquiryId)])
     controller.toast(result === 'done' ? tr('문의를 삭제했습니다.') : tr('삭제 결과를 확인하고 있습니다. 잠시 후 목록을 확인해 주세요.'))
   } catch (reason) { controller.toast(errorText(reason, tr('문의를 삭제하지 못했습니다.')), 'error') }
 }

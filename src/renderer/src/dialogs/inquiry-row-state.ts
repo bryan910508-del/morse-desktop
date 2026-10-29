@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { subscriberRowId } from '../../../shared/channel-inquiries'
 
 // iOS ChatListLocalStateStore: an inquiry row's notifications, pin, unread mark and archive are kept on
 // the device that set them (UserDefaults there, this store here). The room document has no place for
@@ -50,6 +51,24 @@ export function setInquiryRowState(accountUid: string, id: string, patch: Partia
   try { localStorage.setItem(key(accountUid), JSON.stringify(value)) } catch { /* per-device convenience only */ }
   for (const listener of [...listeners]) listener()
 }
+
+// B484 (tdesktop Session::deleteConversationLocally, data_session.cpp:1699-1726): a room that is gone takes what this
+// device kept for its row — archive, pin, notifications, unread mark — so a room made again under the same id
+// (a subscriber's room is always <channel>_<uid>) starts as a new one.
+export function forgetInquiryRows(accountUid: string, ids: readonly string[]): void {
+  const value = { ...all(accountUid) }
+  let changed = false
+  for (const id of ids) if (id in value) { delete value[id]; changed = true }
+  if (!changed) return
+  cache = { account: accountUid, value }
+  try { localStorage.setItem(key(accountUid), JSON.stringify(value)) } catch { /* per-device convenience only */ }
+  for (const listener of [...listeners]) listener()
+}
+// The asking side's rooms this device keeps row state for (owner rows are a channel's folder, not a room).
+export function storedSubscriberRooms(accountUid: string): string[] {
+  return Object.keys(all(accountUid)).flatMap(id => id.startsWith(subscriberRowPrefix) ? [id.slice(subscriberRowPrefix.length)] : [])
+}
+const subscriberRowPrefix = subscriberRowId('')
 
 const subscribe = (listener: () => void): (() => void) => { listeners.add(listener); return () => { listeners.delete(listener) } }
 export function useInquiryRowState(accountUid: string, id: string): InquiryRowState {

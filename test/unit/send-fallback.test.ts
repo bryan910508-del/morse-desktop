@@ -34,7 +34,11 @@ test('a socket that can send carries the message and the callable is not asked',
 test('a socket that cannot send within five seconds: the same message goes through sendMorseMessage', async () => {
   const { path, callable, calls, waits } = paths({ sendable: false }, async () => accepted())
   assert.equal(socketWaitMs, 5000)
-  assert.deepEqual(await sendWithFallback(wire, signal(), path, callable), ack)
+  // The wait is five seconds less the time already gone (send-fallback.ts socketReady); the clock is held still here,
+  // so a millisecond passing between the start and the wait does not read as 4999 (0.241.46 build run 2).
+  const clock = Date.now, frozen = clock()
+  Date.now = () => frozen
+  try { assert.deepEqual(await sendWithFallback(wire, signal(), path, callable), ack) } finally { Date.now = clock }
   assert.deepEqual(waits, [5000])
   assert.deepEqual(calls, [{ name: 'sendMorseMessage', data: { ...wire, fallbackReason: 'not-registered' } }], 'the socket\'s own body, the same id, and why (B441)')
 })

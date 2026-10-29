@@ -636,6 +636,7 @@ export interface DesktopBridge {
   addChatContact(accountUid: string, request: import('./participants').ChatContactRequest): Promise<import('./participants').ParticipantAddResult>
   addInquiryContact(accountUid: string, request: import('./channel-inquiries').InquiryContactRequest): Promise<import('./participants').ParticipantAddResult>
   deleteInquiryRoom(accountUid: string, inquiryId: string): Promise<'done' | 'unconfirmed'>
+  goneInquiries(accountUid: string, inquiryIds: string[]): Promise<{ answered: boolean; gone: string[] }>
   saveGroupName(accountUid: string, request: GroupNameEdit): Promise<GroupNameResult>
   refreshChannelJoinDecisions(accountUid: string): Promise<void>
   prepareChannelJoinDecision(accountUid: string, request: ChannelJoinDecisionRequest): Promise<void>
