@@ -117,6 +117,8 @@ import { ChannelsSession, channelDocumentType } from './channels'
 import { ContactDiscovery } from './contact-discovery'
 import { ReplyDraft } from './reply-draft'
 import { AccountPresence } from './presence'
+import { PeerReadActivity } from './peer-read-activity'
+import { serverNow } from '../network/server-clock'
 import { ChannelPeoplePhotos } from './channel-people-photos'
 import { PinnedMessages } from './pinned-messages'
 import { DeferredMessages, deferredCollections, deferredFields } from './deferred-messages'
@@ -262,6 +264,8 @@ export class AccountSession {
   readonly storyVideoUpload: StoryVideoUpload
   readonly storyReplyDraft: StoryReplyDraft
   readonly presence: AccountPresence
+  // B467d: a 1:1 read that a live list snapshot brings is the other person's activity (peer-read-activity.ts).
+  private readonly peerReads: PeerReadActivity
   readonly channelPeople: ChannelPeoplePhotos
   readonly userpics: UserpicCache
   readonly mediaFiles: MediaCache
@@ -429,6 +433,7 @@ export class AccountSession {
     this.groupName = new GroupNameEditor(credentials, (request, exact) => this.groupNameSource(request, exact))
     this.groupPhoto = new GroupPhoto(profile.uid, credentials, (request, exact) => this.groupPhotoSource(request, exact), () => { if (!this.closed) events.changed() })
     this.presence = new AccountPresence(profile.uid, credentials, () => { if (!this.closed) events.changed() })
+    this.peerReads = new PeerReadActivity(profile.uid, (peer, at) => this.presence.messageSeen(peer, at), serverNow)
     this.channelPeople = new ChannelPeoplePhotos(credentials, () => { if (!this.closed) events.changed() })
     this.pins = new PinnedMessages(credentials.signal, command => this.delivery.bookmarkState(command), () => { if (!this.closed) events.changed() },
       (chatId, messageId) => this.hiddenMessages.has(chatId, messageId))
@@ -1255,9 +1260,13 @@ export class AccountSession {
         reader.watch({ query }, this.credentials.signal, {
           snapshot: rows => {
             if (!active()) return
+            // Every listen (and every one started again) first says reconnecting or loading, which leaves chatsCurrent
+            // false: its first snapshot is the catch-up, not a live read (B467d).
+            const first = kind === 'chats' && !this.chatsCurrent
             if (kind === 'chats') { this.chatRows = rows; this.chatsCurrent = true; this.listEverCurrent = true; this.listAttempts = 0 }
             else { this.pinRows = rows; this.pinsCurrent = true }
-            try { this.rebuild() } catch (error) { failed(error instanceof ReadFailure ? error : new ReadFailure('data')) }
+            try { this.rebuild() } catch (error) { failed(error instanceof ReadFailure ? error : new ReadFailure('data')); return }
+            if (kind === 'chats' && this.pinsCurrent) this.peerReads.observe([...this.index.values()].map(value => value.summary), first)
           },
           // Telegram keeps the dialogs list while it reconnects; the next consistent snapshot replaces it.
           reconnecting: () => {
