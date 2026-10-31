@@ -184,3 +184,14 @@ export function emptyRevokedDirect(summary: DialogSummary, revoked: MessagePosit
   if (savedId && summary.id === savedId) return false
   return summary.kind === 'direct' && revoked !== null && (!summary.top || withinCutoff(summary.top, revoked))
 }
+
+// B509 (가′): a private room the server made before its first message — prepareMorseChatMedia writes the room, with
+// lastMessageAt and no line, before a first media message is sent, and one never sent stays so — has no last message
+// either, so it is not a row (Telegram, as above). What this device holds keeps it: pinned (includedIndex and
+// shouldBeInChatList keep a pinned chat, history.cpp:3470-3471), open, or with a send or a draft of its own, as iOS
+// keeps a pending chat with a draft (removePendingChatIfEmpty) and Android one with a trace (PendingDialog.kt:27-31).
+export interface UnwrittenKeep { pinned: boolean; open: boolean; sending: boolean; draft: boolean }
+export function unwrittenDirect(value: Pick<ReadDialog, 'summary' | 'unwritten'>, savedId: string, keep: UnwrittenKeep): boolean {
+  if (!value.unwritten || value.summary.id === savedId) return false
+  return !keep.pinned && !keep.open && !keep.sending && !keep.draft
+}

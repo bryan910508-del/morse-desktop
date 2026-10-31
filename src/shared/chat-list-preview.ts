@@ -88,3 +88,11 @@ export function chatListDraft(dialog: Pick<DialogSummary, 'kind' | 'draft'>, unr
   if (dialog.kind === 'secret' || unread > 0 || marked) return ''
   return (dialog.draft ?? '').slice(0, draftPreviewChars)
 }
+
+// B509 (다): a room with no message yet — a new group before anyone writes — says so, as iOS (chat.startConvo, or
+// chat.channelDiscussion for a discussion, MorseChatListRowDisplay.subtitle) and Android (messaging_empty_room) do,
+// where the row had an empty line. A row emptied by a deletion keeps its empty line (B474).
+export function emptyRowLine(dialog: Pick<DialogSummary, 'id' | 'topMessageId' | 'topCleared' | 'service' | 'discussion'>): string {
+  if (dialog.topMessageId || dialog.topCleared || dialog.service || dialog.id.startsWith('memo_')) return ''
+  return dialog.discussion ? tr('채널 토론방') : tr('대화를 시작하세요')
+}

@@ -23,7 +23,9 @@ export interface FirestoreDocument { name: string; fields: Record<string, WireOb
 export interface ReadDialog { summary: DialogSummary; cutoff: MessagePosition | null; participantNames: Record<string, string>; accountUid: string; noticeless?: boolean; topExpiresAt?: number
   // B440a: the room's newest line is a member service line (lastSystemEvent); its words are drawn again once contact
   // names are known (session.ts applyNames).
-  memberEvent?: MemberServiceEvent }
+  memberEvent?: MemberServiceEvent
+  // B509: a 1:1 or secret room the server made with no message yet (hidden-chats.ts unwrittenDirect).
+  unwritten?: boolean }
 export const database = 'projects/talky-a38c3/databases/(default)'
 export const documents = `${database}/documents`
 export const pageSize = 80
@@ -185,6 +187,8 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
     return at && positionMilliseconds(at) > 0 ? [[participant, readCursor(at)]] : []
   }))
   let preview = displayField(f, 'lastMessage', 100000)
+  // B509: no line and no message id — prepareMorseChatMedia makes the room before a first media message is sent.
+  const unwritten = (kind === 'direct' || kind === 'secret') && preview === '' && !stringField(f, 'lastMessageId', 160)
   const noticeless = service && !preview && f.lastSystemEvent === undefined
   const autoDeleteLine = service ? null : autoDeleteLineText(f)
   const memberLine = kind === 'group' ? memberEventOfLine(f) : null
@@ -216,7 +220,7 @@ export function decodeDialog(doc: FirestoreDocument, uid: string): ReadDialog {
     // this device's own flags are applied by the session (ChatFlags).
     pinned: false, pinVersion: '', archived: false, muted: false,
     discussion: boolField(f, 'isChannelDiscussion'), channelId: stringField(f, 'channelId', 160) || undefined, autoDeleteSeconds: autoDeleteSecondsValue(numberField(f, 'autoDeleteSeconds')), autoDeleteMyOnly: boolField(f, 'autoDeleteMyOnly'), createdBy: stringField(f, 'createdBy', 160), pinnedForAll: pinnedMessageIds(f), unseenReaction: unseenReaction(f, uid), forum: kind === 'group' ? forumState(f) : undefined }, cutoff, participantNames, accountUid: uid, ...(noticeless ? { noticeless: true } : {}), ...(memberLine ? { memberEvent: memberLine } : {}),
-    ...(topExpiresAt !== null ? { topExpiresAt } : {}) }
+    ...(topExpiresAt !== null ? { topExpiresAt } : {}), ...(unwritten ? { unwritten: true } : {}) }
 }
 // B291 (contract «서버 가지» 17:2x): a channel post's mirror is the channel's, not its writer's; then lastSenderId says
 // whether the row's message is this account's. A secret chat's row shows no state.

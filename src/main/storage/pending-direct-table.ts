@@ -9,6 +9,7 @@ export type PendingDirectCommand =
   | { kind: 'direct-open'; chatId: string; peerUid: string; displayName: string }
   | { kind: 'direct-confirm'; chatId: string; peerUid: string }
   | { kind: 'direct-discard'; chatId: string }
+  | { kind: 'direct-discard-empty'; chatId: string }
   | { kind: 'direct-supersede'; chatId: string; peerUid: string; dialogId: string }
   | { kind: 'direct-move'; chatId: string; peerUid: string; dialogId: string; refusedId: string }
 
@@ -90,6 +91,17 @@ export function executePendingDirect(db: Database.Database, uid: string, command
       if (db.prepare('SELECT 1 FROM intents WHERE chat_id=? LIMIT 1').get(chatId)) return false
       const removed = db.prepare('DELETE FROM pending_directs WHERE chat_id=?').run(chatId).changes === 1
       if (removed) db.prepare('DELETE FROM local_drafts WHERE chat_id=?').run(chatId)
+      return removed
+    })()
+    // B509: a new chat left with nothing in it goes, as iOS removePendingChatIfEmpty (AppState.swift:5278) and Telegram,
+    // which list no 1:1 without a message. Anything written — a send, a draft, a recording — keeps it.
+    case 'direct-discard-empty': return db.transaction(() => {
+      const chatId = identifier(command.chatId)
+      if (db.prepare('SELECT 1 FROM intents WHERE chat_id=? LIMIT 1').get(chatId) ||
+        db.prepare("SELECT 1 FROM local_drafts WHERE chat_id=? AND trim(text)<>'' LIMIT 1").get(chatId) ||
+        db.prepare('SELECT 1 FROM voice_drafts WHERE chat_id=? LIMIT 1').get(chatId)) return false
+      const removed = db.prepare('DELETE FROM pending_directs WHERE chat_id=?').run(chatId).changes === 1
+      if (removed) { db.prepare('DELETE FROM local_drafts WHERE chat_id=?').run(chatId); db.prepare('DELETE FROM reply_drafts WHERE chat_id=?').run(chatId) }
       return removed
     })()
   }

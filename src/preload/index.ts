@@ -432,6 +432,7 @@ const bridge: DesktopBridge = {
   openUnlistedDirect: (uid, chatId) => ipcRenderer.invoke('morse:open-unlisted-direct', uid, chatId),
   startMemberChat: (uid, groupChatId, peerUid) => ipcRenderer.invoke('morse:start-member-chat', uid, groupChatId, peerUid),
   discardDirectDraft: (uid, chatId) => ipcRenderer.invoke('morse:discard-direct-draft', uid, chatId),
+  leavePendingDirect: (uid, chatId) => ipcRenderer.invoke('morse:leave-pending-direct', uid, chatId),
   openContactProfile: (uid, peerUid, requestId, hint) => ipcRenderer.invoke('morse:open-contact-profile', uid, peerUid, requestId, hint),
   addProfileContact: (uid, requestId) => ipcRenderer.invoke('morse:add-profile-contact', uid, requestId),
   closeContactProfile: (uid, requestId) => ipcRenderer.invoke('morse:close-contact-profile', uid, requestId),

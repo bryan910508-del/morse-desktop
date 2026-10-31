@@ -26,7 +26,7 @@ import { selectionActions, selectionMenuRows } from '../../../shared/message-sel
 import { canDelete, deletionChoices, vanishedFromHistory, type DeletionChoices } from '../../../shared/message-deletion'
 import { copyImage } from '../app/copy-image'
 import { hasFiles } from '../app/drop'
-import { trackWrite } from '../app/drafts'
+import { flushDrafts, trackWrite } from '../app/drafts'
 import { showClearHistoryBox } from '../dialogs/clear-history-box'
 import { useShortcut } from '../app/shortcuts'
 import { Avatar, PeerAvatar } from '../ui/avatar'
@@ -129,6 +129,7 @@ function ReactionPanel({ accountUid, mine, onPick }: { accountUid: string; mine:
 export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { accountUid: string; chatId: string; oneColumn: boolean; leftmost: boolean }) {
   const dialog = useDesktop(snapshot => dialogById(snapshot, chatId))
   const pending = useDesktop(snapshot => snapshot?.pendingDirects.find(item => item.chatId === chatId) ?? null)
+  const pendingNow = useRef(pending); pendingNow.current = pending
   const connection = useDesktop(snapshot => snapshot?.connection ?? 'offline')
   // The header says «연결 중…» only once the connection has been away a moment, as Telegram's does.
   const shownConnection = useShownConnection()
@@ -224,7 +225,12 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     revisions.current.outgoing = -1; revisions.current.reply = -1
     void window.morse.outgoing(accountUid, chatId).then(next => { if (alive) applyOutgoing(next) }).catch(() => {})
     void window.morse.replyDraft(accountUid, chatId).then(next => { if (alive) applyReply(next) }).catch(() => {})
-    return () => { alive = false; void window.morse.closeHistory(accountUid, chatId).catch(() => {}) }
+    return () => {
+      alive = false; void window.morse.closeHistory(accountUid, chatId).catch(() => {})
+      // B509: a new chat left with nothing written goes, as iOS removePendingChatIfEmpty does on leaving the room. The
+      // composer's last keystrokes are saved first, so a draft keeps it.
+      if (!dialogExists && pendingNow.current?.canDiscard) void flushDrafts().then(() => window.morse.leavePendingDirect(accountUid, chatId)).catch(() => {})
+    }
   }, [accountUid, chatId, dialogExists])
   const historyReady = history.status === 'ready'
   const secret = dialog?.kind === 'secret'

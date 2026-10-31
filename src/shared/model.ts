@@ -923,6 +923,7 @@ export interface DesktopBridge {
   openUnlistedDirect(accountUid: string, chatId: string): Promise<string>
   startMemberChat(accountUid: string, groupChatId: string, peerUid: string): Promise<string>
   discardDirectDraft(accountUid: string, chatId: string): Promise<void>
+  leavePendingDirect(accountUid: string, chatId: string): Promise<boolean>
   thirdPartyNotices(): Promise<string>
   history(accountUid: string, chatId: string, before?: MessagePosition): Promise<HistorySnapshot>
   newerHistory(accountUid: string, chatId: string, after: MessagePosition): Promise<HistorySnapshot>

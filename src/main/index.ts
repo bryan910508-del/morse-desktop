@@ -2342,6 +2342,8 @@ function registerIPC(): void {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 다시 시도해 주세요.'))
     return accounts.requireActive(identifier(uid)).discardDirectDraft(identifier(chatId))
   })
+  // B509: the window left a new chat; it goes if nothing was written in it. A locked screen leaves it as it is.
+  handle('leave-pending-direct', (uid, chatId) => screenLocked ? false : accounts.requireActive(identifier(uid)).leavePendingDirect(identifier(chatId)))
   handle('open-contact-profile', (uid, peerUid, requestId, hint) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
     if (hint !== undefined && (typeof hint !== 'string' || hint.length > 512)) throw new Error(tr('사용자를 다시 선택해 주세요.'))

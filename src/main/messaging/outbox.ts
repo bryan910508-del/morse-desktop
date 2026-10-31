@@ -358,6 +358,13 @@ export class OutboxPump {
     if (!await this.store<boolean>({ kind: 'direct-discard', chatId })) throw new Error(tr('이미 전송을 시작한 대화는 여기서 삭제할 수 없습니다.'))
     this.known.delete(chatId); await this.refreshPending()
   }
+  // B509: the window left a new chat; it goes only if nothing was written in it (direct-discard-empty decides).
+  async discardEmptyDirect(chatId: string): Promise<boolean> {
+    await this.opening
+    if (!this.initialized || !this.pending.has(chatId) || this.context().dialogs.has(chatId)) return false
+    if (!await this.store<boolean>({ kind: 'direct-discard-empty', chatId })) return false
+    this.known.delete(chatId); this.chatDrafts.delete(chatId); await this.refreshPending(); return true
+  }
   // What this device can write into the queue: the storage is open and the room is one this account
   // may write to. The connection is not part of it — Telegram decides whether a person may write from
   // rights alone (HistoryWidget's _canSendMessages comes from Data::CanSendAnyOf(peer, restrictions);

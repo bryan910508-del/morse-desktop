@@ -133,7 +133,7 @@ import { ChannelStories } from './channel-stories'
 import { DiscussionAvatars } from './discussion-avatars'
 import { PersonalChannels } from './personal-channel'
 import { PhotoPreviews } from '../media/photo-previews'
-import { HiddenChats, decodeHistoryClears, emptyRevokedDirect, markClearedTop, withLocalDeletion } from './hidden-chats'
+import { HiddenChats, decodeHistoryClears, emptyRevokedDirect, markClearedTop, unwrittenDirect, withLocalDeletion } from './hidden-chats'
 import { millisDown } from '../../shared/history-clears'
 import { HiddenMessages } from './hidden-messages'
 import { ChatFlags } from './chat-flags'
@@ -467,7 +467,7 @@ export class AccountSession {
           if (this.selected?.dialog.summary.id === chatId) this.selected.localRepliesChanged()
         }
         events.outgoing(chatId, snapshot)
-      }, () => { if (!this.closed) { this.followPeople(); events.changed() } }, newChatAutoDelete)
+      }, () => { if (!this.closed) { this.followPeople(); this.relistUnwritten(); events.changed() } }, newChatAutoDelete)
     void this.userpics.load().then(() => { if (!this.closed) { this.dialogAvatars.prune(); this.contacts.listAvatars.prune(); events.changed() } })
     this.draftReply = new ReplyDraft(credentials.signal, command => this.delivery.replyState(command),
       (chatId, snapshot) => { if (!this.closed) events.reply(chatId, snapshot) }, (chatId, messageId) => this.hiddenMessages.has(chatId, messageId))
@@ -1367,7 +1367,7 @@ export class AccountSession {
       } catch { skipped++ }
     }
     this.discussionHistory.setSource(this.locked ? null : this.reader, this.chatRows)
-    const index = new Map<string, ReadDialog>(), unlisted = new Set<string>()
+    const index = new Map<string, ReadDialog>(), unlisted = new Set<string>(), unwritten = new Map<string, boolean>()
     const read = readDialogs(this.chatRows.values(), this.profile.uid)
     skipped += read.skipped
     const now = Date.now()
@@ -1397,8 +1397,14 @@ export class AccountSession {
       value.summary.pinVersion = pins.get(value.summary.id)?.version ?? ''
       // B502: the window orders pinned chats and pinned inquiry rows on one clock (iOS pinnedAt), so it needs the rank.
       value.summary.pinRank = value.summary.pinned ? pins.get(value.summary.id)?.rank ?? 0 : 0
+      if (value.unwritten) {
+        const listed = !unwrittenDirect(value, `memo_${this.profile.uid}`, this.unwrittenKeep(value.summary.id, value.summary.pinned))
+        unwritten.set(value.summary.id, listed)
+        if (!listed) unlisted.add(value.summary.id)
+      }
       index.set(value.summary.id, value)
     }
+    this.unwrittenRows = unwritten
     if (skipped) recordHistoryStep('dialog-skipped', String(skipped))
     this.chatListTops.prune(id => index.has(id))
     this.scheduleRowExpiry(nextExpiry)
@@ -1515,7 +1521,9 @@ export class AccountSession {
     this.syncPresence()
     if (!this.locked) this.draftReply.bind(dialog, this.reader)
     queueMicrotask(() => { if (this.selected === history) this.acknowledgeReaction() })
-    history.start(); this.notifications.resume('history'); this.clearOpenUnreadMark(); return history
+    history.start(); this.notifications.resume('history'); this.clearOpenUnreadMark()
+    if (this.unwrittenRows.has(chatId)) queueMicrotask(() => this.relistUnwritten())
+    return history
   }
   // B104: the open chat loses «안 읽음 표시» as Telegram's does on showHistory (clearsUnreadMark), once per version of the chat.
   private unreadMarkCleared = ''
@@ -1552,7 +1560,29 @@ export class AccountSession {
   }
   // B87: another account came to the window — what this one kept is not shown again later from memory.
   forgetKeptHistories(): void { this.keptHistories.clear() }
-  closeHistory(chatId: string): void { if (this.selected?.dialog.summary.id === chatId) this.clearHistory(); this.delivery.forget(chatId); this.actions.forget(chatId) }
+  closeHistory(chatId: string): void { if (this.selected?.dialog.summary.id === chatId) this.clearHistory(); this.delivery.forget(chatId); this.actions.forget(chatId); this.relistUnwritten() }
+  // B509: the window left a new chat; it goes if nothing was written in it (iOS removePendingChatIfEmpty, Telegram).
+  async leavePendingDirect(chatId: string): Promise<boolean> {
+    if (this.closed || this.locked || this.selected?.dialog.summary.id === chatId) return false
+    return this.delivery.discardEmptyDirect(chatId)
+  }
+  // B509: what keeps a room with no message a row — see hidden-chats.ts unwrittenDirect. `sending` takes any send of
+  // this device, whatever the room's own time says: the server dated the room before the first media went up.
+  private unwrittenRows = new Map<string, boolean>()
+  private unwrittenKeep(chatId: string, pinned: boolean): import('./hidden-chats').UnwrittenKeep {
+    const sends = this.delivery.chatSendState(chatId, null)
+    return { pinned, open: this.selected?.dialog.summary.id === chatId, sending: sends.sending || sends.failed, draft: this.delivery.chatDraft(chatId).trim() !== '' }
+  }
+  // The list is built again when what keeps such a room changes: a chat opened or left, a send or a draft.
+  private relistUnwritten(): void {
+    if (this.closed) return
+    for (const [chatId, listed] of this.unwrittenRows) {
+      const summary = this.index.get(chatId)?.summary
+      if (!summary) continue
+      if (listed === !unwrittenDirect({ summary, unwritten: true }, `memo_${this.profile.uid}`, this.unwrittenKeep(chatId, summary.pinned))) continue
+      this.rebuild(); this.events.changed(); return
+    }
+  }
   private backgroundSource(chatId: string): HistoryReader {
     const dialog = this.index.get(chatId)
     if (this.closed || this.locked || this.credentials.signal.aborted || this.status !== 'ready' || !dialog ||

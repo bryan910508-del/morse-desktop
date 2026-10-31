@@ -31,7 +31,7 @@ import { dialogFlags, pinRank, pinUnsettled, reconcileDialogs, reconcilePin, rec
 import { droppedRanks, moved, usePinnedDrag, type PinnedRange } from './pinned-reorder'
 import { learnNotesPreview, notesRowState, refreshNotesPreview, setNotesPinned, setNotesPinnedAt, useNotesRowState } from './notes-row-state'
 import { notesListPreview } from '../../../shared/space-notes'
-import { chatListDraft } from '../../../shared/chat-list-preview'
+import { chatListDraft, emptyRowLine } from '../../../shared/chat-list-preview'
 import { rowSendState, type RowSendState } from '../../../shared/row-send-state'
 import { loadChatFolders, receiveChatFolders, saveChatFolder, toggleChatPinnedInFolder, useChatFolders } from '../app/chat-folders'
 import { removeChatFolder, showFolderEditBox, showFolderPickerBox, showFoldersBox } from '../boxes/chat-folder-boxes'
@@ -169,7 +169,7 @@ const DialogRow = memo(function DialogRow({ dialog, active, style, index, flags,
       <span className="dialog-row-line">
         {typing ? <span className="dialog-row-preview typing ellipsis">{typing}</span>
           : draft ? <span className="dialog-row-preview draft ellipsis"><b>{tr('작성 중')}: </b>{draft}</span>
-            : <span className="dialog-row-preview ellipsis">{secret ? tr('이 기기에서는 열 수 없는 비밀 대화') : dialog.preview}</span>}
+            : <span className="dialog-row-preview ellipsis">{secret ? tr('이 기기에서는 열 수 없는 비밀 대화') : dialog.preview || emptyRowLine(dialog)}</span>}
         {/* iOS latestReactionEmoji: someone's newest reaction to my message, before the unread count. */}
         {!secret && dialog.unseenReaction && <span className="dialog-row-reaction" aria-label={tr('새 반응 {0}', [dialog.unseenReaction.emoji])}>{dialog.unseenReaction.emoji}</span>}
         {flags.unread > 0 ? <span className={`dialog-row-badge${dialog.muted ? ' muted' : ''}`} aria-label={tr('읽지 않은 메시지 {0}개', [flags.unread])}>{flags.unread > 999 ? '999+' : flags.unread}</span>
