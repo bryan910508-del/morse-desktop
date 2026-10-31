@@ -48,7 +48,7 @@ export function historyPosition(value: unknown): MessagePosition | undefined {
 type BooleanPreference = { [K in keyof Preferences]: Preferences[K] extends boolean ? K : never }[keyof Preferences]
 const booleanPreferences = new Set<BooleanPreference>(['storyStealth', 'enterToSend', 'notifications', 'showNotificationPreview', 'showUnreadBadge',
   'autoTranslateChats', 'recordVideoMessages', 'sendTypingIndicator', 'disableTypingIndicators',
-  'notifyPersonal', 'notifyGroup', 'notifyChannel', 'notificationSound', 'inAppNotifications', 'spellCheck', 'powerSavingAuto', 'powerSavingAlwaysOn', 'compressMediaUploads', 'reduceMessageAnimations', 'mainMenuAccountsShown'])
+  'notifyPersonal', 'notifyGroup', 'notifyChannel', 'notificationSound', 'inAppNotifications', 'flashOnNotification', 'autoStart', 'startMinimized', 'spellCheck', 'powerSavingAuto', 'powerSavingAlwaysOn', 'compressMediaUploads', 'reduceMessageAnimations', 'mainMenuAccountsShown'])
 export function preferencePatch(value: unknown): Partial<Preferences> {
   const record = object(value)
   const result: Partial<Preferences> = {}

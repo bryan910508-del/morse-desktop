@@ -220,7 +220,7 @@ export class ChannelPosts {
     const value = this.value
     if (!value || value.status !== 'ready' || value.requestId !== request.requestId || value.channelId !== request.channelId) throw new Error(tr('현재 게시물 목록을 다시 확인해 주세요.'))
     const channel = this.base(request.channelId).doc, post = this.creationSource(request)
-    if (stringField(channel.fields, 'ownerId', 160) !== this.uid || stringField(post.fields, 'authorId', 160) !== this.uid) throw new Error(tr('채널 소유자와 게시물 작성자 조건을 확인할 수 없습니다.'))
+    if (stringField(channel.fields, 'ownerId', 160) !== this.uid) throw new Error(tr('현재 채널 소유자만 고정 정보를 변경할 수 있습니다.'))
     if (exact) {
       const reference = channelPinReference(channel)
       if (documentVersion(channel) !== request.channelVersion || reference.status !== 'known' || reference.postId !== request.postId || channelPostRevision(post) !== request.revision || editablePostText(post) === null || channelPostPinFlag(post) !== 'unpinned') throw new Error(tr('현재 채널 지정 대상과 꺼진 고정 표시가 변경되었습니다.'))
@@ -231,7 +231,7 @@ export class ChannelPosts {
     const value = this.value
     if (!value || value.status !== 'ready' || value.requestId !== request.requestId || value.channelId !== request.channelId) throw new Error(tr('현재 게시물 목록을 다시 확인해 주세요.'))
     const channel = this.base(request.channelId).doc, post = this.creationSource(request)
-    if (stringField(channel.fields, 'ownerId', 160) !== this.uid || stringField(post.fields, 'authorId', 160) !== this.uid) throw new Error(tr('채널 소유자와 게시물 작성자 조건을 확인할 수 없습니다.'))
+    if (stringField(channel.fields, 'ownerId', 160) !== this.uid) throw new Error(tr('현재 채널 소유자만 고정 정보를 변경할 수 있습니다.'))
     if (exact) {
       const reference = channelPinReference(channel)
       if (documentVersion(channel) !== request.channelVersion || reference.status === 'unknown' || reference.postId !== request.referenceId || reference.source !== request.referenceSource || reference.postId === request.postId || channelPostRevision(post) !== request.revision || editablePostText(post) === null || channelPostPinFlag(post) !== 'pinned') throw new Error(tr('현재 채널 대상과 게시물 고정 표시가 변경되었습니다.'))
@@ -246,7 +246,6 @@ export class ChannelPosts {
     if (stringField(channel.fields, 'ownerId', 160) !== this.uid) throw new Error(tr('현재 채널 소유자만 고정 정보를 변경할 수 있습니다.'))
     const previous = request.previous ? this.creationSource({ channelId: request.channelId, postId: request.previous.postId }) : null
     const next = request.next ? this.creationSource({ channelId: request.channelId, postId: request.next.postId }) : null
-    for (const post of [previous, next]) if (post && stringField(post.fields, 'authorId', 160) !== this.uid) throw new Error(tr('변경 대상 게시물의 작성자 조건을 확인할 수 없습니다.'))
     if (exact) {
       const info = channelPostPinInfo(channel, value.posts, this.uid)
       if (info.comparison !== 'compatible' || documentVersion(channel) !== request.channelVersion || info.reference.postId !== (request.previous?.postId ?? null)) throw new Error(tr('현재 고정 정보가 변경되었거나 일치하지 않습니다.'))

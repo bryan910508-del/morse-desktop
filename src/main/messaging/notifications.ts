@@ -3,6 +3,7 @@ import type { ChatMessage, MessagePosition, Preferences } from '../../shared/mod
 import { comparePosition } from '../../shared/model'
 import type { NotificationHint } from '../../shared/notifications'
 import { readCovers, readCursor } from '../../shared/read-receipts'
+import { alerting, notificationAlerts } from '../../shared/notification-alerts'
 import type { NotificationCommand } from '../storage/notification-protocol'
 import type { FirestoreReader } from '../network/firestore-rpc'
 import { decodeMessage, documents, expiry, stringField, type FirestoreDocument, type ReadDialog } from '../network/firestore-values'
@@ -16,6 +17,8 @@ export interface NotificationHost {
   // The window is in front and being used (iOS «앱 사용 중»).
   appActive(): boolean
   show(content: NotificationContent, click: () => void, dismiss: () => void): (() => void) | null
+  // B378 ②: flash the taskbar button or bounce the Dock icon once for a new message (the shell skips a window in front).
+  alert?(): void
   open(chatId: string): void
   report(message: string): void
   // rh-3: why a shown notification was taken back (tap-check.log) — a reason code, never the chat or the message.
@@ -49,7 +52,7 @@ export class AccountNotifications {
     private readonly claim: (command: NotificationCommand) => Promise<boolean>) {}
 
   receive(hint: NotificationHint): void {
-    if (this.closed || this.ownerSignal.aborted || this.host.locked() || !this.host.preferences().notifications) return
+    if (this.closed || this.ownerSignal.aborted || this.host.locked() || !alerting(this.host.preferences())) return
     const key = `${hint.chatId}/${hint.id}`
     if (this.recent.has(key)) return
     this.recent.add(key)
@@ -59,7 +62,7 @@ export class AccountNotifications {
   }
   private active(signal: AbortSignal): boolean {
     return !this.closed && !signal.aborted && !this.ownerSignal.aborted && this.context().ready &&
-      !this.host.locked() && this.host.preferences().notifications
+      !this.host.locked() && alerting(this.host.preferences())
   }
   private message(doc: FirestoreDocument, chatId: string, suppressForeground = true): ChatMessage | null {
     const verdict = this.judge(doc, chatId, suppressForeground)
@@ -124,6 +127,10 @@ export class AccountNotifications {
     if (!this.message(doc, hint.chatId)) return
     const previous = this.displayed.get(hint.chatId)
     if (previous && comparePosition(previous.position, message.position) >= 0) return
+    // B378 ②: the flash goes by its own switch, before the toast and whether or not one shows.
+    const alerts = notificationAlerts(this.host.preferences())
+    if (alerts.flash) this.host.alert?.()
+    if (!alerts.show) return
     this.remove(hint.chatId, 'replaced')
     if (this.displayed.size >= 12) this.remove(this.displayed.keys().next().value!, 'overflow')
     const preview = this.host.preferences().showNotificationPreview
@@ -177,7 +184,8 @@ export class AccountNotifications {
   resume(cause: ResumeCause = 'other'): void {
     for (const [chatId, entry] of this.displayed) {
       try {
-        if (!this.active(this.generation.signal)) { this.remove(chatId, `resume:${cause}:inactive`); continue }
+        // A shown notification goes with the notifications themselves, even while the flash keeps messages looked at.
+        if (!this.active(this.generation.signal) || !notificationAlerts(this.host.preferences()).show) { this.remove(chatId, `resume:${cause}:inactive`); continue }
         const verdict = this.judge(entry.doc, chatId, true)
         if (typeof verdict === 'string') this.remove(chatId, `resume:${cause}:${verdict}`)
       } catch { this.remove(chatId, `resume:${cause}:error`) }

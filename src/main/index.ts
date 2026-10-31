@@ -134,7 +134,7 @@ import { googleConfigured } from './auth/google-answer'
 import { AuthenticationFailure } from './auth/contracts'
 import { generateBackupCode } from './auth/backup-code'
 import { productionAuthentication } from './auth/production'
-import type { DesktopEvent, DesktopSnapshot } from '../shared/model'
+import type { DesktopEvent, DesktopSnapshot, Preferences } from '../shared/model'
 import { draftText, historyPosition, identifier, preferencePatch } from '../shared/validation'
 import { actionRequest } from '../shared/message-actions'
 import { forwardRequest, forwardSource } from '../shared/forward'
@@ -165,6 +165,8 @@ import { applicationMenuShown, composingKey, shortcutAccelerator, shortcutFor, s
 import { NativeContextMenus, type ContextMenuItem } from './platform/context-menus'
 import { WindowState } from './platform/window-state'
 import { activeForTrayClick, DesktopShell } from './platform/desktop-shell'
+import { autostartSkipped, launchedAtLogin, startHidden, toggleAutostart, type LaunchState } from './platform/autostart'
+import { toggledNotifications, type NotificationsMenu } from '../shared/notification-alerts'
 import { AppUpdates } from './platform/app-updates'
 import { AppVersionGate } from './platform/app-version-gate'
 import { BackgroundPhotos, type BackgroundPhotoOwner } from './platform/background-photos'
@@ -226,6 +228,7 @@ const accounts = new AccountRegistry(uid => ({
     // rh-3: why a shown notification was taken back, and whether the window was in use then (tap-check.log).
     withdrawn: reason => recordTapStep('notice-withdrawn', `${reason} focused=${mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused() ? 1 : 0}`),
     show: (content, click, dismiss) => notifications.show(uid, content, click, dismiss),
+    alert: () => desktopShell.alert(),
     open: chatId => openNotificationChat(uid, chatId),
     openInquiry: (channelId, inquiryId) => openNotificationInquiry(uid, channelId, inquiryId),
     report: message => notifications.report(message)
@@ -285,14 +288,16 @@ const desktopShell = new DesktopShell(showWindow, () => app.quit(), () => {
   const window = mainWindow
   if (!window || window.isDestroyed()) return null
   return { setOverlayIcon: (overlay, description) => window.setOverlayIcon(overlay, description), scaleFactor: () => screen.getDisplayMatching(window.getBounds()).scaleFactor,
-    setTitle: title => window.setTitle(title) }
+    setTitle: title => window.setTitle(title), focused: () => window.isVisible() && !window.isMinimized() && window.isFocused(), flash: on => window.flashFrame(on) }
 }, request => emit({ type: 'draw-app-badge', ...request }), process.platform, Date.now, undefined, {
   // B374: a tray click hides a window that is shown and active and shows any other (activeForTrayClick).
   active: () => Boolean(mainWindow && !mainWindow.isDestroyed() && activeForTrayClick(mainWindow.isVisible() && !mainWindow.isMinimized(), mainWindow.isFocused(), windowBlurredAt, Date.now())),
   hide: () => { if (mainWindow && !mainWindow.isDestroyed()) hideToTray(mainWindow) }
-}, recordBadgeStep)
+}, recordBadgeStep, from => toggleNotificationsFromMenu(from))
 // When the window last lost the focus: clicking the tray takes it just before the click arrives.
 let windowBlurredAt = 0
+// B378 ③: this run was started by Windows with «start minimized», so the window waits in the tray (startHidden).
+let startedHidden = false
 const appUpdates = new AppUpdates(() => { void publish() })
 // app_config/desktop: below its minimum this version may not run (platform/app-version-gate.ts); a newer current version
 // only has the updater check now.
@@ -2530,16 +2535,7 @@ function registerIPC(): void {
     return text
   })
   handle('preferences', async patch => {
-    const update = preferencePatch(patch)
-    if (update.closeToTrayChoice === true && (process.platform !== 'win32' || !desktopShell.status().trayAvailable)) throw new Error(tr('시스템 트레이를 사용할 수 없습니다.'))
-    const owner = update.chatBackground ? backgroundPhotoOwner({ kind: 'device' }) : undefined
-    const photo = update.chatBackground?.preset === 'photo' ? backgroundPhotos.forSave(owner!, update.chatBackground.photoId) : undefined
-    try { await settings.update(update, photo, owner?.validate) }
-    finally { photo?.fill(0) }
-    if ('notifications' in update || 'showNotificationPreview' in update || 'notifyPersonal' in update || 'notifyGroup' in update || 'inAppNotifications' in update) for (const session of accounts.all) session.notificationPreferencesChanged()
-    if ('spellCheck' in update && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.session.setSpellCheckerEnabled(settings.preferences.spellCheck)
-    applyTheme()
-    await publish()
+    await changePreferences(preferencePatch(patch))
     return rendererSnapshot()
   })
   handle('history', (uid, chatId, before) => accounts.requireActive(identifier(uid)).history(identifier(chatId), historyPosition(before)))
@@ -2867,12 +2863,44 @@ function accountStates(): AccountAuthState[] {
       photo: photo?.status === 'ready' ? photo.url : null }
   })
 }
+async function changePreferences(update: Partial<Preferences>): Promise<void> {
+  if (update.closeToTrayChoice === true && (process.platform !== 'win32' || !desktopShell.status().trayAvailable)) throw new Error(tr('시스템 트레이를 사용할 수 없습니다.'))
+  // B378 ③ (Windows only): «start minimized» never over a local passcode (settings_advanced.cpp:675-678, :733-739), and
+  // the start with Windows is the system's to take: the setting keeps what it said (AutostartToggle done, :698-716), and
+  // «start minimized» goes off with it.
+  if ((update.autoStart !== undefined || update.startMinimized !== undefined) && process.platform !== 'win32') throw new Error(tr('Windows에서만 사용할 수 있습니다.'))
+  if (update.startMinimized === true && appLock?.enabled) throw new Error(tr('로컬 암호가 켜져 있으면 최소화된 상태로 시작할 수 없어요. 로컬 암호를 먼저 꺼 주세요.'))
+  if (update.autoStart !== undefined) {
+    const enabled = toggleAutostart(update.autoStart)
+    if (update.autoStart && !enabled) emit({ type: 'error', message: tr('Windows 시작 시 실행을 설정하지 못했습니다.') })
+    update.autoStart = enabled
+    if (!enabled) update.startMinimized = false
+  }
+  const owner = update.chatBackground ? backgroundPhotoOwner({ kind: 'device' }) : undefined
+  const photo = update.chatBackground?.preset === 'photo' ? backgroundPhotos.forSave(owner!, update.chatBackground.photoId) : undefined
+  try { await settings.update(update, photo, owner?.validate) }
+  finally { photo?.fill(0) }
+  await preferencesApplied(update)
+}
+// B378 ①: the tray's or the Dock's notifications line (toggledNotifications), applied as the settings' own switch is.
+async function toggleNotificationsFromMenu(from: NotificationsMenu): Promise<void> {
+  if (!settings || shutdown !== 'running') return
+  const { update, flashRemembered } = toggledNotifications(settings.preferences, settings.trayFlashRemembered, from)
+  try { await settings.updateFromTray(update, flashRemembered); await preferencesApplied(update) }
+  catch { emit({ type: 'error', message: tr('설정을 저장하지 못했습니다.') }) }
+}
+async function preferencesApplied(update: Partial<Preferences>): Promise<void> {
+  if ('notifications' in update || 'flashOnNotification' in update || 'showNotificationPreview' in update || 'notifyPersonal' in update || 'notifyGroup' in update || 'inAppNotifications' in update) for (const session of accounts.all) session.notificationPreferencesChanged()
+  if ('spellCheck' in update && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.session.setSpellCheckerEnabled(settings.preferences.spellCheck)
+  applyTheme()
+  await publish()
+}
 function updateDesktopShell(): void {
   if (!settings) return
   // B348: which accounts the count can see, by their states only (badge-check.log).
   if (process.platform === 'win32') recordBadgeStep('accounts', { all: accounts.all.length, states: accounts.all.map(session => `${session.state}/${session.readStatus}`).join(','), locked: screenLocked, running: shutdown === 'running' })
   desktopShell.update(settings.preferences, accounts.all.filter(countsInBadge)
-    .map(session => ({ uid: session.profile.uid, dialogs: session.dialogs() })), shutdown === 'running' && !screenLocked)
+    .map(session => ({ uid: session.profile.uid, dialogs: session.dialogs() })), shutdown === 'running' && !screenLocked, Boolean(appLock?.locked))
 }
 function updateScreenProtection(): void {
   const wasLocked = screenLocked
@@ -3109,7 +3137,7 @@ function createWindow(): void {
     for (const session of accounts.all) session.readingActivityChanged()
     dialog.showErrorBox('Morse', tr('화면이 중단되었습니다. 앱을 다시 열어 주세요.'))
   })
-  window.once('ready-to-show', () => { if (shutdown === 'running') windowState.show() })
+  window.once('ready-to-show', () => { const hidden = startedHidden; startedHidden = false; if (shutdown === 'running' && !hidden) windowState.show() })
   window.on('close', event => {
     if (shutdown !== 'running') return
     event.preventDefault()
@@ -3117,6 +3145,7 @@ function createWindow(): void {
     else app.quit()
   })
   window.on('blur', () => { windowBlurredAt = Date.now() })
+  window.on('focus', () => desktopShell.windowFocused())
   window.on('closed', () => { voiceQueuePreviews.clear();voiceCaptures.clear();storySavedAudio.clear(); storyAudioInputs.clear(); storySavedVideos.clear(); storyVideoInputs.clear(); backgroundPhotos.clear(); contextMenus.close(); if (mainWindow === window) mainWindow = null })
   void window.loadURL(entryURL).catch(() => dialog.showErrorBox('Morse', tr('앱 화면을 불러오지 못했습니다. 설치 파일을 확인해 주세요.')))
 }
@@ -3395,6 +3424,9 @@ else {
     if (!['darwin', 'win32'].includes(process.platform)) throw new Error(tr('macOS와 Windows에서 사용할 수 있습니다.'))
     settings = new SettingsStore(app.getPath('userData'))
     await settings.load()
+    const launch: LaunchState = { platform: process.platform, atLogin: launchedAtLogin(process.argv), autoStart: settings.preferences.autoStart,
+      startMinimized: settings.preferences.startMinimized, passcodeLocked: false, trayAvailable: false }
+    if (autostartSkipped(launch)) { toggleAutostart(false); app.exit(0); return }
     windowState = new WindowState(settings, message => emit({ type: 'error', message }))
     appLock = new AppLock(app.getPath('userData'))
     await appLock.load()
@@ -3444,6 +3476,7 @@ else {
       })
     if (process.platform === 'win32') app.setAppUserModelId('com.morse.messenger.desktop')
     desktopShell.initialize()
+    startedHidden = startHidden({ ...launch, passcodeLocked: appLock.locked, trayAvailable: desktopShell.status().trayAvailable })
     notifications.initialize()
     applyTheme()
     // B409-2: the window dates a message it is sending with the server's time.

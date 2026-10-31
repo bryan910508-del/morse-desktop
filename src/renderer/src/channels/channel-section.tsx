@@ -401,7 +401,7 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
   function openPostMenu(state: ChannelPostsSnapshot, post: ChannelPostText, point: { x: number; y: number }): void {
     const base = postPinBase(state), owner = state.pins?.owned === true
     const sharing = channel?.status === 'ready' ? channel.publicSharing : null
-    const canPin = owner && post.own && Boolean(base) && post.pinFlag === 'unpinned' && post.editableText !== null
+    const canPin = owner && Boolean(base) && post.pinFlag === 'unpinned' && post.editableText !== null
     const canUnpin = owner && base?.previous?.id === post.id
     const pin = (next: string | null): void => {
       try { reportResult(window.morse.saveChannelPostPin(accountUid, preparePostPin(state, next)), next ? tr('게시물을 고정했습니다.') : tr('고정을 해제했습니다.')) }
@@ -427,7 +427,7 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
         void window.morse.copyListedChannelLink(accountUid, { requestId, channelId, channelVersion: sharing.version, post: { id: post.id, revision: post.revision } })
           .then(() => controller.toast(tr('게시물 링크를 복사했습니다.'))).catch(reason => controller.toast(errorText(reason, tr('링크를 복사하지 못했습니다.')), 'error'))
       } } : null,
-      post.own || canUnpin ? 'separator' : null,
+      post.own || canPin || canUnpin || canClearExtraPin(state, post.id) ? 'separator' : null,
       canPin ? { label: base?.previous ? tr('이 게시물로 고정 교체') : tr('고정'), icon: <Pin size={18} />, onSelect: () => pin(post.id) } : null,
       canUnpin ? { label: tr('고정 해제'), icon: <PinOff size={18} />, onSelect: () => pin(null) } : null,
       canClearExtraPin(state, post.id) ? { label: tr('별도 고정 표시 해제'), icon: <PinOff size={18} />, onSelect: clearExtra } : null,

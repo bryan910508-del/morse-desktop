@@ -1,6 +1,7 @@
 import type { Preferences } from '../../shared/model'
 import type { NotificationContent } from '../messaging/notifications'
 import { tr } from '../../shared/i18n'
+import { alerting, notificationAlerts } from '../../shared/notification-alerts'
 
 // A room's new message reaches the other side as a push on iOS (MorsePushNotificationService). This window follows
 // every room of the account itself (ChannelInquiryService listenToSubscriberInquiries / listenToAllOwnerInquiries),
@@ -17,6 +18,8 @@ export interface InquiryNotificationHost {
   // The room whose messages are being read right now shows no banner, as an open chat shows none.
   foreground(inquiryId: string): boolean
   show(content: NotificationContent, click: () => void, dismiss: () => void): (() => void) | null
+  // B378 ②: as a chat's message flashes the taskbar button or bounces the Dock icon (notifications.ts).
+  alert?(): void
   open(channelId: string, inquiryId: string): void
 }
 const clean = (value: string, max: number): string => value.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').slice(0, max)
@@ -59,9 +62,12 @@ export class InquiryNotifications {
   private announce(room: InquiryNotice): void {
     const preferences = this.host.preferences()
     // A 1:1 inquiry is a personal conversation: MorsePushPreferences keeps those under «개인».
-    if (this.host.locked() || !preferences.notifications || !preferences.notifyPersonal) return
+    if (this.host.locked() || !alerting(preferences) || !preferences.notifyPersonal) return
     if (!preferences.inAppNotifications && this.host.appActive()) return
     if (this.host.foreground(room.inquiryId)) return
+    const alerts = notificationAlerts(preferences)
+    if (alerts.flash) this.host.alert?.()
+    if (!alerts.show) return
     this.withdraw(room.inquiryId)
     if (this.shown.size >= maxShown) this.withdraw(this.shown.keys().next().value!)
     const preview = preferences.showNotificationPreview

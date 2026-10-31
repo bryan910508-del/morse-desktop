@@ -9,7 +9,9 @@ import { migrateCloseToTray } from '../../shared/close-to-tray'
 
 export interface SavedWindow extends Rectangle { maximized?: boolean }
 // trayHintSeen: B374, the Windows balloon «still running here» was shown once (tdesktop cSeenTrayTooltip).
-interface Settings { version: 1; preferences: Preferences; window?: SavedWindow; backgroundPhoto?: { id: string; data: string }; trayHintSeen?: true }
+// trayFlashRemembered: B378, the tray's «off» turned the flash off with the notifications and gives it back with them
+// (tdesktop rememberedFlashBounceNotifyFromTray, tray.cpp:156-200).
+interface Settings { version: 1; preferences: Preferences; window?: SavedWindow; backgroundPhoto?: { id: string; data: string }; trayHintSeen?: true; trayFlashRemembered?: true }
 
 // One writer serializes preference and geometry changes. No account secrets live here.
 export class SettingsStore {
@@ -44,7 +46,8 @@ export class SettingsStore {
           backgroundPhoto = { id: photo.id as string, data: photo.data }
         } finally { bytes.fill(0) }
       }
-      this.value = { version: 1, preferences, window: window as SavedWindow | undefined, backgroundPhoto, ...(raw.trayHintSeen === true ? { trayHintSeen: true as const } : {}) }
+      this.value = { version: 1, preferences, window: window as SavedWindow | undefined, backgroundPhoto, ...(raw.trayHintSeen === true ? { trayHintSeen: true as const } : {}),
+        ...(raw.trayFlashRemembered === true ? { trayFlashRemembered: true as const } : {}) }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error(tr('설정 파일을 읽을 수 없습니다. 원본 파일은 보존됩니다.'))
     }
@@ -72,6 +75,14 @@ export class SettingsStore {
     })
   }
   get trayHintSeen(): boolean { return this.value.trayHintSeen === true }
+  get trayFlashRemembered(): boolean { return this.value.trayFlashRemembered === true }
+  // The preferences the tray's line changes and whether the flash is kept aside, in one write.
+  updateFromTray(patch: Partial<Preferences>, flashRemembered: boolean): Promise<void> {
+    return this.commit(current => {
+      const { trayFlashRemembered: _, ...rest } = current
+      return { ...rest, preferences: { ...current.preferences, ...patch }, ...(flashRemembered ? { trayFlashRemembered: true as const } : {}) }
+    })
+  }
   markTrayHintSeen(): Promise<void> { return this.commit(current => ({ ...current, trayHintSeen: true })) }
   saveWindow(window: SavedWindow): Promise<void> {
     return this.commit(current => ({ ...current, window }))

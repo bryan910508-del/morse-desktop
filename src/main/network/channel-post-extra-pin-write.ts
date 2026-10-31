@@ -15,7 +15,7 @@ interface CommitClient { commit(request: WireObject, metadata: Metadata, options
 export async function writeChannelPostExtraPin(client: CommitClient, auth: Metadata, uid: string, input: ChannelPostExtraPinRequest, source: ExtraPinWriteSource, signal: AbortSignal): Promise<void> {
   const request = channelPostExtraPin(input), { channel, post } = source, reference = channelPinReference(channel)
   if (signal.aborted || channel.name !== `${documents}/channels/${request.channelId}` || !channel.updateTime || documentVersion(channel) !== request.channelVersion || stringField(channel.fields, 'ownerId', 160) !== uid || reference.status === 'unknown' || reference.postId !== request.referenceId || reference.source !== request.referenceSource || reference.postId === request.postId ||
-    post.name !== `${channel.name}/posts/${request.postId}` || !post.updateTime || channelPostRevision(post) !== request.revision || stringField(post.fields, 'channelId', 160) !== request.channelId || stringField(post.fields, 'authorId', 160) !== uid || editablePostText(post) === null || channelPostPinFlag(post) !== 'pinned') throw new ChannelPostExtraPinFailure(false)
+    post.name !== `${channel.name}/posts/${request.postId}` || !post.updateTime || channelPostRevision(post) !== request.revision || stringField(post.fields, 'channelId', 160) !== request.channelId || editablePostText(post) === null || channelPostPinFlag(post) !== 'pinned') throw new ChannelPostExtraPinFailure(false)
   // Preserve the exact pointer representation while enforcing its version in the same commit.
   const pointer = channel.fields.pinnedPostId
   const writes: WireObject[] = [

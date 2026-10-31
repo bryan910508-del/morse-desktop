@@ -12,6 +12,8 @@ export class ChannelPostPinFailure extends Error {
   constructor(readonly uncertain: boolean) { super(uncertain ? tr('고정 변경 응답을 확인하지 못했습니다. 자동으로 다시 요청하지 않습니다.') : tr('채널·게시물·고정 정보가 변경되었거나 소유자/작성자 조건을 확인하지 못했습니다. 현재 상태를 다시 확인해 주세요.')) }
 }
 interface CommitClient { commit(request: WireObject, metadata: Metadata, options: { deadline: Date }, callback: (error: ServiceError | null, response: WireObject) => void): ClientUnaryCall }
+// B21 (rules v4.8.43): the owner marks any post pinned, whoever wrote it; the post's isPinned is the only field written
+// on it, and pinnedPostId on the channel is the owner's alone, so an admin's pin is refused before any write.
 export async function writeChannelPostPin(client: CommitClient, auth: Metadata, uid: string, input: ChannelPostPinEdit, source: ChannelPinWriteSource, signal: AbortSignal): Promise<void> {
   const request = channelPostPinEdit(input), { channel } = source, reference = channelPinReference(channel)
   if (signal.aborted || channel.name !== `${documents}/channels/${request.channelId}` || !channel.updateTime || documentVersion(channel) !== request.channelVersion || stringField(channel.fields, 'ownerId', 160) !== uid || reference.status === 'unknown' || reference.postId !== (request.previous?.postId ?? null)) throw new ChannelPostPinFailure(false)
@@ -19,7 +21,7 @@ export async function writeChannelPostPin(client: CommitClient, auth: Metadata, 
   for (const which of ['previous', 'next'] as const) {
     const expected = request[which], post = source[which]
     if (!expected) { if (post) throw new ChannelPostPinFailure(false); continue }
-    if (!post || post.name !== `${channel.name}/posts/${expected.postId}` || !post.updateTime || channelPostRevision(post) !== expected.revision || stringField(post.fields, 'channelId', 160) !== request.channelId || stringField(post.fields, 'authorId', 160) !== uid || editablePostText(post) === null || channelPostPinFlag(post) !== (which === 'previous' ? 'pinned' : 'unpinned')) throw new ChannelPostPinFailure(false)
+    if (!post || post.name !== `${channel.name}/posts/${expected.postId}` || !post.updateTime || channelPostRevision(post) !== expected.revision || stringField(post.fields, 'channelId', 160) !== request.channelId || editablePostText(post) === null || channelPostPinFlag(post) !== (which === 'previous' ? 'pinned' : 'unpinned')) throw new ChannelPostPinFailure(false)
     writes.push({ update: { name: post.name, fields: { isPinned: { booleanValue: which === 'next' } } }, updateMask: { fieldPaths: ['isPinned'] }, currentDocument: { updateTime: post.updateTime } })
   }
   await new Promise<void>((resolve, reject) => {

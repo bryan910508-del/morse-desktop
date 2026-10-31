@@ -15,7 +15,7 @@ interface CommitClient { commit(request: WireObject, metadata: Metadata, options
 export async function writeChannelPostPinResolution(client: CommitClient, auth: Metadata, uid: string, input: ChannelPostPinResolution, source: PinResolutionWriteSource, signal: AbortSignal): Promise<void> {
   const request = channelPostPinResolution(input), { channel, post } = source, reference = channelPinReference(channel)
   if (signal.aborted || channel.name !== `${documents}/channels/${request.channelId}` || !channel.updateTime || documentVersion(channel) !== request.channelVersion || stringField(channel.fields, 'ownerId', 160) !== uid || reference.status !== 'known' || reference.postId !== request.postId ||
-    post.name !== `${channel.name}/posts/${request.postId}` || !post.updateTime || channelPostRevision(post) !== request.revision || stringField(post.fields, 'channelId', 160) !== request.channelId || stringField(post.fields, 'authorId', 160) !== uid || editablePostText(post) === null || channelPostPinFlag(post) !== 'unpinned') throw new ChannelPostPinResolutionFailure(false)
+    post.name !== `${channel.name}/posts/${request.postId}` || !post.updateTime || channelPostRevision(post) !== request.revision || stringField(post.fields, 'channelId', 160) !== request.channelId || editablePostText(post) === null || channelPostPinFlag(post) !== 'unpinned') throw new ChannelPostPinResolutionFailure(false)
   // Preserve or delete only the currently referenced post ID, as explicitly selected.
   const pointer = request.action === 'restore' ? channel.fields.pinnedPostId : undefined
   const writes: WireObject[] = [

@@ -5,11 +5,17 @@ import type { DesktopSnapshot, Preferences } from '../../shared/model'
 import { appBadgePixels, appBadgeState, dockBadgeText, type AppBadgeAccount, type AppBadgeState } from '../../shared/app-badge'
 import { tr } from '../../shared/i18n'
 import { closeToTrayEffective } from '../../shared/close-to-tray'
+import type { NotificationsMenu } from '../../shared/notification-alerts'
 import { errorName, type BadgeDetail } from './badge-diagnostics'
 
 // The window that carries the Windows taskbar overlay (BrowserWindow.setOverlayIcon), the scale it is shown at, and its
 // title (B348d-3).
-export interface OverlayWindow { setOverlayIcon(overlay: NativeImage | null, description: string): void; scaleFactor(): number; setTitle(title: string): void }
+export interface OverlayWindow { setOverlayIcon(overlay: NativeImage | null, description: string): void; scaleFactor(): number; setTitle(title: string): void
+  // B378 ②: whether it is in front, and its taskbar button's flash (BrowserWindow.isFocused / flashFrame).
+  focused?(): boolean; flash?(on: boolean): void }
+// B378 ②: tdesktop kSystemAlertDuration (notifications_manager.cpp:68-72): a Mac's alert lasts a second; elsewhere it
+// lasts until the window is brought in front.
+const dockBounceMs = 1000
 // B348d: the tray tooltip and the window title carry the count as Telegram's do (Core::TrayIconToolTip, tray.cpp:22-27;
 // MainWindow::updateTitle, window/main_window.cpp:887-917, «Telegram (n)»). No chat or account name goes into either.
 export function countTitle(count: number): string { return count > 0 ? `Morse (${count})` : 'Morse' }
@@ -55,14 +61,19 @@ export class DesktopShell {
     private readonly makeTray: (icon: NativeImage) => TrayLike = icon => new Tray(icon),
     private readonly trayWindow: TrayWindow = { active: () => false, hide: () => {} },
     // B348: badge-check.log (badge-diagnostics.ts); a test gives its own.
-    private readonly record: (step: string, detail: BadgeDetail) => void = () => {}) {}
+    private readonly record: (step: string, detail: BadgeDetail) => void = () => {},
+    // B378 ①: the notifications line of the tray or Dock menu was chosen.
+    private readonly toggleNotifications: (from: NotificationsMenu) => void = () => {}) {}
   private lastTrayClick = 0
+  // B378 ①: what the menus were last made for (notifications on, local passcode locked); a Dock bounce under way.
+  private menusFor = ''
+  private bounce: { id: number; timer: ReturnType<typeof setTimeout> } | null = null
 
   initialize(): void {
     if (this.platform === 'darwin') {
       try {
         app.dock?.setBadge('')
-        app.dock?.setMenu(Menu.buildFromTemplate([{ label: tr('Morse 열기'), click: this.show }]))
+        this.updateMenus(true, false)
       } catch { this.message = tr('Dock 메뉴와 메시지 수 표시를 초기화하지 못했습니다.') }
       return
     }
@@ -75,10 +86,7 @@ export class DesktopShell {
       const base = icon.resize({ width: 32, height: 32, quality: 'best' })
       const tray = this.makeTray(base)
       this.tray = tray; this.trayBase = base
-      tray.setContextMenu(Menu.buildFromTemplate([
-        { label: tr('Morse 열기'), click: this.show }, { type: 'separator' },
-        { label: tr('Morse 종료'), click: this.quit }
-      ]))
+      this.updateMenus(true, false)
       tray.on('click', () => this.trayClicked())
       this.record('tray', { made: true, pixels: 32 })
       this.sendTip(tray)
@@ -111,8 +119,9 @@ export class DesktopShell {
       return true
     } catch { return false }
   }
-  update(preferences: Preferences, accounts: AppBadgeAccount[], available: boolean): void {
+  update(preferences: Preferences, accounts: AppBadgeAccount[], available: boolean, passcodeLocked = false): void {
     if (this.closed) return
+    this.updateMenus(preferences.notifications, passcodeLocked)
     // Every signed-in account's confirmed list contributes, as Telegram counts all accounts.
     // There is no local increment on receipt and no decrement when a notification is clicked.
     const state = appBadgeState(preferences, accounts, available)
@@ -231,8 +240,56 @@ export class DesktopShell {
     this.record('request', { target, count: state.count, muted: state.muted, pixels, serial: this.serial, again: same })
     this.draw({ key: next.key, count: state.count, muted: state.muted, pixels, target })
   }
+  // B378 ①: tdesktop Tray::rebuildMenu (tray.cpp:80-112) — open, then «Disable/Enable notifications» unless the local
+  // passcode is locked (:98-109), then quit — and RefreshDockMenu (menu/menu_dock.cpp:25-60), whose notifications line
+  // stays while locked (only the accounts are hidden there, :32). Electron keeps a menu as it was made, so it is made again
+  // when either changes, as tdesktop makes the Dock's again each time it opens (specific_mac_p.mm:46-52).
+  private updateMenus(notifications: boolean, passcodeLocked: boolean): void {
+    const key = `${notifications}/${passcodeLocked}`
+    if (this.closed || key === this.menusFor) return
+    const label = notifications ? tr('데스크톱 알림 끄기') : tr('데스크톱 알림 켜기')
+    try {
+      if (this.platform === 'darwin') {
+        app.dock?.setMenu(Menu.buildFromTemplate([{ label, click: () => this.toggleNotifications('dock') }, { type: 'separator' }, { label: tr('Morse 열기'), click: this.show }]))
+      } else if (this.platform === 'win32') {
+        if (!this.tray || this.tray.isDestroyed()) return
+        this.tray.setContextMenu(Menu.buildFromTemplate([{ label: tr('Morse 열기'), click: this.show },
+          ...(passcodeLocked ? [] : [{ label, click: () => this.toggleNotifications('tray') }]), { type: 'separator' as const },
+          { label: tr('Morse 종료'), click: this.quit }]))
+      } else return
+      this.menusFor = key
+    } catch { this.message = this.platform === 'darwin' ? tr('Dock 메뉴와 메시지 수 표시를 초기화하지 못했습니다.') : tr('시스템 트레이를 만들지 못했습니다. 창을 닫으면 앱이 종료됩니다.') }
+  }
+  // B378 ②: tdesktop maybeFlashBounce → QWindow::alert(kSystemAlertDuration) (notifications_manager.cpp:753-764), which
+  // does nothing to a window in front. Windows flashes the taskbar button until the window comes in front (flashFrame,
+  // stopped again by windowFocused); a Mac bounces the Dock icon once for a second (requestUserAttention informational,
+  // always, notifications_manager_mac.mm:636-638). Windows' own skips (quiet hours, Focus Assist, a full-screen app:
+  // notifications_manager_win.cpp:1020-1027) are not told to Electron; a locked screen never gets here (the callers' locked).
+  alert(): void {
+    if (this.closed) return
+    const window = this.window()
+    if (!window || window.focused?.()) return
+    try {
+      if (this.platform === 'win32') window.flash?.(true)
+      else if (this.platform === 'darwin' && app.dock && !this.bounce) {
+        const id = app.dock.bounce('informational')
+        this.bounce = { id, timer: setTimeout(() => { this.stopBounce() }, dockBounceMs) }
+      }
+    } catch { /* an alert that cannot be given is not a failure of the message */ }
+  }
+  windowFocused(): void {
+    try { if (this.platform === 'win32') this.window()?.flash?.(false) } catch {}
+    this.stopBounce()
+  }
+  private stopBounce(): void {
+    const bounce = this.bounce
+    if (!bounce) return
+    this.bounce = null; clearTimeout(bounce.timer)
+    try { app.dock?.cancelBounce(bounce.id) } catch {}
+  }
   close(): void {
     if (this.closed) return
+    this.stopBounce()
     this.closed = true
     try {
       this.tray?.destroy()

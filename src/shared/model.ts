@@ -89,6 +89,15 @@ export interface Preferences {
   notifyChannel: boolean
   notificationSound: boolean
   inAppNotifications: boolean
+  // B378: tdesktop Core::Settings flashBounceNotify (core_settings.h:1092, on by default): a new message flashes the
+  // taskbar button on Windows or bounces the Dock icon on a Mac while the window is not in front. Apart from
+  // notifications, as tdesktop alerts apart from its toasts (notifications_manager.cpp:753-789).
+  flashOnNotification: boolean
+  // B378 (Windows only, tdesktop AutostartSupported specific_win.cpp:441 vs specific_mac.h:15-17): start with Windows
+  // (cAutoStart, kept here as tdesktop keeps it — the login item follows it), and on such a start stay in the tray
+  // (cStartMinimized, never over a local passcode: mainwindow.cpp:124-128).
+  autoStart: boolean
+  startMinimized: boolean
   badgeMode: 'messages' | 'chats'
   // iOS ChatSettingsView «맞춤법 검사» (chatSpellCheckEnabled).
   spellCheck: boolean
@@ -110,7 +119,7 @@ export const defaultPreferences: Preferences = {
   theme: 'system', messageFontSize: 14, chatBackground: defaultChatBackground, enterToSend: true, notifications: true, showNotificationPreview: false,
   storyStealth: false, closeToTrayChoice: null, showUnreadBadge: true, autoDeleteDefaultSeconds: 0, autoTranslateChats: false,
   autoDownloadPhotos: { user: 8 * 1024 * 1024, group: 8 * 1024 * 1024, channel: 8 * 1024 * 1024 }, recordVideoMessages: false, sendTypingIndicator: true, disableTypingIndicators: false,
-  notifyPersonal: true, notifyGroup: true, notifyChannel: true, notificationSound: true, inAppNotifications: true, badgeMode: 'messages', spellCheck: true,
+  notifyPersonal: true, notifyGroup: true, notifyChannel: true, notificationSound: true, inAppNotifications: true, flashOnNotification: true, autoStart: false, startMinimized: false, badgeMode: 'messages', spellCheck: true,
   photoSendQuality: 'auto', photoSendHd: null, videoSendQuality: 'auto', powerSavingAuto: true, powerSavingAlwaysOn: false, compressMediaUploads: false, reduceMessageAnimations: false, mainMenuAccountsShown: true, language: null
 }
 

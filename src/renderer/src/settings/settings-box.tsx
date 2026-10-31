@@ -472,6 +472,9 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
         <Toggle label={tr('채널')} detail={tr('구독한 채널의 새 게시물')} checked={preferences.notifyChannel} disabled={!preferences.notifications} onChange={value => update({ notifyChannel: value })} />
         <div className="section-label">{tr('알림 방식')}</div>
         <Toggle label={tr('소리')} checked={preferences.notificationSound} disabled={!preferences.notifications} onChange={value => update({ notificationSound: value })} />
+        {/* B378 ②: tdesktop «Flash the taskbar icon» / «Bounce the Dock icon» (settings_notifications.cpp:970-981), apart from
+            desktop notifications as there. */}
+        <Toggle label={desktop.value?.platform === 'Windows' ? tr('작업 표시줄 아이콘 깜박이기') : tr('Dock 아이콘 튀기기')} detail={tr('창이 뒤에 있을 때 새 메시지가 오면 알려 줍니다')} checked={preferences.flashOnNotification} onChange={value => update({ flashOnNotification: value })} />
         <Toggle label={tr('메시지 미리보기')} detail={tr('알림에 보낸 사람과 내용을 표시합니다')} checked={preferences.showNotificationPreview} disabled={!preferences.notifications} onChange={value => update({ showNotificationPreview: value })} />
         <div className="section-label">{tr('앱 사용 중')}</div>
         <Toggle label={tr('앱 사용 중 알림')} detail={tr('Morse를 사용하는 동안 다른 메시지 도착 시 표시')} checked={preferences.inAppNotifications} disabled={!preferences.notifications} onChange={value => update({ inAppNotifications: value })} />
@@ -483,6 +486,12 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
         </>}
         {/* B374: only Windows has a tray, so the toggle shows what Windows does — the tray until the person chooses. */}
         {integration?.trayAvailable && <Toggle label={tr('창을 닫으면 트레이로 최소화')} checked={closeToTrayEffective(preferences, 'win32')} onChange={value => update({ closeToTrayChoice: value })} />}
+        {/* B378 ③: tdesktop «Launch Telegram when system starts» and «Launch minimized», the second only while the first is on
+            and never over a local passcode (settings_advanced.cpp:673-744). Windows only, as there. */}
+        {desktop.value?.platform === 'Windows' && <>
+          <Toggle label={tr('Windows 시작 시 Morse 실행')} checked={preferences.autoStart} onChange={value => update({ autoStart: value })} />
+          {preferences.autoStart && <Toggle label={tr('최소화된 상태로 시작')} detail={tr('창을 열지 않고 알림 영역에서 시작합니다')} checked={preferences.startMinimized && !lockEnabled} onChange={value => update({ startMinimized: value })} />}
+        </>}
       </>}
       {page === 'chat' && <>
         <div className="section-label"><Palette size={14} />{' '}{tr('테마')}</div>
