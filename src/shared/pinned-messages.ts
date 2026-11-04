@@ -17,6 +17,14 @@ export interface PinnedMessageItem {
   position: MessagePosition | null
 }
 export interface PinnedMessagesSnapshot { chatId: string; items: PinnedMessageItem[]; limit: number }
+// B543: the open chat's pinned messages that can be shown — both kinds, in their order — for the pinned bar, the menu's
+// «고정 해제» and the pin on the bubble (tdesktop BottomInfo Flag::Pinned, history_view_bottom_info.cpp:677-678).
+export function shownPins(pinned: PinnedMessagesSnapshot | null, chatId: string): PinnedMessageItem[] {
+  return pinned?.chatId === chatId ? pinned.items.filter(item => item.status !== 'unavailable') : []
+}
+export function pinnedMessageIds(pinned: PinnedMessagesSnapshot | null, chatId: string): Set<string> {
+  return new Set(shownPins(pinned, chatId).map(item => item.id))
+}
 export interface PinMessageRequest { chatId: string; messageId: string; scope: 'me' | 'all'; pin: boolean }
 
 export function pinMessageRequest(raw: unknown): PinMessageRequest {

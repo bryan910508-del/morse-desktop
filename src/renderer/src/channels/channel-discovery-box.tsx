@@ -161,6 +161,8 @@ function ChannelDiscoveryBox({ accountUid, initialLink, close }: { accountUid: s
   const photos = preview?.photos?.requestId === photoId ? preview.photos : null
   const avatarUrl = photos?.avatar?.status === 'ready' ? photos.avatar.url : null, coverUrl = photos?.cover?.status === 'ready' ? photos.cover.url : null
   const membership = preview?.membership?.requestId === memberId && preview.membership.status === 'ready' ? preview.membership.info : null
+  // B515: a request waiting for the owner, read from the server's joinRequests document, shows «승인 대기 중» on the button for as
+  // long as it waits, in all three apps (user 11:4x «권장대로»); tdesktop keeps no such state and only toasts (apiwrap.cpp:1920-1924).
   const requested = membership?.joinRequest === 'pending'
   const commentTarget = commentsPost && preview?.postStatus === 'ready' ? preview.posts.find(post => post.id === commentsPost) ?? null : null
   const back = commentsPost ? () => setCommentsPost(null) : () => setPreviewId(null)
@@ -168,7 +170,7 @@ function ChannelDiscoveryBox({ accountUid, initialLink, close }: { accountUid: s
     width={440} onClose={close} className="channel-discovery"
     buttons={previewId && metadata && !commentsPost ? listed
       ? <button className="button flat" onClick={() => open(metadata.id)}>{tr('채널 열기')}</button>
-      : <button className="button flat" disabled={joining || requested} onClick={() => { void join() }}>{joining && <Spinner size={14} />}{requested ? tr('가입 요청 보냄') : tr('가입')}</button> : undefined}>
+      : <button className="button flat" disabled={joining || requested} onClick={() => { void join() }}>{joining && <Spinner size={14} />}{requested ? tr('승인 대기 중') : tr('가입')}</button> : undefined}>
     {previewId ? !preview || preview.status === 'loading' ? <div className="empty-state"><Spinner size={22} /></div>
       : !metadata ? <div className="empty-state">{preview.message || tr('채널을 열 수 없습니다.')}</div>
         : commentsPost ? !commentTarget ? <div className="empty-state">{tr('게시물을 찾을 수 없습니다.')}</div>

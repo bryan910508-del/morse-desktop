@@ -14,11 +14,12 @@ import type { AttachmentDropMode } from '../../../shared/uploads'
 import { defaultChatBackground } from '../../../shared/chat-background'
 import { positionMilliseconds } from '../../../shared/model'
 import { readCovers, readCursor } from '../../../shared/read-receipts'
+import { unreadEntry } from '../../../shared/unread-entry'
 import { canForwardMessage } from '../../../shared/forward'
 import { canReply } from '../../../shared/reply-draft'
 import { maxAlbumPhotos } from '../../../shared/uploads'
 import { desktop, dialogById, useDesktop, useDesktopEvent } from '../app/store'
-import { controller, useUi } from '../app/ui'
+import { controller, ui, useUi } from '../app/ui'
 import { errorText, sameDay, serviceDate } from '../app/format'
 import { copyText } from '../app/clipboard'
 import { selectedMessagesText } from '../../../shared/message-copy'
@@ -61,6 +62,7 @@ import { stickerFavouriteNow } from './sticker-favourite'
 import { usePresence } from '../app/presence'
 import { useTyping } from '../app/typing'
 import { PinnedBar, togglePin } from './pinned-bar'
+import { pinnedMessageIds } from '../../../shared/pinned-messages'
 import { DeferredBar } from './deferred-send'
 import { linkLabel, useShownConnection } from '../app/connection'
 import { tr } from '../../../shared/i18n'
@@ -70,6 +72,7 @@ import emojiList from './emoji-data.json'
 import { chatRestrictedNotice } from '../../../shared/sanctions'
 import { PeerBar } from './peer-bar'
 import { SwipeBack, SwipeReply, useSwipe } from './use-swipe'
+import { useDragSelect, type DragPreview } from './use-drag-select'
 import { swipeAllowed } from './swipe-gesture'
 import { historyEntries, type Entry } from './history-entries'
 import { messageReportAllowed } from '../../../shared/reports'
@@ -143,7 +146,21 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   const [editing, setEditing] = useState<ChatMessage | null>(null)
   const [selection, setSelection] = useState<string[] | null>(null)
   const selectionRef = useRef(selection); selectionRef.current = selection
-  const [highlight, setHighlight] = useState<string | null>(null)
+  // B519: the rows a drag over the messages is choosing (or letting go), drawn before the drag ends (use-drag-select.ts).
+  const [dragPreview, setDragPreview] = useState<DragPreview | null>(null)
+  // B543: the message shown highlighted and which highlight it is, so the same message is highlighted again on every jump
+  // (tdesktop enqueueMessageHighlight on each showAtMsgId, history_widget.cpp:8455-8466).
+  const [highlight, setHighlight] = useState<{ id: string; serial: number } | null>(null)
+  const highlightSerial = useRef(0), lastHighlight = useRef({ id: '', at: 0 })
+  const highlightMessage = useCallback((id: string) => {
+    // One jump can report itself twice (the history's focus, then the jump's answer); that is one highlight.
+    const now = performance.now(), last = lastHighlight.current
+    if (last.id === id && now - last.at < 400) return
+    lastHighlight.current = { id, at: now }
+    // Off for a frame first, so a highlight still showing starts over.
+    setHighlight(null)
+    requestAnimationFrame(() => setHighlight({ id, serial: ++highlightSerial.current }))
+  }, [])
   const [away, setAway] = useState(false)
   const [paging, setPaging] = useState(false)
   const [dragging, setDragging] = useState<AttachmentDropMode | 'none' | null>(null)
@@ -161,6 +178,12 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   const anchor = useRef<{ key: string; offset: number } | null>(null)
   const revealKeys = useRef<readonly string[]>([])
   const firstUnread = useRef<string | null | undefined>(undefined)
+  // F-MB-003: the room waits for the page around its first unread message; the epoch drops an answer for a room left.
+  const entryJump = useRef(false), entryEpoch = useRef(0)
+  // B533 (tdesktop keeps «읽지 않은 메시지» at the top while the history around it is measured, HistoryWidget
+  // ShowAtUnreadMsgId → the unread bar's top): the first unread stays at the top as its neighbours are measured, the way
+  // a history at its bottom stays there, until the person scrolls.
+  const holdStart = useRef<string | null>(null)
   const virtualRef = useRef<Virtualizer<HTMLDivElement, Element> | null>(null)
 
   const captureAnchor = (): void => {
@@ -174,25 +197,59 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     if (next.revision <= revisions.current.history) return
     revisions.current.history = next.revision
     const previous = current.current
-    if (next.focusMessageId && next.focusMessageId !== previous.focusMessageId) {
-      pendingScroll.current = { key: next.focusMessageId, align: 'center' }; bottom.current = false; setHighlight(next.focusMessageId)
+    if (entryJump.current) {
+      // tdesktop shows its loading until the page around the unread is there; the first page is not shown before it.
+      if (next.status !== 'ready' || !next.focusMessageId) return
+      entryJump.current = false
+      const owner = dialogRef.current
+      const entry = unreadEntry(next, owner?.unreadCount ?? 0, owner?.readPositions[accountUid], accountUid)
+      openAt(entry.kind === 'message' ? entry.id : null)
+    } else if (next.focusMessageId && next.focusMessageId !== previous.focusMessageId) {
+      pendingScroll.current = { key: next.focusMessageId, align: 'center' }; bottom.current = false; highlightMessage(next.focusMessageId)
     } else if (next.status !== 'ready') {
       pendingScroll.current = 'bottom'; bottom.current = true
+    } else if (firstUnread.current === undefined && ui().entryMessage?.chatId === chatId) {
+      // A notice of this account's own message: the room opens at that message, not at its first unread.
+      openAt(null); goToEntryMessage()
     } else if (firstUnread.current === undefined) {
-      const owner = dialogRef.current, count = owner?.unreadCount ?? 0
-      let unread: ChatMessage | undefined
-      if (owner && count > 0) {
-        const cursor = owner.readPositions[accountUid]
-        unread = cursor ? next.messages.find(message => message.senderId !== accountUid && message.readEligible && !message.system && !readCovers(cursor, readCursor(message.position)))
-          : next.messages[Math.max(0, next.messages.length - count)]
-      }
-      firstUnread.current = unread?.id ?? null
-      pendingScroll.current = unread ? { key: unread.id, align: 'start' } : 'bottom'
-      bottom.current = !unread
+      const owner = dialogRef.current
+      const entry = unreadEntry(next, owner?.unreadCount ?? 0, owner?.readPositions[accountUid], accountUid)
+      if (entry.kind === 'around') { entryJump.current = true; jumpUnread(); return }
+      openAt(entry.kind === 'message' ? entry.id : null)
     } else captureAnchor()
     current.current = next
     setHistory(next)
   }
+  const openAt = (id: string | null): void => {
+    firstUnread.current = id; holdStart.current = id
+    pendingScroll.current = id ? { key: id, align: 'start' } : 'bottom'
+    bottom.current = !id
+  }
+  // Nothing to go to, or the jump failed: the room opens at the bottom with no divider, from the page it has now.
+  const jumpUnread = (): void => {
+    const epoch = entryEpoch.current
+    const settle = (): void => {
+      if (epoch !== entryEpoch.current || !entryJump.current) return
+      entryJump.current = false; firstUnread.current = null; revisions.current.history = -1
+      void window.morse.history(accountUid, chatId).then(next => { if (epoch === entryEpoch.current) applyHistory(next) }).catch(() => {})
+    }
+    void window.morse.jumpUnread(accountUid, chatId).then(next => {
+      if (epoch !== entryEpoch.current) return
+      if (next) applyHistory(next)
+      settle()
+    }, settle)
+  }
+  const goToEntryMessage = (): void => {
+    const messageId = controller.takeEntryMessage(chatId), epoch = entryEpoch.current
+    if (!messageId) return
+    void window.morse.jumpMessage(accountUid, chatId, messageId).then(next => { if (epoch === entryEpoch.current) applyHistory(next) })
+      .catch(reason => controller.toast(errorText(reason, tr('메시지로 이동하지 못했습니다.')), 'error'))
+  }
+  // The chat was open already when the notice was pressed: it goes to the message once its history is in.
+  const entryMessage = useUi(state => state.entryMessage)
+  useEffect(() => {
+    if (entryMessage?.chatId === chatId && history.status === 'ready' && firstUnread.current !== undefined && !entryJump.current) goToEntryMessage()
+  }, [entryMessage, chatId, history.status])
   const applyOutgoing = (next: OutgoingSnapshot): void => {
     if (next.revision <= revisions.current.outgoing) return
     revisions.current.outgoing = next.revision; captureAnchor(); setOutgoing(next)
@@ -213,7 +270,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   useEffect(() => {
     if (!dialogExists) return
     let alive = true
-    firstUnread.current = undefined; revisions.current.history = -1; revisions.current.actions = -1
+    firstUnread.current = undefined; holdStart.current = null; entryJump.current = false; entryEpoch.current++; revisions.current.history = -1; revisions.current.actions = -1
     pendingScroll.current = 'bottom'; bottom.current = true
     void window.morse.history(accountUid, chatId).then(next => { if (alive) applyHistory(next) })
       .catch(reason => { if (alive) { current.current = { ...initialHistory, status: 'error', message: errorText(reason, tr('대화를 불러오지 못했습니다.')) }; setHistory(current.current) } })
@@ -305,6 +362,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   const autoTranslateRef = useRef(autoTranslateOn); autoTranslateRef.current = autoTranslateOn
   const pinnedSnapshot = useDesktop(snapshot => snapshot?.pinnedMessages?.chatId === chatId ? snapshot.pinnedMessages : null)
   const pinnedRef = useRef(pinnedSnapshot); pinnedRef.current = pinnedSnapshot
+  const pinnedIds = useMemo(() => pinnedMessageIds(pinnedSnapshot, chatId), [pinnedSnapshot, chatId])
+  const pinnedIdsRef = useRef(pinnedIds); pinnedIdsRef.current = pinnedIds
   const translatableOnScreen = virtual.getVirtualItems().flatMap(item => {
     const entry = entries[item.index]
     return entry?.kind === 'message' && !entry.own && entry.message.kind === 'text' && !entry.message.system && !entry.message.encrypted && entry.message.text.trim() ? [entry.message] : []
@@ -337,21 +396,38 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     observer.observe(element); setViewport(height)
     return () => observer.disconnect()
   }, [])
+  const holdAtStart = (): void => {
+    const index = holdStart.current ? revealKeys.current.indexOf(holdStart.current) : -1
+    if (index >= 0) virtualRef.current?.scrollToIndex(index, { align: 'start' })
+  }
   // B307: the list's height follows a message's new size a render or a layout later (a reaction's chip, a picture
   // measured); a history at its bottom follows it there too (keepsBottomOnChange, tdesktop updateListSize).
   useLayoutEffect(() => {
     const element = scroll.current, inner = element?.querySelector<HTMLElement>('.history-inner')
     if (!element || !inner || !settled) return
-    const observer = new ResizeObserver(() => { if (keepsBottomOnChange(false, bottom.current, true)) element.scrollTop = element.scrollHeight })
+    const observer = new ResizeObserver(() => {
+      if (keepsBottomOnChange(false, bottom.current, true)) element.scrollTop = element.scrollHeight
+      else holdAtStart()
+    })
     observer.observe(inner)
     return () => observer.disconnect()
   }, [settled])
+  // The person's own scrolling lets the first unread go.
+  useEffect(() => {
+    const element = scroll.current
+    if (!element) return
+    const release = (): void => { holdStart.current = null }
+    const events = ['wheel', 'pointerdown', 'keydown', 'touchstart'] as const
+    for (const name of events) element.addEventListener(name, release, { passive: true })
+    return () => { for (const name of events) element.removeEventListener(name, release) }
+  }, [])
   useLayoutEffect(() => {
     if (settled || history.status === 'loading') return
     if (!entries.length) { setSettled(true); return }
     let frames = 0, handle = 0
     const step = (): void => {
       if (bottom.current && virtualRef.current) virtualRef.current.scrollToIndex(entries.length - 1, { align: 'end' })
+      else holdAtStart()
       if (++frames < 2) handle = requestAnimationFrame(step); else setSettled(true)
     }
     handle = requestAnimationFrame(step)
@@ -554,7 +630,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
         copyMessage,
         translate,
         message.version && message.serverConfirmed && !message.system && !message.encrypted && owner?.kind !== 'secret'
-          ? (pinnedRef.current?.items.some(item => item.id === message.id)
+          ? (pinnedIdsRef.current.has(message.id)
             ? { label: tr('고정 해제'), icon: <PinOff size={18} />, onSelect: () => { void togglePin(accountUid, chatId, message.id, pinnedRef.current) } }
             : { label: tr('고정'), icon: <Pin size={18} />, onSelect: () => { void togglePin(accountUid, chatId, message.id, pinnedRef.current) } }) : null,
         // B208: a sticker is added to this device's favourites or taken out of them, by whether it is one
@@ -597,6 +673,17 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       item.state !== 'sent' && { label: failed ? tr('삭제') : tr('보내기 취소'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void window.morse.discardOutgoing(accountUid, chatId, item.id).catch(reason => controller.toast(errorText(reason, tr('처리하지 못했습니다.')), 'error')) } }
     ])
   }, [accountUid, chatId])
+  // B543: the pinned bar's jump is done — the message comes to the middle and is highlighted, also when the history was
+  // already there (tdesktop's bar shows the message on every click, history_widget.cpp:9735-9748, scrolled and highlighted
+  // :8455-8466).
+  const entriesRef = useRef(entries); entriesRef.current = entries
+  const jumpedToPin = useCallback((id: string) => {
+    const virtual = virtualRef.current, index = entriesRef.current.findIndex(entry => entry.key === id)
+    bottom.current = false
+    if (virtual && index >= 0) virtual.scrollToIndex(index, { align: 'center' })
+    else pendingScroll.current = { key: id, align: 'center' }
+    highlightMessage(id)
+  }, [highlightMessage])
   const jumpReply = useCallback((message: ChatMessage) => {
     void window.morse.jumpReply(accountUid, chatId, message.id, message.version).catch(reason => controller.toast(errorText(reason, tr('원본 메시지로 이동하지 못했습니다.')), 'error'))
   }, [accountUid, chatId])
@@ -630,6 +717,30 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     document.addEventListener('keydown', keydown)
     return () => document.removeEventListener('keydown', keydown)
   }, [canCopySelection, selected, copyMessages])
+  // B519 (tdesktop HistoryInner::keyPressEvent :4379-4384): Delete or Backspace with messages chosen asks to delete them,
+  // when every one of them can be.
+  useEffect(() => {
+    if (!canDeleteSelection) return
+    const keydown = (event: KeyboardEvent): void => {
+      if ((event.key !== 'Delete' && event.key !== 'Backspace') || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
+      if ((event.target as HTMLElement | null)?.closest?.('input, textarea, [contenteditable="true"]') || document.querySelector('.layer, .popup-menu')) return
+      event.preventDefault(); void removeMessages(selected)
+    }
+    document.addEventListener('keydown', keydown)
+    return () => document.removeEventListener('keydown', keydown)
+  }, [canDeleteSelection, selected, removeMessages])
+  // B519: dragging over the messages chooses them, where «메시지 선택» is offered — a 1:1 or a group, not a secret chat,
+  // the notice chat or a closed room, once its history is here. A row a drag can choose is one the «선택» menu can.
+  useDragSelect(scroll, {
+    enabled: () => {
+      const owner = dialogRef.current
+      return Boolean(owner) && owner!.kind !== 'secret' && !owner!.service && !owner!.restricted && current.current.status === 'ready'
+    },
+    rows: () => currentEntries.current.map(entry => ({ key: entry.key, id: entry.kind === 'message' && entry.message.version && !entry.message.system && !entry.message.channelPost ? entry.message.id : null })),
+    chosen: () => selectionRef.current,
+    preview: setDragPreview,
+    apply: setSelection
+  })
   const canAttach = Boolean(dialog) && !secret && outgoing.canCompose && !editing
 
   function dropMode(target: EventTarget): AttachmentDropMode | null {
@@ -718,7 +829,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       </>}
     </header>
     {dialog && dialog.kind === 'direct' && !service && selection === null && <PeerBar accountUid={accountUid} dialog={dialog} />}
-    {dialog && !secret && <PinnedBar accountUid={accountUid} chatId={chatId} />}
+    {dialog && !secret && <PinnedBar accountUid={accountUid} chatId={chatId} onJumped={jumpedToPin} />}
     {dialog && forum && <CategoryBar accountUid={accountUid} chatId={chatId} forum={forum} selected={forumSelected}
       owner={dialog.kind === 'group' && dialog.createdBy === accountUid && !dialog.discussion} />}
     <PlaybackBar chatId={chatId} />
@@ -743,10 +854,10 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
                   answer changes the row's state and not the row (localChatMessage). */}
               {entry.kind === 'message'
                 ? <MessageView accountUid={accountUid} chatId={chatId} message={entry.message} own={entry.own} layout={layout} read={entry.own ? readState(entry.message) : 'sent'}
-                  selecting={selection !== null} selected={selection?.includes(entry.message.id) ?? false} highlighted={highlight === entry.message.id}
+                  selecting={selection !== null || dragPreview !== null} selected={dragPreview?.ids.has(entry.message.id) ? dragPreview.choose : selection?.includes(entry.message.id) ?? false} highlighted={highlight?.id === entry.message.id} pinned={pinnedIds.has(entry.message.id)}
                   autoTranslate={autoTranslateOn} onMenu={openMessageMenu} onReply={replyByDoubleClick} onJumpReply={jumpReply} onOpenMedia={openMedia} onToggle={toggleSelected} onReaction={react} />
                 : <MessageView accountUid={accountUid} chatId={chatId} message={localChatMessage(entry.item, accountUid, entry.item.replyToId ? history.replyQuotes?.[entry.item.replyToId] ?? { state: 'loading' } : undefined)}
-                  own layout={layout} read="sent" selecting={selection !== null} selected={false} highlighted={false} autoTranslate={autoTranslateOn}
+                  own layout={layout} read="sent" selecting={selection !== null || dragPreview !== null} selected={false} highlighted={false} autoTranslate={autoTranslateOn}
                   onMenu={openMessageMenu} onReply={replyByDoubleClick} onJumpReply={jumpReply} onOpenMedia={openMedia} onToggle={toggleSelected} onReaction={react}
                   outgoing={{ item: entry.item, onMenu: openLocalMenu }} />}
             </div>

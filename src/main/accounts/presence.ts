@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { deleteApp, initializeApp, type FirebaseApp } from '@firebase/app'
-import { _initStandalone, goOffline, onDisconnect, onValue, ref, serverTimestamp, update, type Database } from '@firebase/database'
+import { _initStandalone, goOffline, onDisconnect, onValue, ref, serverTimestamp, set, update, type Database } from '@firebase/database'
 import type { FirebaseAuthInternal } from '@firebase/auth-interop-types'
 import type { FirebaseAppCheckInternal } from '@firebase/app-check-interop-types'
 import { peerPresence, presenceAfterMessage, presenceFromCopy, type PeerPresence } from '../../shared/presence'
@@ -24,6 +24,12 @@ const maxWatched = 48
 const maxRemembered = 2000
 export type PresenceSurface = 'chat' | 'profile' | 'dialogs' | 'contacts'
 const surfaceOrder: PresenceSurface[] = ['chat', 'profile', 'dialogs', 'contacts']
+// F-RT-002 (contracts/F-RT-002-presence-heartbeat.md): while online and connected this window writes the server's time to
+// presenceBeat/{me} once with online:true and then every 30 s; the server takes an online whose beat is older than 75 s
+// for gone (sweepStalePresence). Telegram's sessions say they are online again each onlineUpdatePeriod
+// (tdesktop Api::Updates::updateOnline, api/api_updates.cpp:993-1061; mtproto_config.h:20) and Telegram-iOS every 30 s
+// (ManagedAccountPresence.swift:48-56). presence/{me} is not written again for it: that write fans out to every viewer.
+export const presenceBeatMs = 30000
 
 // One account's presence on the Realtime Database, as MorseAccountPresenceWriter and
 // MorsePeerPresenceStore do on iOS: presence/{me} {online, lastSeen} with an onDisconnect
@@ -34,6 +40,7 @@ export class AccountPresence {
   private database: Database | null = null
   private stopConnected: (() => void) | null = null
   private stopOwn: (() => void) | null = null
+  private beat: ReturnType<typeof setInterval> | null = null
   private connected = false
   private online = false
   // What presence/{me} holds as far as this connection knows: true after writing online.
@@ -70,6 +77,7 @@ export class AccountPresence {
       this.connected = snapshot.val() === true
       // A new connection starts offline: onDisconnect already ran for the previous one.
       if (this.connected) this.written = false
+      else this.stopBeat()
       this.apply()
     })
     return database
@@ -84,7 +92,9 @@ export class AccountPresence {
       void onDisconnect(me).update({ online: false, lastSeen: serverTimestamp() }).catch(() => {})
       void update(me, { online: true, lastSeen: serverTimestamp() }).catch(retry)
       this.watchOwn(database)
+      this.startBeat(database)
     } else {
+      this.stopBeat()
       // This device's own sign-off must not look like another device's.
       this.stopOwn?.(); this.stopOwn = null
       void onDisconnect(me).cancel().catch(() => {})
@@ -104,6 +114,18 @@ export class AccountPresence {
       this.apply()
     }, () => {})
   }
+  // Once now and then every presenceBeatMs while this window is online and connected. A stopped beat is left as it is:
+  // its age is what tells the server this window has gone.
+  private startBeat(database: Database): void {
+    this.stopBeat()
+    const write = (): void => {
+      if (this.closed || !this.connected || !this.online || !this.written) { this.stopBeat(); return }
+      void set(ref(database, `presenceBeat/${this.uid}`), serverTimestamp()).catch(() => {})
+    }
+    write()
+    this.beat = setInterval(write, presenceBeatMs)
+  }
+  private stopBeat(): void { if (this.beat) clearInterval(this.beat); this.beat = null }
   // Whether this window must write itself online again: it is connected, it should be online, and the account's place
   // does not say so.
   private reassert(value: unknown): boolean { return !this.closed && this.connected && this.online && value !== true }
@@ -113,7 +135,7 @@ export class AccountPresence {
     if (this.closed || this.online === online) return
     this.online = online
     if (online) this.db()
-    else { this.stopOwn?.(); this.stopOwn = null }
+    else { this.stopOwn?.(); this.stopOwn = null; this.stopBeat() }
     this.apply()
   }
 
@@ -204,6 +226,7 @@ export class AccountPresence {
     if (this.closed) return
     const database = this.database, app = this.app, wasOnline = this.connected && this.written
     this.closed = true
+    this.stopBeat()
     this.stopConnected?.(); this.stopConnected = null
     this.stopOwn?.(); this.stopOwn = null
     for (const stop of this.watched.values()) stop()

@@ -97,7 +97,15 @@ export const retryableRejections = new Set(['UNAUTHORIZED', 'SUSPENDED', 'CHAT_M
 // STICKER_NOT_FOUND and STICKER_REFERENCE_OFF (B195): a sticker reference the server holds no copy of, or one sent while
 // the switch is off; the account sends those bytes again under a new id (session.ts stickerReferenceRefused).
 export const stickerReferenceRefusals = new Set(['STICKER_NOT_FOUND', 'STICKER_REFERENCE_OFF'])
-export const definiteRejections = new Set([...retryableRejections, 'INVALID_PAYLOAD', 'REPLY_MESSAGE_NOT_FOUND', 'CONFLICT', 'DIRECT_CHAT_EXISTS', 'ACCOUNT_BANNED', 'CHAT_RESTRICTED', ...stickerReferenceRefusals])
+// F-ST-003: READ_ONLY_CHAT (the notice chat, chat.type 'system') and FORWARD_SOURCE_SECRET (a secret chat's message as
+// a forward's original) are answers about the message itself, so it is not sent again (talky-shared
+// morse-message-authority.js SEND_ERRORS :448, READ_ONLY_CHAT :324).
+export const definiteRejections = new Set([...retryableRejections, 'INVALID_PAYLOAD', 'REPLY_MESSAGE_NOT_FOUND', 'CONFLICT', 'DIRECT_CHAT_EXISTS', 'ACCOUNT_BANNED', 'CHAT_RESTRICTED', 'READ_ONLY_CHAT', 'FORWARD_SOURCE_SECRET', ...stickerReferenceRefusals])
+// F-ST-003: the server keeps a deleted message's id retired (a tombstone, or acceptedMessages retired after a delete for
+// everyone or a cleared history, morse-message-authority.js :288-290, :443) and answers a send of that id with
+// MESSAGE_REVOKED: the message was deleted, so the copy waiting here goes as a deleted message does — iOS applies it as a
+// remote delete (MorsePendingOutgoingSendQueue.swift:800-806), Telegram destroys a deleted message's item.
+export const revokedRejection = 'MESSAGE_REVOKED'
 export function deliveryReason(reason: string): string {
   if (rejectionCode(reason) === 'ACCOUNT_RESTRICTED') return restrictedNotice(rejectionUntil(reason))
   return ({ ACCOUNT_BANNED: bannedNotice(), CHAT_RESTRICTED: tr('이 대화는 Morse 운영 정책 위반으로 이용할 수 없습니다.'), BLOCKED: tr('차단 상태로 전송할 수 없습니다.'), PEER_GONE: tr('상대 계정을 확인할 수 없습니다.'),
@@ -111,6 +119,8 @@ export function deliveryReason(reason: string): string {
     REPLY_MESSAGE_NOT_FOUND: tr('답장 원본이 없어 전송되지 않았습니다. 최신 대화에서 다시 작성해 주세요.'),
     UNAUTHORIZED: tr('로그인 상태를 다시 확인해 주세요.'), INVALID_PAYLOAD: tr('전송할 수 없는 내용입니다.'),
     CONFLICT: tr('서버 기록과 전송 정보가 일치하지 않습니다.'),
+    READ_ONLY_CHAT: tr('이 대화에는 메시지를 보낼 수 없습니다.'),
+    FORWARD_SOURCE_SECRET: tr('비밀 대화의 메시지는 전달할 수 없습니다.'),
     STICKER_NOT_FOUND: tr('서버에 없는 스티커라 보내지 못했습니다.'),
     STICKER_REFERENCE_OFF: tr('서버에 없는 스티커라 보내지 못했습니다.'),
     DIRECT_CHAT_EXISTS: tr('이 상대와의 대화가 이미 있습니다. 대화 목록의 기존 대화에서 다시 보내 주세요.'),

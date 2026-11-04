@@ -9,6 +9,8 @@ import { DocumentWriteFailure, FirestoreReader } from '../network/firestore-rpc'
 import { boolField, childId, documents, numberField, stringField, timestamp, type FirestoreDocument, type WireObject } from '../network/firestore-values'
 import { callMorseFunction, MorseCallableFailure } from '../network/morse-callable'
 import { tr } from '../../shared/i18n'
+import { deleteOwnAccount, type PasswordAnswer } from './account-deletion'
+import type { DeleteAccountOutcome } from '../../shared/two-step'
 
 type Value = { stringValue?: string; timestampValue?: string; mapValue?: { fields?: Record<string, Value> }; arrayValue?: { values?: Value[] } }
 const fieldsOf = (doc: FirestoreDocument): Record<string, Value> => (doc.fields ?? {}) as unknown as Record<string, Value>
@@ -308,11 +310,9 @@ export class AccountToolsApi {
     if (!parsed || parsed.protocol !== 'https:' || !Number.isFinite(expiresAt) || !Number.isSafeInteger(size) || size < 0) throw new Error(tr('응답 형식이 올바르지 않아요'))
     return { downloadURL: parsed.href, expiresAt, fileSizeBytes: size }
   }
-  // deleteCurrentMorseAccount purges the account and its owned channels on the server.
-  async deleteAccount(): Promise<void> {
-    let result: Record<string, unknown>
-    try { result = await this.call('deleteCurrentMorseAccount', { expectedUid: this.uid }) }
-    catch { throw new Error(tr('계정을 삭제하지 못했습니다. 연결을 확인한 뒤 다시 시도해 주세요.')) }
-    if (result.ok !== true || result.deletedUid !== this.uid) throw new Error(tr('계정 삭제 결과를 확인하지 못했습니다.'))
+  // deleteCurrentMorseAccount purges the account and its owned channels on the server — with the two-step password's
+  // answer when the account has one (B525, account-deletion.ts); a refusal the screen acts on comes back with its reason.
+  deleteAccount(password: string | null, prove: (password: string) => Promise<PasswordAnswer | null>): Promise<DeleteAccountOutcome> {
+    return deleteOwnAccount(this.uid, password, prove, data => this.call('deleteCurrentMorseAccount', data))
   }
 }

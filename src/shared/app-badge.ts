@@ -10,27 +10,43 @@ export interface AppBadgeAccount { uid: string; dialogs: DialogSummary[] }
 // mention counts, so it is computeUnreadBadge, :3716-3721) with its default includeMutedCounter = true (core_settings.h:1103):
 // marks + messages (or chats, as countUnreadMessages picks), muted chats too, grey only when everything counted is
 // muted (computeUnreadBadgeMuted, :3724-3733). The accounts list shows it beside every other account
-// (settings_information.cpp:138-148, the row's hasUnread = !active, :828-834).
-export function accountBadgeState(uid: string, dialogs: DialogSummary[], badgeMode: Preferences['badgeMode']): AppBadgeState {
+// (settings_information.cpp:138-148, the row's hasUnread = !active, :828-834). F-AC-005: with «알림 끈 대화 포함» off
+// a muted chat counts nothing, its mark neither, and nothing is grey (computeUnreadBadge's `all`, :3716-3722, :3726-3728).
+// B532: a chat is muted by its own switch, or else by its kind's (NotifySettings::isMuted, data_notify_settings.cpp:547-561:
+// with no muteUntil of the chat's own, defaultSettings(peer) — the private or group default). Morse keeps a chat's
+// switch as on or nothing, so with it off a chat whose «개인 채팅» / «그룹 채팅» notifications are off counts as muted
+// here, as notifications.ts's 'kind-off' leaves it silent. Channels are their own tab and not counted here.
+export type BadgeCategories = Partial<Pick<Preferences, 'notifyPersonal' | 'notifyGroup'>>
+export function badgeMuted(dialog: Pick<DialogSummary, 'muted' | 'kind'>, categories: BadgeCategories = {}): boolean {
+  return dialog.muted || (dialog.kind === 'group' ? categories.notifyGroup === false : categories.notifyPersonal === false)
+}
+export function accountBadgeState(uid: string, dialogs: DialogSummary[], badgeMode: Preferences['badgeMode'], includeMuted = true, categories: BadgeCategories = {}): AppBadgeState {
   let count = 0, unmuted = false
   for (const dialog of dialogs) {
     // A mark counts once and only with no count (effectiveUnreadCount, B341); «채팅 수» counts the chats that have any.
     const unread = effectiveUnreadCount(dialog)
     // B113: the official notice chat stays out (A13-5 §3-5), as the server keeps it out of the account's badge.
-    if (dialog.archived || dialog.kind === 'secret' || dialog.service || !dialog.participantUids.includes(uid) || !Number.isSafeInteger(unread) || unread <= 0) continue
+    // B532: a secret chat counts like a 1:1, as Telegram-Android (MessagesStorage.java:3823-3827) and Telegram-iOS
+    // (SyncCore_GlobalNotificationSettings.swift:106-107) count it. Its unreadCount is the server's own: talky-server
+    // morse-message-authority.js raises it for a secret room as for a 1:1 (:327, :411-429), Firebase index.js
+    // applyUnreadForNewChatMessage (:1438-1465) does for messages made outside the socket, and a read recounts it
+    // (morse-read-marker.js:158-189). A secret chat v2 keeps no server count (morse-secret-push.js:13) and is not listed here.
+    if (dialog.archived || dialog.service || !dialog.participantUids.includes(uid) || !Number.isSafeInteger(unread) || unread <= 0) continue
+    const muted = badgeMuted(dialog, categories)
+    if (muted && !includeMuted) continue
     count = Math.min(100000, count + (badgeMode === 'chats' ? 1 : unread))
-    if (!dialog.muted) unmuted = true
+    if (!muted) unmuted = true
   }
   return { count, muted: count > 0 && !unmuted }
 }
 
 // B348: the one count the macOS Dock and the Windows taskbar both show: tdesktop's Domain::updateUnreadBadge
 // (main_domain.cpp:302-314) adds every signed-in account's count, grey only when every account's is.
-export function appBadgeState(preferences: Pick<Preferences, 'showUnreadBadge' | 'badgeMode'>, accounts: AppBadgeAccount[], available: boolean): AppBadgeState {
+export function appBadgeState(preferences: Pick<Preferences, 'showUnreadBadge' | 'badgeMode' | 'badgeIncludeMuted'> & BadgeCategories, accounts: AppBadgeAccount[], available: boolean): AppBadgeState {
   let count = 0, unmuted = false
   if (available && preferences.showUnreadBadge) {
     for (const { uid, dialogs } of accounts) {
-      const account = accountBadgeState(uid, dialogs, preferences.badgeMode)
+      const account = accountBadgeState(uid, dialogs, preferences.badgeMode, preferences.badgeIncludeMuted, preferences)
       count = Math.min(100000, count + account.count)
       if (account.count > 0 && !account.muted) unmuted = true
     }

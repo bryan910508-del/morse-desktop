@@ -9,7 +9,7 @@ import { sendsOnEnter } from '../../../shared/shortcuts'
 import { outgoingText } from '../../../shared/validation'
 import type { PressedSend } from './pressed-sends'
 import { maxAlbumPhotos } from '../../../shared/uploads'
-import { desktop, useDesktop } from '../app/store'
+import { desktop, useDesktop, useDesktopEvent } from '../app/store'
 import { translationUnavailableNote, translationAvailable } from '../../../shared/translation'
 import { useTypingReport } from '../app/typing'
 import { EntityPanel } from './entity-panel'
@@ -106,8 +106,28 @@ export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, 
     // A recording kept on this device takes the place of the field until it is sent or deleted.
     void window.morse.readVoiceDraft(accountUid, chatId).then(record => { if (alive && record.chatId === chatId) setVoiceDraft(record) }).catch(() => {})
     draftFlushers.add(flush)
-    return () => { alive = false; draftFlushers.delete(flush); void flush().catch(() => {}) }
+    // B530: leaving the room sends its cloud draft at once (tdesktop setActiveChatEntry → saveCurrentDraftToCloud).
+    return () => { alive = false; draftFlushers.delete(flush); void flush().catch(() => {}).finally(() => { void window.morse.pushDraft(accountUid, chatId).catch(() => {}) }) }
   }, [accountUid, chatId, flush])
+  // B530: so does the window going away (hidden or minimized).
+  useEffect(() => {
+    const away = (): void => {
+      if (document.visibilityState === 'hidden') void flush().catch(() => {}).finally(() => { void window.morse.pushDraft(accountUid, chatId).catch(() => {}) })
+    }
+    document.addEventListener('visibilitychange', away)
+    return () => document.removeEventListener('visibilitychange', away)
+  }, [accountUid, chatId, flush])
+  // B530: another device's draft of this chat comes into the field only while it is empty (Telegram Android
+  // ChatActivity.applyDraftMaybe); a deletion empties it only while it still holds the text last synced, so what was typed
+  // here since stays (contract §11 ②). A field being edited, sent or saved keeps what it has.
+  useDesktopEvent(event => {
+    if (event.type !== 'cloud-draft-changed' || event.accountUid !== accountUid || event.chatId !== chatId) return
+    if (editing || sending.current || dirty.current || !available.current) return
+    const current = latest.current
+    if (event.text ? current.trim() !== '' : event.previous === null || current !== event.previous || current === '') return
+    latest.current = event.text; dirty.current = true; setText(event.text)
+    void flush().catch(() => {})
+  })
 
   useEffect(() => {
     if (!editing) return

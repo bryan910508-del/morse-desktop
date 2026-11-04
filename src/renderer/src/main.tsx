@@ -31,8 +31,9 @@ function takeOpenLink(): void {
 // A notification of another account opens its chat or inquiry room after the window switches to that account.
 let pendingNotification: PendingNotification | null = null
 function openNotificationTarget(target: NotificationTarget | null): void {
-  if (target?.kind === 'chat') controller.openChat(target.chatId)
+  if (target?.kind === 'chat') { if (target.messageId) controller.openChatAt(target.chatId, target.messageId); else controller.openChat(target.chatId) }
   else if (target?.kind === 'inquiry') controller.openInquiryRoom(target.channelId, target.inquiryId)
+  else if (target?.kind === 'channel') controller.openChannel(target.channelId)
 }
 
 class ErrorBoundary extends Component<PropsWithChildren, { failed: boolean }> {
@@ -91,9 +92,10 @@ function App() {
     // B348: a picture that could not be drawn is told by its error's name (badge-check.log), not dropped here.
     else if (event.type === 'draw-app-badge') void drawAppBadge(event.count, event.muted, event.pixels, event.target).then(url => window.morse.appBadgeDrawn(event.key, url),
       reason => window.morse.appBadgeFailed(event.key, reason instanceof Error ? reason.name : typeof reason)).catch(() => {})
-    else if (event.type === 'open-notification-chat' || event.type === 'open-notification-inquiry') {
-      // A 1:1 inquiry room opens the way its row in the list opens it.
-      const target: NotificationTarget = event.type === 'open-notification-chat' ? { kind: 'chat', chatId: event.chatId } : { kind: 'inquiry', channelId: event.channelId, inquiryId: event.inquiryId }
+    else if (event.type === 'open-notification-chat' || event.type === 'open-notification-inquiry' || event.type === 'open-notification-channel') {
+      // A 1:1 inquiry room opens the way its row in the list opens it; an approved join request opens its channel (B515).
+      const target: NotificationTarget = event.type === 'open-notification-chat' ? { kind: 'chat', chatId: event.chatId, ...event.messageId ? { messageId: event.messageId } : {} }
+        : event.type === 'open-notification-channel' ? { kind: 'channel', channelId: event.channelId } : { kind: 'inquiry', channelId: event.channelId, inquiryId: event.inquiryId }
       const next = notificationArrived(desktop.value?.activeAccountUid ?? null, event.accountUid, target, Date.now())
       if (next.pending) pendingNotification = next.pending
       openNotificationTarget(next.open)

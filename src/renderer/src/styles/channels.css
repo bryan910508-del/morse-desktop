@@ -144,6 +144,8 @@
 .box-buttons-gap { flex: 1 }
 
 /* Pin flag resolution bar. */
+/* B515: «가입 요청이 승인되었어요», drawn once as a service line under the channel's profile. */
+.channel-service-line { display: flex; justify-content: center; padding: 8px 16px }
 .channel-pin-status { display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 16px; border-bottom: 1px solid var(--divider); background: var(--card); font-size: var(--t-caption); color: var(--text-medium) }
 .channel-pin-status span { flex: 1; min-width: 0 }
 

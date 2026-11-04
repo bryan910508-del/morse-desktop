@@ -46,7 +46,7 @@ export function historyPosition(value: unknown): MessagePosition | undefined {
   return { seconds, nanoseconds, id: identifier(record.id) }
 }
 type BooleanPreference = { [K in keyof Preferences]: Preferences[K] extends boolean ? K : never }[keyof Preferences]
-const booleanPreferences = new Set<BooleanPreference>(['storyStealth', 'enterToSend', 'notifications', 'showNotificationPreview', 'showUnreadBadge',
+const booleanPreferences = new Set<BooleanPreference>(['storyStealth', 'enterToSend', 'notifications', 'showNotificationPreview', 'showUnreadBadge', 'badgeIncludeMuted',
   'autoTranslateChats', 'recordVideoMessages', 'sendTypingIndicator', 'disableTypingIndicators',
   'notifyPersonal', 'notifyGroup', 'notifyChannel', 'notificationSound', 'inAppNotifications', 'flashOnNotification', 'autoStart', 'startMinimized', 'spellCheck', 'powerSavingAuto', 'powerSavingAlwaysOn', 'compressMediaUploads', 'reduceMessageAnimations', 'mainMenuAccountsShown'])
 export function preferencePatch(value: unknown): Partial<Preferences> {

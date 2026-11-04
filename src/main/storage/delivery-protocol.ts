@@ -107,6 +107,11 @@ export type DeliveryCommand =
   // Every room's unsent draft at once, for the chat list's own line.
   | { kind: 'drafts' }
   | { kind: 'save-draft'; chatId: string; text: string }
+  // B530: what a draft last matched of its cloud copy (cloud-drafts.ts).
+  | { kind: 'draft-sync'; chatId: string }
+  | { kind: 'draft-synced'; chatId: string; synced: string }
+  | { kind: 'adopt-draft'; chatId: string; text: string }
+  | { kind: 'unsynced-drafts' }
   | { kind: 'text-known'; wire: TextSendWire }
   | { kind: 'enqueue'; wire: TextSendWire; expectedDraft: string; reply: ReplyBinding | null }
   | { kind: 'claim'; id: string }

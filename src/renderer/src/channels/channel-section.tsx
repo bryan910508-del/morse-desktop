@@ -2,6 +2,7 @@ import { showPostLikers } from './post-likers-box'
 import { fieldHeight } from '../history/field-height'
 import { showReportBox } from '../boxes/report-box'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { takeJoinApprovedLine } from './join-approved-line'
 import { AlignLeft, ArrowLeft, ChevronLeft, ChevronRight, Copy, Film, Globe, Heart, Image as ImageIcon, Images, Info, Layers, Link, Lock, MessageCircle, Pencil, Pin, PinOff, Plus, Send, ShieldOff, Trash2, Users, X, Flag } from 'lucide-react'
 import type { ChannelSummary } from '../../../shared/channels'
 import type { ChannelPostsSnapshot, ChannelPostText } from '../../../shared/channel-posts'
@@ -338,6 +339,10 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
   // MorseChannelPostReadMarks: a post on screen here is read in this channel.
   usePostReads(accountUid, scroller, Boolean(posts?.length))
   const name = channel?.status === 'ready' ? channel.name : tr('채널')
+  // B515: the first time this device opens a channel joined by an approved request, its line shows once (join-approved-line.ts).
+  const [approvedLine, setApprovedLine] = useState<string | null>(null)
+  const joinedByRequest = channel?.joinedByRequest === true
+  useEffect(() => { if (takeJoinApprovedLine(accountUid, channelId, joinedByRequest)) setApprovedLine(channelId) }, [accountUid, channelId, joinedByRequest])
   const pinnedId = snapshot?.pins?.reference.status === 'known' ? snapshot.pins.reference.postId : null
   const pinnedPost = pinnedId ? posts?.find(post => post.id === pinnedId) ?? null : null
   const unresolvedPin = referencedUnpinnedPost(snapshot)
@@ -485,6 +490,7 @@ export function ChannelSection({ accountUid, channelId, oneColumn, leftmost }: {
     <div className="channel-page" ref={scroller} onScroll={onScroll}>
       <ChannelProfile accountUid={accountUid} channelId={channelId} channel={channel} posts={channel?.status === 'ready' ? channel.postCount : null}
         discussion={Boolean(discussionChat)} onDiscussion={() => { void openDiscussion() }} />
+      {approvedLine === channelId && <div className="channel-service-line" role="status"><span className="service-pill">{tr('가입 요청이 승인되었어요.')}</span></div>}
       {unresolvedPin && <div className="channel-pin-status" role="status">
         <PinOff size={18} /><span>{tr('고정된 게시물의 고정 표시가 꺼져 있습니다.')}</span>
         <button className="button flat" onClick={() => resolvePin('restore')}>{tr('다시 고정')}</button>

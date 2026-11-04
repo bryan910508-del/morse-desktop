@@ -37,7 +37,14 @@ async function encode(canvas: HTMLCanvasElement): Promise<Uint8Array> {
   throw new Error(tr('편집한 사진이 너무 큽니다.'))
 }
 
-function PhotoEditor({ source, close, apply }: { source: string; close(): void; apply(bytes: Uint8Array): Promise<void> }) {
+// B518: what an edit was — kept by the send box and opened again over the picture as picked, as tdesktop's editor opens an
+// item's own modifications again (EditorData / PhotoModifications, editor/photo_editor.cpp) instead of editing its last
+// result. None of it (or «원래대로») is the picture as picked.
+export interface PhotoEdit { orientation: Orientation; crop: Rect; strokes: Stroke[] }
+// The edited picture and how it was made, or null for the picture as picked.
+export type PhotoEditResult = { bytes: Uint8Array; edit: PhotoEdit } | null
+
+function PhotoEditor({ source, initial, close, apply }: { source: string; initial: PhotoEdit | null; close(): void; apply(result: PhotoEditResult): Promise<void> }) {
   const [picture, setPicture] = useState<ImageBitmap | null>(null)
   const [failure, setFailure] = useState('')
   const [orientation, setOrientation] = useState<Orientation>({ angle: 0, flipped: false })
@@ -67,9 +74,12 @@ function PhotoEditor({ source, close, apply }: { source: string; close(): void; 
       if (!alive) { loaded.close(); return }
       const layer = document.createElement('canvas')
       layer.width = loaded.width; layer.height = loaded.height
-      layer.getContext('2d')!.drawImage(loaded, 0, 0)
+      const context = layer.getContext('2d')!
+      context.drawImage(loaded, 0, 0)
+      for (const stroke of initial?.strokes ?? []) drawStroke(context, stroke)
       base.current = layer
-      setCrop(wholePicture(loaded)); setPicture(loaded)
+      if (initial) { setOrientation(initial.orientation); setStrokes(initial.strokes) }
+      setCrop(initial?.crop ?? wholePicture(loaded)); setPicture(loaded)
     })().catch(reason => { loaded?.close(); if (alive) setFailure(errorText(reason, tr('사진을 불러오지 못했습니다.'))) })
     return () => { alive = false; loaded?.close(); base.current = null }
   }, [source])
@@ -214,10 +224,22 @@ function PhotoEditor({ source, close, apply }: { source: string; close(): void; 
     if (!keep) { setStrokes(paintEntry); repaintBase(paintEntry) }
     setRedo([]); setMode('transform')
   }
+  const untouched = !size || !crop || (crop.x === 0 && crop.y === 0 && crop.width === size.width && crop.height === size.height &&
+    !strokes.length && orientation.angle === 0 && !orientation.flipped)
+  // «원래대로»: no rotation, no crop, nothing drawn — «완료» then gives the picture as picked back.
+  function reset(): void {
+    if (saving || action.current || !picture) return
+    setOrientation({ angle: 0, flipped: false }); setCrop(wholePicture(picture)); setStrokes([]); setRedo([]); repaintBase([])
+  }
   async function finish(): Promise<void> {
     if (saving || !picture || !size || !crop || !base.current) return
-    const whole = crop.x === 0 && crop.y === 0 && crop.width === size.width && crop.height === size.height
-    if (whole && !strokes.length && orientation.angle === 0 && !orientation.flipped) { close(); return }
+    if (untouched) {
+      if (!initial) { close(); return }
+      setSaving(true); setFailure('')
+      try { await apply(null); close() }
+      catch (reason) { setFailure(errorText(reason, tr('편집한 사진을 적용하지 못했습니다.'))); setSaving(false) }
+      return
+    }
     setSaving(true); setFailure('')
     const output = document.createElement('canvas')
     try {
@@ -230,7 +252,7 @@ function PhotoEditor({ source, close, apply }: { source: string; close(): void; 
       context.transform(...orientationMatrix(size, orientation))
       context.drawImage(base.current, 0, 0)
       const bytes = await encode(output)
-      try { await apply(bytes) } finally { bytes.fill(0) }
+      try { await apply({ bytes, edit: { orientation, crop, strokes } }) } finally { bytes.fill(0) }
       close()
     } catch (reason) { setFailure(errorText(reason, tr('편집한 사진을 적용하지 못했습니다.'))); setSaving(false) }
     finally { output.width = 0; output.height = 0 }
@@ -260,6 +282,7 @@ function PhotoEditor({ source, close, apply }: { source: string; close(): void; 
         <button type="button" disabled={!picture || saving} aria-label={tr('회전')} title={tr('회전')} onClick={() => turn(rotated)}><RotateCw size={22} /></button>
         <button type="button" disabled={!picture || saving} aria-label={tr('좌우 반전')} title={tr('좌우 반전')} onClick={() => turn(flipped)}><FlipIcon /></button>
         <button type="button" disabled={!picture || saving} aria-label={tr('그리기')} title={tr('그리기')} onClick={enterPaint}><Pencil size={22} /></button>
+        {!untouched && <button type="button" className="photo-editor-text" disabled={!picture || saving} onClick={reset}>{tr('원래대로')}</button>}
       </div> : <div className="photo-editor-tools">
         <button type="button" disabled={!strokes.length} aria-label={tr('되돌리기')} title={tr('되돌리기')} onClick={undo}><Undo2 size={22} /></button>
         <button type="button" disabled={!redo.length} aria-label={tr('다시 실행')} title={tr('다시 실행')} onClick={redoStroke}><Redo2 size={22} /></button>
@@ -272,6 +295,6 @@ function PhotoEditor({ source, close, apply }: { source: string; close(): void; 
   </div>
 }
 
-export function showPhotoEditor(source: string, apply: (bytes: Uint8Array) => Promise<void>): void {
-  controller.showLayer(close => <PhotoEditor source={source} close={close} apply={apply} />, { dismissible: false })
+export function showPhotoEditor(source: string, initial: PhotoEdit | null, apply: (result: PhotoEditResult) => Promise<void>): void {
+  controller.showLayer(close => <PhotoEditor source={source} initial={initial} close={close} apply={apply} />, { dismissible: false })
 }

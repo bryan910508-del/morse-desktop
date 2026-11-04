@@ -193,6 +193,11 @@ db.transaction(() => {
   if (!hiddenColumns.has('uploaded')) db.exec('ALTER TABLE hidden_chats ADD COLUMN uploaded INTEGER NOT NULL DEFAULT 0')
   // B327b: whether a message hidden here has gone to the server (hidden-message-table.ts). Rows from before are not sent yet.
   if (!(db.pragma('table_info(hidden_messages)') as { name: string }[]).some(column => column.name === 'uploaded')) db.exec('ALTER TABLE hidden_messages ADD COLUMN uploaded INTEGER NOT NULL DEFAULT 0')
+  // B530 (contract §11 ⑥): the cloud copy each draft last matched (null: not known) and when it was last typed here, so a
+  // listener started again tells a draft typed offline from one another device replaced.
+  const localDraftColumns = new Set((db.pragma('table_info(local_drafts)') as { name: string }[]).map(column => column.name))
+  if (!localDraftColumns.has('synced')) db.exec('ALTER TABLE local_drafts ADD COLUMN synced TEXT')
+  if (!localDraftColumns.has('edited_at')) db.exec('ALTER TABLE local_drafts ADD COLUMN edited_at REAL')
   for (const name of ['parent_id', 'parent_revision']) if (!draftColumns.has(name)) db.exec(`ALTER TABLE channel_comment_drafts ADD COLUMN ${name} TEXT`)
   const columns = new Set((db.pragma('table_info(intents)') as { name: string }[]).map(column => column.name))
   for (const [name, type] of [['upload', 'TEXT'], ['source', 'BLOB'], ['source_digest', 'TEXT'], ['upload_request_digest', 'TEXT'], ['forward_operation_id', 'TEXT']]) if (!columns.has(name!)) db.exec(`ALTER TABLE intents ADD COLUMN ${name} ${type}`)
@@ -327,8 +332,23 @@ function execute(command: DeliveryCommand): unknown {
     case 'drafts': return Object.fromEntries((db.prepare(`SELECT chat_id,substr(text,1,${draftPreviewChars}) AS text FROM local_drafts WHERE text<>'' ORDER BY chat_id LIMIT 1000`)
       .all() as { chat_id: string; text: string }[]).map(row => [row.chat_id, row.text]))
     case 'save-draft':
-      db.prepare('INSERT INTO local_drafts(chat_id,text) VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET text=excluded.text')
-        .run(identifier(command.chatId), draftText(command.text)); return null
+      db.prepare('INSERT INTO local_drafts(chat_id,text,edited_at) VALUES(?,?,?) ON CONFLICT(chat_id) DO UPDATE SET text=excluded.text,edited_at=CASE WHEN local_drafts.text=excluded.text THEN local_drafts.edited_at ELSE excluded.edited_at END')
+        .run(identifier(command.chatId), draftText(command.text), Date.now()); return null
+    // B530: a draft with the cloud copy it last matched and when it was typed here.
+    case 'draft-sync': {
+      const row = db.prepare('SELECT text,synced,edited_at FROM local_drafts WHERE chat_id=?').get(identifier(command.chatId)) as { text: string; synced: string | null; edited_at: number | null } | undefined
+      return { text: row?.text ?? '', synced: row?.synced ?? null, editedAt: row?.edited_at ?? null }
+    }
+    case 'draft-synced':
+      db.prepare("INSERT INTO local_drafts(chat_id,text,synced) VALUES(?,'',?) ON CONFLICT(chat_id) DO UPDATE SET synced=excluded.synced")
+        .run(identifier(command.chatId), draftText(command.synced)); return null
+    // Another device's copy taken as this device's draft: it matches the cloud copy now.
+    case 'adopt-draft':
+      db.prepare('INSERT INTO local_drafts(chat_id,text,synced) VALUES(?,?,?) ON CONFLICT(chat_id) DO UPDATE SET text=excluded.text,synced=excluded.synced')
+        .run(identifier(command.chatId), draftText(command.text), draftText(command.text)); return null
+    case 'unsynced-drafts':
+      return (db.prepare("SELECT chat_id,text,synced FROM local_drafts WHERE text<>'' ORDER BY chat_id LIMIT 1000").all() as { chat_id: string; text: string; synced: string | null }[])
+        .map(row => ({ chatId: row.chat_id, text: row.text, synced: row.synced }))
     case 'enqueue': {
       db.transaction(() => {
         const wire = command.wire, digest = textDigest(wire)

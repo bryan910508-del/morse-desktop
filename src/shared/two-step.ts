@@ -73,3 +73,6 @@ export type TwoStepRequest =
 // Its answer: the state after it, or the server's refusal — its reason, which the screen acts on (a wrong current
 // password goes back to asking for it), and its words.
 export type TwoStepOutcome = { ok: true; settings: TwoStepSettings } | { ok: false; reason: string; message: string }
+// B525: the account's own deletion — done, or refused for its two-step password (asked for, wrong, locked) with its words,
+// which sends the screen back to the password step.
+export type DeleteAccountOutcome = { ok: true } | { ok: false; reason: string; message: string }

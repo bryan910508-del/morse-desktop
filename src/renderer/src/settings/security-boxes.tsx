@@ -15,6 +15,7 @@ import { Box, confirmBox } from '../ui/layers'
 import { UserAvatar } from '../ui/user-avatar'
 import { tr } from '../../../shared/i18n'
 import type { BackupCodeChange } from '../../../shared/model'
+import type { DeleteAccountOutcome } from '../../../shared/two-step'
 
 // One privacy rule's box, as tdesktop's EditPrivacyBox serves every key through its controller (edit_privacy_box.cpp,
 // settings_privacy_controllers.cpp): the title, the question over the options and the note under them are the key's.
@@ -214,9 +215,13 @@ const needsIdentityNote = (): string => tr('이 기기에 복구 코드가 없�
 const identityAgainNote = (): string => tr('확인한 지 오래되어 아직 적용하지 못했어요. 다시 확인하면 위 코드를 마저 적용해요.')
 const refusedIdentityNote = (): string => tr('이 기기에 저장된 코드가 이 계정의 코드와 맞지 않아요. 이 계정에 연결된 Apple 또는 Google로 확인하면 새 코드를 만들 수 있어요.')
 const unconfirmedNote = (): string => tr('변경 결과를 확인하지 못했어요. 이 새 코드와 이전 코드를 모두 보관해 두세요.')
+// A3 §10: a change that waited past seven days is not sent again — both codes are kept by the person, and a new one made.
+const expiredNote = (previous?: string): string => previous
+  ? tr('변경을 확인하지 못했습니다. 위 새 코드와 이전 코드 {0} 중 하나가 지금 코드예요. 둘 다 적어 두고 새 코드를 다시 만들어 주세요.', [previous])
+  : tr('변경을 확인하지 못했습니다. 위 새 코드를 적어 두고 새 코드를 다시 만들어 주세요.')
 
 function showNewCode(result: BackupCodeChange): void {
-  const notice = result.needsProof ? identityAgainNote() : result.confirmed ? null : unconfirmedNote()
+  const notice = result.expired ? expiredNote(result.previous) : result.needsProof ? identityAgainNote() : result.confirmed ? null : unconfirmedNote()
   controller.showLayer(close => <BackupCodeBox code={result.backupCode} notice={notice} close={close} />, { dismissible: false })
 }
 
@@ -278,10 +283,64 @@ export async function changeBackupCode(accountUid: string): Promise<void> {
   controller.showLayer(close => <BackupCodeChangeBox accountUid={accountUid} refused={false} close={close} />)
 }
 
+// B525 (contract B525-in-app-delete-2fa §9; Telegram-iOS DeleteAccountDataController.swift:413-434·:536-576): an account
+// with a two-step password gives it before the last confirmation, checked at once (verifyMorsePassword) so a wrong or
+// locked one stops here; the deletion proves it again (account-deletion.ts). No «Forgot?» here — Telegram's deletion has
+// none — the hint only. The words are the two-step box's own.
+function DeletionPasswordBox({ accountUid, hint, note, done }: { accountUid: string; hint: string; note: string; done(result: { password: string | null } | null): void }) {
+  const [password, setPassword] = useState(''), [busy, setBusy] = useState(false), [error, setError] = useState(note)
+  async function check(): Promise<void> {
+    if (busy || !password) return
+    setBusy(true); setError('')
+    try {
+      const outcome = await window.morse.updateTwoStep(accountUid, { action: 'verify', current: password })
+      if (outcome.ok) { done({ password: outcome.settings.enabled ? password : null }); return }
+      // Turned off meanwhile: the deletion goes without it.
+      if (outcome.reason === 'password-off') { done({ password: null }); return }
+      if (outcome.reason === 'password-wrong') setPassword('')
+      setError(outcome.message)
+    } catch (reason) { setError(errorText(reason, tr('2단계 인증을 처리하지 못했어요. 잠시 뒤에 다시 해 주세요.'))) }
+    finally { setBusy(false) }
+  }
+  return <Box title={tr('회원 탈퇴')} width={400} onClose={() => done(null)} buttons={<>
+    <button className="button flat" disabled={busy} onClick={() => done(null)}>{tr('취소')}</button>
+    <button className="button flat danger" disabled={busy || !password} onClick={() => { void check() }}>{busy && <Spinner size={14} />}{tr('다음')}</button>
+  </>}>
+    <p className="box-note">{tr('계정을 삭제하려면 2단계 인증 비밀번호를 입력해 주세요.')}</p>
+    <TextField type="password" label={tr('비밀번호')} value={password} maxLength={1024} autoFocus disabled={busy} invalid={Boolean(error)}
+      onChange={value => { setPassword(value); setError('') }} onSubmit={() => { void check() }} />
+    {hint && <p className="box-note">{tr('힌트: {0}', [hint])}</p>}
+    {error && <p className="box-error" role="alert">{error}</p>}
+  </Box>
+}
+// The password checked (null: the account has none by now), or null when the box was closed.
+function askDeletionPassword(accountUid: string, hint: string, note: string): Promise<{ password: string | null } | null> {
+  return new Promise(resolve => {
+    let settled = false
+    const settle = (result: { password: string | null } | null): void => { if (!settled) { settled = true; resolve(result) } }
+    controller.showLayer(close => <DeletionPasswordBox accountUid={accountUid} hint={hint} note={note} done={result => { settle(result); close() }} />, { onClose: () => settle(null) })
+  })
+}
+
 export async function deleteAccount(accountUid: string, userId: string, closeSettings: () => void): Promise<void> {
   if (!await confirmBox({ title: tr('회원 탈퇴'), text: tr('@{0} 계정의 모든 데이터가 서버에서 영구 삭제됩니다. 내가 만든 채널도 함께 삭제되며 되돌릴 수 없어요.', [userId]), confirm: tr('다음'), danger: true })) return
-  if (!await confirmBox({ title: tr('이 계정을 영구 삭제할까요?'), text: tr('삭제하면 이 기기에서도 로그아웃됩니다.'), confirm: tr('영구 삭제'), danger: true })) return
-  closeSettings()
-  try { await trackWrite(window.morse.deleteAccount(accountUid)); controller.toast(tr('계정을 삭제했습니다.')) }
-  catch (reason) { controller.toast(errorText(reason, tr('계정을 삭제하지 못했습니다.')), 'error') }
+  // Whether the account has a password, read as the two-step row reads it. Unreadable, the deletion goes without one and
+  // the server answers password-needed when it has one.
+  const state = await window.morse.twoStepSettings(accountUid).catch(() => null)
+  let asking = state?.enabled === true, hint = state?.hint ?? '', note = '', password: string | null = null
+  for (;;) {
+    if (asking) {
+      const given = await askDeletionPassword(accountUid, hint, note)
+      if (!given) return
+      password = given.password
+    }
+    if (!await confirmBox({ title: tr('이 계정을 영구 삭제할까요?'), text: tr('삭제하면 이 기기에서도 로그아웃됩니다.'), confirm: tr('영구 삭제'), danger: true })) return
+    let outcome: DeleteAccountOutcome
+    try { outcome = await trackWrite(window.morse.deleteAccount(accountUid, password)) }
+    catch (reason) { controller.toast(errorText(reason, tr('계정을 삭제하지 못했습니다.')), 'error'); return }
+    if (outcome.ok) { closeSettings(); controller.toast(tr('계정을 삭제했습니다.')); return }
+    // Asked for the password (turned on meanwhile), a wrong one or a lock: back to the password step with its words.
+    asking = true; note = outcome.message
+    if (outcome.reason === 'password-needed') hint = (await window.morse.twoStepSettings(accountUid).catch(() => null))?.hint ?? hint
+  }
 }

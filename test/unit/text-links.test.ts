@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { channelShareCard, classifyLink, findTextLinks, linkTarget, suspiciousLink } from '../../src/shared/text-links'
+import { channelShareCard, classifyLink, findTextLinks, linkTarget, schemeLinkTarget, suspiciousLink } from '../../src/shared/text-links'
 
 // Links are found as Telegram Desktop's ParseEntities finds url and email entities.
 const texts = (text: string): string[] => findTextLinks(text).map(link => link.text)
@@ -42,8 +42,26 @@ test('a domain with non-Latin letters is suspicious and asks first', () => {
 test('Morse web addresses open inside the app like the iOS router', () => {
   assert.deepEqual(classifyLink('https://talky-a38c3.web.app/i/abcdefgh12345678'), { kind: 'invite', url: 'https://talky-a38c3.web.app/i/abcdefgh12345678' })
   assert.deepEqual(classifyLink('https://talky-a38c3.web.app/channel/ch1/post/p1'), { kind: 'channel', url: 'https://talky-a38c3.web.app/channel/ch1/post/p1', channelId: 'ch1' })
-  assert.equal(classifyLink('https://talky-a38c3.web.app/u/abcd2345').kind, 'external')
   assert.equal(classifyLink('https://example.com/channel/ch1').kind, 'external')
+})
+
+// N-49: a profile link (iOS MorseDeepLinkParsing.profileLinkUserId) — /u/ and eight characters of the public ID
+// alphabet, lower-cased; the app-scheme form morse://user/{id} (talky:// too) is the same link.
+test('a profile link opens the profile inside the app, and nothing else that looks like one does', () => {
+  assert.deepEqual(classifyLink('https://talky-a38c3.web.app/u/abcd2345'), { kind: 'profile', url: 'https://talky-a38c3.web.app/u/abcd2345', morseId: 'abcd2345' })
+  assert.deepEqual(classifyLink('https://talky-a38c3.web.app/u/ABCD2345/'), { kind: 'profile', url: 'https://talky-a38c3.web.app/u/abcd2345', morseId: 'abcd2345' })
+  assert.deepEqual(classifyLink('morse://user/abcd2345'), { kind: 'profile', url: 'https://talky-a38c3.web.app/u/abcd2345', morseId: 'abcd2345' })
+  assert.equal(classifyLink('talky://user/abcd2345').kind, 'profile')
+  for (const url of ['https://talky-a38c3.web.app/u/abcd234', 'https://talky-a38c3.web.app/u/abcd23456', 'https://talky-a38c3.web.app/u/abcd2301',
+    'https://talky-a38c3.web.app/u/abcdilo2', 'https://talky-a38c3.web.app/u/@abcd234', 'https://talky-a38c3.web.app/u/abcd2345/x',
+    'https://talky-a38c3.web.app/u/abcd2345?x=1', 'http://talky-a38c3.web.app/u/abcd2345', 'https://example.com/u/abcd2345'])
+    assert.equal(classifyLink(url).kind, 'external', url)
+  assert.equal(schemeLinkTarget('morse://user/abcd2345'), 'https://talky-a38c3.web.app/u/abcd2345')
+  assert.equal(schemeLinkTarget('talky://user/ABCD2345'), 'https://talky-a38c3.web.app/u/abcd2345')
+  assert.equal(schemeLinkTarget('morse://user/abcd234'), null)
+  assert.equal(schemeLinkTarget('morse://user/abcd2345/x'), null)
+  assert.equal(schemeLinkTarget('morse://user/abcd2345?x=1'), null)
+  assert.equal(schemeLinkTarget('morse://channel/ch1'), 'https://talky-a38c3.web.app/channel/ch1')
 })
 
 test('a channel share becomes a card that keeps only the words before the address', () => {

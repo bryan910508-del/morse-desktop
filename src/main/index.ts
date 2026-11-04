@@ -224,13 +224,19 @@ const accounts = new AccountRegistry(uid => ({
   notifications: {
     preferences: () => settings.preferences,
     locked: () => screenLocked || shutdown !== 'running',
+    // F-RT-004: a chat's notification is dropped only while the app closes or the computer sleeps, and shows without its
+    // words while the app's own lock is on (notifications.ts NotificationHost); a locked screen or a person away from the
+    // computer no longer loses it.
+    dropped: () => shutdown !== 'running' || systemSuspended,
+    hidden: () => Boolean(appLock?.locked),
     appActive: () => Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && mainWindow.isFocused()),
     // rh-3: why a shown notification was taken back, and whether the window was in use then (tap-check.log).
     withdrawn: reason => recordTapStep('notice-withdrawn', `${reason} focused=${mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused() ? 1 : 0}`),
     show: (content, click, dismiss) => notifications.show(uid, content, click, dismiss),
     alert: () => desktopShell.alert(),
-    open: chatId => openNotificationChat(uid, chatId),
+    open: (chatId, messageId) => openNotificationChat(uid, chatId, messageId),
     openInquiry: (channelId, inquiryId) => openNotificationInquiry(uid, channelId, inquiryId),
+    openChannel: channelId => openNotificationChannel(uid, channelId),
     report: message => notifications.report(message)
   },
   mediaProgress: (requestId, loaded, total) => emit({ type: 'media-progress', accountUid: uid, requestId, loaded, total }),
@@ -244,7 +250,8 @@ const accounts = new AccountRegistry(uid => ({
   history: (chatId, history) => { contextMenus.prune(); emit({ type: 'history-changed', accountUid: uid, chatId, history }) },
   search: (chatId, search) => emit({ type: 'search-changed', accountUid: uid, chatId, search }),
   outgoing: (chatId, outgoing) => {voiceQueuePreviews.observe(uid,chatId,outgoing);emit({ type: 'outgoing-changed', accountUid: uid, chatId, outgoing })},
-  reply: (chatId, reply) => emit({ type: 'reply-draft-changed', accountUid: uid, chatId, reply })
+  reply: (chatId, reply) => emit({ type: 'reply-draft-changed', accountUid: uid, chatId, reply }),
+  cloudDraft: (chatId, text, previous) => emit({ type: 'cloud-draft-changed', accountUid: uid, chatId, text, previous })
 }))
 let settings: SettingsStore
 let authentication: AuthenticationDomain
@@ -305,8 +312,14 @@ const versionGate = new AppVersionGate(app.getVersion(), () => { void publish() 
 function readVersionGate(force: boolean): void {
   void versionGate.refresh(async () => {
     const signal = AbortSignal.timeout(30000)
-    // Before any sign-in with the app's own proof; where that is refused (B99), as the open account.
-    return await authentication?.publicConfig('desktop', signal).catch(() => null) ?? await accounts.active?.appConfig('desktop').catch(() => null) ?? null
+    // B522: with no account saved here, before any sign-in with the app's own proof — the check page. Once an account is
+    // saved, only as an account: at start this runs before the saved accounts have their sessions (startAccounts comes
+    // after it), so the app's proof would open the check page — a window in view when it is refused — for a computer
+    // whose accounts need none, and their restores would wait on it. tdesktop reads its app config through the account
+    // (Main::AppConfig, main/main_app_config.cpp:342); an account that connects reads it again (activated).
+    const saved = (await credentialVault?.list().catch(() => [] as string[]) ?? []).length > 0
+    if (!saved) return await authentication?.publicConfig('desktop', signal).catch(() => null) ?? null
+    return await accounts.active?.appConfig('desktop').catch(() => null) ?? null
   }, force)
 }
 const notifications = new NativeNotifications(() => { void publish() })
@@ -761,10 +774,14 @@ function registerIPC(): void {
     if (url.protocol !== 'https:' || (url.hostname !== 'storage.googleapis.com' && url.hostname !== 'firebasestorage.googleapis.com')) throw new Error(tr('내려받기 주소를 확인하지 못했습니다.'))
     return shell.openExternal(url.href)
   })
-  handle('delete-account', async uid => {
+  handle('delete-account', async (uid, rawPassword) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
-    await accounts.requireActive(identifier(uid)).accountTools.deleteAccount()
-    await authentication.forgetDeleted(identifier(uid))
+    const session = accounts.requireActive(identifier(uid))
+    // B525: the two-step password the screen checked, proved here and dropped; it is never kept or written down.
+    const password = typeof rawPassword === 'string' && rawPassword && rawPassword.length <= 1024 ? rawPassword : null
+    const outcome = await session.accountTools.deleteAccount(password, answer => session.twoStep.deletionAnswer(answer))
+    if (outcome.ok) await authentication.forgetDeleted(identifier(uid))
+    return outcome
   })
   handle('set-chat-auto-delete', (uid, chatId, seconds) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
@@ -2327,6 +2344,11 @@ function registerIPC(): void {
   })
   handle('undo-contact-delete', (uid, operationId) => accounts.requireActive(identifier(uid)).contacts.undoDelete(identifier(operationId)))
   handle('search-contact', (uid, requestId, publicId) => accounts.requireActive(identifier(uid)).contactDiscovery.search(identifier(requestId), publicMorseId(publicId)))
+  // N-49: the person a Morse profile link names (lookupUserByTalkyId); null for an unknown or private ID.
+  handle('resolve-profile-link', (uid, morseId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).contactDiscovery.profileLink(publicMorseId(morseId))
+  })
   handle('add-contact', (uid, requestId) => accounts.requireActive(identifier(uid)).contactDiscovery.add(identifier(requestId)))
   handle('close-contact-search', (uid, requestId) => {
     if (accounts.active?.profile.uid === identifier(uid)) accounts.active.contactDiscovery.closeSearch(identifier(requestId))
@@ -2568,6 +2590,14 @@ function registerIPC(): void {
     if (typeof at !== 'number' || !Number.isSafeInteger(at) || at < 0 || at > Date.now() + 86400000) throw new Error(tr('날짜를 다시 선택해 주세요.'))
     return accounts.requireActive(identifier(uid)).jumpDate(identifier(chatId), at)
   })
+  handle('jump-unread', (uid, chatId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).jumpUnread(identifier(chatId))
+  })
+  handle('jump-message', (uid, chatId, messageId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).jumpMessage(identifier(chatId), identifier(messageId))
+  })
   handle('jump-reply', (uid, chatId, messageId, version) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
     if (typeof version !== 'string' || !/^\d{1,12}:\d{1,9}$/.test(version)) throw new Error(tr('답장 메시지를 다시 선택해 주세요.'))
@@ -2659,6 +2689,10 @@ function registerIPC(): void {
     if (!(bytes instanceof Uint8Array) || !bytes.byteLength || bytes.byteLength >= 10 * 1024 * 1024) throw new Error(tr('준비한 사진을 확인하지 못했습니다.'))
     return accounts.requireActive(identifier(uid)).replaceAttachmentImage(identifier(chatId), identifier(id), identifier(itemId), bytes)
   })
+  handle('restore-attachment-image', (uid, chatId, id, itemId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).restoreAttachmentImage(identifier(chatId), identifier(id), identifier(itemId))
+  })
   handle('edit-attachment-video', (uid, chatId, id, itemId, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
@@ -2673,7 +2707,6 @@ function registerIPC(): void {
     accounts.requireActive(identifier(uid)).pressAttachment(identifier(chatId), identifier(id))
   })
   handle('discard-attachment', (uid, id) => { if (accounts.active?.profile.uid === identifier(uid)) accounts.active.discardAttachment(identifier(id)) })
-  handle('next-attachment', (uid, chatId) => accounts.requireActive(identifier(uid)).nextAttachment(identifier(chatId)))
   handle('drop-attachments', (uid, chatId, paths, mode) => {
     if (mode !== 'media' && mode !== 'file') throw new Error(tr('첨부 종류를 확인해 주세요.'))
     if (!Array.isArray(paths) || !paths.length || paths.length > maxAlbumPhotos ||
@@ -2789,6 +2822,8 @@ function registerIPC(): void {
   })
   handle('cancel-reply', (uid, chatId, selectionId) => accounts.requireActive(identifier(uid)).cancelReply(identifier(chatId), identifier(selectionId)))
   handle('save-draft', (uid, chatId, text) => accounts.requireActive(identifier(uid)).saveDraft(identifier(chatId), draftText(text)), true)
+  // B530: a room left (or the app going away) sends its waiting cloud draft at once.
+  handle('push-draft', (uid, chatId) => accounts.requireActive(identifier(uid)).pushDraft(identifier(chatId)), true)
   handle('app-badge-drawn', (key, dataURL) => {
     if (typeof key !== 'string' || key.length > 20 || typeof dataURL !== 'string' || dataURL.length > 200000 || !dataURL.startsWith('data:image/png;base64,')) return
     desktopShell.overlayDrawn(key, dataURL)
@@ -2858,7 +2893,7 @@ function accountStates(): AccountAuthState[] {
   return authentication.states().map(state => {
     const session = accounts.get(state.uid), own = session?.account
     // B353: the same count as the Dock's, for this account (accountBadgeState, tdesktop unreadWithMentionsBadge).
-    const badge = session && countsInBadge(session) ? accountBadgeState(state.uid, session.dialogs(), settings?.preferences.badgeMode ?? 'messages') : { count: 0, muted: false }
+    const badge = session && countsInBadge(session) ? accountBadgeState(state.uid, session.dialogs(), settings?.preferences.badgeMode ?? 'messages', settings?.preferences.badgeIncludeMuted ?? true, settings?.preferences) : { count: 0, muted: false }
     // Each account's own photo, as Settings::AccountsList paints every account's userpic.
     const photo = session?.selfProfile.snapshot.photo
     return { ...state, userId: own?.userId || state.userId, displayName: own?.displayName || state.displayName, connected: Boolean(session), active: state.uid === activeUid, unread: badge.count, unreadMuted: badge.muted,
@@ -2983,7 +3018,7 @@ function shortcut(command: ShortcutCommand): void {
   emit({ type: 'shortcut', command })
 }
 // A notification of another account switches the window to that account first (Telegram).
-function openNotificationChat(uid: string, chatId: string): void {
+function openNotificationChat(uid: string, chatId: string, messageId?: string): void {
   const owner = accounts.get(uid)
   const valid = (): boolean => Boolean(owner && accounts.get(uid) === owner &&
     owner.readStatus === 'ready' && !screenLocked && shutdown === 'running' &&
@@ -2993,7 +3028,7 @@ function openNotificationChat(uid: string, chatId: string): void {
   const switching = accounts.active !== owner
   if (switching) { accounts.setActive(uid); authentication.select(uid); void credentialVault.setActive(uid); void publish(); updatePresence() }
   // The window opens the chat once it shows this account.
-  const send = (): void => { if (valid() && accounts.active === owner) emit({ type: 'open-notification-chat', accountUid: uid, chatId }) }
+  const send = (): void => { if (valid() && accounts.active === owner) emit({ type: 'open-notification-chat', accountUid: uid, chatId, ...messageId ? { messageId } : {} }) }
   if (mainWindow?.webContents.isLoadingMainFrame()) mainWindow.webContents.once('did-finish-load', send)
   else send()
 }
@@ -3005,6 +3040,17 @@ function openNotificationInquiry(uid: string, channelId: string, inquiryId: stri
   showWindow()
   if (accounts.active !== owner) { accounts.setActive(uid); authentication.select(uid); void credentialVault.setActive(uid); void publish(); updatePresence() }
   const send = (): void => { if (valid() && accounts.active === owner) emit({ type: 'open-notification-inquiry', accountUid: uid, channelId, inquiryId }) }
+  if (mainWindow?.webContents.isLoadingMainFrame()) mainWindow.webContents.once('did-finish-load', send)
+  else send()
+}
+// B515: a join request approved — the window shows that account's channel, as a channelJoinApproved push opens it.
+function openNotificationChannel(uid: string, channelId: string): void {
+  const owner = accounts.get(uid)
+  const valid = (): boolean => Boolean(owner && accounts.get(uid) === owner && owner.readStatus === 'ready' && !screenLocked && shutdown === 'running')
+  if (!valid()) return
+  showWindow()
+  if (accounts.active !== owner) { accounts.setActive(uid); authentication.select(uid); void credentialVault.setActive(uid); void publish(); updatePresence() }
+  const send = (): void => { if (valid() && accounts.active === owner) emit({ type: 'open-notification-channel', accountUid: uid, channelId }) }
   if (mainWindow?.webContents.isLoadingMainFrame()) mainWindow.webContents.once('did-finish-load', send)
   else send()
 }
@@ -3413,6 +3459,9 @@ else {
         dialog.showErrorBox('Morse', tr('작성 중인 내용의 저장을 확인하지 못했습니다. 내용을 복사해 보관한 뒤 다시 종료해 주세요.'))
         return
       }
+      // B530: the cloud drafts still waiting go up before the accounts close (tdesktop waits for its draft saves to quit,
+      // ApiWrap::checkQuitPreventFinished); a network that does not answer holds the quit for three seconds at most.
+      await Promise.race([Promise.all(accounts.all.map(session => session.flushCloudDrafts().catch(() => {}))), new Promise(resolve => setTimeout(resolve, 3000))])
       try { await windowState?.save(); translator.close(); mediaHelper.close(); await authentication?.close(); accounts.closeAll(); await accounts.flush(); await settings?.flush()
         // B483: what ended a helper or a window while closing reaches crash-check.log before the app is gone (a second at most).
         await Promise.race([crashStepsWritten(), new Promise(resolve => setTimeout(resolve, 1000))]) }

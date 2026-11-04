@@ -15,7 +15,7 @@ test('one account\'s number: marks + messages (or chats), muted chats too, grey 
     [[dialog('b', 2, { muted: true }), dialog('c', 0, { markedUnread: true, muted: true })], 'messages', { count: 3, muted: true }],
     [[dialog('a', 3), dialog('b', 2, { muted: true })], 'chats', { count: 2, muted: false }],
     [[dialog('m', 4, { markedUnread: true })], 'messages', { count: 4, muted: false }],
-    [[dialog('r', 1, { archived: true }), dialog('s', 1, { kind: 'secret' } as Partial<DialogSummary>), dialog('n', 1, { service: true } as Partial<DialogSummary>), dialog('o', 1, { participantUids: ['x', 'y'] })], 'messages', { count: 0, muted: false }],
+    [[dialog('r', 1, { archived: true }), dialog('n', 1, { service: true } as Partial<DialogSummary>), dialog('o', 1, { participantUids: ['x', 'y'] })], 'messages', { count: 0, muted: false }],
     [[], 'messages', { count: 0, muted: false }]
   ]
   for (const [dialogs, mode, expected] of rows) assert.deepEqual(accountBadgeState('me', dialogs, mode), expected, JSON.stringify([dialogs.map(d => d.id), mode]))

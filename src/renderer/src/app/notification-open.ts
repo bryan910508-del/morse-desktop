@@ -1,7 +1,7 @@
 // A pressed notification of another account opens once the window shows that account — a chat, and (B-menu-now) a 1:1
 // inquiry room the same way: main switches the account and sends the open at once, so the window may hear the open
 // before it shows the account. Kept for a short while only: an old press does not open a screen much later.
-export type NotificationTarget = { kind: 'chat'; chatId: string } | { kind: 'inquiry'; channelId: string; inquiryId: string }
+export type NotificationTarget = { kind: 'chat'; chatId: string; messageId?: string } | { kind: 'inquiry'; channelId: string; inquiryId: string } | { kind: 'channel'; channelId: string }
 export interface PendingNotification { accountUid: string; target: NotificationTarget; at: number }
 export const pendingNotificationMs = 15000
 

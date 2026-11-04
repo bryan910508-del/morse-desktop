@@ -36,6 +36,8 @@ export interface UiState {
   layers: LayerEntry[]
   toasts: ToastEntry[]
   composerFocus: number
+  // F-MB-003: a message the chat opens at instead of its first unread (a notice of this account's own message).
+  entryMessage: { chatId: string; messageId: string } | null
   searchFocus: number
   dialogsWidth: number
 }
@@ -49,7 +51,7 @@ function storedWidth(): number {
 
 let state: UiState = {
   section: 'chats', folder: 'all', archived: false, chatId: null, channelId: null, channelPostId: null, channelExplore: false, noteId: null, right: null, person: null, inquiry: null,
-  dialogsQuery: '', mainMenu: false, layers: [], toasts: [], composerFocus: 0, searchFocus: 0, dialogsWidth: storedWidth()
+  dialogsQuery: '', mainMenu: false, layers: [], toasts: [], composerFocus: 0, entryMessage: null, searchFocus: 0, dialogsWidth: storedWidth()
 }
 const listeners = new Set<() => void>()
 function set(patch: Partial<UiState>): void {
@@ -88,6 +90,13 @@ export const controller = {
     // again — nothing beside it closes, the composer takes the focus.
     if (state.section === 'chats' && state.chatId === chatId && state.inquiry === null) { set({ mainMenu: false, composerFocus: state.composerFocus + 1 }); return }
     set({ section: 'chats', chatId, channelId: null, noteId: null, inquiry: null, mainMenu: false, right: state.right === 'info' ? 'info' : null, composerFocus: state.composerFocus + 1 })
+  },
+  // tdesktop Manager::openNotificationMessage: this account's own message opens exactly where it is.
+  openChatAt(chatId: string, messageId: string): void { set({ entryMessage: { chatId, messageId } }); controller.openChat(chatId) },
+  takeEntryMessage(chatId: string): string | null {
+    const entry = state.entryMessage
+    if (!entry || entry.chatId !== chatId) return null
+    set({ entryMessage: null }); return entry.messageId
   },
   closeChat(): void { set({ chatId: null, channelId: null, inquiry: null, right: null }) },
   openChannel(channelId: string, postId: string | null = null): void { set({ section: 'channels', channelId, channelPostId: postId, chatId: null, noteId: null, inquiry: null, mainMenu: false, right: null }) },

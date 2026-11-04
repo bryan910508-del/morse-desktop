@@ -9,6 +9,7 @@ import { storyReactions, type PeerStoryRow } from '../../../shared/peer-stories'
 import { composingKey } from '../../../shared/shortcuts'
 import { desktop, shallowEqual, useDesktop } from '../app/store'
 import { controller } from '../app/ui'
+import { classifyLink } from '../../../shared/text-links'
 import { errorText } from '../app/format'
 import { trackWrite } from '../app/drafts'
 import { waitFor } from '../app/contacts'
@@ -322,6 +323,9 @@ function StoryViewer({ accountUid, peers, startIndex, close }: { accountUid: str
 
   const openLink = (url: string): void => {
     if (!peer || !item) return
+    // N-49: a Morse address goes through the app's one router as a message's does; the story steps aside for it.
+    // The router is loaded when it is needed: it brings the channel screens, which the story row does not need.
+    if (classifyLink(url).kind !== 'external') { close(); void import('../app/links').then(links => links.openLink(accountUid, url)); return }
     void window.morse.openPeerStoryLink(accountUid, { ...target(peer, item), url }).catch(reason => controller.toast(errorText(reason, tr('링크를 열지 못했습니다.')), 'error'))
   }
 

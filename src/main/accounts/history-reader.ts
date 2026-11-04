@@ -13,6 +13,8 @@ import { recordHistoryStep } from '../platform/history-diagnostics'
 import { ReactionUpdates } from './reaction-updates'
 import { PollVotes } from './poll-votes'
 import { tr } from '../../shared/i18n'
+import type { ReadCursor } from '../../shared/read-receipts'
+import { unreadCandidate } from '../../shared/unread-entry'
 
 export class HistoryReader {
   private readonly abort = new AbortController()
@@ -31,6 +33,12 @@ export class HistoryReader {
   private paging: Promise<HistorySnapshot> | null = null
   private pageAbort: AbortController | null = null
   private epoch = 0
+  // B534: the live listen has answered «current» once. The listen cancels pages as it starts (cancelPage on its
+  // reconnect or loading), so a jump made on the page kept from the last visit came back without its message; entry
+  // jumps wait for this, as tdesktop moves to a message only in a history it has loaded.
+  private liveWaiters: Array<() => void> | null = []
+  whenLive(): Promise<void> { return this.liveWaiters ? new Promise(done => this.liveWaiters!.push(done)) : Promise.resolve() }
+  private markLive(): void { const waiters = this.liveWaiters ?? []; this.liveWaiters = null; for (const done of waiters) done() }
   private failed = false
   private expiryTimer?: ReturnType<typeof setTimeout>
   private readonly replies: ReplyContext
@@ -174,7 +182,8 @@ export class HistoryReader {
         reconnecting: () => { if (!this.closed && !this.failed) this.cancelPage() },
         state: (state, error) => {
           if (this.closed || this.failed) return
-          if (state === 'error') this.fail(error!)
+          if (state === 'ready') this.markLive()
+          else if (state === 'error') this.fail(error!)
           else if (state === 'loading') {
             // B184 (Phase1 10-07): the live page a window joins on reaching the newest is a new listen, which says
             // «loading» as it starts (relisten, firestore-rpc.ts). That is not a reconnect: the window keeps its rows and
@@ -234,6 +243,7 @@ export class HistoryReader {
   }
   private fail(error: ReadFailure): void {
     if (this.closed || this.failed) return
+    this.markLive()
     recordHistoryStep('history-failed', error.code)
     this.failed = true; this.attached = false; this.cancelPage(); this.stopTail?.(); this.stopGroups(); this.replies.clear()
     this.value.status = 'error'; this.value.message = error.message
@@ -316,6 +326,31 @@ export class HistoryReader {
     for (const doc of this.sorted(rows).reverse()) {
       const message = decodeMessage(doc, this.dialog)
       if (message && !this.hidden(message.id)) return message.position
+    }
+    return null
+  }
+  // F-MB-003: where one message of this room is, read by its id — the message a notice of this account's own message opens.
+  async messageTarget(messageId: string): Promise<MessagePosition | null> {
+    if (this.closed || this.failed || this.paging || this.value.status !== 'ready') throw new Error(tr('기록을 불러온 뒤 다시 선택해 주세요.'))
+    const chat = this.dialog.summary.id, name = `${documents}/chats/${chat}/messages/${messageId}`
+    const rows = await this.reader.query(`${documents}/chats/${chat}`, { from: [{ collectionId: 'messages' }],
+      where: { fieldFilter: { field: { fieldPath: '__name__' }, op: 'EQUAL', value: { referenceValue: name } } }, limit: { value: 1 } }, this.abort.signal)
+    const doc = rows.find(row => row.name === name), message = doc ? decodeMessage(doc, this.dialog) : null
+    return message && !this.hidden(message.id) ? message.position : null
+  }
+  // F-MB-003: the first unread message after the read position (tdesktop History::loadAroundId — the first unread, or the
+  // read boundary), for a room whose first page does not reach the boundary. The same rule as the window's divider
+  // (unreadCandidate); nothing among the next rows → null, and the room stays at the bottom.
+  async unreadTarget(cursor: ReadCursor, self: string): Promise<MessagePosition | null> {
+    if (this.closed || this.failed || this.paging || this.value.status !== 'ready' || !Number.isSafeInteger(cursor.at) || cursor.at < 0) throw new Error(tr('기록을 불러온 뒤 다시 선택해 주세요.'))
+    const start = positionAt(cursor.at, '')
+    const from = this.dialog.cutoff && comparePosition(this.dialog.cutoff, start) > 0 ? this.dialog.cutoff : start
+    const query = { from: [{ collectionId: 'messages' }], where: { fieldFilter: { field: { fieldPath: 'createdAt' }, op: 'GREATER_THAN_OR_EQUAL', value: positionValue(from) } },
+      orderBy: [{ field: { fieldPath: 'createdAt' }, direction: 'ASCENDING' }, { field: { fieldPath: '__name__' }, direction: 'ASCENDING' }], limit: { value: 20 } }
+    const rows = await this.reader.query(`${documents}/chats/${this.dialog.summary.id}`, query, this.abort.signal)
+    for (const doc of this.sorted(rows).reverse()) {
+      const message = decodeMessage(doc, this.dialog)
+      if (message && !this.hidden(message.id) && unreadCandidate(message, cursor, self)) return message.position
     }
     return null
   }
@@ -446,7 +481,7 @@ export class HistoryReader {
   private cancelPage(): void { this.epoch++; this.pageAbort?.abort(); this.pageAbort = null; this.paging = null }
   close(): void {
     if (this.closed) return
-    this.closed = true; this.cancelPage(); this.abort.abort(); this.stopTail?.(); this.stopGroups(); this.replies.clear(); this.expired.close(); this.pollVotes.close(); clearTimeout(this.expiryTimer)
+    this.closed = true; this.markLive(); this.cancelPage(); this.abort.abort(); this.stopTail?.(); this.stopGroups(); this.replies.clear(); this.expired.close(); this.pollVotes.close(); clearTimeout(this.expiryTimer)
     this.rows.clear(); this.top = []
   }
 }

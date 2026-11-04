@@ -7,7 +7,8 @@ import { bannedNotice } from '../../shared/sanctions'
 
 export interface AppCheckProof { token: string; expiresAt: number; appId: string }
 export interface DesktopAppProofProvider {
-  getProof(signal: AbortSignal): Promise<AppCheckProof>
+  // `purpose`: B522's name of the request that needs the proof, for the security check's own log (web-app-proof.ts).
+  getProof(signal: AbortSignal, purpose?: string): Promise<AppCheckProof>
   // A16: a signed-in account offers its session to prove this app (web-app-proof.ts); the result takes it back.
   useSession?(uid: string, proof: (signal: AbortSignal) => Promise<string | null>): () => void
   // «Try now» (tdesktop window_connecting_widget lng_reconnecting_try_now): the check again at once, its wait skipped.

@@ -44,8 +44,9 @@ test('the pick is a preference of its own: boolean or null, nothing else; null b
 
 test('the row is in a chat\'s box only, for photos that are re-encoded (not GIFs alone), and the send carries it', () => {
   const box = readFileSync('src/renderer/src/boxes/send-files-box.tsx', 'utf8')
-  assert.match(box, /hdOffered = sender\.highQuality === true && draft\.kind === 'image' && items\.some\(item => !\/\\\.gif\$\/i\.test\(item\.name\)\)/)
+  // B518: the photos among the items that go — a mixed box's too.
+  assert.match(box, /hdOffered = sender\.highQuality === true && going\.some\(item => item\.kind === 'image' && !\/\\\.gif\$\/i\.test\(item\.name\)\)/)
   assert.match(box, /highQuality: true,\n    send: async \(caption, itemIds, video, options\)/)
-  assert.match(box, /reencodePhotos\(accountUid, chatId, draft, itemIds, photoSendMode\(choice, hd\)\)/)
+  assert.match(box, /reencodePhotos\(accountUid, chatId, draft, photos, photoSendMode\(choice, hd\)\)/)
   assert.doesNotMatch(readFileSync('src/renderer/src/channels/channel-inquiry-panel.tsx', 'utf8'), /highQuality/, 'an inquiry room keeps its own size')
 })

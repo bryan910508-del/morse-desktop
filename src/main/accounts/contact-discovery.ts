@@ -6,6 +6,7 @@ import { tr } from '../../shared/i18n'
 interface Search { id: string; publicId: string; abort: AbortController; result: PublicContact | null }
 export class ContactDiscovery {
   private owner: Search | null = null
+  private links = new Set<AbortController>()
   private closed = false
   private job: Promise<void> | null = null
   private value: ContactSearchSnapshot = { requestId: null, status: 'idle', result: null, adding: false, outcome: 'none', message: '' }
@@ -15,6 +16,8 @@ export class ContactDiscovery {
   private publish(): void { if (!this.closed) this.changed() }
   pause(): void {
     this.owner?.abort.abort(); this.owner = null
+    for (const link of this.links) link.abort()
+    this.links.clear()
     this.value = { ...this.value, status: 'idle', result: null, outcome: this.job ? 'uncertain' : this.value.outcome,
       message: this.job ? tr('연락처 저장 결과를 확인해야 합니다. 연결 후 목록을 다시 불러와 주세요.') : '' }; this.publish()
   }
@@ -57,6 +60,18 @@ export class ContactDiscovery {
     })()
     this.job = task
     try { await task } finally { this.job = null; this.value.adding = false; this.publish() }
+  }
+  // N-49: the person a profile link names, looked up once with the same public lookup (tdesktop resolveUsername);
+  // null when nobody has the ID or the account is private.
+  async profileLink(publicId: string): Promise<{ uid: string; displayName: string } | null> {
+    if (this.closed || !this.allowed()) throw new Error(tr('연결 상태가 변경되었습니다.'))
+    const abort = new AbortController()
+    this.links.add(abort)
+    try {
+      const result = await lookupContact(this.auth, publicId, abort.signal, true)
+      if (abort.signal.aborted) throw new Error(tr('연결 상태가 변경되었습니다.'))
+      return result ? { uid: result.uid, displayName: result.displayName } : null
+    } finally { this.links.delete(abort) }
   }
   closeSearch(id: string): void { if (this.owner?.id === id && !this.job) { this.pause(); this.value.requestId = null; this.publish() } }
   async close(): Promise<void> { this.closed = true; this.pause(); await this.job }

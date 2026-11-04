@@ -483,6 +483,8 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
         {preferences.showUnreadBadge && <>
           <label className="settings-radio"><input type="radio" name="badge-mode" checked={preferences.badgeMode === 'messages'} onChange={() => update({ badgeMode: 'messages' })} /><span>{tr('메시지 수')}<small>{tr('안 읽은 메시지 총 개수')}</small></span></label>
           <label className="settings-radio"><input type="radio" name="badge-mode" checked={preferences.badgeMode === 'chats'} onChange={() => update({ badgeMode: 'chats' })} /><span>{tr('채팅 수')}<small>{tr('안 읽은 채팅방 개수')}</small></span></label>
+          {/* F-AC-005: tdesktop «Include muted chats» (settings/sections/settings_notifications.cpp:1340). */}
+          <Toggle label={tr('알림 끈 대화 포함')} detail={tr('알림을 끈 대화의 안 읽은 메시지도 셉니다')} checked={preferences.badgeIncludeMuted} onChange={value => update({ badgeIncludeMuted: value })} />
         </>}
         {/* B374: only Windows has a tray, so the toggle shows what Windows does — the tray until the person chooses. */}
         {integration?.trayAvailable && <Toggle label={tr('창을 닫으면 트레이로 최소화')} checked={closeToTrayEffective(preferences, 'win32')} onChange={value => update({ closeToTrayChoice: value })} />}

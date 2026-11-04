@@ -126,16 +126,30 @@ export const morseWebHost = 'talky-a38c3.web.app'
 
 export type MorseLink =
   | { kind: 'channel'; url: string; channelId: string }
+  | { kind: 'profile'; url: string; morseId: string }
   | { kind: 'invite'; url: string }
   | { kind: 'external'; url: string }
 
-// MorseMessengerApp.handleUniversalLink: /i/{token} accepts an invite, /channel/{id} opens the channel inside the
-// app, and every other web address (profile links under /u/ included) opens in the browser.
+// The Morse ID a profile link names (N-49): eight characters of the public ID alphabet, as iOS
+// MorseDeepLinkParsing.profileLinkUserId and Android MorseAppLink take it; anything else is no profile link.
+function profileId(raw: string | undefined): string | null {
+  return raw && /^[abcdefghjkmnpqrstuvwxyz23456789]{8}$/i.test(raw) ? raw.toLowerCase() : null
+}
+
+// MorseMessengerApp.handleUniversalLink: /i/{token} accepts an invite, /channel/{id} opens the channel and /u/{id} the
+// person's profile inside the app (N-49, as tdesktop turns t.me/{username} into tg://resolve and opens it in the app,
+// core/local_url_handlers.cpp:2015, :2119); every other web address opens in the browser.
 export function classifyLink(url: string): MorseLink {
   let parsed: URL
   try { parsed = new URL(url) } catch { return { kind: 'external', url } }
   const parts = parsed.pathname.split('/').filter(Boolean)
+  if (parsed.protocol === 'morse:' || parsed.protocol === 'talky:') {
+    const web = parsed.hostname === 'user' ? schemeLinkTarget(url) : null
+    if (web) return classifyLink(web)
+  }
   const morse = (parsed.protocol === 'https:' && parsed.hostname === morseWebHost) || parsed.protocol === 'talky:'
+  const profile = morse && parsed.protocol === 'https:' && parts[0] === 'u' && parts.length === 2 && !parsed.search && !parsed.hash ? profileId(parts[1]) : null
+  if (profile) return { kind: 'profile', url: `https://${morseWebHost}/u/${profile}`, morseId: profile }
   if (morse && parsed.protocol === 'https:' && parts[0] === 'i' && parts[1]?.length === 16) return { kind: 'invite', url }
   if (morse && parsed.protocol === 'https:' && parts[0] === 'channel' && parts[1] && parts[1] !== 'post') return { kind: 'channel', url, channelId: parts[1] }
   if (parsed.protocol === 'talky:' && parsed.hostname === 'channel' && parts[0]) return { kind: 'channel', url, channelId: parts[0] }
@@ -143,8 +157,8 @@ export function classifyLink(url: string): MorseLink {
 }
 
 // Morse's own address schemes on the desktop, as Telegram Desktop opens tg:// links: morse:// and iOS's talky://
-// (MorseDeepLinkParsing) open a channel — …//channel/{id}, or …//channel/{id}/post/{postId} — or an invite
-// …//i/{token}, the same way their web addresses open inside the app.
+// (MorseDeepLinkParsing) open a channel — …//channel/{id}, or …//channel/{id}/post/{postId} — an invite
+// …//i/{token}, or a profile …//user/{id} (N-49), the same way their web addresses open inside the app.
 export function schemeLinkTarget(raw: string): string | null {
   if (typeof raw !== 'string' || raw.length > 2048) return null
   let url: URL
@@ -157,6 +171,8 @@ export function schemeLinkTarget(raw: string): string | null {
     return null
   }
   if (parts[0] === 'i' && parts.length === 2 && /^[A-Za-z0-9_-]{16}$/.test(parts[1]!)) return `https://${morseWebHost}/i/${parts[1]}`
+  const profile = parts[0] === 'user' && parts.length === 2 ? profileId(parts[1]) : null
+  if (profile) return `https://${morseWebHost}/u/${profile}`
   return null
 }
 

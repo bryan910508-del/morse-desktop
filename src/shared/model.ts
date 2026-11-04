@@ -50,7 +50,8 @@ export type LinkState = 'ready' | 'waiting-network' | 'connecting' | 'updating'
 
 // A recovery code change (A3): the new code, whether the server confirmed it, and — made by Apple/Google — whether it
 // waits for the person to confirm again (§9).
-export interface BackupCodeChange { backupCode: string; confirmed: boolean; needsProof?: boolean }
+// `expired` (A3 §10): a change that waited past seven days and was not sent again; `previous` is its old code.
+export interface BackupCodeChange { backupCode: string; confirmed: boolean; needsProof?: boolean; expired?: boolean; previous?: string }
 // B178 §2-5: the screens that show people on rows of their own, each with its own set of uids whose official marks are
 // read while they are shown — a profile over the search's results, or a channel's subscribers beside a group's members,
 // must not clear each other's.
@@ -99,6 +100,8 @@ export interface Preferences {
   autoStart: boolean
   startMinimized: boolean
   badgeMode: 'messages' | 'chats'
+  // F-AC-005: tdesktop «Include muted chats» (Core::Settings includeMutedCounter, on by default, core_settings.h:1103).
+  badgeIncludeMuted: boolean
   // iOS ChatSettingsView «맞춤법 검사» (chatSpellCheckEnabled).
   spellCheck: boolean
   // iOS DataStorageView «사진 화질» (PhotoSendQuality).
@@ -119,7 +122,7 @@ export const defaultPreferences: Preferences = {
   theme: 'system', messageFontSize: 14, chatBackground: defaultChatBackground, enterToSend: true, notifications: true, showNotificationPreview: false,
   storyStealth: false, closeToTrayChoice: null, showUnreadBadge: true, autoDeleteDefaultSeconds: 0, autoTranslateChats: false,
   autoDownloadPhotos: { user: 8 * 1024 * 1024, group: 8 * 1024 * 1024, channel: 8 * 1024 * 1024 }, recordVideoMessages: false, sendTypingIndicator: true, disableTypingIndicators: false,
-  notifyPersonal: true, notifyGroup: true, notifyChannel: true, notificationSound: true, inAppNotifications: true, flashOnNotification: true, autoStart: false, startMinimized: false, badgeMode: 'messages', spellCheck: true,
+  notifyPersonal: true, notifyGroup: true, notifyChannel: true, notificationSound: true, inAppNotifications: true, flashOnNotification: true, autoStart: false, startMinimized: false, badgeMode: 'messages', badgeIncludeMuted: true, spellCheck: true,
   photoSendQuality: 'auto', photoSendHd: null, videoSendQuality: 'auto', powerSavingAuto: true, powerSavingAlwaysOn: false, compressMediaUploads: false, reduceMessageAnimations: false, mainMenuAccountsShown: true, language: null
 }
 
@@ -476,12 +479,14 @@ export type DesktopEvent =
   | { type: 'queued-voice-revoked'; requestId:string }
   | { type: 'outgoing-changed'; accountUid: string; chatId: string; outgoing: OutgoingSnapshot }
   | { type: 'reply-draft-changed'; accountUid: string; chatId: string; reply: ReplyDraftSnapshot }
+  | { type: 'cloud-draft-changed'; accountUid: string; chatId: string; text: string; previous: string | null }
   | { type: 'actions-changed'; accountUid: string; chatId: string; actions: MessageActionsSnapshot }
   | { type: 'media-progress'; accountUid: string; requestId: string; loaded: number; total: number | null }
   | { type: 'file-state'; accountUid: string; chatId: string; messageId: string; index: number; state: import('./media').FileState }
   | { type: 'shortcut'; command: ShortcutCommand }
-  | { type: 'open-notification-chat'; accountUid: string; chatId: string }
+  | { type: 'open-notification-chat'; accountUid: string; chatId: string; messageId?: string }
   | { type: 'open-notification-inquiry'; accountUid: string; channelId: string; inquiryId: string }
+  | { type: 'open-notification-channel'; accountUid: string; channelId: string }
   | { type: 'search-changed'; accountUid: string; chatId: string; search: SearchSnapshot }
   | { type: 'error'; message: string }
   // A picked video is being compressed before the send box opens.
@@ -559,7 +564,7 @@ export interface DesktopBridge {
   setAutoDeleteMonths(accountUid: string, months: number): Promise<void>
   requestDataExport(accountUid: string): Promise<import('./account-tools').DataExport>
   openDataExport(url: string): Promise<void>
-  deleteAccount(accountUid: string): Promise<void>
+  deleteAccount(accountUid: string, password?: string | null): Promise<import('./two-step').DeleteAccountOutcome>
   createInviteLink(accountUid: string): Promise<import('./account-tools').InviteLink>
   useInviteLink(accountUid: string, link: string): Promise<import('./account-tools').InviteCreator>
   chatFolders(accountUid: string): Promise<import('./chat-folders').ChatFolder[]>
@@ -917,6 +922,7 @@ export interface DesktopBridge {
   deleteContact(accountUid: string, requestId: string, operationId: string, version: string): Promise<void>
   undoContactDelete(accountUid: string, operationId: string): Promise<boolean>
   searchContact(accountUid: string, requestId: string, publicId: string): Promise<void>
+  resolveProfileLink(accountUid: string, morseId: string): Promise<{ uid: string; displayName: string } | null>
   addContact(accountUid: string, requestId: string): Promise<void>
   closeContactSearch(accountUid: string, requestId: string): Promise<void>
   startContactChat(accountUid: string, requestId: string): Promise<string>
@@ -936,6 +942,8 @@ export interface DesktopBridge {
   jumpSearch(accountUid: string, chatId: string, searchId: string, messageId: string): Promise<HistorySnapshot>
   jumpReply(accountUid: string, chatId: string, messageId: string, version: string): Promise<HistorySnapshot>
   jumpDate(accountUid: string, chatId: string, at: number): Promise<HistorySnapshot>
+  jumpUnread(accountUid: string, chatId: string): Promise<HistorySnapshot | null>
+  jumpMessage(accountUid: string, chatId: string, messageId: string): Promise<HistorySnapshot>
   refreshDialogs(accountUid: string): Promise<void>
   markVisibleRead(accountUid: string, chatId: string, revision: number, messageId: string): Promise<boolean>
   markBottomRead(accountUid: string, chatId: string, revision: number): Promise<boolean>
@@ -963,10 +971,10 @@ export interface DesktopBridge {
   pasteAttachments(accountUid: string, chatId: string, files: File[]): Promise<AttachmentDraft>
   discardAttachment(accountUid: string, id: string): Promise<void>
   // B311: the next item of a picked selection that is sent one at a time, or null.
-  nextAttachment(accountUid: string, chatId: string): Promise<AttachmentDraft | null>
   // B280 ③: «보내기» was pressed: from here the selection is that send's, whichever chat is on screen.
   pressAttachment(accountUid: string, chatId: string, id: string): Promise<void>
   replaceAttachmentImage(accountUid: string, chatId: string, id: string, itemId: string, bytes: Uint8Array): Promise<AttachmentDraft>
+  restoreAttachmentImage(accountUid: string, chatId: string, id: string, itemId: string): Promise<AttachmentDraft>
   editAttachmentVideo(accountUid: string, chatId: string, id: string, itemId: string, edit: { start: number; end: number; preset: import('./photo-quality').VideoSendPreset; overlay?: Uint8Array }): Promise<AttachmentDraft>
   cacheUsage(): Promise<number>
   clearCache(): Promise<'done'>
@@ -977,6 +985,7 @@ export interface DesktopBridge {
   dismissMessageAction(accountUid: string, chatId: string, operationId: string): Promise<void>
   draft(accountUid: string, chatId: string): Promise<string>
   saveDraft(accountUid: string, chatId: string, text: string): Promise<void>
+  pushDraft(accountUid: string, chatId: string): Promise<void>
   replyDraft(accountUid: string, chatId: string): Promise<ReplyDraftSnapshot>
   selectReply(accountUid: string, chatId: string, messageId: string, version: string): Promise<void>
   cancelReply(accountUid: string, chatId: string, selectionId: string): Promise<void>

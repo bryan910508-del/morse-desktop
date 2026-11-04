@@ -1,7 +1,7 @@
 // Portions of this file follow Telegram Desktop (https://github.com/telegramdesktop/tdesktop, 7.2.8, 272f6f5c),
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import { memo, useEffect, useRef, useState, type MouseEvent, type ReactElement } from 'react'
-import { Camera, Check, CircleAlert, Clock3, Download, File as FileIcon, Image as ImageIcon, LockKeyhole, Megaphone, MessageSquareText, MessageSquareWarning, Mic, NotebookPen, Pause, Play, X } from 'lucide-react'
+import { Camera, Check, CircleAlert, Clock3, Download, File as FileIcon, Image as ImageIcon, LockKeyhole, Megaphone, MessageSquareText, MessageSquareWarning, Mic, NotebookPen, Pause, Pin, Play, X } from 'lucide-react'
 import type { ChatMessage, ReplyPreview } from '../../../shared/model'
 import { StickerVideo } from './sticker-video'
 import { learnStickerId } from './sticker-favourite'
@@ -409,6 +409,8 @@ export interface MessageMenuTarget { link?: MessageLink; part?: number }
 export interface MessageViewProps {
   accountUid: string; chatId: string; message: ChatMessage; own: boolean; layout: MessageLayout; read: 'sent' | 'read'
   selecting: boolean; selected: boolean; highlighted: boolean
+  // B543: pinned in this chat («나에게만» or «모두에게»), shown as a pin before the time (tdesktop BottomInfo Flag::Pinned).
+  pinned?: boolean
   onMenu(message: ChatMessage, point: { x: number; y: number }, target?: MessageMenuTarget): void; onReply(message: ChatMessage): void; onJumpReply(message: ChatMessage): void
   onOpenMedia(message: ChatMessage, index: number): void; onToggle(message: ChatMessage): void; onReaction(message: ChatMessage, emoji: string): void
   autoTranslate: boolean
@@ -422,7 +424,7 @@ export interface OutgoingRow { item: LocalOutgoing; onMenu(item: LocalOutgoing, 
 
 // HistoryView::Message: bubble with Telegram geometry and Morse colors.
 export const MessageView = memo(function MessageView(props: MessageViewProps) {
-  const { accountUid, chatId, message, own, layout, read, selecting, selected, highlighted } = props
+  const { accountUid, chatId, message, own, layout, read, selecting, selected, highlighted, pinned } = props
   const translation = useTranslation(accountUid, props.translationRoom ?? chatId, message.id)
   // A channel post mirrored into the discussion room is a card with the post's picture, its channel and its text,
   // the way iOS draws it (MorseChatUIKitNativeChannelPostRow) and Telegram shows a channel's post in the group.
@@ -499,8 +501,11 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
   // otherwise — the date is the row's last item, pushed to its end. A picture alone and a sticker keep theirs on it.
   const overMedia = mediaOnly && infoOverMedia(message.kind)
   const inlineMeta = message.reactions.length > 0 && !overMedia && !round && !emojiOnly
-  const metaSpace = <span className={`bubble-meta-space${message.edited ? ' edited' : ''}${own ? ' own' : ''}`} />
+  const metaSpace = <span className={`bubble-meta-space${message.edited ? ' edited' : ''}${own ? ' own' : ''}${pinned ? ' pinned' : ''}`} />
+  // B543: tdesktop draws the pin in the date line (history_view_bottom_info.cpp:328-337, its width :607-608); iOS and
+  // Android put it first, before «수정됨» (MessageBubbleLayoutCalculator.swift:626-630, MessengerView.kt:5819-5823).
   const meta = <span className={`bubble-meta${inlineMeta ? ' inline' : ''}`}>
+    {pinned && <Pin size={12} className="bubble-pin" aria-label={tr('고정됨')} />}
     {message.edited && !emojiOnly && <span>{tr('수정됨')}</span>}
     <time dateTime={new Date(time).toISOString()}>{messageTime(time)}</time>
     {local ? (failed ? <CircleAlert size={14} aria-label={tr('전송 실패')} /> : local.state === 'sent' ? <Check size={15} aria-label={tr('보냄')} />
@@ -539,7 +544,7 @@ export const MessageView = memo(function MessageView(props: MessageViewProps) {
         {/* The date sits at the bubble's end, so the room it needs belongs to the note's last line. */}
         {memo.body ? <span>{memo.body}{metaSpace}</span> : !memo.title.trim() && metaSpace}
       </div>
-        : emojiBody ? emojiBody : !local?.voicePreview && (text || plainLabel || !media) && <div className="bubble-text selectable">{plainLabel ? <em className={message.kind === 'unsupported' ? 'unsupported' : undefined}>{plainLabel}</em> : message.encrypted ? text : <LinkedText accountUid={accountUid} text={shown} disabled={selecting} />}{!card?.url && !inlineMeta && <span className={`bubble-meta-space${message.edited ? ' edited' : ''}${own ? ' own' : ''}`} />}</div>}
+        : emojiBody ? emojiBody : !local?.voicePreview && (text || plainLabel || !media) && <div className="bubble-text selectable">{plainLabel ? <em className={message.kind === 'unsupported' ? 'unsupported' : undefined}>{plainLabel}</em> : message.encrypted ? text : <LinkedText accountUid={accountUid} text={shown} disabled={selecting} />}{!card?.url && !inlineMeta && metaSpace}</div>}
       {card?.url && <LinkCard accountUid={accountUid} text={message.text} disabled={selecting} />}
       {/* B113: a sign-in this person may not have made leads to where its session ends (A13-5 §3-4 «기기 관리»). */}
       {message.notice && systemNoticeShortcut(message.notice) === 'sessions' && <button type="button" className="bubble-notice-action" disabled={selecting}

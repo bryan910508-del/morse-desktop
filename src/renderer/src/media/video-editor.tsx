@@ -16,7 +16,9 @@ import { drawMarkupStroke, markupPens, MarkupPenPicker, type MarkupStroke } from
 // qualities are the three iOS VideoSendQuality choices the settings already offer.
 // strokes: iOS VideoMarkupEditorView's drawing over the whole part, kept in fractions of the picture (x, y and the
 // pen width against its width) so it can be drawn again at the video's own size.
-export interface VideoEditValue { start: number; end: number; preset: VideoSendPreset; strokes?: MarkupStroke[] }
+// edited: B518 — the part, the quality or a drawing differs from the whole video at the quality it would go at, which the
+// send box marks on the video's tile.
+export interface VideoEditValue { start: number; end: number; preset: VideoSendPreset; strokes?: MarkupStroke[]; edited?: boolean }
 const qualities: { preset: VideoSendPreset; label: string; detail: string }[] = [
   { preset: '960x540', label: tr('자동'), detail: '480p' }, { preset: '1280x720', label: tr('원본'), detail: '720p' }, { preset: 'medium', label: tr('압축'), detail: '360p' }
 ]
@@ -50,7 +52,9 @@ function useFrames(source: string, duration: number): string[] {
   return frames
 }
 
-function VideoEditor({ source, initial, preferred, close, apply }: { source: string; initial: VideoEditValue | null; preferred: VideoSendPreset; close(): void; apply(value: VideoEditValue, overlay: Uint8Array | null): Promise<void> }) {
+// quality: whether this editor offers the video's quality. B518 (the three apps alike): an item's editor in a box of several
+// is the «완료» kind and leaves the quality to the box — the video goes at the data settings' quality, as an untouched one does.
+function VideoEditor({ source, initial, preferred, quality, close, apply }: { source: string; initial: VideoEditValue | null; preferred: VideoSendPreset; quality: boolean; close(): void; apply(value: VideoEditValue, overlay: Uint8Array | null): Promise<void> }) {
   const video = useRef<HTMLVideoElement>(null)
   const track = useRef<HTMLDivElement>(null)
   const [duration, setDuration] = useState(0)
@@ -216,7 +220,8 @@ function VideoEditor({ source, initial, preferred, close, apply }: { source: str
     video.current?.pause()
     setSaving(true); setFailure('')
     try {
-      await apply({ start: Math.round(range.start * 1000) / 1000, end: Math.round(range.end * 1000) / 1000, preset, strokes }, await overlayPicture())
+      await apply({ start: Math.round(range.start * 1000) / 1000, end: Math.round(range.end * 1000) / 1000, preset, strokes,
+        edited: !whole || preset !== preferred || strokes.length > 0 }, await overlayPicture())
       close()
     } catch (reason) { setFailure(errorText(reason, tr('동영상을 편집하지 못했습니다.'))); setSaving(false) }
   }
@@ -268,9 +273,9 @@ function VideoEditor({ source, initial, preferred, close, apply }: { source: str
         <MarkupPenPicker pen={pen} width={penWidth} onPen={setPen} onWidth={setPenWidth} />
       </div> : <div className="photo-editor-tools">
         <button type="button" disabled={!range || saving} aria-label={tr('그리기')} title={tr('그리기')} onClick={startDrawing}><Pencil size={22} /></button>
-        <span className="video-editor-qualities" role="radiogroup" aria-label={tr('영상 화질')}>{qualities.map(option =>
+        {quality && <span className="video-editor-qualities" role="radiogroup" aria-label={tr('영상 화질')}>{qualities.map(option =>
           <button key={option.preset} type="button" role="radio" aria-checked={preset === option.preset} className={preset === option.preset ? 'selected' : undefined}
-            disabled={saving} onClick={() => setPreset(option.preset)}>{option.label}<small>{option.detail}</small></button>)}</span>
+            disabled={saving} onClick={() => setPreset(option.preset)}>{option.label}<small>{option.detail}</small></button>)}</span>}
       </div>}
       <button type="button" className="photo-editor-done" disabled={!range || saving} onClick={() => { if (drawing) stopDrawing(true); else void finish() }}>
         {saving ? <><Spinner size={14} />{tr('준비 중')}</> : tr('완료')}
@@ -283,6 +288,6 @@ function scaled(stroke: MarkupStroke, width: number, height: number): MarkupStro
   return { color: stroke.color, width: stroke.width * width, points: stroke.points.map(point => ({ x: point.x * width, y: point.y * height })) }
 }
 
-export function showVideoEditor(source: string, initial: VideoEditValue | null, preferred: VideoSendPreset, apply: (value: VideoEditValue, overlay: Uint8Array | null) => Promise<void>): void {
-  controller.showLayer(close => <VideoEditor source={source} initial={initial} preferred={preferred} close={close} apply={apply} />, { dismissible: false })
+export function showVideoEditor(source: string, initial: VideoEditValue | null, preferred: VideoSendPreset, apply: (value: VideoEditValue, overlay: Uint8Array | null) => Promise<void>, options: { quality?: boolean } = {}): void {
+  controller.showLayer(close => <VideoEditor source={source} initial={initial} preferred={preferred} quality={options.quality !== false} close={close} apply={apply} />, { dismissible: false })
 }

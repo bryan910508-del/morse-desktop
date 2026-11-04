@@ -124,11 +124,14 @@ import { PinnedMessages } from './pinned-messages'
 import { DeferredMessages, deferredCollections, deferredFields } from './deferred-messages'
 import { ChatTyping, DialogTyping, type ListTypingEntry, type TypingSnapshot } from './chat-typing'
 import { ChannelPostNotices } from './channel-post-notices'
+import { ChatTopNotices, chatTopsOf } from './chat-top-notices'
 import { callMorseFunction } from '../network/morse-callable'
 // MorseAppConfig MorseOfficialSupport.uid: the customer support account every app opens a chat with.
 import { InquiryRows } from './inquiry-rows'
+import { ChannelJoinApprovals } from './channel-join-approvals'
 import { ChatFolderWatch } from './chat-folder-watch'
 import { DialogPreferenceWatch } from './dialog-preference-watch'
+import { CloudDrafts, firestoreCloudDrafts } from './cloud-drafts'
 import { ChannelStories } from './channel-stories'
 import { DiscussionAvatars } from './discussion-avatars'
 import { PersonalChannels } from './personal-channel'
@@ -192,12 +195,14 @@ export interface AccountEvents {
   storyStealth(): boolean
   canRead(): boolean
   // The banner host, plus the way a 1:1 inquiry room is opened from one (a chat opens by its id).
-  notifications: Omit<NotificationHost, 'foreground'> & { openInquiry(channelId: string, inquiryId: string): void }
+  notifications: Omit<NotificationHost, 'foreground'> & { openInquiry(channelId: string, inquiryId: string): void; openChannel(channelId: string): void }
   changed(): void
   history(chatId: string, snapshot: HistorySnapshot): void
   search(chatId: string, snapshot: SearchSnapshot): void
   outgoing(chatId: string, snapshot: OutgoingSnapshot): void
   reply(chatId: string, snapshot: ReplyDraftSnapshot): void
+  // B530: another device's draft of an open chat; the field takes it only while empty (compose.tsx).
+  cloudDraft(chatId: string, text: string, previous: string | null): void
   actions(chatId: string, snapshot: MessageActionsSnapshot): void
   mediaProgress(requestId: string, loaded: number, total: number | null): void
   // F2: a file bubble's fetching, and the system that opens what it fetched.
@@ -212,6 +217,12 @@ export interface AccountEvents {
 
 // Authentication alone owns Socket.IO registration. Server history remains
 // separate from the durable local send-intent ledger.
+// B534: an entry jump waits for the chat's live listen (HistoryReader.whenLive), but not for ever — a listen that does
+// not answer within 15 s leaves the jump to try with the page there is.
+function liveOrLater(history: { whenLive(): Promise<void> }): Promise<void> {
+  return Promise.race([history.whenLive(), new Promise<void>(done => { setTimeout(done, 15000).unref?.() })])
+}
+
 export class AccountSession {
   private reader: FirestoreReader | null = null
   private generation = 0
@@ -332,7 +343,9 @@ export class AccountSession {
   readonly historyClears: HistoryClears
   // The account's chat folders, followed for the whole session.
   private readonly folders: ChatFolderWatch
+  private readonly joinApprovals: ChannelJoinApprovals
   private readonly dialogPreferences: DialogPreferenceWatch
+  private readonly cloudDrafts: CloudDrafts
   // A channel discussion row's picture, read from the channel itself.
   readonly discussionAvatars: DiscussionAvatars
   // Telegram's automatic media download: the pictures of the photo messages on screen.
@@ -342,6 +355,7 @@ export class AccountSession {
   private readonly actions: MessageActions
   private readonly notifications: AccountNotifications
   private readonly channelPosts: ChannelPostNotices
+  private readonly chatTops: ChatTopNotices
   readonly media: MediaSession
   readonly files: OpenedFiles
   readonly selfProfile: SelfProfileSession
@@ -595,6 +609,13 @@ export class AccountSession {
       { ...events.notifications, foreground: chatId => events.canRead() && this.selected?.dialog.summary.id === chatId },
       command => this.delivery.notificationState<boolean>(command))
     this.channelPosts = new ChannelPostNotices((chatId, id) => this.notifications.receive({ chatId, id }))
+    // F-RT-004: a chat's newest message from the list, as the socket's hint gives it (chat-top-notices.ts). This account's own
+    // newest message is read only when it may be a scheduled one sent for it (tdesktop showForMuted) and its chat is not the
+    // one open here, where it was just written.
+    this.chatTops = new ChatTopNotices(top => {
+      if (top.fromMe && events.canRead() && this.selected?.dialog.summary.id === top.chatId) return
+      this.notifications.receive({ chatId: top.chatId, id: top.messageId! })
+    })
     this.reads = new ReadSync(profile.uid, credentials, command => this.delivery.readState(command),
       () => ({ ready: this.status === 'ready' && !this.closed, foreground: events.canRead(), dialogs: this.index }),
       () => { if (!this.closed) events.changed() })
@@ -705,7 +726,7 @@ export class AccountSession {
     this.stopReachability = reachability.subscribe(() => {
       if (this.closed) return
       if (this.status === 'error' && !this.locked) this.refresh()
-      this.actions.retryNow(); this.inquirySends.retryNow(); this.channelOperations.retryNow(); this.historyClears.retryNow(); this.hiddenUploads.retryNow(); this.postCreation.resume(); this.commentCreation.resume()
+      this.actions.retryNow(); this.inquirySends.retryNow(); this.channelOperations.retryNow(); this.historyClears.retryNow(); this.hiddenUploads.retryNow(); this.postCreation.resume(); this.commentCreation.resume(); this.cloudDrafts.retryNow()
     })
     this.channelInquiries = new ChannelInquiries(profile.uid, credentials, connected, () => this.selfProfile.commentAuthor(), () => events.canRead(), () => { if (!this.closed) events.changed() },
       request => this.inquirySends.enqueue(request), inquiryId => this.inquirySends.forgetRoom(inquiryId),
@@ -719,12 +740,24 @@ export class AccountSession {
     // B484: a room the lists no longer hold and the server says is gone takes what this device was still sending into it.
     this.inquiryRows.listed = (ids, exists) => { if (!this.closed && !this.locked) void this.inquirySends.forgetGoneRooms(ids, exists).catch(() => {}) }
     this.folders = new ChatFolderWatch(profile.uid, credentials, connected, () => { if (!this.closed) events.changed() })
+    // B515: a join request approved meanwhile, told as the phones' channelJoinApproved push (channel-join-approvals.ts).
+    this.joinApprovals = new ChannelJoinApprovals(profile.uid, credentials, connected, { ...events.notifications, open: channelId => events.notifications.openChannel(channelId) })
     // A mute or archive chosen on another device of this account replaces what this device holds.
     this.dialogPreferences = new DialogPreferenceWatch(profile.uid, credentials, connected, (chatId, patch) => {
       if (this.closed) return
       const current = this.chatFlags.current(chatId)
       if (current.muted === patch.muted && (patch.archived === undefined || current.archived === patch.archived)) return
       void this.chatFlags.set(chatId, patch).catch(() => {})
+    })
+    // B530: the chats' unsent texts, kept on the account for its other devices (cloud-drafts.ts).
+    this.cloudDrafts = new CloudDrafts(profile.uid, firestoreCloudDrafts(profile.uid, credentials, () => { if (this.closed || this.locked) throw new Error('Account changed before the draft write') }), connected, {
+      state: chatId => this.delivery.draftSync(chatId),
+      adopt: (chatId, text) => this.delivery.adoptDraft(chatId, text),
+      markSynced: (chatId, text) => this.delivery.markDraftSynced(chatId, text),
+      unsynced: () => this.delivery.unsyncedDrafts(),
+      open: chatId => this.selected?.dialog.summary.id === chatId,
+      show: (chatId, text, previous) => { if (!this.closed) events.cloudDraft(chatId, text, previous) },
+      eligible: chatId => this.index.get(chatId)?.summary.kind !== 'secret'
     })
     this.discussionAvatars = new DiscussionAvatars(credentials, () => { if (!this.closed) events.changed() })
     // Channel screens show every listed person's photo (Telegram userpics; iOS AvatarView photoURL).
@@ -769,7 +802,9 @@ export class AccountSession {
     this.inquiryRows.setLocked(locked)
     if (locked) this.inquiryNotifications.pause()
     this.folders.setLocked(locked)
+    this.joinApprovals.setLocked(locked)
     this.dialogPreferences.setLocked(locked)
+    this.cloudDrafts.setLocked(locked)
     this.discussionAvatars.setLocked(locked)
     this.personalChannels.setLocked(locked)
     if (locked) this.photoPreviews.clear()
@@ -1199,7 +1234,9 @@ export class AccountSession {
     this.manualUnread.pause()
     this.inquiryRows.pause()
     this.folders.pause()
+    this.joinApprovals.pause()
     this.dialogPreferences.pause()
+    this.cloudDrafts.pause()
     this.discussionAvatars.pause()
     this.photoPreviews.clear()
     this.listTyping.clear()
@@ -1440,7 +1477,9 @@ export class AccountSession {
     this.actions.resume()
     this.inquiryRows.resume()
     this.folders.resume()
+    this.joinApprovals.resume()
     this.dialogPreferences.resume()
+    this.cloudDrafts.resume()
     this.hiddenChats.load()
     this.hiddenMessages.load()
     this.chatFlags.load()
@@ -1468,6 +1507,7 @@ export class AccountSession {
     this.manualUnread.prune()
     this.clearOpenUnreadMark()
     this.channelPosts.observe(this.chatRows.values(), index, this.reader, this.credentials.signal)
+    this.chatTops.observe(chatTopsOf(this.chatRows.values(), index))
     this.listTyping.bind(this.locked ? [] : this.list, this.locked ? null : this.reader)
     this.notifications.resume('list')
     this.events.changed()
@@ -1646,6 +1686,29 @@ export class AccountSession {
     const target = await history.dateTarget(at)
     if (this.selected !== history) throw new Error(tr('대화를 다시 선택해 주세요.'))
     return target ? history.jump(target) : history.latest()
+  }
+  // F-MB-003: a room whose first page does not reach its read position opens around the first unread message after it,
+  // as tdesktop's first load reads around loadAroundId. null: nothing unread to go to, the room stays where it is.
+  async jumpUnread(chatId: string): Promise<HistorySnapshot | null> {
+    const history = this.selected
+    if (this.closed || this.connection !== 'ready' || this.status !== 'ready' || !this.index.has(chatId) || history?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    const cursor = this.index.get(chatId)!.summary.readPositions[this.profile.uid]
+    if (!cursor) return null
+    await liveOrLater(history)
+    if (this.selected !== history) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    const target = await history.unreadTarget(cursor, this.profile.uid)
+    if (this.selected !== history) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    return target ? history.jump(target) : null
+  }
+  async jumpMessage(chatId: string, messageId: string): Promise<HistorySnapshot> {
+    const history = this.selected
+    if (this.closed || this.connection !== 'ready' || this.status !== 'ready' || !this.index.has(chatId) || history?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    await liveOrLater(history)
+    if (this.selected !== history) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    const target = await history.messageTarget(messageId)
+    if (this.selected !== history) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    if (!target) throw new Error(tr('메시지를 찾을 수 없습니다.'))
+    return history.jump(target)
   }
   jumpReply(chatId: string, messageId: string, version: string): Promise<HistorySnapshot> {
     if (this.closed || this.connection !== 'ready' || this.status !== 'ready' || !this.index.has(chatId) || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
@@ -2612,10 +2675,6 @@ export class AccountSession {
     return this.delivery.pickAttachment(chatId, mode, choose)
   }
   discardAttachment(id: string) { this.delivery.discardAttachment(id) }
-  nextAttachment(chatId: string) {
-    if (this.closed || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
-    return this.delivery.nextAttachment(chatId)
-  }
   // «캐시 정리»: pictures kept in memory for bubbles go; they are fetched again when shown.
   // The pictures of one person, newest first: the one on screen now, then the ones this device remembers.
   openProfilePhotos(peerUid: string): Promise<{ count: number }> {
@@ -2628,6 +2687,11 @@ export class AccountSession {
   replaceAttachmentImage(chatId: string, id: string, itemId: string, bytes: Uint8Array) {
     if (this.closed || this.locked || (this.selected?.dialog.summary.id !== chatId && this.delivery.pressedAttachmentChat() !== chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
     return this.delivery.replaceAttachmentImage(chatId, id, itemId, bytes)
+  }
+  // B518 «원래대로»: the picture as picked again.
+  restoreAttachmentImage(chatId: string, id: string, itemId: string) {
+    if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    return this.delivery.restoreAttachmentImage(chatId, id, itemId)
   }
   editAttachmentVideo(chatId: string, id: string, itemId: string, edit: VideoEdit) {
     if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
@@ -2897,7 +2961,13 @@ export class AccountSession {
     return this.delivery.commentDraftState({ kind: 'comment-draft-write', request })
   }
   draft(chatId: string) { return this.delivery.draft(chatId) }
-  saveDraft(chatId: string, text: string) { return this.delivery.saveDraft(chatId, text) }
+  // B530: the draft is kept here first, then its cloud copy follows (at once when the room is left or the app quits).
+  async saveDraft(chatId: string, text: string): Promise<void> {
+    await this.delivery.saveDraft(chatId, text)
+    this.cloudDrafts.changed(chatId, text)
+  }
+  pushDraft(chatId: string): void { this.cloudDrafts.push(chatId) }
+  flushCloudDrafts(): Promise<void> { return this.cloudDrafts.flush() }
   // The other person of each 1:1 chat among these (memo and secret chats have none).
   directPeers(chatIds: string[]): string[] {
     return chatIds.flatMap(id => {
@@ -3062,6 +3132,7 @@ export class AccountSession {
       if (this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
       this.draftReply.validate(chatId, reply!)
     }, silent)
+    this.cloudDrafts.sent(chatId)
     await this.draftReply.refresh(chatId)
   }
   retry(chatId: string, id: string) { return this.delivery.retry(chatId, id) }
@@ -3087,7 +3158,7 @@ export class AccountSession {
   async close(purge: boolean): Promise<void> {
     if (this.closed) return
     this.keptHistories.clear(); this.settleListed(false)
-    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); void this.hiddenUploads.close(); this.hiddenRowLines.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.dialogPreferences.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.sendingMedia.clear(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stickerLibrary.close(); this.serverTranslator.close(); this.storyBarApi.close(); this.storyPreloader.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
+    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); void this.hiddenUploads.close(); this.hiddenRowLines.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.joinApprovals.close(); this.dialogPreferences.close(); this.cloudDrafts.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.sendingMedia.clear(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stickerLibrary.close(); this.serverTranslator.close(); this.storyBarApi.close(); this.storyPreloader.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
     this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.hiddenUploads.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.peerStories.pause(); this.peerStoryPhoto.pause(); this.peerStoryVideo.pause(); this.peerStoryPhotoAudio.pause(); 
     await storyClose
     await noteClose

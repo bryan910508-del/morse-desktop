@@ -355,6 +355,8 @@ function messagePoll(f: Record<string, WireObject>): MessagePoll | undefined {
     attachments, mediaMetadata: encrypted || system ? null : messageMediaMetadata(doc, kind, attachments.length, circular),
     caption: encrypted || system ? '' : mediaCaption(doc, kind),
     position, serverConfirmed: true, encrypted, silent: messageFlag(f, 'isSilent'), circular, state: 'sent', edited: messageFlag(f, 'isEdited'),
+    // B467b's server mark of a message it sent at the time set for it (talky-scheduled-online-messages.js wasScheduled).
+    ...(messageFlag(f, 'wasScheduled') ? { wasScheduled: true as const } : {}),
     version: documentVersion(doc), system, reactions: encrypted ? [] : messageReactions(doc, dialog.accountUid, dialog.participantNames),
     storySource: encrypted || system ? null : messageStorySource(doc),
     replyToId: replyId || undefined,

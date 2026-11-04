@@ -71,6 +71,9 @@ export class TwoStepSettingsApi {
     return this.state()
   }
 
+  // B525: the account's deletion proves the password the screen checked, against a fresh check.
+  deletionAnswer(password: string): Promise<{ srpId: string; A: string; M1: string } | null> { return this.api.deletionAnswer(password) }
+
   // Manage opens only for the right current password (tdesktop: account.getPasswordSettings before the section).
   async verify(current: unknown): Promise<TwoStepSettings> {
     const now = text(current)

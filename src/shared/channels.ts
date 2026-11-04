@@ -22,6 +22,8 @@ export interface ChannelSummary {
   description: string
   owned: boolean
   subscriptionListed: boolean
+  // B515: this account joined by a request the owner approved (its subscription's joinedByRequest, decideMorseChannelJoin).
+  joinedByRequest?: true
   type: 'public' | 'private' | 'invite' | 'unknown'
   subscriberCount: number | null
   postCount: number | null

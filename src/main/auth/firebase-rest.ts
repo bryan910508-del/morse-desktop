@@ -61,7 +61,7 @@ export class FirebaseAuthenticationAPI {
       throw new AuthenticationFailure('unavailable')
     }
   }
-  private async appProof(signal: AbortSignal): Promise<AppCheckProof> {
+  private async appProof(signal: AbortSignal, purpose = 'sign-in'): Promise<AppCheckProof> {
     signal.throwIfAborted()
     const bounded = AbortSignal.any([signal, AbortSignal.timeout(35000)])
     const proof = await new Promise<Awaited<ReturnType<DesktopAuthConfiguration['proof']['getProof']>>>((resolve, reject) => {
@@ -69,7 +69,7 @@ export class FirebaseAuthenticationAPI {
       bounded.addEventListener('abort', cancel, { once: true })
       // Race a provider that becomes unavailable, so cancel/quit cannot wait
       // indefinitely for an external attestation implementation.
-      Promise.resolve().then(() => { bounded.throwIfAborted(); return this.config.proof.getProof(bounded) }).then(resolve, reject)
+      Promise.resolve().then(() => { bounded.throwIfAborted(); return this.config.proof.getProof(bounded, purpose) }).then(resolve, reject)
         .finally(() => bounded.removeEventListener('abort', cancel))
     })
     signal.throwIfAborted()
@@ -78,9 +78,9 @@ export class FirebaseAuthenticationAPI {
     }
     return { ...proof, token: string(proof.token) }
   }
-  private async proof(signal: AbortSignal): Promise<string> { return (await this.appProof(signal)).token }
+  private async proof(signal: AbortSignal, purpose?: string): Promise<string> { return (await this.appProof(signal, purpose)).token }
   async readAuthorization(idToken: string, expiresAt: number, signal: AbortSignal): Promise<ReadAuthorization> {
-    const proof = await this.appProof(signal)
+    const proof = await this.appProof(signal, 'read')
     return { idToken: string(idToken), appCheckToken: proof.token, expiresAt: Math.min(expiresAt, proof.expiresAt) }
   }
   private async request(url: string, headers: Record<string, string>, body: string, signal: AbortSignal, kind: RequestKind = 'plain'): Promise<Record<string, unknown>> {
@@ -113,7 +113,7 @@ export class FirebaseAuthenticationAPI {
     }
   }
   private async callable(name: 'verifyBackupCode' | 'createAccountWithCustomToken' | 'completeTalkyProfile' | 'startMorseDeviceSession' | 'revokeMorseDeviceSession' | 'exportMorseLoginToken' | 'redeemMorseLoginToken', data: Record<string, unknown>, signal: AbortSignal, idToken?: string): Promise<Record<string, unknown>> {
-    const proof = await this.proof(signal)
+    const proof = await this.proof(signal, name)
     const headers: Record<string, string> = { 'Content-Type': 'application/json', 'X-Firebase-AppCheck': proof }
     // Bootstrap must never inherit another account's Authorization header (the QR sign-in is a bootstrap too).
     const bootstrap = name === 'verifyBackupCode' || name === 'exportMorseLoginToken' || name === 'redeemMorseLoginToken'
@@ -148,7 +148,7 @@ export class FirebaseAuthenticationAPI {
   // app_config/{name} — readable by anyone, so it is read before any sign-in, with this app's proof only. Absent or
   // unreadable is null.
   async publicConfig(name: 'qr_login' | 'desktop', signal: AbortSignal): Promise<Record<string, unknown> | null> {
-    const proof = await this.proof(signal)
+    const proof = await this.proof(signal, `config:${name}`)
     const combined = AbortSignal.any([signal, AbortSignal.timeout(15000)])
     try {
       const response = await morseFetch(`https://firestore.googleapis.com/v1/projects/${this.config.projectId}/databases/(default)/documents/app_config/${name}?key=${encodeURIComponent(this.config.apiKey)}`,

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Users } from 'lucide-react'
-import { premiumPinLimit, type PinnedMessagesSnapshot } from '../../../shared/pinned-messages'
+import { premiumPinLimit, shownPins, type PinnedMessagesSnapshot } from '../../../shared/pinned-messages'
 import { useDesktop } from '../app/store'
 import { controller } from '../app/ui'
 import { errorText } from '../app/format'
@@ -9,16 +9,17 @@ import { Box } from '../ui/layers'
 import { tr } from '../../../shared/i18n'
 
 // iOS BookmarkBar / Telegram HistoryView pinned bar: the current pinned message with its kind
-// ("고정" or "모두에게 고정") and position; a click jumps to it and moves on to the next pin.
-export function PinnedBar({ accountUid, chatId }: { accountUid: string; chatId: string }) {
+// ("고정" or "모두에게 고정") and position; a click jumps to it and moves on to the next pin. B543: once there, the history
+// shows it again however often it is clicked (`onJumped`, tdesktop pinned bar → showPeerHistory, history_widget.cpp:9735-9748).
+export function PinnedBar({ accountUid, chatId, onJumped }: { accountUid: string; chatId: string; onJumped?(messageId: string): void }) {
   const pinned = useDesktop(snapshot => snapshot?.pinnedMessages?.chatId === chatId ? snapshot.pinnedMessages : null)
-  const items = useMemo(() => pinned?.items.filter(item => item.status !== 'unavailable') ?? [], [pinned])
+  const items = useMemo(() => shownPins(pinned, chatId), [pinned, chatId])
   const [index, setIndex] = useState(0)
   useEffect(() => { if (index >= items.length) setIndex(Math.max(0, items.length - 1)) }, [index, items.length])
   if (!items.length) return null
   const position = index % items.length, current = items[position]!
   const open = (): void => {
-    if (current.status === 'ready') void window.morse.jumpPinned(accountUid, chatId, current.id).catch(reason => controller.toast(errorText(reason, tr('고정된 메시지로 이동하지 못했습니다.')), 'error'))
+    if (current.status === 'ready') void window.morse.jumpPinned(accountUid, chatId, current.id).then(() => onJumped?.(current.id), reason => controller.toast(errorText(reason, tr('고정된 메시지로 이동하지 못했습니다.')), 'error'))
     setIndex((position + 1) % items.length)
   }
   return <button type="button" className="pinned-bar" onClick={open} aria-label={tr('고정된 메시지로 이동')}>

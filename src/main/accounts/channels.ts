@@ -134,8 +134,10 @@ export class ChannelsSession {
     const ids = new Set([...subscribed, ...[...this.rows.owned.keys()].map(name => childId(name, `${documents}/channels`))])
     const items = [...ids].map(id => {
       const doc = docs.get(`${documents}/channels/${id}`)
-      try { return doc ? { ...decodeChannelSummary(doc, this.uid, subscribed.has(id)), avatar: this.avatars.snapshot(id), cover: this.cover.snapshot(id) } : empty(id, states.get(id) ?? 'loading', subscribed.has(id)) }
-      catch { return empty(id, 'error', subscribed.has(id)) }
+      // B515: the subscription the owner's approval made says so (joinedByRequest), for the line its channel shows once.
+      const joined = this.rows.subscriptions.get(`${documents}/users/${this.uid}/subscriptions/${id}`)?.fields.joinedByRequest?.booleanValue === true ? { joinedByRequest: true as const } : {}
+      try { return doc ? { ...decodeChannelSummary(doc, this.uid, subscribed.has(id)), avatar: this.avatars.snapshot(id), cover: this.cover.snapshot(id), ...joined } : { ...empty(id, states.get(id) ?? 'loading', subscribed.has(id)), ...joined } }
+      catch { return { ...empty(id, 'error', subscribed.has(id)), ...joined } }
     }).sort((a, b) => a.updated && b.updated ? comparePosition(b.updated, a.updated) : a.updated ? -1 : b.updated ? 1 : a.id.localeCompare(b.id))
     return { status: this.status, message: this.message, items, admins: this.admins.snapshot, subscribers: this.subscribers.snapshot, joinRequests: this.joinRequests.snapshot, membership: this.membership.snapshot, posts: this.posts.snapshot }
   }

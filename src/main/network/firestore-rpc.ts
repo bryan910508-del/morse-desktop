@@ -3,6 +3,7 @@
 import { randomBytes } from 'node:crypto'
 import { channelStoryCreateWrite, channelStoryDeleteWrite } from './channel-story-write'
 import { writeDialogPreference, DialogPreferenceWriteFailure, type DialogPreferenceWrite } from './dialog-preference-write'
+import { writeComposerDraft, ComposerDraftWriteFailure, type CommitTime } from './composer-draft-write'
 import { writeStickerPackInstall, writeStickerPackUninstall, StickerPackInstallFailure } from './sticker-pack-install-write'
 import type { StickerPack } from '../../shared/sticker-packs'
 import { recordStoryStep } from '../platform/story-diagnostics'
@@ -556,6 +557,15 @@ export class FirestoreReader {
     catch { throw new DialogPreferenceWriteFailure(false) }
     try { await writeDialogPreference(this.client, metadata(authorization), uid, request, bounded, validate) }
     catch (error) { throw error instanceof DialogPreferenceWriteFailure ? error : new DialogPreferenceWriteFailure(true) }
+  }
+  // B530: users/{uid}/composerDrafts/{chatId}, the account's cloud copy of a chat's unsent text ('' deletes it).
+  async writeComposerDraft(uid: string, chatId: string, text: string, signal: AbortSignal, validate: () => void): Promise<CommitTime> {
+    const bounded = AbortSignal.any([this.bounded(signal), AbortSignal.timeout(60000)])
+    let authorization: ReadAuthorization
+    try { bounded.throwIfAborted(); validate(); authorization = await this.auth.authorize(bounded, false); bounded.throwIfAborted(); validate() }
+    catch { throw new ComposerDraftWriteFailure(true) }
+    try { return await writeComposerDraft(this.client, metadata(authorization), uid, chatId, text, bounded, validate) }
+    catch (error) { throw error instanceof ComposerDraftWriteFailure ? error : new ComposerDraftWriteFailure(true) }
   }
   async changeStoryHiddenAudience(uid: string, request: StoryHiddenChangeRequest, signal: AbortSignal, validate: () => void): Promise<void> {
     const bounded = AbortSignal.any([this.bounded(signal), AbortSignal.timeout(60000)])

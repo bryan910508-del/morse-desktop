@@ -76,10 +76,18 @@ button.info-row:hover { background: var(--card-pressed) }
 .send-files-grid.files .send-files-item { display: flex; justify-content: flex-start; gap: 12px; aspect-ratio: auto; padding: 10px 12px }
 .send-files-item img { width: 100%; height: 100%; object-fit: cover }
 .send-files-icon { color: var(--accent) }
-.send-files-duration { position: absolute; left: 6px; bottom: 6px; padding: 1px 6px; border-radius: 8px; background: rgb(0 0 0 / .55); color: #fff; font-size: 12px }
+.send-files-duration { position: absolute; right: 6px; bottom: 6px; padding: 1px 6px; border-radius: 8px; background: rgb(0 0 0 / .55); color: #fff; font-size: 12px }
 .send-files-name { display: grid; gap: 2px; min-width: 0; text-align: left }
 .send-files-name small { color: var(--text-weak) }
-.send-files-remove { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: rgb(0 0 0 / .55); color: #fff }
+.send-files-chosen { margin: 0; color: var(--text-weak); font-size: 13px }
+/* B518: a tile of a box with more than one item opens its editor; the round mark at its top right chooses whether it goes,
+   and a small pencil at its bottom left says it was edited (iOS MediaPreviewView, Telegram's picker grid). */
+.send-files-item.editable { cursor: pointer }
+.send-files-item.editable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px }
+.send-files-item.left-out > img, .send-files-item.left-out > .send-files-icon { opacity: .4 }
+.send-files-check { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; border: 2px solid #fff; background: rgb(0 0 0 / .3); color: #fff; box-shadow: 0 0 2px rgb(0 0 0 / .4) }
+.send-files-check.on { border-color: var(--accent); background: var(--accent) }
+.send-files-edited { position: absolute; left: 6px; bottom: 6px; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; background: rgb(0 0 0 / .55); color: #fff }
 .send-files-edit { position: absolute; top: 6px; left: 6px; width: 24px; height: 24px; display: grid; place-items: center; border-radius: 50%; background: rgb(0 0 0 / .55); color: #fff }
 /* Editor::PhotoEditor: the picture on a dark layer with the tools below it. */
 .photo-editor { position: fixed; inset: 0; z-index: 120; display: flex; flex-direction: column; background: #000; color: #fff; animation: morse-fade-in .15s ease-out }
@@ -94,6 +102,8 @@ button.info-row:hover { background: var(--card-pressed) }
 .photo-editor-tools > button:disabled { opacity: .35 }
 .photo-editor-text { min-width: 64px; height: 36px; padding: 0 12px; border-radius: 18px; color: #fff; font-size: 14px; font-weight: 600 }
 .photo-editor-text:hover:not(:disabled) { background: rgb(255 255 255 / .12) }
+/* B518 «원래대로» among the round tools: a word, not a circle. */
+.photo-editor-tools > button.photo-editor-text { width: auto; min-width: 0; padding: 0 12px; border-radius: 18px; white-space: nowrap }
 .photo-editor-done { min-width: 64px; height: 36px; padding: 0 16px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border-radius: 18px; background: var(--accent); color: #fff; font-size: 14px; font-weight: 700 }
 .photo-editor-done:disabled { opacity: .5 }
 .photo-editor-pens { display: flex; gap: 2px; margin: 0 6px }

@@ -61,6 +61,8 @@
 .history-message.selecting { padding-left: 52px; cursor: pointer }
 .history-message.selecting .bubble { pointer-events: none }
 .history-message.selected::before { content: ''; position: absolute; inset: 0; background: var(--accent-soft) }
+/* B519: while a drag chooses messages no text is selected under it (use-drag-select.ts). */
+.history-scroll.drag-choosing .selectable { user-select: none; cursor: default }
 .history-check { position: absolute; left: 16px; bottom: 6px; z-index: 1 }
 .history-photo { flex: none; width: var(--msg-photo-skip); display: flex; align-items: flex-end }
 
@@ -76,6 +78,10 @@
 .history-message.own.attached-top .bubble { border-top-right-radius: var(--r-bubble-merged) }
 .history-message.own.attached-bottom .bubble { border-bottom-right-radius: var(--r-bubble-merged) }
 .history-message.highlight .bubble { animation: history-highlight 2.4s ease-out }
+/* B543: with animations reduced (the system's setting, or «메시지 애니메이션 줄이기») the highlight stays still while it lasts,
+   as tdesktop's does when anim::Disabled() (history_view_highlight_manager.cpp:192-198, :226-235). */
+@media (prefers-reduced-motion: reduce) { .history-message.highlight .bubble { animation: none !important; box-shadow: 0 0 0 3px var(--accent-border) } }
+.reduce-motion .history-message.highlight .bubble { animation: none !important; box-shadow: 0 0 0 3px var(--accent-border) }
 @keyframes history-highlight { 0%, 40% { box-shadow: 0 0 0 3px var(--accent-border) } 100% { box-shadow: 0 1px 1px rgb(0 0 0 / .06) } }
 .bubble.encrypted { color: var(--text-weak); font-style: italic }
 .bubble-name { margin-bottom: 2px; font-size: var(--t-caption); font-weight: 600; color: var(--accent) }
@@ -134,6 +140,9 @@ button.bubble-forward:hover { text-decoration: underline }
 .bubble-meta-space.own { width: 80px }
 .bubble-meta-space.edited { width: 104px }
 .bubble-meta-space.edited.own { width: 122px }
+/* B543: the pin (12 px) and its gap before the time. */
+.bubble-meta-space.pinned { margin-left: 15px }
+.bubble-meta .bubble-pin { flex: none }
 .bubble-meta { position: absolute; right: 10px; bottom: 6px; display: inline-flex; align-items: center; gap: 3px; font-size: 12px; line-height: 1; color: var(--text-weak); white-space: nowrap; pointer-events: none }
 .history-message.own .bubble-meta { color: rgb(255 255 255 / .78) }
 .bubble-meta .read-mark, .history-message.own .bubble-meta .read-mark { color: var(--read-check); flex: none }

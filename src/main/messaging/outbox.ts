@@ -71,7 +71,7 @@ import { documents, stringField } from '../network/firestore-values'
 import { NotEmitted, ServerRejection } from '../network/contracts'
 import { outgoingCategory } from '../../shared/forum'
 import { stickerContentType, stickerSidePx, type StickerKind } from '../../shared/stickers'
-import { definiteRejections, deliveryReason, retryableRejections, stickerReferenceRefusals, textDigest, textDigestMatches } from './text-identity'
+import { definiteRejections, deliveryReason, retryableRejections, revokedRejection, stickerReferenceRefusals, textDigest, textDigestMatches } from './text-identity'
 import { draftPreviewChars } from '../../shared/chat-list-preview'
 import { directChatId } from './direct-chat-id'
 import { directPairPath, isPairDialog, pairCorrection, pairLookup, pairReadFailed, pairRoom, settledMoves, type PairLookup } from './direct-chat-pair'
@@ -661,11 +661,32 @@ export class OutboxPump {
   }
   async saveDraft(chatId: string, text: string): Promise<void> {
     // A view disappearing during a reconnect may flush the last local edit.
-    // This authorizes local draft persistence only, never remote transmission.
+    // This keeps the draft on this device; the account's cloud copy follows it (B530, session.saveDraft →
+    // cloud-drafts.ts), and it never sends a message.
     if (!this.known.has(chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
     await this.store({ kind: 'save-draft', chatId, text })
     // The row keeps up with the keystrokes instead of waiting for the next publish to read them back.
     this.noteChatDraft(chatId, text)
+  }
+  // B530 (contract §11 ⑥): a draft with the cloud copy it last matched and when it was last typed here.
+  async draftSync(chatId: string): Promise<{ text: string; synced: string | null; editedAt: number | null }> {
+    await this.opening
+    if (!this.targetExists(chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    this.known.add(chatId)
+    const state = await this.store<{ text: string; synced: string | null; editedAt: number | null }>({ kind: 'draft-sync', chatId })
+    if (this.closed || this.auth.signal.aborted) throw new Error(tr('계정이 변경되었습니다.'))
+    return state
+  }
+  async markDraftSynced(chatId: string, synced: string): Promise<void> { await this.opening; await this.store({ kind: 'draft-synced', chatId, synced }) }
+  // Another device's copy becomes this device's draft (the room is not open here).
+  async adoptDraft(chatId: string, text: string): Promise<void> {
+    if (!this.known.has(chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    await this.store({ kind: 'adopt-draft', chatId, text })
+    this.noteChatDraft(chatId, text)
+  }
+  async unsyncedDrafts(): Promise<{ chatId: string; text: string; synced: string | null }[]> {
+    await this.opening
+    return this.store<{ chatId: string; text: string; synced: string | null }[]>({ kind: 'unsynced-drafts' })
   }
   async enqueue(chatId: string, rawText: string, id: string, reply: ReplyBinding | null = null, validateReply: () => void = () => {}, silent = false): Promise<void> {
     if (!this.eligible(chatId)) throw new Error(tr('이 대화에는 지금 메시지를 보낼 수 없습니다.'))
@@ -802,16 +823,16 @@ export class OutboxPump {
     return this.staging.pick(chatId, mode, () => this.context().dialogs.has(chatId) && this.eligible(chatId), choose)
   }
   discardAttachment(id?: string, all = false): void { this.staging.discard(id, all) }
-  // B311: the next item of a picked selection that had a video among its photos.
-  nextAttachment(chatId: string) {
-    return this.staging.next(chatId, () => this.context().dialogs.has(chatId) && this.eligible(chatId))
-  }
   // B280 ③: «보내기» was pressed — the selection is that send's from here (the photos are made smaller first).
   pressAttachment(id: string): void { this.staging.pressed(id) }
   pressedAttachmentChat(): string | null { return this.staging.pressedChat() }
   replaceAttachmentImage(chatId: string, id: string, itemId: string, bytes: Uint8Array) {
     if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('대화와 연결을 확인해 주세요.'))
     return this.staging.replaceImage(chatId, id, itemId, bytes)
+  }
+  restoreAttachmentImage(chatId: string, id: string, itemId: string) {
+    if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('대화와 연결을 확인해 주세요.'))
+    return this.staging.restoreImage(chatId, id, itemId)
   }
   editAttachmentVideo(chatId: string, id: string, itemId: string, edit: VideoEdit) {
     if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('대화와 연결을 확인해 주세요.'))
@@ -924,23 +945,28 @@ export class OutboxPump {
     catch (error) { this.staging.clear(draft.id); throw error }
   }
   // B280 ③: from the press on, the selection is this send's (AttachmentStaging.pressed).
+  // B518: a mixed selection goes as several messages, each of these calls one of them; the selection stays the press's until
+  // its last is queued, so a chat changed between two of them does not let the rest go.
   async enqueueAttachment(chatId: string, id: string, caption: string, itemIds: string[], reply: ReplyBinding | null, validate: () => void, video: VideoFacts | null = null, circular = false): Promise<void> {
     const release = this.staging.pressed(id)
     try { await this.enqueuePressed(chatId, id, caption, itemIds, reply, validate, video, circular) }
-    finally { release() }
+    catch (error) { release(); throw error }
+    if (!this.staging.holds(id)) release()
   }
   private async enqueuePressed(chatId: string, id: string, caption: string, itemIds: string[], reply: ReplyBinding | null, validate: () => void, video: VideoFacts | null, circular: boolean): Promise<void> {
     await this.opening
     if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('첫 텍스트 메시지를 보낸 뒤 첨부할 수 있습니다.'))
-    const request = { id, chatId, senderId: this.uid, caption, itemIds, reply }
+    // B518: the message's own id — the selection's, or one of a mixed selection's messages (AttachmentStaging.messageId).
+    const messageId = this.staging.messageId(id, itemIds)
+    const request = { id: messageId, chatId, senderId: this.uid, caption, itemIds, reply }
     // Check the durable receipt before accessing staging: successful enqueue
     // clears its bytes, even if the renderer never receives the IPC response.
     if (await this.store<boolean>({ kind: 'attachment-known', request })) {
-      this.staging.clear(id); void this.publish(); this.kick(); return
+      this.staging.sent(id, itemIds); void this.publish(); this.kick(); return
     }
     if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('연결 상태가 변경되었습니다.'))
     validate()
-    const { wire, parts } = this.staging.prepare(this.uid, chatId, id, caption, itemIds, video, circular)
+    const { wire, parts } = this.staging.prepare(this.uid, chatId, id, caption, itemIds, video, circular, messageId)
     if (reply) wire.replyToId = reply.messageId
     const category = outgoingCategory(this.context().dialogs.get(chatId))
     if (category) wire.categoryId = category
@@ -955,7 +981,7 @@ export class OutboxPump {
       throw error
     }
     finally { for (const part of parts) part.bytes.fill(0) }
-    this.staging.clear(id); void this.publish(); this.kick()
+    this.staging.sent(id, itemIds); void this.publish(); this.kick()
   }
   pause(): void {
     this.staging.clear(); this.uploadAbort?.abort()
@@ -1080,7 +1106,12 @@ export class OutboxPump {
             return
           }
           if (!this.active(signal)) return
-          if (error instanceof ServerRejection && definiteRejections.has(error.reason)) {
+          if (error instanceof ServerRejection && error.reason === revokedRejection) {
+            // F-ST-003: the id was deleted on the server; sending it again would only be refused again (it was put back
+            // in the queue after every refusal before, a minute apart at most, without end).
+            this.retryAt.delete(intent.id)
+            await this.store({ kind: 'finish', id: intent.id, discarded: true })
+          } else if (error instanceof ServerRejection && definiteRejections.has(error.reason)) {
             if (!await this.movedToPairDialog(intent, error))
               await this.store({ kind: 'state', id: intent.id, state: 'failed', reason: storedRejection(error.reason, error.until) })
             if (stickerReferenceRefusals.has(error.reason) && intent.wire.type === 'sticker' && intent.wire.stickerId && intent.wire.stickerKind) {

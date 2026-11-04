@@ -62,6 +62,13 @@ export class TwoStepApi {
     return { srpId: state.srpId, A: toBytes(A).toString('hex'), M1: M1.toString('hex') }
   }
 
+  // B525: the answer the account's own deletion carries (account-deletion.ts) — from a fresh check, each answering once;
+  // none when the password has been turned off by now, and the deletion goes without it.
+  async deletionAnswer(password: string): Promise<{ srpId: string; A: string; M1: string } | null> {
+    try { return await this.proof(password) }
+    catch (error) { if (error instanceof TwoStepFailure && error.reason === 'password-off') return null; throw error }
+  }
+
   // checkMorsePassword: a sign-in held for the password goes on with the token it answers (morsePwdOk).
   async signIn(password: string, qrSecret?: string): Promise<{ customToken: string; sessionId: string | null }> {
     const answer = await this.send('checkMorsePassword', { ...await this.proof(password), ...(qrSecret ? { qrSecret } : {}) })

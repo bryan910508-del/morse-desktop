@@ -9,7 +9,7 @@ import type { CredentialVault } from './credential-vault'
 import { tr } from '../../shared/i18n'
 import { recordConnectionStep } from '../platform/connection-diagnostics'
 import { reachability } from '../network/reachability'
-import { restoreRetryDelay } from './restore-retry'
+import { proofRestoreTries, restoreRetryDelay, restoreRetryKind } from './restore-retry'
 import { FirebaseAuthenticationAPI } from './firebase-rest'
 import { SessionEnders } from './session-enders'
 
@@ -26,7 +26,8 @@ export interface DomainAccountState { uid: string; userId: string; displayName: 
 export class AuthenticationDomain {
   private readonly controllers = new Map<string, AuthenticationController>()
   private readonly profiles = new Map<string, AccountProfile>()
-  private readonly retries = new Map<string, { attempt: number; timer: NodeJS.Timeout | null }>()
+  // `proofTries`/`held`: B522's tries after a failed security check, and whether they ran out (restore-retry.ts).
+  private readonly retries = new Map<string, { attempt: number; timer: NodeJS.Timeout | null; proofTries: number; held: boolean }>()
   private adding: AuthenticationController | null = null
   private pendingUid: string | null = null
   private requested = false
@@ -42,8 +43,11 @@ export class AuthenticationDomain {
       configuration ? new FirebaseAuthenticationAPI(configuration) : null, uid => vault.read(uid).then(record => record?.sessionId ?? null))
     this.unsubscribe = reachability.subscribe(reason => { this.restoreNow(reason); this.enders.runNow() })
     this.enders.runNow()
-    // Read once at start, so «계정 추가» opened later already knows whether its QR is drawn.
-    this.readQrSwitch()
+    // Read once at start, so «계정 추가» opened later already knows whether its QR is drawn — on a computer with no saved
+    // account. B522: with one, it is read with the app's own proof before the account has its session, which opens the
+    // check page (a window in view when refused) and holds the account's restore; «계정 추가» reads it then (beginAdd),
+    // proved by the open account's session.
+    void vault.list().then(saved => { if (!saved.length) this.readQrSwitch() }, () => this.readQrSwitch())
   }
   private readonly enders: SessionEnders
   private readonly unsubscribe: () => void
@@ -97,17 +101,20 @@ export class AuthenticationDomain {
         void this.vault.read(uid).then(record => {
           if (record === null && this.controllers.get(uid) === controller && !controller.connected) this.forget(uid)
         }, () => {})
-      } else if (snapshot.phase === 'error' && controller.lastFailure === 'network' && this.pendingUid !== uid) {
-        this.scheduleRetry(uid, controller)
+      } else if (snapshot.phase === 'error' && this.pendingUid !== uid) {
+        const kind = restoreRetryKind(controller.lastFailure)
+        if (kind) this.scheduleRetry(uid, controller, kind)
       }
     }
     this.changed()
   }
-  private scheduleRetry(uid: string, controller: AuthenticationController): void {
+  private scheduleRetry(uid: string, controller: AuthenticationController, kind: 'network' | 'proof'): void {
     if (this.suspended) return
-    const state = this.retries.get(uid) ?? { attempt: 0, timer: null }
+    const state = this.retries.get(uid) ?? { attempt: 0, timer: null, proofTries: 0, held: false }
     this.retries.set(uid, state)
-    if (state.timer) return
+    if (state.timer || state.held) return
+    if (kind === 'proof' && state.proofTries >= proofRestoreTries) { state.held = true; recordConnectionStep('restore-held', 'app-proof'); return }
+    if (kind === 'proof') state.proofTries++
     const delay = restoreRetryDelay(state.attempt)
     recordConnectionStep('restore-wait', `${delay / 1000}s`)
     state.timer = setTimeout(() => {
@@ -120,7 +127,7 @@ export class AuthenticationDomain {
     if (this.closed || this.suspended) return
     for (const [uid, controller] of this.controllers) {
       const state = this.retries.get(uid)
-      if (!state?.timer || controller.connected) continue
+      if ((!state?.timer && !state?.held) || controller.connected) continue
       recordConnectionStep('restore-now', reason)
       this.clearRetry(uid)
       void controller.restore().catch(() => {})

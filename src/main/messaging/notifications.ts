@@ -13,13 +13,21 @@ export interface NotificationContent { chatId: string; title: string; body: stri
 export interface NotificationHost {
   preferences(): Preferences
   locked(): boolean
+  // F-RT-004 (tdesktop System and Manager::getNotificationOptions, window/notifications_manager.cpp:1084-1088): what
+  // drops a chat's notification — the app closing, the computer asleep — apart from what only hides its words, the app's
+  // own lock (passcodeLocked → hideEverything). A screen locked by the system or a person away from the computer neither
+  // drops nor hides it: the system's notification centre keeps it. Without them `locked` drops, as before.
+  dropped?(): boolean
+  hidden?(): boolean
   foreground(chatId: string): boolean
   // The window is in front and being used (iOS «앱 사용 중»).
   appActive(): boolean
   show(content: NotificationContent, click: () => void, dismiss: () => void): (() => void) | null
   // B378 ②: flash the taskbar button or bounce the Dock icon once for a new message (the shell skips a window in front).
   alert?(): void
-  open(chatId: string): void
+  // F-MB-003: messageId when the notice is this account's own message — tdesktop opens exactly it (item->out(),
+  // window/notifications_manager.cpp:1343-1346); otherwise the chat opens at its first unread.
+  open(chatId: string, messageId?: string): void
   report(message: string): void
   // rh-3: why a shown notification was taken back (tap-check.log) — a reason code, never the chat or the message.
   withdrawn?(reason: string): void
@@ -29,7 +37,10 @@ export interface NotificationHost {
 export type ResumeCause = 'list' | 'focus' | 'history' | 'preferences' | 'other'
 interface Context { ready: boolean; reader: FirestoreReader | null; dialogs: Map<string, ReadDialog> }
 interface Pending extends NotificationHint { at: number }
-interface Displayed { doc: FirestoreDocument; position: MessagePosition; version: string; close(): void; stop(): void; timer?: ReturnType<typeof setTimeout> }
+// What a shown notification says, so that only a change to it counts as an edit: the message's document also changes when
+// it is marked delivered or read, gets a reaction, or the server finishes sending a scheduled one, and none of those make
+// the words shown out of date (tdesktop takes a notification back only with its message, history.cpp:742).
+interface Displayed { doc: FirestoreDocument; position: MessagePosition; shown: string; title: string; detailed: boolean; close(): void; stop(): void; timer?: ReturnType<typeof setTimeout> }
 // The card keeps the post's first 180 characters, or the server's own words when the post has none.
 export function channelPostNotice(doc: FirestoreDocument, fallbackTitle: string): { title: string; body: string } {
   const text = stringField(doc.fields, 'text', 1000).trim(), kind = stringField(doc.fields, 'mediaType', 32)
@@ -38,6 +49,16 @@ export function channelPostNotice(doc: FirestoreDocument, fallbackTitle: string)
   return { title: stringField(doc.fields, 'channelName', 512).trim() || fallbackTitle, body }
 }
 const clean = (value: string, max: number) => value.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').slice(0, max)
+// The title and words of a message's notification: the chat (or the channel) over the message, or only that something came.
+export function noticeText(message: ChatMessage, doc: FirestoreDocument, chatTitle: string, preview: boolean): { title: string; body: string } {
+  // onChannelPostCreated's push: the channel's name over the post's words, or a line for a photo or video post.
+  const post = message.kind === 'channelPost' ? channelPostNotice(doc, chatTitle) : null
+  if (!preview) return { title: 'Morse', body: post ? tr('새 게시물이 올라왔어요') : tr('새 메시지가 도착했습니다.') }
+  if (post) return { title: clean(post.title, 80), body: clean(post.body, 240) }
+  const labels: Partial<Record<ChatMessage['kind'], string>> = { image: tr('사진'), video: tr('동영상'), voice: tr('음성 메시지'), file: tr('파일'), sticker: tr('스티커'), location: tr('위치'), event: tr('이벤트'), channelPost: tr('게시물', [], 'kind') }
+  const body = message.kind === 'text' ? message.text : [labels[message.kind] || tr('메시지'), message.caption].filter(Boolean).join(' · ')
+  return { title: clean(chatTitle, 80), body: clean(`${message.senderName ? `${message.senderName}: ` : ''}${body}`, 240) }
+}
 
 export class AccountNotifications {
   private closed = false
@@ -51,8 +72,9 @@ export class AccountNotifications {
     private readonly context: () => Context, private readonly host: NotificationHost,
     private readonly claim: (command: NotificationCommand) => Promise<boolean>) {}
 
+  private dropped(): boolean { return this.host.dropped ? this.host.dropped() : this.host.locked() }
   receive(hint: NotificationHint): void {
-    if (this.closed || this.ownerSignal.aborted || this.host.locked() || !alerting(this.host.preferences())) return
+    if (this.closed || this.ownerSignal.aborted || this.dropped() || !alerting(this.host.preferences())) return
     const key = `${hint.chatId}/${hint.id}`
     if (this.recent.has(key)) return
     this.recent.add(key)
@@ -62,7 +84,7 @@ export class AccountNotifications {
   }
   private active(signal: AbortSignal): boolean {
     return !this.closed && !signal.aborted && !this.ownerSignal.aborted && this.context().ready &&
-      !this.host.locked() && alerting(this.host.preferences())
+      !this.dropped() && alerting(this.host.preferences())
   }
   private message(doc: FirestoreDocument, chatId: string, suppressForeground = true): ChatMessage | null {
     const verdict = this.judge(doc, chatId, suppressForeground)
@@ -73,17 +95,21 @@ export class AccountNotifications {
     const dialog = this.context().dialogs.get(chatId)
     if (!dialog) return 'no-dialog'
     if (dialog.summary.kind === 'secret') return 'secret'
-    if (dialog.summary.muted) return 'muted'
     if (!dialog.summary.participantUids.includes(this.uid)) return 'not-participant'
     const message = decodeMessage(doc, dialog)
+    // F-RT-004: this account's own message the server sent at the time set for it is announced to its sender, even in a muted
+    // chat and read or not (tdesktop computeSkipState showForMuted = item->out() && item->isFromScheduled(),
+    // window/notifications_manager.cpp:348-350).
+    const reminder = Boolean(message && message.senderId === this.uid && message.wasScheduled)
+    if (dialog.summary.muted && !reminder) return 'muted'
     // A channel post arrives as the server's «channelPost» card in the channel's discussion chat.
     const channelPost = Boolean(message && message.kind === 'channelPost' && message.system && dialog.summary.discussion)
     // MorsePushPreferences: 1:1, group and channel notifications apart, and none while the app is in use when that is off.
     const preferences = this.host.preferences()
     if (channelPost ? !preferences.notifyChannel : dialog.summary.kind === 'group' ? !preferences.notifyGroup : !preferences.notifyPersonal) return 'kind-off'
     if (!preferences.inAppNotifications && this.host.appActive()) return 'in-app-off'
-    if (!message || message.senderId === this.uid || message.encrypted || (message.system && !channelPost && !message.memberService) || !message.readEligible || message.kind === 'unsupported') return 'not-notifiable'
-    if (readCovers(dialog.summary.readPositions[this.uid], readCursor(message.position))) return 'read-position'
+    if (!message || (message.senderId === this.uid && !reminder) || message.encrypted || (message.system && !channelPost && !message.memberService) || !message.readEligible || message.kind === 'unsupported') return 'not-notifiable'
+    if (!reminder && readCovers(dialog.summary.readPositions[this.uid], readCursor(message.position))) return 'read-position'
     if (suppressForeground && this.host.foreground(chatId)) return 'foreground'
     return message
   }
@@ -133,29 +159,27 @@ export class AccountNotifications {
     if (!alerts.show) return
     this.remove(hint.chatId, 'replaced')
     if (this.displayed.size >= 12) this.remove(this.displayed.keys().next().value!, 'overflow')
-    const preview = this.host.preferences().showNotificationPreview
-    const dialog = this.context().dialogs.get(hint.chatId)!
-    const labels: Partial<Record<ChatMessage['kind'], string>> = { image: tr('사진'), video: tr('동영상'), voice: tr('음성 메시지'), file: tr('파일'), sticker: tr('스티커'), location: tr('위치'), event: tr('이벤트'), channelPost: tr('게시물', [], 'kind') }
-    const body = message.kind === 'text' ? message.text : [labels[message.kind] || tr('메시지'), message.caption].filter(Boolean).join(' · ')
-    const entry: Displayed = { doc, position: message.position, version: message.version, close: () => {}, stop: () => {} }
+    const preview = this.host.preferences().showNotificationPreview && !this.host.hidden?.()
+    const title = this.context().dialogs.get(hint.chatId)!.summary.title
+    const text = noticeText(message, doc, title, preview)
+    const entry: Displayed = { doc, position: message.position, shown: `${text.title}\n${text.body}`, title, detailed: preview, close: () => {}, stop: () => {} }
     this.displayed.set(hint.chatId, entry)
-    // onChannelPostCreated's push: the channel's name over the post's words, or a line for a photo or video post.
-    const post = message.kind === 'channelPost' ? channelPostNotice(doc, dialog.summary.title) : null
-    const close = this.host.show({ chatId: hint.chatId, title: preview ? clean(post?.title ?? dialog.summary.title, 80) : 'Morse',
-      body: post ? preview ? clean(post.body, 240) : tr('새 게시물이 올라왔어요') : preview ? clean(`${message.senderName ? `${message.senderName}: ` : ''}${body}`, 240) : tr('새 메시지가 도착했습니다.'), silent: message.silent === true || !this.host.preferences().notificationSound },
+    const close = this.host.show({ chatId: hint.chatId, title: text.title, body: text.body, silent: message.silent === true || !this.host.preferences().notificationSound },
     () => {
       if (this.displayed.get(hint.chatId) !== entry || !this.active(signal) || !this.message(entry.doc, hint.chatId, false)) return
-      this.remove(hint.chatId, 'clicked'); this.host.open(hint.chatId)
+      this.remove(hint.chatId, 'clicked'); this.host.open(hint.chatId, message.senderId === this.uid ? message.id : undefined)
     }, () => { if (this.displayed.get(hint.chatId) === entry) this.remove(hint.chatId, 'system-closed') })
     if (!close || this.displayed.get(hint.chatId) !== entry) { close?.(); this.remove(hint.chatId, 'not-shown'); return }
     entry.close = close
     // Only displayed notifications own document subscriptions; history loading
-    // never creates candidates. Edits/deletion withdraw an outdated preview.
+    // never creates candidates. Deletion, and an edit that changes what it says, withdraw an outdated preview.
     let loadingCount = 0
     const next = (doc: FirestoreDocument | undefined): ChatMessage | string => {
       if (!doc) return 'gone'
       const verdict = this.judge(doc, hint.chatId, true)
-      return typeof verdict === 'string' ? verdict : verdict.version !== entry.version ? 'edited' : verdict
+      if (typeof verdict === 'string') return verdict
+      const text = noticeText(verdict, doc, entry.title, entry.detailed)
+      return `${text.title}\n${text.body}` !== entry.shown ? 'edited' : verdict
     }
     entry.stop = reader.watch({ documents: { documents: [name] } }, signal, {
       snapshot: rows => {
@@ -186,6 +210,8 @@ export class AccountNotifications {
       try {
         // A shown notification goes with the notifications themselves, even while the flash keeps messages looked at.
         if (!this.active(this.generation.signal) || !notificationAlerts(this.host.preferences()).show) { this.remove(chatId, `resume:${cause}:inactive`); continue }
+        // The app locked after it was shown: its words go with it.
+        if (entry.detailed && this.host.hidden?.()) { this.remove(chatId, `resume:${cause}:hidden`); continue }
         const verdict = this.judge(entry.doc, chatId, true)
         if (typeof verdict === 'string') this.remove(chatId, `resume:${cause}:${verdict}`)
       } catch { this.remove(chatId, `resume:${cause}:error`) }

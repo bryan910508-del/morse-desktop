@@ -62,6 +62,12 @@ export function confirmBox(options: { title?: string; text: string; confirm?: st
   })
 }
 
+// tdesktop Ui::MakeInformBox: words and one button.
+export function informBox(options: { title?: string; text: string }): void {
+  controller.showLayer(close => <Box title={options.title} width={360} buttons={<button className="button flat" data-autofocus onClick={close}>{tr('확인')}</button>}>
+    <p className="box-text">{options.text}</p></Box>)
+}
+
 export function ToastHost() {
   const toasts = useUi(state => state.toasts)
   return <div className="toasts" aria-live="polite">{toasts.map(toast => <div key={toast.id} className={`toast ${toast.tone}`} role={toast.tone === 'error' ? 'alert' : 'status'}>
