@@ -4,8 +4,9 @@ import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 're
 import type { ChatMessage, HistorySnapshot } from '../../../shared/model'
 import { compareReadCursor, readCursor, type ReadCursor } from '../../../shared/read-receipts'
 import { tr } from '../../../shared/i18n'
+import { reactionPlaceShown } from '../../../shared/reaction-seen'
 
-interface Display { accountUid: string; chatId: string; history: HistorySnapshot; enabled: boolean; serverUnread: number }
+interface Display { accountUid: string; chatId: string; history: HistorySnapshot; enabled: boolean; serverUnread: number; reaction?: string }
 
 // A message is read only when its bubble bottom is actually visible in the
 // focused window. The newest such message is sent once; main merges cursors.
@@ -22,7 +23,7 @@ export function useVisibleRead(scroll: RefObject<HTMLDivElement | null>, display
     if (!element) return
     let disposed = false, busy = false, failed = false, frame = 0, second = 0
     let timer: ReturnType<typeof setTimeout> | undefined
-    let accepted: ReadCursor | null = null, bottomAsked = ''
+    let accepted: ReadCursor | null = null, bottomAsked = '', reactionAsked = ''
     const cancel = (): void => { clearTimeout(timer); cancelAnimationFrame(frame); cancelAnimationFrame(second) }
     const allowed = (): boolean => !disposed && !failed && committed.current.enabled && committed.current.history.status === 'ready' && document.visibilityState === 'visible' && document.hasFocus()
     const observe = (): void => {
@@ -31,6 +32,7 @@ export function useVisibleRead(scroll: RefObject<HTMLDivElement | null>, display
       const top = Math.max(0, viewport.top), bottom = Math.min(window.innerHeight, viewport.bottom)
       if (element.clientHeight <= 0 || bottom <= top) return
       const byId = new Map<string, ChatMessage>(view.history.messages.map(message => [message.id, message]))
+      seeReaction(view, viewport, top, bottom)
       let candidate: ChatMessage | undefined
       for (const row of element.querySelectorAll<HTMLElement>('[data-message-id]')) {
         const message = byId.get(row.dataset.messageId ?? '')
@@ -52,6 +54,22 @@ export function useVisibleRead(scroll: RefObject<HTMLDivElement | null>, display
         if (saved && !disposed && (!accepted || compareReadCursor(target, accepted) > 0)) accepted = target
       }).catch(() => { if (!disposed) { failed = true; setError(tr('읽음 위치를 저장하지 못했습니다. 앱을 다시 열어 주세요.')) } })
         .finally(() => { busy = false; if (!disposed && !failed) queue(800) })
+    }
+    // The chat's unseen reaction is seen once its message's reactions are on screen in the focused window (tdesktop
+    // HistoryInner::paintEvent: an item with an unread reaction is read when its reaction's place is inside the visible
+    // area, history_inner_widget.cpp:1518-1528, while the window is marking as read). Asked once per message here; main
+    // checks it is still the room's unseen reaction.
+    const seeReaction = (view: Display, viewport: DOMRect, top: number, bottom: number): void => {
+      const id = view.reaction
+      if (!id || reactionAsked === id) return
+      const row = [...element.querySelectorAll<HTMLElement>('[data-message-id]')].find(item => item.dataset.messageId === id)
+      const place = row?.querySelector<HTMLElement>('.bubble-reactions') ?? row?.querySelector<HTMLElement>('.bubble')
+      if (!place) return
+      const bounds = place.getBoundingClientRect()
+      const visible = { top, bottom, left: Math.max(viewport.left, 0), right: Math.min(viewport.right, window.innerWidth) }
+      if (!reactionPlaceShown(bounds, visible, (x, y) => { const hit = document.elementFromPoint(x, y); return Boolean(hit && row!.contains(hit)) })) return
+      reactionAsked = id
+      void window.morse.markReactionVisible(view.accountUid, view.chatId, id).then(seen => { if (!seen && !disposed && reactionAsked === id) reactionAsked = '' }).catch(() => { if (reactionAsked === id) reactionAsked = '' })
     }
     // Once per newest message and history revision: a new message or a new page may ask again, nothing else does.
     const readBottom = (view: Display): void => {

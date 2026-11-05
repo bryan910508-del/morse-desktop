@@ -10,6 +10,10 @@ const lateGrace = 10 * 60 * 1000
 
 interface ReminderHost {
   locked(): boolean
+  // F-RT-004, as a chat's notification (notifications.ts NotificationHost): only the app closing or the computer asleep
+  // holds a reminder back; the app's own lock shows it without the event's words. Without them `locked` holds it, as before.
+  dropped?(): boolean
+  hidden?(): boolean
   show(content: NotificationContent, click: () => void, dismiss: () => void): (() => void) | null
   open(chatId: string): void
 }
@@ -39,14 +43,15 @@ export class EventReminders {
       this.timers.delete(reminder.id)
       if (this.closed) return
       if (reminder.fireAt - Date.now() > 1000) { this.arm(reminder); return }
-      // A locked screen shows no chat content; look again shortly while the reminder is still recent.
-      if (this.host.locked()) {
+      // Asleep or closing: look again shortly while the reminder is still recent.
+      if (this.host.dropped ? this.host.dropped() : this.host.locked()) {
         if (Date.now() - reminder.fireAt < lateGrace) this.timers.set(reminder.id, setTimeout(() => { this.timers.delete(reminder.id); this.arm(reminder) }, 60000))
         else this.forget(reminder.id)
         return
       }
       this.forget(reminder.id)
-      const close = this.host.show({ chatId: reminder.chatId, title: tr('일정 알림'), body: eventReminderBody(reminder.title, reminder.eventStart), silent: false },
+      const hidden = Boolean(this.host.hidden?.())
+      const close = this.host.show({ chatId: reminder.chatId, title: hidden ? 'Morse' : tr('일정 알림'), body: hidden ? tr('일정 알림') : eventReminderBody(reminder.title, reminder.eventStart), silent: false },
         () => { close?.(); this.host.open(reminder.chatId) }, () => {})
     }, Math.max(0, Math.min(maxTimer, wait))))
   }

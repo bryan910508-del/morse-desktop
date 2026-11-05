@@ -251,7 +251,7 @@ function unseenReaction(fields: Record<string, WireObject>, uid: string): Dialog
     const messageId = stringField(payload, 'messageId', 160), emoji = stringField(payload, 'emoji', 64), actor = stringField(payload, 'actorUid', 160)
     const version = numberField(payload, 'reactionVersion')
     if (!messageId || !emoji.trim() || !actor || actor === uid || !Number.isSafeInteger(version) || version <= 0) return undefined
-    return { messageId: identifier(messageId), emoji, reactionVersion: version }
+    return { messageId: identifier(messageId), emoji, reactionVersion: version, actorUid: identifier(actor) }
   } catch { return undefined }
 }
 // chats/{id}.pinnedForAllMessageIds: message ids pinned for everyone (unreadable entries are left out).

@@ -2,7 +2,7 @@
 // Copyright (c) 2014-2026 The Telegram Desktop Authors. Licensed under GPL-3.0-or-later; see LEGAL.
 import type { ChatMessage, HistorySnapshot, MessagePosition, ReplyPreview } from '../../shared/model'
 import { comparePosition, positionAt } from '../../shared/model'
-import { FirestoreReader, type WatchResumeToken } from '../network/firestore-rpc'
+import { compareReadTime, FirestoreReader, type WatchReadTime, type WatchResumeToken } from '../network/firestore-rpc'
 import type { KeptHistory } from './kept-histories'
 import { decodeMessage, documents, expiry, historyReadable, historyLimit, messagesQuery, newerMessagesQuery, pageSize, positionValue, rawPosition, ReadFailure, type FirestoreDocument, type ReadDialog, roomMediaNames } from '../network/firestore-values'
 import type { MediaRequest } from '../../shared/media'
@@ -16,14 +16,23 @@ import { tr } from '../../shared/i18n'
 import type { ReadCursor } from '../../shared/read-receipts'
 import { unreadCandidate } from '../../shared/unread-entry'
 
+// B546: one document watch over older rows. `names` is what it listens to; `owned` the rows it still answers for. An open
+// (not sealed) group takes in the rows that leave the live page until it holds a page.
+interface RowGroup { names: string[]; owned: Set<string>; sealed: boolean; alive: boolean; stop(): void }
+
 export class HistoryReader {
   private readonly abort = new AbortController()
   private rows = new Map<string, FirestoreDocument>()
   private top: FirestoreDocument[] = []
-  private stops: (() => void)[] = []
+  // B546: the older rows' document watches, each over the names it was started with; `owner` says which group answers
+  // for a row. A group that no row is left to stays until none is, and one row is never answered for by two.
+  private groups: RowGroup[] = []
+  private owner = new Map<string, RowGroup>()
+  // B546 ②: the latest server time each document, exactly as held, was known to be current at — a page query's read time
+  // or a snapshot's. A group over rows that all have one listens from the oldest of them (only what changed after it)
+  // instead of reading every row again. Kept by the document itself, so a newer copy of a row starts with none.
+  private readonly readAt = new WeakMap<FirestoreDocument, WatchReadTime>()
   private stopTail: (() => void) | null = null
-  private groupGeneration = 0
-  private groupNames = ''
   private closed = false
   private following = true
   // B184: the window reaches the newest message but holds older ones too (read further up, or down to the end): the
@@ -151,8 +160,9 @@ export class HistoryReader {
     this.stopTail = this.reader.watch({ query: { parent: `${documents}/chats/${this.dialog.summary.id}`, structuredQuery } },
       this.abort.signal, {
         resumeToken: token => { if (!this.closed && !this.failed) this.token = token },
-        snapshot: entries => {
+        snapshot: (entries, readTime) => {
           if (this.closed || this.failed) return
+          this.stamp(entries.values(), readTime)
           this.top = this.sorted(entries.values())
           if (this.following) {
             // Query-window removal does not delete older history. A following
@@ -193,7 +203,7 @@ export class HistoryReader {
             if (this.attached) return
             this.cancelPage()
             // Reconnect discards rows whose server authorization is not current.
-            this.rows.clear(); this.top = []; this.token = null; this.groupNames = ''; this.stopGroups()
+            this.rows.clear(); this.top = []; this.token = null; this.stopGroups()
             this.value.status = 'loading'; this.value.message = error?.message ?? ''; this.value.before = null; this.value.hasMore = false; this.value.newerAvailable = false; this.value.focusMessageId = undefined; this.following = true; this.attached = false; this.publish()
           }
         },
@@ -208,38 +218,90 @@ export class HistoryReader {
   private sorted(rows: Iterable<FirestoreDocument>): FirestoreDocument[] {
     return [...rows].sort((a, b) => comparePosition(rawPosition(b, this.dialog.summary.id), rawPosition(a, this.dialog.summary.id)))
   }
-  private stopGroups(): void { this.groupGeneration++; for (const stop of this.stops) stop(); this.stops = [] }
-  private observeRows(): void {
-    if (this.following) { this.stopGroups(); this.groupNames = ''; return }
-    const live = this.attached ? new Set(this.top.slice(0, pageSize).map(doc => doc.name)) : new Set<string>()
-    const names = [...this.rows.keys()].filter(name => !live.has(name)).sort()
-    const signature = names.join('\n')
-    if (signature === this.groupNames) return
-    this.stopGroups(); this.groupNames = signature
-    const generation = this.groupGeneration
-    // Small document targets keep loaded older rows live without an unbounded
-    // history query. Their absence at CURRENT is authority for this exact set.
-    for (let offset = 0; offset < names.length; offset += pageSize) {
-      const group = names.slice(offset, offset + pageSize)
-      let current = false
-      this.stops.push(this.reader.watch({ documents: { documents: group } }, this.abort.signal, {
-        snapshot: entries => {
-          if (this.closed || this.failed || generation !== this.groupGeneration) return
-          current = true
-          for (const name of group) {
-            if (entries.has(name)) this.rows.set(name, entries.get(name)!)
-            else this.rows.delete(name)
-          }
-          this.publish()
-        },
-        // A stream renewal or network retry re-reads the same documents; the rows stay until then.
-        reconnecting: () => { if (!this.closed && !this.failed && generation === this.groupGeneration) recordHistoryStep('rows-reconnecting') },
-        state: (state, error) => {
-          if (!this.closed && !this.failed && generation === this.groupGeneration &&
-              (state === 'error' || error || (state === 'loading' && current))) { recordHistoryStep('rows-failed', `${state}:${error?.code ?? ''}`); this.fail(error ?? new ReadFailure('network')) }
-        },
-      }, group.length))
+  private stamp(docs: Iterable<FirestoreDocument>, readTime: WatchReadTime | undefined): void {
+    if (!readTime) return
+    for (const doc of docs) {
+      const known = this.readAt.get(doc)
+      if (!known || compareReadTime(known, readTime) < 0) this.readAt.set(doc, readTime)
     }
+  }
+  private stopGroups(): void {
+    const groups = this.groups
+    this.groups = []; this.owner.clear()
+    for (const group of groups) { group.alive = false; group.stop() }
+  }
+  // B546 (inbox B546, reports/desktop/2026-11-04-b546-plan.md): the older rows stay live as they were, but a change to
+  // which rows the window holds only starts watches for the rows no group has and ends the groups no row is left to.
+  // Before, every change ended them all and read every older row again — up to 320 documents for each page read while
+  // scrolling, and for each new message while older pages were held. tdesktop keeps no watch per message at all
+  // (edits and deletions come with the account's updates, api_updates.cpp:1462-1464, :1906-1910); here a document
+  // watch is the only way an older row hears of its edit or deletion, so every held row keeps one.
+  private observeRows(): void {
+    if (this.following) { this.stopGroups(); return }
+    const live = this.attached ? new Set(this.top.slice(0, pageSize).map(doc => doc.name)) : new Set<string>()
+    const wanted = new Set([...this.rows.keys()].filter(name => !live.has(name)))
+    for (const [name, group] of this.owner) if (!wanted.has(name)) { this.owner.delete(name); group.owned.delete(name) }
+    for (const group of this.groups.filter(group => !group.owned.size)) this.endGroup(group)
+    const fresh = [...wanted].filter(name => !this.owner.has(name)).sort()
+    if (!fresh.length) return
+    // Rows that leave the live page one by one (a new message below) join the one open group until it holds a page, so a
+    // message costs at most that group's documents read again, not every older row.
+    const open = this.groups.find(group => !group.sealed)
+    if (open && open.owned.size + fresh.length <= pageSize) {
+      const names = [...open.owned, ...fresh].sort()
+      this.endGroup(open)
+      this.startGroup(names, names.length >= pageSize)
+    } else {
+      if (open) open.sealed = true
+      for (let offset = 0; offset < fresh.length; offset += pageSize) {
+        const names = fresh.slice(offset, offset + pageSize)
+        this.startGroup(names, names.length >= pageSize)
+      }
+    }
+    // The ledger must answer for every held older row exactly once; if it does not, start over the way it always did.
+    if ([...wanted].some(name => !this.owner.get(name)?.owned.has(name)) || this.owner.size !== wanted.size) {
+      recordHistoryStep('rows-regrouped')
+      this.stopGroups()
+      const names = [...wanted].sort()
+      for (let offset = 0; offset < names.length; offset += pageSize) this.startGroup(names.slice(offset, offset + pageSize), true)
+    }
+  }
+  private endGroup(group: RowGroup): void {
+    group.alive = false; group.stop()
+    this.groups = this.groups.filter(item => item !== group)
+    for (const name of group.owned) if (this.owner.get(name) === group) this.owner.delete(name)
+  }
+  // Small document targets keep loaded older rows live without an unbounded history query. Their absence at CURRENT is
+  // authority for this exact set — for the rows this group still answers for; a row the window let go is left alone.
+  private startGroup(names: string[], sealed: boolean): void {
+    const group: RowGroup = { names, owned: new Set(names), sealed, alive: true, stop: () => {} }
+    this.groups.push(group)
+    for (const name of names) this.owner.set(name, group)
+    let current = false
+    // B546 ②: rows that all came with a read time listen from the oldest of them, starting from what they hold.
+    const held = names.map(name => this.rows.get(name))
+    const times = held.map(doc => doc ? this.readAt.get(doc) : undefined)
+    const from = times.every(time => time) ? (times as WatchReadTime[]).reduce((oldest, time) => compareReadTime(time, oldest) < 0 ? time : oldest) : null
+    group.stop = this.reader.watch({ documents: { documents: names } }, this.abort.signal, {
+      snapshot: (entries, readTime) => {
+        if (this.closed || this.failed || !group.alive) return
+        current = true
+        this.stamp(entries.values(), readTime)
+        for (const name of names) {
+          if (!group.owned.has(name)) continue
+          if (entries.has(name)) this.rows.set(name, entries.get(name)!)
+          else this.rows.delete(name)
+        }
+        this.publish()
+      },
+      // A stream renewal or network retry re-reads the same documents; the rows stay until then.
+      reconnecting: () => { if (!this.closed && !this.failed && group.alive && current) recordHistoryStep('rows-reconnecting') },
+      readTimeRefused: reason => { if (!this.closed && !this.failed && group.alive) recordHistoryStep('rows-readtime-refused', reason.code) },
+      state: (state, error) => {
+        if (!this.closed && !this.failed && group.alive &&
+            (state === 'error' || error || (state === 'loading' && current))) { recordHistoryStep('rows-failed', `${state}:${error?.code ?? ''}`); this.fail(error ?? new ReadFailure('network')) }
+      },
+    }, names.length, undefined, from ? { readTime: from, documents: new Map(held.map(doc => [doc!.name, doc!])) } : undefined)
   }
   private fail(error: ReadFailure): void {
     if (this.closed || this.failed) return
@@ -311,7 +373,7 @@ export class HistoryReader {
     this.cancelPage()
     // A fresh CURRENT boundary avoids restoring a cached tail older than a
     // loaded document's edit/deletion snapshot on another stream.
-    this.stopTail?.(); this.stopGroups(); this.groupNames = ''
+    this.stopTail?.(); this.stopGroups()
     this.following = true; this.attached = false; this.start(); return this.snapshot
   }
   // Telegram's jump to date (resolveJumpToDate: the first message at or after the day's start), found with an
@@ -370,17 +432,19 @@ export class HistoryReader {
         const earlier = messagesQuery(this.dialog)
         earlier.limit = { value: half + 1 }
         earlier.startAt = { before: true, values: [positionValue(target), { referenceValue: `${documents}/chats/${chat}/messages/${target.id}` }] }
+        let olderTime: WatchReadTime | undefined, newerTime: WatchReadTime | undefined
         const [olderRows, newerRows] = await Promise.all([
-          this.reader.query(`${documents}/chats/${chat}`, earlier, signal),
-          this.reader.query(`${documents}/chats/${chat}`, newerMessagesQuery(this.dialog, target, half + 1), signal)])
+          this.reader.query(`${documents}/chats/${chat}`, earlier, signal, time => { olderTime = time }),
+          this.reader.query(`${documents}/chats/${chat}`, newerMessagesQuery(this.dialog, target, half + 1), signal, time => { newerTime = time })])
         if (this.closed || this.failed || epoch !== this.epoch) return this.snapshot
+        this.stamp(olderRows, olderTime); this.stamp(newerRows, newerTime)
         const before = this.sorted(olderRows), after = this.sorted(newerRows).reverse()
         const selected = before.find(doc => rawPosition(doc, chat).id === target.id)
         const reason = before.some(doc => comparePosition(rawPosition(doc, chat), target) > 0) || after.some(doc => comparePosition(rawPosition(doc, chat), target) <= 0) ? 'cursor'
           : !selected ? 'target-missing' : !decodeMessage(selected, this.dialog) ? 'target-hidden' : ''
         if (reason) { recordHistoryStep('jump-check', `${reason} rows=${before.length}+${after.length}`); throw new ReadFailure('data') }
         const olderPage = before.slice(0, half), newerPage = after.slice(0, half), atNewest = after.length <= half
-        this.stopTail?.(); this.stopTail = null; this.stopGroups(); this.groupNames = ''
+        this.stopTail?.(); this.stopTail = null; this.stopGroups()
         this.following = false; this.attached = atNewest; this.top = []
         this.rows = new Map([...newerPage, ...olderPage].map(doc => [doc.name, doc]))
         this.value.before = olderPage.length ? rawPosition(olderPage.at(-1)!, chat) : null
@@ -392,7 +456,7 @@ export class HistoryReader {
         if (this.closed || this.failed || epoch !== this.epoch) return this.snapshot
         // Telegram shows a notice when it cannot reach a message; the chat itself stays. Return to the latest page.
         recordHistoryStep('jump-failed', error instanceof ReadFailure ? error.code : error instanceof Error ? error.name : 'unknown')
-        this.cancelPage(); this.stopTail?.(); this.stopTail = null; this.stopGroups(); this.groupNames = ''; this.following = true; this.attached = false
+        this.cancelPage(); this.stopTail?.(); this.stopTail = null; this.stopGroups(); this.following = true; this.attached = false
         this.value = { ...this.value, status: 'loading', message: '', focusMessageId: undefined, newerAvailable: false }
         this.publish(); this.start()
         throw new Error(tr('메시지로 이동하지 못했습니다. 최신 메시지를 다시 불러왔어요.'))
@@ -414,8 +478,10 @@ export class HistoryReader {
     const task = (async (): Promise<HistorySnapshot> => {
       try {
         const chat = this.dialog.summary.id
-        const rows = await this.reader.query(`${documents}/chats/${chat}`, newerMessagesQuery(this.dialog, after), AbortSignal.any([this.abort.signal, pageAbort.signal]))
+        let readTime: WatchReadTime | undefined
+        const rows = await this.reader.query(`${documents}/chats/${chat}`, newerMessagesQuery(this.dialog, after), AbortSignal.any([this.abort.signal, pageAbort.signal]), time => { readTime = time })
         if (this.closed || this.failed || epoch !== this.epoch) return this.snapshot
+        this.stamp(rows, readTime)
         const ascending = this.sorted(rows).reverse()
         if (ascending.some(doc => comparePosition(rawPosition(doc, chat), after) <= 0)) throw new ReadFailure('data')
         for (const doc of ascending.slice(0, pageSize)) this.rows.set(doc.name, doc)
@@ -453,8 +519,10 @@ export class HistoryReader {
     this.observeRows()
     const task = (async (): Promise<HistorySnapshot> => {
       try {
-        const rows = await this.reader.query(`${documents}/chats/${this.dialog.summary.id}`, messagesQuery(this.dialog, before), AbortSignal.any([this.abort.signal, pageAbort.signal]))
+        let readTime: WatchReadTime | undefined
+        const rows = await this.reader.query(`${documents}/chats/${this.dialog.summary.id}`, messagesQuery(this.dialog, before), AbortSignal.any([this.abort.signal, pageAbort.signal]), time => { readTime = time })
         if (this.closed || this.failed || epoch !== this.epoch) return this.snapshot
+        this.stamp(rows, readTime)
         // Validate every raw cursor before deriving page progress, including rows
         // hidden by expiry/deletion markers. UI-visible rows are not the cursor.
         const sorted = this.sorted(rows)

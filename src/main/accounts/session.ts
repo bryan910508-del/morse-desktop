@@ -89,10 +89,10 @@ import { ManualUnread } from './manual-unread'
 import { clearsUnreadMark, effectiveUnreadCount, type ManualUnreadRequest } from '../../shared/manual-unread'
 import type { ContactCreateFields } from '../network/participant-contact-write'
 import { FirestoreReader } from '../network/firestore-rpc'
-import { boolField, childId, decodeDialog, decodeMessage, messagesQuery, readDialogs, historyReadable, documents, positionValue, timestamp, documentVersion, mapField, numberField, stringField, ReadFailure, type FirestoreDocument, type ReadDialog, type WireObject } from '../network/firestore-values'
+import { boolField, childId, decodeDialog, decodeMessage, expiry, messagesQuery, readDialogs, historyReadable, documents, positionValue, timestamp, documentVersion, mapField, numberField, stringField, ReadFailure, type FirestoreDocument, type ReadDialog, type WireObject } from '../network/firestore-values'
 import { decodeHiddenMessages } from './hidden-messages'
 import { HiddenMessageUploads, type HideAnswer, type HideRoute } from './hidden-message-uploads'
-import { HiddenRowLines, type HiddenRowLine, type OpenRowLines } from './hidden-row-lines'
+import { ExpiredRowLines, HiddenRowLines, type HiddenRowLine, type OpenRowLines } from './hidden-row-lines'
 import { HistoryReader } from './history-reader'
 import { OutboxPump, type AccountAuthorization } from '../messaging/outbox'
 import type { OutgoingSnapshot } from '../../shared/delivery'
@@ -125,6 +125,10 @@ import { DeferredMessages, deferredCollections, deferredFields } from './deferre
 import { ChatTyping, DialogTyping, type ListTypingEntry, type TypingSnapshot } from './chat-typing'
 import { ChannelPostNotices } from './channel-post-notices'
 import { ChatTopNotices, chatTopsOf } from './chat-top-notices'
+import { defaultReactionSettings, ReactionNotices, ReactionNotifications, reactionNoticesEnabled, reactionSettingsOf, type ReactionSettings } from '../messaging/reaction-notifications'
+import type { ReactionSettingsPatch } from '../../shared/reaction-settings'
+import { reactionSeenAllowed } from '../../shared/reaction-seen'
+import type { NotificationCommand } from '../storage/notification-protocol'
 import { callMorseFunction } from '../network/morse-callable'
 // MorseAppConfig MorseOfficialSupport.uid: the customer support account every app opens a chat with.
 import { InquiryRows } from './inquiry-rows'
@@ -314,6 +318,7 @@ export class AccountSession {
   private readonly hiddenMessages: HiddenMessages
   private readonly hiddenUploads: HiddenMessageUploads
   private readonly hiddenRowLines: HiddenRowLines
+  private readonly expiredRowLines: ExpiredRowLines
   private readonly chatFlags: ChatFlags
   private readonly contactFlags: ContactFlags
   private readonly stickerLibrary: StickerLibrary
@@ -356,6 +361,10 @@ export class AccountSession {
   private readonly notifications: AccountNotifications
   private readonly channelPosts: ChannelPostNotices
   private readonly chatTops: ChatTopNotices
+  // B545: the unseen reactions' notices (null while reactionNoticesEnabled is off) and users/{uid}/settings/notify.reactions.
+  private readonly reactionNotices: ReactionNotices | null
+  private reactionSettings: ReactionSettings = defaultReactionSettings
+  private reactionSettingsWatch: { reader: FirestoreReader; stop(): void } | null = null
   readonly media: MediaSession
   readonly files: OpenedFiles
   readonly selfProfile: SelfProfileSession
@@ -604,10 +613,14 @@ export class AccountSession {
       if (stringField(doc.fields, 'name', 512).trim() !== request.title) throw new Error(tr('최신 채널 이름을 확인해 주세요.'))
       this.delivery.requireLeaveReady(request.chatId)
     }, (command, validate) => this.delivery.discussionJoinState(command, validate), () => { if (!this.closed) events.changed() })
+    const host = { ...events.notifications, foreground: (chatId: string) => events.canRead() && this.selected?.dialog.summary.id === chatId }
+    const claim = (command: NotificationCommand) => this.delivery.notificationState<boolean>(command)
+    // B545: reaction notices from the list's unseen reactions, off until the three apps turn them on together.
+    const reactions = reactionNoticesEnabled ? new ReactionNotifications(profile.uid, credentials.signal,
+      () => ({ ready: this.status === 'ready' && !this.closed, reader: this.reader, dialogs: this.index, reactions: this.reactionSettings }), host, claim) : undefined
+    this.reactionNotices = reactions ? new ReactionNotices(hint => reactions.receive(hint)) : null
     this.notifications = new AccountNotifications(profile.uid, credentials.signal,
-      () => ({ ready: this.status === 'ready' && !this.closed, reader: this.reader, dialogs: this.index }),
-      { ...events.notifications, foreground: chatId => events.canRead() && this.selected?.dialog.summary.id === chatId },
-      command => this.delivery.notificationState<boolean>(command))
+      () => ({ ready: this.status === 'ready' && !this.closed, reader: this.reader, dialogs: this.index }), host, claim, reactions)
     this.channelPosts = new ChannelPostNotices((chatId, id) => this.notifications.receive({ chatId, id }))
     // F-RT-004: a chat's newest message from the list, as the socket's hint gives it (chat-top-notices.ts). This account's own
     // newest message is read only when it may be a scheduled one sent for it (tdesktop showForMuted) and its chat is not the
@@ -668,6 +681,7 @@ export class AccountSession {
     this.hiddenUploads = new HiddenMessageUploads(this.hiddenMessages, chatId => this.hideRoute(chatId), () => this.closed ? null : {
       call: (name, data, signal) => callMorseFunction(credentials, name, data, AbortSignal.any([signal, AbortSignal.timeout(65000)]))
     }, profile.uid)
+    this.expiredRowLines = new ExpiredRowLines(this.hiddenMessages, chatId => this.readRowLines(chatId), () => { if (this.chatsCurrent && this.pinsCurrent && !this.closed) { this.rebuild(); this.events.changed() } })
     this.hiddenRowLines = new HiddenRowLines(this.hiddenMessages, chatId => this.readRowLines(chatId),
       () => { if (!this.closed && this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() } })
     const connected = (): void => { if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('계정 연결을 확인해 주세요.')) }
@@ -734,8 +748,11 @@ export class AccountSession {
     this.inquiryNotifications = new InquiryNotifications({ ...events.notifications,
       foreground: inquiryId => events.canRead() && this.channelInquiries.openThreadId === inquiryId,
       open: (channelId, inquiryId) => events.notifications.openInquiry(channelId, inquiryId) })
-    this.inquiryRows = new InquiryRows(profile.uid, credentials, connected, () => { if (!this.closed) events.changed() },
-      rooms => { if (!this.closed && !this.locked) this.inquiryNotifications.observe(rooms) },
+    // F-RT-004: the inquiry rooms are listened to under a lock as well (their banners hide their words, InquiryNotifications);
+    // the rows themselves stay out of sight until the unlock (InquiryRows.setLocked).
+    const listening = (): void => { if (this.closed || this.connection !== 'ready') throw new Error(tr('계정 연결을 확인해 주세요.')) }
+    this.inquiryRows = new InquiryRows(profile.uid, credentials, listening, () => { if (!this.closed) events.changed() },
+      rooms => { if (!this.closed) this.inquiryNotifications.observe(rooms) },
       { count: inquiryId => this.hiddenMessages.count(inquiryQueueChatId(inquiryId)), has: (inquiryId, messageId) => this.hiddenMessages.has(inquiryQueueChatId(inquiryId), messageId) })
     // B484: a room the lists no longer hold and the server says is gone takes what this device was still sending into it.
     this.inquiryRows.listed = (ids, exists) => { if (!this.closed && !this.locked) void this.inquirySends.forgetGoneRooms(ids, exists).catch(() => {}) }
@@ -800,7 +817,7 @@ export class AccountSession {
     if (locked) this.storyPreloader.pause(); else this.storyPreloader.poke()
     this.channelInquiries.setLocked(locked)
     this.inquiryRows.setLocked(locked)
-    if (locked) this.inquiryNotifications.pause()
+    this.inquiryNotifications.lockChanged()
     this.folders.setLocked(locked)
     this.joinApprovals.setLocked(locked)
     this.dialogPreferences.setLocked(locked)
@@ -1411,8 +1428,16 @@ export class AccountSession {
     let nextExpiry = Infinity
     for (const { doc, value } of read.dialogs) {
       // B163 ④: the row's message expired — the next one this device holds, or no line (chat-list-tops.ts expiredTop).
-      if (!this.chatListTops.apply(value.summary) && !expiredTop(value.summary, value.topExpiresAt, now, this.openRowSource(value.summary.id)) &&
-        value.topExpiresAt !== undefined) nextExpiry = Math.min(nextExpiry, value.topExpiresAt)
+      // B181 ③: with no open history to give it, the room is asked for its newest message left (ExpiredRowLines).
+      const expiring = value.summary.topMessageId
+      if (!this.chatListTops.apply(value.summary)) {
+        if (!expiredTop(value.summary, value.topExpiresAt, now, this.openRowSource(value.summary.id))) {
+          if (value.topExpiresAt !== undefined) nextExpiry = Math.min(nextExpiry, value.topExpiresAt)
+        } else if (!value.summary.topMessageId && expiring) {
+          const next = this.expiredRowLines.apply(value.summary, expiring)
+          if (next !== null) nextExpiry = Math.min(nextExpiry, next)
+        }
+      }
       // B327b: a line deleted for me is never shown; the row takes the newest message left.
       this.hiddenRowLines.apply(value.summary, this.openRowLines(value.summary.id))
       this.discussionHistory.apply(doc, value)
@@ -1443,7 +1468,7 @@ export class AccountSession {
     }
     this.unwrittenRows = unwritten
     if (skipped) recordHistoryStep('dialog-skipped', String(skipped))
-    this.chatListTops.prune(id => index.has(id))
+    this.chatListTops.prune(id => index.has(id)); this.expiredRowLines.prune(id => index.has(id))
     this.scheduleRowExpiry(nextExpiry)
     this.namesApplied = this.contacts.namesRevision
     // The other side of every 1:1 chat is followed by name, contact or not (B48).
@@ -1484,7 +1509,6 @@ export class AccountSession {
     this.hiddenMessages.load()
     this.chatFlags.load()
     this.contactFlags.load()
-    this.acknowledgeReaction()
     const selected = this.selected
     const search = this.search
     if (search) {
@@ -1508,6 +1532,7 @@ export class AccountSession {
     this.clearOpenUnreadMark()
     this.channelPosts.observe(this.chatRows.values(), index, this.reader, this.credentials.signal)
     this.chatTops.observe(chatTopsOf(this.chatRows.values(), index))
+    if (this.reactionNotices) { this.watchReactionSettings(); this.reactionNotices.observe(index) }
     this.listTyping.bind(this.locked ? [] : this.list, this.locked ? null : this.reader)
     this.notifications.resume('list')
     this.events.changed()
@@ -1560,21 +1585,26 @@ export class AccountSession {
     this.selected = history
     this.syncPresence()
     if (!this.locked) this.draftReply.bind(dialog, this.reader)
-    queueMicrotask(() => { if (this.selected === history) this.acknowledgeReaction() })
-    history.start(); this.notifications.resume('history'); this.clearOpenUnreadMark()
+    history.start(); this.notifications.resume('history'); this.unreadMarkOpening = chatId; this.clearOpenUnreadMark()
     if (this.unwrittenRows.has(chatId)) queueMicrotask(() => this.relistUnwritten())
     return history
   }
-  // B104: the open chat loses «안 읽음 표시» as Telegram's does on showHistory (clearsUnreadMark), once per version of the chat.
-  private unreadMarkCleared = ''
+  // B104: the open chat loses «안 읽음 표시» as Telegram's does on showHistory (history_widget.cpp:3613-3617) — the mark it
+  // had when it was opened, and only that one. A mark another device sets while the chat is open is not cleared: Telegram
+  // closes the chat and keeps the mark (unreadCountUpdated → closeCurrent, :4747-4753), which the window does
+  // (window/chat-marked.ts). Until the list knows the chat, or while another mark change is on its way, the opening's
+  // clear waits for the next list.
+  private unreadMarkOpening: string | null = null
   private clearOpenUnreadMark(): void {
-    const chatId = this.selected?.dialog.summary.id, summary = chatId ? this.index.get(chatId)?.summary : undefined
-    if (!summary || this.closed || this.locked || !clearsUnreadMark(summary, this.profile.uid)) return
-    const key = `${summary.id}:${summary.version}`
-    if (this.unreadMarkCleared === key || !this.manualUnread.canChange(summary.id)) return
-    this.unreadMarkCleared = key
+    const chatId = this.selected?.dialog.summary.id
+    if (!chatId || this.unreadMarkOpening !== chatId || this.closed || this.locked) return
+    const summary = this.index.get(chatId)?.summary
+    if (!summary) return
+    if (!clearsUnreadMark(summary, this.profile.uid)) { this.unreadMarkOpening = null; return }
+    if (!this.manualUnread.canChange(summary.id)) return
+    this.unreadMarkOpening = null
     try { void this.manualUnread.set({ id: randomUUID(), chatId: summary.id, markedUnread: false, version: summary.version, readToEnd: false }).catch(() => {}) }
-    catch { /* a chat the list no longer agrees on is left for the next look */ }
+    catch { /* a chat the list no longer agrees on is left as it is */ }
   }
   async history(chatId: string, before?: MessagePosition): Promise<HistorySnapshot> {
     if (this.closed || this.status !== 'ready' || !this.reader) return this.empty(this.status, this.message)
@@ -2189,15 +2219,26 @@ export class AccountSession {
     } catch { /* Not an event this account can read; the document brings the same state. */ }
   }
   // AppState.markReactionSeen: the open chat's unseen reaction is cleared here at once and acknowledged with its
-  // version, so a newer reaction that arrives meanwhile is not cleared by it.
-  private acknowledgeReaction(): void {
+  // version, so a newer reaction that arrives meanwhile is not cleared by it. Only once the window has shown it: the
+  // renderer asks when the reacted message's bubble is on screen in the focused window (visible-read.ts), as tdesktop
+  // reads a reaction only when its place is painted in the visible area while the window is marking as read
+  // (history_inner_widget.cpp:1518-1528, :1549 → ApiWrap::markContentsRead; mainwindow.cpp:597-606) — not when the chat
+  // is chosen, nor when an account whose chat was left open becomes the active one behind other windows.
+  markReactionVisible(chatId: string, messageId: string): boolean {
+    const raw = this.chatRows.get(`${documents}/chats/${chatId}`)
+    const unseen = raw ? decodeDialog(raw, this.profile.uid).summary.unseenReaction : undefined
+    if (!reactionSeenAllowed({ closed: this.closed, locked: this.locked, ready: this.status === 'ready', canRead: this.events.canRead(),
+      selectedChatId: this.selected?.dialog.summary.id, chatId, unseenMessageId: unseen?.messageId, shownMessageId: messageId })) return false
+    return this.acknowledgeReaction(messageId)
+  }
+  private acknowledgeReaction(shown: string): boolean {
     const chatId = this.selected?.dialog.summary.id
     const current = chatId ? this.index.get(chatId)?.summary : undefined
     const raw = current && this.chatRows.get(`${documents}/chats/${current.id}`)
     const unseen = raw ? decodeDialog(raw, this.profile.uid).summary.unseenReaction : undefined
-    if (this.closed || this.locked || !chatId || !unseen) return
+    if (this.closed || this.locked || !chatId || !unseen || unseen.messageId !== shown) return false
     const token = `${unseen.messageId}:${unseen.reactionVersion}`
-    if (this.seenReactions.get(chatId) === token) return
+    if (this.seenReactions.get(chatId) === token) return false
     this.seenReactions.set(chatId, token)
     if (current) delete current.unseenReaction
     this.events.changed()
@@ -2207,6 +2248,7 @@ export class AccountSession {
       this.seenReactions.delete(chatId)
       if (!this.closed && this.chatsCurrent && this.pinsCurrent) { this.rebuild(); this.events.changed() }
     })
+    return true
   }
   // ChannelService.loadLikers: my contacts are named from the list here; everyone else through resolveUsersByUids.
   async openPostLikers(request: PostLikersRequest): Promise<'done'> {
@@ -2630,9 +2672,9 @@ export class AccountSession {
     const reader = this.reader, dialog = this.index.get(chatId)
     if (!reader || !dialog || this.closed) throw new Error('No room')
     const docs = await reader.query(`${documents}/chats/${chatId}`, messagesQuery(dialog), this.credentials.signal)
-    return docs.flatMap(doc => { const message = decodeMessage(doc, dialog); return message ? [message] : [] })
-      .sort((a, b) => comparePosition(b.position, a.position))
-      .map(message => ({ preview: messageListPreview(message), position: message.position, fromMe: message.senderId === this.profile.uid, messageId: message.id }))
+    return docs.flatMap(doc => { const message = decodeMessage(doc, dialog); return message ? [{ message, expiresAt: expiry(doc) }] : [] })
+      .sort((a, b) => comparePosition(b.message.position, a.message.position))
+      .map(({ message, expiresAt }) => ({ preview: messageListPreview(message), position: message.position, fromMe: message.senderId === this.profile.uid, messageId: message.id, expiresAt }))
   }
   private openRowLines(chatId: string): OpenRowLines | null {
     const history = this.selected
@@ -2793,6 +2835,34 @@ export class AccountSession {
   // B467: the sender of a message that arrived live, for their last seen (presence.ts messageSeen).
   peerMessage(senderId: string, at: number): void { if (!this.closed) this.presence.messageSeen(senderId, at) }
   notificationPreferencesChanged(): void { this.notifications.pause(); this.notifications.resume('preferences') }
+  // B545 §5: the «반응» settings page reads what the watch last saw and writes only what changed; the watch then brings
+  // the stored value, and until it does the page shows the write it asked for.
+  reactionSettingsNow(): ReactionSettings {
+    if (this.closed || this.locked) throw new Error(tr('잠금을 해제하고 현재 계정을 확인해 주세요.'))
+    return this.reactionSettings
+  }
+  async setReactionSettings(patch: ReactionSettingsPatch): Promise<ReactionSettings> {
+    const reader = this.reader
+    if (this.closed || this.locked || !reader) throw new Error(tr('연결된 뒤 다시 시도해 주세요.'))
+    await reader.setReactionSettings(this.profile.uid, patch, this.credentials.signal)
+    if (this.closed) throw new Error(tr('계정이 변경되었습니다.'))
+    this.reactionSettings = { ...this.reactionSettings, ...patch }
+    return this.reactionSettings
+  }
+  // B545: users/{uid}/settings/notify, the account's reaction settings the phones write (contracts/B545-reaction-push.md
+  // §5) — one document, watched while the reaction notices are on; nothing written reads as the defaults.
+  private watchReactionSettings(): void {
+    const reader = this.reader
+    if (this.reactionSettingsWatch?.reader === reader) return
+    this.reactionSettingsWatch?.stop(); this.reactionSettingsWatch = null
+    if (!reader || this.closed) return
+    const name = `${documents}/users/${this.profile.uid}/settings/notify`
+    const stop = reader.watch({ documents: { documents: [name] } }, this.credentials.signal, {
+      snapshot: rows => { this.reactionSettings = reactionSettingsOf(rows.get(name)) },
+      state: () => {}
+    }, 1)
+    this.reactionSettingsWatch = { reader, stop }
+  }
   async outgoing(chatId: string): Promise<OutgoingSnapshot> { return this.delivery.snapshot(chatId) }
   inquirySendItems(): ReturnType<InquirySends['items']> { return this.inquirySends.items() }
   async startStoryCaptionDraft(target: StoryCaptionDraftStart): Promise<StoryCaptionDraftRecord> {
@@ -2980,7 +3050,10 @@ export class AccountSession {
   // Reminders start with the first request or the first ready list, after the delivery store exists.
   private reminders(): EventReminders {
     this.eventReminders ??= new EventReminders(command => this.delivery.reminderState(command), {
-      locked: () => this.locked || this.closed || this.events.notifications.locked(), show: (content, click, dismiss) => this.events.notifications.show(content, click, dismiss), open: chatId => this.events.notifications.open(chatId)
+      locked: () => this.locked || this.closed || this.events.notifications.locked(),
+      dropped: () => this.closed || (this.events.notifications.dropped ? this.events.notifications.dropped() : this.events.notifications.locked()),
+      hidden: () => Boolean(this.events.notifications.hidden?.()),
+      show: (content, click, dismiss) => this.events.notifications.show(content, click, dismiss), open: chatId => this.events.notifications.open(chatId)
     })
     return this.eventReminders
   }
@@ -3158,7 +3231,7 @@ export class AccountSession {
   async close(purge: boolean): Promise<void> {
     if (this.closed) return
     this.keptHistories.clear(); this.settleListed(false)
-    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); void this.hiddenUploads.close(); this.hiddenRowLines.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.joinApprovals.close(); this.dialogPreferences.close(); this.cloudDrafts.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.sendingMedia.clear(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stickerLibrary.close(); this.serverTranslator.close(); this.storyBarApi.close(); this.storyPreloader.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
+    this.roomPresence.close(); this.closed = true; clearTimeout(this.listRetry); if (this.rowExpiryTimer) clearTimeout(this.rowExpiryTimer); this.stopReachability(); this.userpics.close(); this.mediaFiles.close(); this.eventReminders?.close(); const presenceClose = this.presence.close(); const peopleClose = this.channelPeople.close(); const storyClose = this.ownStories.close(), noteClose = this.spaceNotes.close(); this.channels.close(); this.channelHome.closeAll(); this.channelStories.close(); this.channelInquiries.close(); void this.inquirySends.close(); void this.channelOperations.close(); void this.historyClears.close(); void this.hiddenUploads.close(); this.hiddenRowLines.close(); this.expiredRowLines.close(); this.inquiryRows.close(); this.inquiryNotifications.close(); this.peerPhotos.dispose(); this.folders.close(); this.joinApprovals.close(); this.dialogPreferences.close(); this.cloudDrafts.close(); this.discussionAvatars.close(); this.personalChannels.close(); this.photoPreviews.close(); this.sendingMedia.clear(); this.hiddenChats.close(); this.hiddenMessages.close(); this.chatFlags.close(); this.topicDeletions.close(); this.channelReadMarks.close(); this.contactFlags.close(); this.stickerPacks.close(); this.stickerLibrary.close(); this.serverTranslator.close(); this.storyBarApi.close(); this.storyPreloader.close(); this.stop(); this.selfProfile.connection(false); this.contacts.connection(false); this.clearVisible('loading')
     this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.hiddenUploads.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); this.peerStories.pause(); this.peerStoryPhoto.pause(); this.peerStoryVideo.pause(); this.peerStoryPhotoAudio.pause(); 
     await storyClose
     await noteClose
@@ -3203,6 +3276,7 @@ export class AccountSession {
     this.channelDiscovery.close()
     await this.contactDiscovery.close()
     await this.selfProfile.close()
+    this.reactionSettingsWatch?.stop(); this.reactionSettingsWatch = null
     await this.notifications.close()
     await this.media.close()
     await this.files.close(purge)

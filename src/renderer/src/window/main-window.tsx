@@ -24,6 +24,8 @@ import { MainMenu } from './main-menu'
 import { LockScreen } from './lock-screen'
 import { UpdateRequiredScreen } from './update-required'
 import { chatGone } from './chat-gone'
+import { markArrived } from './chat-marked'
+import { clearsUnreadMark } from '../../../shared/manual-unread'
 import { UpdateBar } from './update-bar'
 import { tr } from '../../../shared/i18n'
 
@@ -102,6 +104,15 @@ function SessionWindow({ accountUid }: { accountUid: string }) {
     if (chatGone(seenChat.current.present, { listReady, present: chatPresent, pending: chatPending })) { seenChat.current.present = false; controller.closeChat(); return }
     if (chatPresent) seenChat.current.present = true
   }, [chatId, chatPresent, chatPending, listReady])
+  // The open chat marked unread from another device closes and keeps the mark (chat-marked.ts).
+  const chatMarked = useDesktop(snapshot => { const dialog = chatId ? dialogById(snapshot, chatId) : null; return dialog ? clearsUnreadMark(dialog, accountUid) : null })
+  const seenMark = useRef<{ chatId: string | null; marked: boolean | null }>({ chatId: null, marked: null })
+  useEffect(() => {
+    if (seenMark.current.chatId !== chatId) seenMark.current = { chatId, marked: null }
+    if (chatMarked === null || !listReady) return
+    if (markArrived(seenMark.current.marked, { listReady, marked: chatMarked })) { seenMark.current = { chatId: null, marked: null }; controller.closeChat(); return }
+    seenMark.current.marked = chatMarked
+  }, [chatId, chatMarked, listReady])
   const oneColumn = width < leftMin + mainMin
   // A room opened from the chat list has no channel screen behind it: it is the conversation, so it takes
   // the main column, as a chat does. Beside an open channel it stays that channel's third column.

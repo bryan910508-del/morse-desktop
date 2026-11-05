@@ -14,6 +14,10 @@ export interface InquiryNotice { inquiryId: string; channelId: string; title: st
 export interface InquiryNotificationHost {
   preferences(): Preferences
   locked(): boolean
+  // F-RT-004, as a chat's (notifications.ts NotificationHost): dropped only while the app closes or the computer sleeps,
+  // shown without its words under the app's own lock. Without them `locked` drops, as before.
+  dropped?(): boolean
+  hidden?(): boolean
   appActive(): boolean
   // The room whose messages are being read right now shows no banner, as an open chat shows none.
   foreground(inquiryId: string): boolean
@@ -27,11 +31,12 @@ const maxShown = 8
 
 export class InquiryNotifications {
   private readonly seen = new Map<string, number>()
-  private readonly shown = new Map<string, { at: number; close(): void }>()
+  private readonly shown = new Map<string, { at: number; detailed: boolean; close(): void }>()
   private since = 0
   private known = false
   private closed = false
   constructor(private readonly host: InquiryNotificationHost, private readonly now: () => number = Date.now) {}
+  private dropped(): boolean { return this.host.dropped ? this.host.dropped() : this.host.locked() }
 
   observe(rooms: InquiryNotice[]): void {
     if (this.closed) return
@@ -62,7 +67,7 @@ export class InquiryNotifications {
   private announce(room: InquiryNotice): void {
     const preferences = this.host.preferences()
     // A 1:1 inquiry is a personal conversation: MorsePushPreferences keeps those under «개인».
-    if (this.host.locked() || !alerting(preferences) || !preferences.notifyPersonal) return
+    if (this.dropped() || !alerting(preferences) || !preferences.notifyPersonal) return
     if (!preferences.inAppNotifications && this.host.appActive()) return
     if (this.host.foreground(room.inquiryId)) return
     const alerts = notificationAlerts(preferences)
@@ -70,8 +75,8 @@ export class InquiryNotifications {
     if (!alerts.show) return
     this.withdraw(room.inquiryId)
     if (this.shown.size >= maxShown) this.withdraw(this.shown.keys().next().value!)
-    const preview = preferences.showNotificationPreview
-    const entry = { at: room.at, close: () => {} }
+    const preview = preferences.showNotificationPreview && !this.host.hidden?.()
+    const entry = { at: room.at, detailed: preview, close: () => {} }
     this.shown.set(room.inquiryId, entry)
     const close = this.host.show({
       chatId: room.inquiryId,
@@ -79,14 +84,19 @@ export class InquiryNotifications {
       body: preview ? clean(room.preview || tr('새 메시지가 도착했습니다.'), 240) : tr('새 메시지가 도착했습니다.'),
       silent: !preferences.notificationSound
     }, () => {
-      if (this.shown.get(room.inquiryId) !== entry || this.closed || this.host.locked()) return
+      if (this.shown.get(room.inquiryId) !== entry || this.closed || this.dropped()) return
       this.withdraw(room.inquiryId)
       this.host.open(room.channelId, room.inquiryId)
     }, () => { if (this.shown.get(room.inquiryId) === entry) this.shown.delete(room.inquiryId) })
     if (!close || this.shown.get(room.inquiryId) !== entry) { close?.(); this.shown.delete(room.inquiryId); return }
     entry.close = close
   }
-  // A screen lock, a sign-out or a paused list withdraws every banner and forgets where the rooms stood.
+  // F-RT-004: the app locked after a banner showed its words — they go with it, as a chat's do (notifications.ts resume).
+  lockChanged(): void {
+    if (!this.host.hidden?.()) return
+    for (const [id, entry] of [...this.shown]) if (entry.detailed) this.withdraw(id)
+  }
+  // A sign-out or a paused list withdraws every banner and forgets where the rooms stood.
   pause(): void {
     for (const id of [...this.shown.keys()]) this.withdraw(id)
     this.seen.clear(); this.known = false; this.since = 0

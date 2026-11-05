@@ -55,10 +55,14 @@ export function noticeText(message: ChatMessage, doc: FirestoreDocument, chatTit
   const post = message.kind === 'channelPost' ? channelPostNotice(doc, chatTitle) : null
   if (!preview) return { title: 'Morse', body: post ? tr('새 게시물이 올라왔어요') : tr('새 메시지가 도착했습니다.') }
   if (post) return { title: clean(post.title, 80), body: clean(post.body, 240) }
-  const labels: Partial<Record<ChatMessage['kind'], string>> = { image: tr('사진'), video: tr('동영상'), voice: tr('음성 메시지'), file: tr('파일'), sticker: tr('스티커'), location: tr('위치'), event: tr('이벤트'), channelPost: tr('게시물', [], 'kind') }
-  const body = message.kind === 'text' ? message.text : [labels[message.kind] || tr('메시지'), message.caption].filter(Boolean).join(' · ')
-  return { title: clean(chatTitle, 80), body: clean(`${message.senderName ? `${message.senderName}: ` : ''}${body}`, 240) }
+  return { title: clean(chatTitle, 80), body: clean(`${message.senderName ? `${message.senderName}: ` : ''}${messageWords(message)}`, 240) }
 }
+// A message's own words for a notice: its text, or what kind it is with its caption.
+export function messageWords(message: ChatMessage): string {
+  const labels: Partial<Record<ChatMessage['kind'], string>> = { image: tr('사진'), video: tr('동영상'), voice: tr('음성 메시지'), file: tr('파일'), sticker: tr('스티커'), location: tr('위치'), event: tr('이벤트'), channelPost: tr('게시물', [], 'kind') }
+  return message.kind === 'text' ? message.text : [labels[message.kind] || tr('메시지'), message.caption].filter(Boolean).join(' · ')
+}
+export const cleanNotice = clean
 
 export class AccountNotifications {
   private closed = false
@@ -70,7 +74,9 @@ export class AccountNotifications {
   private wake?: ReturnType<typeof setTimeout>
   constructor(private readonly uid: string, private readonly ownerSignal: AbortSignal,
     private readonly context: () => Context, private readonly host: NotificationHost,
-    private readonly claim: (command: NotificationCommand) => Promise<boolean>) {}
+    private readonly claim: (command: NotificationCommand) => Promise<boolean>,
+    // B545: this account's reaction notices, which go with its notifications (resume, reads, pause, close).
+    private readonly reactions?: { resume(cause: ResumeCause): void; observed(chatId: string, position: MessagePosition): void; pause(): void; close(): void }) {}
 
   private dropped(): boolean { return this.host.dropped ? this.host.dropped() : this.host.locked() }
   receive(hint: NotificationHint): void {
@@ -216,15 +222,18 @@ export class AccountNotifications {
         if (typeof verdict === 'string') this.remove(chatId, `resume:${cause}:${verdict}`)
       } catch { this.remove(chatId, `resume:${cause}:error`) }
     }
+    this.reactions?.resume(cause)
     this.kick()
   }
   observed(chatId: string, position: MessagePosition): void {
     const item = this.displayed.get(chatId)
     if (item && readCovers(readCursor(position), readCursor(item.position))) this.remove(chatId, 'read-here')
+    this.reactions?.observed(chatId, position)
   }
   pause(): void {
     this.generation.abort(); this.generation = new AbortController(); clearTimeout(this.wake); this.wake = undefined
     this.pending.clear(); for (const chatId of [...this.displayed.keys()]) this.remove(chatId, 'paused')
+    this.reactions?.pause()
   }
-  async close(): Promise<void> { this.closed = true; this.pause(); await this.task; this.recent.clear() }
+  async close(): Promise<void> { this.closed = true; this.pause(); this.reactions?.close(); await this.task; this.recent.clear() }
 }

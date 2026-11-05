@@ -3,6 +3,7 @@ import { inquiryPreviewText, ownerRowId, subscriberRowId, type InquiryForwardRoo
 import type { InquiryNotice } from './inquiry-notifications'
 import { positionMilliseconds } from '../../shared/model'
 import { FirestoreReader, type ReadCredentials } from '../network/firestore-rpc'
+import { callMorseFunction } from '../network/morse-callable'
 import { boolField, documents, numberField, stringField, timestamp, type FirestoreDocument, type WireObject } from '../network/firestore-values'
 import { ChannelImages } from './channel-images'
 import { tr } from '../../shared/i18n'
@@ -131,7 +132,9 @@ export class InquiryRows {
   }
 
   resume(): void {
-    if (this.closed || this.locked || this.running) return
+    // F-RT-004: the rooms are listened to under a lock too, so a message still makes its (hidden) banner; nothing of them is
+    // shown while locked (snapshot, opened rooms and pictures wait for the unlock).
+    if (this.closed || this.running) return
     try { this.allowed() } catch { return }
     this.reader ??= new FirestoreReader(this.auth)
     const reader = this.reader
@@ -145,7 +148,7 @@ export class InquiryRows {
           if (this.closed || !this.running) return
           rows.clear()
           for (const [name, doc] of next) rows.set(name, doc)
-          this.choosePhotos()
+          if (!this.locked) this.choosePhotos()
           try { this.noticed(this.notices()) } catch { /* A banner is never worth losing the list over. */ }
           this.answered[side] = true
           this.tellListed(reader)
@@ -164,6 +167,33 @@ export class InquiryRows {
     try {
       this.listed(ids, async inquiryId => (await reader.getDocument(`${documents}/channelInquiries/${inquiryId}`, this.auth.signal)) !== null)
     } catch { /* The queue is asked again with the next list. */ }
+  }
+  // B521: «읽음으로 표시» on a row with unread messages reads them, as Telegram's «Mark as read» moves the read position to
+  // the end (TA DialogsActivity markAsRead :9573-9574 · markDialogsAsRead :9587-9601) — the room, or each unread room of an
+  // owner's folder, to its newest message (markMorseInquiryRead with no message, morse-release-authority.js:527-549).
+  // Only the device's own mark changed before, so a room with unread messages stayed unread. Android 0c5c6aca.
+  unreadRooms(rowId: string): string[] {
+    const name = (doc: FirestoreDocument): string => doc.name.slice(doc.name.lastIndexOf('/') + 1)
+    const subscriber = [...this.subscriber.values()].filter(doc => subscriberRowId(name(doc)) === rowId && stringField(doc.fields, 'subscriberId', 160) === this.uid &&
+      numberField(doc.fields, 'unreadForSubscriber') > 0)
+    const owner = [...this.owner.values()].filter(doc => ownerRowId(stringField(doc.fields, 'channelId', 160)) === rowId && stringField(doc.fields, 'channelOwnerId', 160) === this.uid &&
+      numberField(doc.fields, 'unreadForOwner') > 0)
+    return [...subscriber, ...owner].map(name).filter(Boolean)
+  }
+  async readRow(rowId: string, call: typeof callMorseFunction = callMorseFunction): Promise<number> {
+    if (this.closed || this.locked) throw new Error(tr('읽음 요청과 연결 상태를 확인해 주세요.'))
+    this.allowed()
+    const rooms = this.unreadRooms(rowId)
+    let next = 0, failed = 0
+    const work = async (): Promise<void> => {
+      while (next < rooms.length) {
+        const inquiryId = rooms[next++]!
+        try { await call(this.auth, 'markMorseInquiryRead', { inquiryId, expectedUid: this.uid }, AbortSignal.timeout(65000)) } catch { failed++ }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(4, rooms.length) }, work))
+    if (failed) throw new Error(tr('읽음 요청과 연결 상태를 확인해 주세요.'))
+    return rooms.length
   }
   // B484 (tdesktop Session::deleteConversationLocally, data_session.cpp:1699-1726): which of these rooms are gone, so the
   // window drops what it kept on this device for them. Gone is known only once both lists have answered in this run, the
@@ -192,8 +222,7 @@ export class InquiryRows {
   setLocked(locked: boolean): void {
     if (this.locked === locked) return
     this.locked = locked
-    if (locked) this.pause()
-    else this.resume()
+    if (!locked) { this.resume(); this.choosePhotos() }
     this.changed()
   }
   close(): void { this.closed = true; this.pause(); this.photos.close() }
@@ -248,8 +277,10 @@ export class InquiryRows {
   }
 
   // What each room says about its newest message: who sent it, what it was, and whether this side has read it.
+  // F-RT-004: read under a lock too — these go only to InquiryNotifications, which hides the words under the app's lock
+  // and drops nothing else; the rooms themselves stay off screen (snapshot) until the unlock.
   notices(): InquiryNotice[] {
-    if (this.closed || this.locked) return []
+    if (this.closed) return []
     const notices: InquiryNotice[] = []
     const add = (doc: FirestoreDocument, role: InquiryRole): void => {
       const f = doc.fields, id = doc.name.slice(doc.name.lastIndexOf('/') + 1), channelId = stringField(f, 'channelId', 160)

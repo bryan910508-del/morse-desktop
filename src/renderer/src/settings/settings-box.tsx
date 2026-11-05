@@ -4,8 +4,9 @@ import { autoDownloadChoiceLabel, autoDownloadChoices, autoDownloadSourceLabel }
 import { changeBackupCode, deleteAccount, showBlockedUsersBox, showPrivacyRuleBox, showSessionsBox } from './security-boxes'
 import { TwoStepEntry } from './two-step-box'
 import { useEffect, useState, type ReactNode } from 'react'
-import { ArrowLeft, AtSign, Forward, Bell, Camera, ChevronRight, FileText, FolderOpen, HardDrive, Image as ImageIcon, Info, LogOut, Megaphone, MessageSquare, Palette, Shield, Star, Trash2, User, X, Clock3, KeyRound, ShieldOff, Timer, Lock, BatteryLow, Download, Lightbulb, CircleHelp, ShieldCheck, Users, QrCode as QrCodeIcon, Crown, CircleCheck, Globe, History, ImagePlus, Keyboard, RefreshCw } from 'lucide-react'
+import { ArrowLeft, AtSign, Forward, Bell, Camera, ChevronRight, FileText, FolderOpen, HardDrive, Image as ImageIcon, Info, LogOut, Megaphone, MessageSquare, Palette, Shield, Star, Trash2, User, X, Clock3, KeyRound, ShieldOff, Timer, Lock, BatteryLow, Download, Lightbulb, CircleHelp, ShieldCheck, Users, QrCode as QrCodeIcon, Crown, CircleCheck, Globe, History, ImagePlus, Keyboard, RefreshCw, Heart } from 'lucide-react'
 import type { Preferences, ThemePreference } from '../../../shared/model'
+import { reactionKinds, type ReactionSettings, type ReactionSettingsPatch, type ReactionSource } from '../../../shared/reaction-settings'
 import type { BackgroundStorageSnapshot } from '../../../shared/background-storage'
 import type { ContactPhotoStorage } from '../../../shared/contact-photo'
 import type { VoiceDraftStorageSnapshot } from '../../../shared/voice-draft-storage'
@@ -42,9 +43,9 @@ import { openPersonalChannel, PersonalChannelSection, showPersonalChannelBox, us
 import { languageNames, languages, locale, tr, type Language } from '../../../shared/i18n'
 import { closeToTrayEffective } from '../../../shared/close-to-tray'
 
-export type Page = 'main' | 'profile' | 'notifications' | 'chat' | 'privacy' | 'data' | 'storage' | 'power' | 'language' | 'about'
-const titles: Record<Page, string> = { main: tr('설정'), language: tr('언어'), profile: tr('내 정보'), notifications: tr('알림'), chat: tr('채팅 설정'), privacy: tr('개인정보'), data: tr('데이터 및 저장공간'), storage: tr('이 기기에 보관한 파일'), power: tr('절전'), about: tr('Morse Desktop 정보') }
-const parents: Partial<Record<Page, Page>> = { storage: 'data', power: 'data' }
+export type Page = 'main' | 'profile' | 'notifications' | 'reactions' | 'chat' | 'privacy' | 'data' | 'storage' | 'power' | 'language' | 'about'
+const titles: Record<Page, string> = { main: tr('설정'), language: tr('언어'), profile: tr('내 정보'), notifications: tr('알림'), reactions: tr('반응'), chat: tr('채팅 설정'), privacy: tr('개인정보'), data: tr('데이터 및 저장공간'), storage: tr('이 기기에 보관한 파일'), power: tr('절전'), about: tr('Morse Desktop 정보') }
+const parents: Partial<Record<Page, Page>> = { storage: 'data', power: 'data', reactions: 'notifications' }
 const themes: { id: ThemePreference; label: string }[] = [
   { id: 'system', label: tr('시스템 설정 따르기') }, { id: 'light', label: tr('라이트') }, { id: 'dark', label: tr('다크') }, { id: 'black', label: tr('블랙') }
 ]
@@ -94,6 +95,59 @@ function ReadyUpdateEntry() {
 }
 
 // Settings::Information: photo, name, bio, Morse ID and the personal channel.
+// B545 §5 (contracts/B545-reaction-push.md): users/{uid}/settings/notify.reactions, the same page the phones show —
+// Telegram-iOS ReactionNotificationSettingsController.swift:226-263, 296-380: reactions to my messages and to my stories,
+// each on (starting with my contacts) or off (nobody); one that is on says whose reactions notify and offers everyone or
+// my contacts; with either on, the sender's name and the sound. Each change writes only its own field.
+function useReactionSettings(accountUid: string) {
+  const [settings, setSettings] = useState<ReactionSettings | null>(null)
+  useEffect(() => {
+    let live = true
+    void window.morse.reactionSettings(accountUid).then(value => { if (live) setSettings(value) }).catch(() => {})
+    return () => { live = false }
+  }, [accountUid])
+  const change = (patch: ReactionSettingsPatch): void => {
+    const before = settings
+    if (before) setSettings({ ...before, ...patch })
+    void trackWrite(window.morse.setReactionSettings(accountUid, patch)).then(setSettings).catch(reason => {
+      setSettings(before); controller.toast(errorText(reason, tr('반응 알림 설정을 저장하지 못했습니다.')), 'error')
+    })
+  }
+  return { settings, change }
+}
+function ReactionsEntry({ accountUid, open }: { accountUid: string; open(): void }) {
+  const { settings } = useReactionSettings(accountUid)
+  const kinds = settings ? reactionKinds(settings).map(kind => kind === 'messages' ? tr('메시지', [], 'reaction-kind') : tr('스토리', [], 'reaction-kind')) : []
+  return <Entry icon={<Heart size={20} />} label={tr('반응')} detail={kinds.length ? kinds.join(', ') : undefined} onClick={open} />
+}
+function ReactionsPage({ accountUid }: { accountUid: string }) {
+  const { settings, change } = useReactionSettings(accountUid)
+  if (!settings) return <p className="settings-note">{tr('불러오는 중...')}</p>
+  const kind = (key: 'messages' | 'stories', label: string) => {
+    const source: ReactionSource = settings[key]
+    return <>
+      <Toggle label={label} detail={source === 'everyone' ? tr('모든 사람에게서') : source === 'contacts' ? tr('내 연락처에서') : undefined}
+        checked={source !== 'nobody'} onChange={value => change({ [key]: value ? 'contacts' : 'nobody' })} />
+      {source !== 'nobody' && (['everyone', 'contacts'] as const).map(value =>
+        <label key={value} className="settings-radio"><input type="radio" name={`reaction-${key}`} checked={source === value} onChange={() => change({ [key]: value })} />
+          <span>{value === 'everyone' ? tr('모든 사람') : tr('내 연락처')}</span></label>)}
+    </>
+  }
+  return <>
+    <div className="section-label">{tr('알림 받을 것')}</div>
+    {kind('messages', tr('내 메시지에 단 반응'))}
+    {kind('stories', tr('내 스토리에 단 반응'))}
+    {reactionKinds(settings).length > 0 && <>
+      <div className="section-label">{tr('설정', [], 'reaction-options')}</div>
+      <Toggle label={tr('보낸 사람 이름 보이기')} checked={settings.showSender} onChange={value => change({ showSender: value })} />
+      <div className="section-label">{tr('소리')}</div>
+      {(['default', 'none'] as const).map(value =>
+        <label key={value} className="settings-radio"><input type="radio" name="reaction-sound" checked={(settings.sound ?? 'default') === value} onChange={() => change({ sound: value })} />
+          <span>{value === 'default' ? tr('기본 소리') : tr('소리 없음')}</span></label>)}
+    </>}
+  </>
+}
+
 function ProfilePage({ accountUid, close }: { accountUid: string; close(): void }) {
   const state = useDesktop(value => value?.selfProfile ?? null)
   const [photoBusy, setPhotoBusy] = useState(false)
@@ -470,6 +524,9 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
         <Toggle label={tr('개인 채팅')} detail={tr('1:1 메시지 알림')} checked={preferences.notifyPersonal} disabled={!preferences.notifications} onChange={value => update({ notifyPersonal: value })} />
         <Toggle label={tr('그룹 채팅')} detail={tr('그룹 메시지 알림')} checked={preferences.notifyGroup} disabled={!preferences.notifications} onChange={value => update({ notifyGroup: value })} />
         <Toggle label={tr('채널')} detail={tr('구독한 채널의 새 게시물')} checked={preferences.notifyChannel} disabled={!preferences.notifications} onChange={value => update({ notifyChannel: value })} />
+        {/* B545 §5: «반응» last in the group, as the phones put it under their stories row (Telegram-iOS
+            NotificationsAndSoundsController.swift:563-601); its line names the kinds that notify. */}
+        <ReactionsEntry accountUid={accountUid} open={() => setPage('reactions')} />
         <div className="section-label">{tr('알림 방식')}</div>
         <Toggle label={tr('소리')} checked={preferences.notificationSound} disabled={!preferences.notifications} onChange={value => update({ notificationSound: value })} />
         {/* B378 ②: tdesktop «Flash the taskbar icon» / «Bounce the Dock icon» (settings_notifications.cpp:970-981), apart from
@@ -495,6 +552,7 @@ function SettingsBox({ accountUid, initialPage, close }: { accountUid: string; i
           {preferences.autoStart && <Toggle label={tr('최소화된 상태로 시작')} detail={tr('창을 열지 않고 알림 영역에서 시작합니다')} checked={preferences.startMinimized && !lockEnabled} onChange={value => update({ startMinimized: value })} />}
         </>}
       </>}
+      {page === 'reactions' && <ReactionsPage accountUid={accountUid} />}
       {page === 'chat' && <>
         <div className="section-label"><Palette size={14} />{' '}{tr('테마')}</div>
         {themes.map(theme => <label key={theme.id} className="settings-radio">

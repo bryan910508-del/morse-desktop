@@ -11,7 +11,7 @@ const chat = (unseen: Record<string, unknown>): FirestoreDocument => ({
 // AppState.resolveMyUnseenReaction.
 test('another person\'s reaction to my message is read for me, never my own or a versionless one', () => {
   const good = { messageId: { stringValue: 'm1' }, emoji: { stringValue: '❤️' }, actorUid: { stringValue: 'peer' }, reactionVersion: { integerValue: '3' } }
-  assert.deepEqual(decodeDialog(chat(good), 'me').summary.unseenReaction, { messageId: 'm1', emoji: '❤️', reactionVersion: 3 })
+  assert.deepEqual(decodeDialog(chat(good), 'me').summary.unseenReaction, { messageId: 'm1', emoji: '❤️', reactionVersion: 3, actorUid: 'peer' })
   assert.equal(decodeDialog(chat({ ...good, actorUid: { stringValue: 'me' } }), 'me').summary.unseenReaction, undefined)
   assert.equal(decodeDialog(chat({ ...good, reactionVersion: { integerValue: '0' } }), 'me').summary.unseenReaction, undefined)
   assert.equal(decodeDialog(chat(good), 'peer').summary.unseenReaction, undefined, 'the other person has no entry')

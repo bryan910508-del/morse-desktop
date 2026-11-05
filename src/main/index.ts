@@ -197,6 +197,8 @@ import { recordConnectionStep } from './platform/connection-diagnostics'
 import { answerAfterPublish, answerWhenListed } from './platform/chat-opening'
 import { channelOperationId, channelOperationRequest } from '../shared/channel-operations'
 import { serverClock } from './network/server-clock'
+import { reactionSettingsPatch } from '../shared/reaction-settings'
+import { accountMayRead } from '../shared/reaction-seen'
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'morse', privileges: {
   standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true
@@ -220,7 +222,7 @@ const openedFileSystem: OpenedFileSystem = {
 
 const accounts = new AccountRegistry(uid => ({
   storyStealth: () => settings.preferences.storyStealth,
-  canRead: () => canReadWindow() && accounts.active?.profile.uid === uid,
+  canRead: () => accountMayRead(canReadWindow(), accounts.active?.profile.uid, uid),
   notifications: {
     preferences: () => settings.preferences,
     locked: () => screenLocked || shutdown !== 'running',
@@ -2422,6 +2424,23 @@ function registerIPC(): void {
     if (!Array.isArray(raw) || raw.length > goneCheckLimit) throw new Error(tr('문의 목록을 다시 확인해 주세요.'))
     return accounts.requireActive(identifier(uid)).inquiryRows.gone(raw.map(inquiryIdentifier))
   })
+  // B521: «읽음으로 표시» on an inquiry row with unread messages reads them (InquiryRows.readRow).
+  // B545 §5: the account's reaction notice settings (users/{uid}/settings/notify.reactions).
+  handle('reaction-settings', uid => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).reactionSettingsNow()
+  })
+  handle('set-reaction-settings', (uid, patch) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
+    return accounts.requireActive(identifier(uid)).setReactionSettings(reactionSettingsPatch(patch))
+  })
+  handle('read-inquiry-row', (uid, rowId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 선택해 주세요.'))
+    const raw = typeof rowId === 'string' ? rowId : '', match = /^(sub|own)_inq_(.+)$/.exec(raw)
+    if (!match) throw new Error(tr('문의 목록을 다시 확인해 주세요.'))
+    const id = match[1] === 'sub' ? inquiryIdentifier(match[2]) : identifier(match[2])
+    return accounts.requireActive(identifier(uid)).inquiryRows.readRow(`${match[1]}_inq_${id}`)
+  })
   handle('delete-inquiry-room', (uid, inquiryId) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 삭제해 주세요.'))
     return accounts.requireActive(identifier(uid)).deleteInquiryRoom(inquiryIdentifier(inquiryId))
@@ -2743,6 +2762,10 @@ function registerIPC(): void {
   handle('mutate-message', (uid, chatId, request) => accounts.requireActive(identifier(uid)).mutateMessage(identifier(chatId), actionRequest(request)))
   handle('check-message-action', (uid, chatId, id) => accounts.requireActive(identifier(uid)).checkMessageAction(identifier(chatId), identifier(id)))
   handle('dismiss-message-action', (uid, chatId, id) => accounts.requireActive(identifier(uid)).dismissMessageAction(identifier(chatId), identifier(id)))
+  handle('mark-reaction-visible', (uid, chatId, messageId) => {
+    if (screenLocked) return false
+    return accounts.requireActive(identifier(uid)).markReactionVisible(identifier(chatId), identifier(messageId))
+  })
   handle('mark-visible-read', (uid, chatId, revision, messageId) => {
     if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) throw new Error(tr('잘못된 표시 위치입니다.'))
     return accounts.requireActive(identifier(uid)).markVisibleRead(identifier(chatId), revision, identifier(messageId))

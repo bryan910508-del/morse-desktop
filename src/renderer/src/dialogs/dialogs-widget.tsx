@@ -356,8 +356,9 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
     const unread = inquiry.unread > 0 || local.unread
     const set = (patch: Partial<typeof local>): void => setInquiryRowState(accountUid, inquiry.id, patch)
     popupMenu.open(point, [
+      // B521: with unread messages, «읽음으로 표시» reads them to the newest (TA markAsRead), not only this device's mark.
       { label: unread ? tr('읽음으로 표시') : tr('읽지 않음으로 표시'), icon: unread ? <MailOpen size={18} /> : <Mail size={18} />,
-        onSelect: () => set({ unread: !unread }) },
+        onSelect: () => { set({ unread: !unread }); if (unread && inquiry.unread > 0) void readInquiryRow(inquiry) } },
       { label: local.pinned ? tr('고정 해제') : tr('고정'), icon: local.pinned ? <PinOff size={18} /> : <Pin size={18} />, onSelect: () => set({ pinned: !local.pinned }) },
       { label: local.muted ? tr('알림 켜기') : tr('알림 끄기'), icon: local.muted ? <Bell size={18} /> : <BellOff size={18} />, onSelect: () => set({ muted: !local.muted }) },
       { label: local.archived ? tr('보관 취소') : tr('보관'), icon: local.archived ? <ArchiveRestore size={18} /> : <Archive size={18} />, onSelect: () => set({ archived: !local.archived }) },
@@ -365,6 +366,10 @@ export function DialogsWidget({ accountUid }: { accountUid: string }) {
       inquiry.inquiryId ? 'separator' : null,
       inquiry.inquiryId ? { label: tr('문의 삭제'), icon: <Trash2 size={18} />, danger: true, onSelect: () => { void removeInquiry(inquiry) } } : null
     ])
+  }
+  async function readInquiryRow(inquiry: InquiryRow): Promise<void> {
+    try { await trackWrite(window.morse.readInquiryRow(accountUid, inquiry.id)) }
+    catch (reason) { controller.toast(errorText(reason, tr('읽음 요청과 연결 상태를 확인해 주세요.')), 'error') }
   }
   async function removeInquiry(inquiry: InquiryRow): Promise<void> {
     if (!inquiry.inquiryId) return

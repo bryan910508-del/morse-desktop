@@ -197,7 +197,8 @@ export interface DialogSummary {
   // chats/{id}.pinnedForAllMessageIds ("모두에게 고정").
   pinnedForAll?: string[]
   // chats.unseenReactionByUid[me]: someone else's newest reaction to my message, until this account sees it.
-  unseenReaction?: { messageId: string; emoji: string; reactionVersion: number }
+  // B545: actorUid — who reacted, for the reaction notification (contracts/B545-reaction-push.md §9).
+  unseenReaction?: { messageId: string; emoji: string; reactionVersion: number; actorUid?: string }
   // A group's topics when isForumEnabled, and the topic this device shows (null: «모두»).
   forum?: import('./forum').ForumState
   forumSelected?: string | null
@@ -650,6 +651,10 @@ export interface DesktopBridge {
   addChatContact(accountUid: string, request: import('./participants').ChatContactRequest): Promise<import('./participants').ParticipantAddResult>
   addInquiryContact(accountUid: string, request: import('./channel-inquiries').InquiryContactRequest): Promise<import('./participants').ParticipantAddResult>
   deleteInquiryRoom(accountUid: string, inquiryId: string): Promise<'done' | 'unconfirmed'>
+  // B521: reads the row's unread rooms to their newest message; how many rooms it read.
+  readInquiryRow(accountUid: string, rowId: string): Promise<number>
+  reactionSettings(accountUid: string): Promise<import('./reaction-settings').ReactionSettings>
+  setReactionSettings(accountUid: string, patch: import('./reaction-settings').ReactionSettingsPatch): Promise<import('./reaction-settings').ReactionSettings>
   goneInquiries(accountUid: string, inquiryIds: string[]): Promise<{ answered: boolean; gone: string[] }>
   saveGroupName(accountUid: string, request: GroupNameEdit): Promise<GroupNameResult>
   refreshChannelJoinDecisions(accountUid: string): Promise<void>
@@ -946,6 +951,7 @@ export interface DesktopBridge {
   jumpMessage(accountUid: string, chatId: string, messageId: string): Promise<HistorySnapshot>
   refreshDialogs(accountUid: string): Promise<void>
   markVisibleRead(accountUid: string, chatId: string, revision: number, messageId: string): Promise<boolean>
+  markReactionVisible(accountUid: string, chatId: string, messageId: string): Promise<boolean>
   markBottomRead(accountUid: string, chatId: string, revision: number): Promise<boolean>
   openMedia(accountUid: string, chatId: string, request: MediaRequest): Promise<MediaReady>
   closeMedia(accountUid: string, requestId: string): Promise<void>

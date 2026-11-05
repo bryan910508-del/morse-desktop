@@ -69,6 +69,8 @@ import type { ChannelAccessRequest } from '../../shared/channel-access-edit'
 import { writeChannelTags, ChannelTagsWriteFailure } from './channel-tags-write'
 import type { ChannelTagsEdit } from '../../shared/channel-tags'
 import { writeChannelIntroduction, ChannelIntroductionWriteFailure } from './channel-introduction-write'
+import { ReactionSettingsWriteFailure, writeReactionSettings } from './reaction-settings-write'
+import type { ReactionSettingsPatch } from '../../shared/reaction-settings'
 import type { ChannelIntroductionEdit } from '../../shared/channel-introduction'
 import { writeChannelName, ChannelNameWriteFailure } from './channel-name-write'
 import type { ChannelNameEdit } from '../../shared/channel-name'
@@ -119,7 +121,8 @@ interface FirestoreClient extends Client {
   commit(request: WireObject, metadata: Metadata, options: { deadline: Date }, callback: (error: ServiceError | null, response: WireObject) => void): ClientUnaryCall
 }
 export interface WatchEvents {
-  snapshot(documents: Map<string, FirestoreDocument>): void
+  // B546 ②: `readTime` is the server time the snapshot is consistent at, for a later listen to start from.
+  snapshot(documents: Map<string, FirestoreDocument>, readTime?: WatchReadTime): void
   state(state: 'loading' | 'ready' | 'error', error?: ReadFailure): void
   // Called instead of state('loading') when a target that was already current re-listens
   // (renewal, retry, RESET); a watcher that provides it keeps its last snapshot.
@@ -127,12 +130,31 @@ export interface WatchEvents {
   // B87: the target's resume token at each consistent snapshot, for a later listen to start from (Firestore sends
   // only what changed since). Given only to a watcher that asks for it.
   resumeToken?(token: WatchResumeToken): void
+  // B546 ②: the server would not start the listen from the read time it was given (too old, or refused); it listens
+  // again from nothing. Given only to a watcher that asks for it.
+  readTimeRefused?(reason: ReadFailure): void
 }
 export type WatchResumeToken = Buffer | Uint8Array | string
 // What a listen resumes from: the token of a snapshot and the documents that snapshot had. Firestore sends only
 // the changes since then, so the listen starts from those documents; a RESET, a count that does not match or any
 // retry listens from nothing again.
-export interface WatchResume { token: WatchResumeToken; documents: ReadonlyMap<string, FirestoreDocument> }
+// B546 ②: or the read time of a query whose documents those are (runQuery's readTime) — Firestore then sends only what
+// changed after it. A listen the server will not start from that time listens again from nothing.
+export type WatchResume = { token: WatchResumeToken; readTime?: undefined; documents: ReadonlyMap<string, FirestoreDocument> } |
+  { readTime: WatchReadTime; token?: undefined; documents: ReadonlyMap<string, FirestoreDocument> }
+// A google.protobuf.Timestamp as the loader gives it (longs as strings), handed back to the server as it came.
+export interface WatchReadTime { seconds: string | number; nanos?: number }
+export function readTimeOf(value: unknown): WatchReadTime | null {
+  if (!value || typeof value !== 'object') return null
+  const { seconds, nanos } = value as { seconds?: unknown; nanos?: unknown }
+  if ((typeof seconds !== 'string' && typeof seconds !== 'number') || !/^\d{1,12}$/.test(String(seconds))) return null
+  if (nanos !== undefined && (typeof nanos !== 'number' || !Number.isInteger(nanos) || nanos < 0 || nanos > 999999999)) return null
+  return { seconds, nanos: nanos ?? 0 }
+}
+export function compareReadTime(a: WatchReadTime, b: WatchReadTime): number {
+  const left = BigInt(a.seconds) * 1000000000n + BigInt(a.nanos ?? 0), right = BigInt(b.seconds) * 1000000000n + BigInt(b.nanos ?? 0)
+  return left < right ? -1 : left > right ? 1 : 0
+}
 function failure(error: unknown): ReadFailure {
   if (error instanceof ReadFailure) return error
   const code = error && typeof error === 'object' ? (error as { code?: number }).code : undefined
@@ -402,6 +424,14 @@ export class FirestoreReader {
     } catch { throw new ChannelTagsWriteFailure(false) }
     try { await writeChannelTags(this.client, metadata(authorization), request, doc, bounded) }
     catch (error) { throw error instanceof ChannelTagsWriteFailure ? error : new ChannelTagsWriteFailure(true) }
+  }
+  async setReactionSettings(uid: string, patch: ReactionSettingsPatch, signal: AbortSignal): Promise<void> {
+    const bounded = AbortSignal.any([this.bounded(signal), AbortSignal.timeout(60000)])
+    let authorization: ReadAuthorization
+    try { bounded.throwIfAborted(); authorization = await this.auth.authorize(bounded, false); bounded.throwIfAborted() }
+    catch { throw new ReactionSettingsWriteFailure(false) }
+    try { await writeReactionSettings(this.client, metadata(authorization), uid, patch, bounded) }
+    catch (error) { throw error instanceof ReactionSettingsWriteFailure ? error : new ReactionSettingsWriteFailure(true) }
   }
   async setChannelIntroduction(request: ChannelIntroductionEdit, signal: AbortSignal, source: () => FirestoreDocument): Promise<void> {
     const bounded = AbortSignal.any([this.bounded(signal), AbortSignal.timeout(60000)])
@@ -1050,27 +1080,30 @@ export class FirestoreReader {
     catch (error) { throw failure(error) }
     return queryPublicChannels(this.client, metadata(authorization), query, kind, bounded, validate)
   }
-  async query(parent: string, structuredQuery: WireObject, signal: AbortSignal): Promise<FirestoreDocument[]> {
+  // B546 ②: `readAt`, when given, hears the time the server read the result at (runQuery's readTime); other readers do
+  // not ask for it.
+  async query(parent: string, structuredQuery: WireObject, signal: AbortSignal, readAt?: (readTime: WatchReadTime) => void): Promise<FirestoreDocument[]> {
     const bounded = this.bounded(signal)
     bounded.throwIfAborted()
     const authorization = await this.auth.authorize(bounded, false)
     bounded.throwIfAborted()
     return new Promise((resolve, reject) => {
       const rows: FirestoreDocument[] = []
-      let bytes = 0, settled = false
+      let bytes = 0, settled = false, readTime: WatchReadTime | null = null
       const stream = this.client.runQuery({ parent, structuredQuery }, metadata(authorization), { deadline: new Date(Date.now() + 30000) })
       const done = (error?: unknown): void => {
         if (settled) return
         settled = true
         bounded.removeEventListener('abort', cancel)
         if (error) { stream.cancel(); reject(failure(error)) }
-        else resolve(rows)
+        else { if (readAt && readTime) readAt(readTime); resolve(rows) }
       }
       const cancel = (): void => done(new ReadFailure('cancelled'))
       bounded.addEventListener('abort', cancel, { once: true })
       stream.on('data', (raw: WireObject) => {
         if (settled) return
         try {
+          if (readAt) readTime = readTimeOf(raw.readTime) ?? readTime
           if (raw.document) {
             bytes += JSON.stringify(raw.document).length
             if (rows.length >= 81 || bytes > 16 * 1024 * 1024) throw new ReadFailure('data')
@@ -1127,7 +1160,11 @@ export class FirestoreReader {
         ended = true
         const reason = failure(error)
         if ((error as { code?: number } | null)?.code === status.UNAUTHENTICATED && !force) force = true
-        else if (['permission', 'index', 'data'].includes(reason.code)) {
+        else if (from?.readTime && !current) {
+          // B546 ②: a listen started from a query's read time that the server ends before it is current listens once
+          // more from nothing — the documents stay on screen meanwhile (reconnecting) — rather than failing the reader.
+          stopCycle(); events.readTimeRefused?.(reason); relisten(reason); void run(); return
+        } else if (['permission', 'index', 'data'].includes(reason.code)) {
           stopCycle(); events.state('error', reason); return
         }
         stopCycle()
@@ -1192,7 +1229,7 @@ export class FirestoreReader {
                 // An added row may arrive before the matching removal from a
                 // limited query. Cardinality applies to a consistent boundary.
                 if (received.size > maxDocuments) throw new ReadFailure('data')
-                if (dirty) { events.snapshot(new Map(received)); dirty = false }
+                if (dirty) { events.snapshot(new Map(received), readTimeOf(change.readTime) ?? undefined); dirty = false }
                 if (!active()) return
                 if (attempt || woken) recordWatch(null, undefined, this.where())
                 woken = false
@@ -1205,7 +1242,7 @@ export class FirestoreReader {
         })
         currentStream.on('error', end)
         currentStream.on('end', () => end(new ReadFailure('network')))
-        currentStream.write({ database, addTarget: { ...target, targetId: 1, ...(from ? { resumeToken: from.token } : {}) } })
+        currentStream.write({ database, addTarget: { ...target, targetId: 1, ...(from?.readTime ? { readTime: from.readTime } : from ? { resumeToken: from.token } : {}) } })
       } catch (error) { end(error) }
     }
     if (!bounded.aborted) void run()

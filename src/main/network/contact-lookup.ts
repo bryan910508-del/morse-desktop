@@ -1,7 +1,8 @@
 import { identifier } from '../../shared/validation'
 import { publicMorseId } from '../../shared/contacts'
 import type { ReadCredentials } from './firestore-rpc'
-import { callMorseFunction } from './morse-callable'
+import { callMorseFunction, MorseCallableFailure } from './morse-callable'
+import { recordContactStep } from '../platform/contact-diagnostics'
 import { tr } from '../../shared/i18n'
 
 export interface PublicContact { uid: string; userId: string; displayName: string; photoURL: string }
@@ -9,7 +10,11 @@ export interface PublicContact { uid: string; userId: string; displayName: strin
 export async function lookupContact(auth: ReadCredentials, publicId: string, owner: AbortSignal, privateIsMissing = false): Promise<PublicContact | null> {
   let result: Record<string, unknown>
   try { result = await callMorseFunction(auth, 'lookupUserByTalkyId', { userId: publicMorseId(publicId), purpose: 'public' }, owner, { timeout: 35000, limit: 64 * 1024 }) }
-  catch { throw new Error(tr('ID 검색을 완료하지 못했습니다. 잠시 후 다시 검색해 주세요.')) }
+  catch (error) {
+    // 0.241.51 Phase1 A5: a first look-up failed once and the next one answered; which way it failed was not kept. Codes only.
+    recordContactStep('lookup-failed', error instanceof MorseCallableFailure ? `${error.delivery}:${error.status}:${error.transport}` : error instanceof Error ? error.name : 'unknown')
+    throw new Error(tr('ID 검색을 완료하지 못했습니다. 잠시 후 다시 검색해 주세요.'))
+  }
   if (result.found === false || (privateIsMissing && result.found === true && result.isPrivate === true)) return null
   if (result.found !== true || result.isPrivate === true || publicMorseId(result.userId) !== publicId) throw new Error(tr('검색 응답을 확인하지 못했습니다.'))
   if (typeof result.displayName !== 'string' || !result.displayName.trim() || result.displayName.length > 512 ||

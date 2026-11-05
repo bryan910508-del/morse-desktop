@@ -505,7 +505,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   const scrollDate = useScrollDate(scroll, virtual, entryTimes, inlineDates, settled)
   useEffect(() => { scrollDate.reset() }, [chatId])
 
-  const readError = useVisibleRead(scroll, { accountUid, chatId, history, enabled: historyReady && connection === 'ready' && layerCount === 0 && selection === null && !secret, serverUnread: dialog?.unreadCount ?? 0 })
+  const readError = useVisibleRead(scroll, { accountUid, chatId, history, enabled: historyReady && connection === 'ready' && layerCount === 0 && selection === null && !secret, serverUnread: dialog?.unreadCount ?? 0, reaction: dialog?.unseenReaction?.messageId })
   useEffect(() => { if (readError) controller.toast(readError, 'error') }, [readError])
 
   const peers = useMemo(() => dialog ? [...new Set(dialog.participantUids)].filter(uid => uid !== accountUid) : [], [dialog?.participantUids, accountUid])
