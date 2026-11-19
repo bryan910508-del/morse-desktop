@@ -375,14 +375,18 @@ button.voice-message-play:disabled { opacity: .7 }
 .delete-choice-row.danger strong { color: var(--danger) }
 .delete-choice-row.danger .delete-choice-icon { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger) }
 
-/* Queued messages of this chat (scheduled / when online). */
-.deferred-bar { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 6px 16px; border: 0; border-bottom: 1px solid var(--divider); background: var(--window-bg); color: var(--accent); font-size: var(--t-caption); font-weight: 600; text-align: left; cursor: pointer }
-.deferred-bar:hover { background: var(--card-pressed) }
-.deferred-bar small.error, .deferred-row small.error { color: var(--danger); font-weight: 400 }
+/* N-36: queued messages of this chat (scheduled / when online) — a clock in the composer, and their box. */
+.compose-deferred { position: relative; color: var(--text-weak) }
+.compose-deferred:hover { color: var(--accent) }
+.compose-deferred-dot { position: absolute; top: 8px; right: 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 2px var(--window-bg) }
 .deferred-list { display: grid; gap: 4px; max-height: 360px; overflow-y: auto }
-.deferred-row { display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 1px solid var(--divider) }
-.deferred-row-text { flex: 1; min-width: 0; display: grid; gap: 2px }
-.deferred-row-text small { font-size: var(--t-caption); color: var(--text-weak) }
+.deferred-group { display: grid }
+.deferred-row { border-bottom: 1px solid var(--divider) }
+.deferred-row-main { display: grid; gap: 2px; width: 100%; min-width: 0; padding: 8px 4px; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer }
+.deferred-row-main:hover { background: var(--card-pressed) }
+.deferred-row-main small { font-size: var(--t-caption); color: var(--text-weak) }
+.deferred-row-main small.error { color: var(--danger) }
+.deferred-row-actions { display: flex; justify-content: flex-end; gap: 4px; padding: 0 4px 8px }
 .schedule-input { width: 100%; margin-top: 8px }
 
 /* Event sheet fields. */

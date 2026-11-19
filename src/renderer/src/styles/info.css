@@ -321,3 +321,7 @@ button.info-row:hover { background: var(--card-pressed) }
 .settings-hero svg { color: var(--accent) }
 .settings-update { display: grid; justify-items: center; gap: 8px; margin: 6px 0 4px; font-size: var(--t-caption); color: var(--text-weak) }
 .settings-update .error { color: var(--danger) }
+/* F-ST-004 B: the «문제 보고» file, read-only, exactly as it will be sent. */
+.problem-report-view { display: block; box-sizing: border-box; width: calc(100% - 44px); margin: 0 22px 8px; min-height: 180px; max-height: 280px; padding: 10px 12px; resize: vertical;
+  border: 1px solid var(--composer-border); border-radius: 10px; background: var(--composer-fill); color: var(--text-medium);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre; overflow: auto }

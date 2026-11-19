@@ -1,5 +1,6 @@
 import type { FirestoreDocument } from '../network/firestore-values'
 import type { WatchResumeToken } from '../network/firestore-rpc'
+import type { LeftPlace } from '../../shared/left-place'
 
 // B87 (Telegram Data::Session keeps each History once it is closed — data_session.cpp:1681-1687 findOrCreate — and
 // HistoryWidget::showHistory draws it at once when it isReadyFor, history_widget.cpp:3090): the latest messages of a
@@ -21,6 +22,9 @@ export const keptHistoryLimit = 300
 
 export class KeptHistories {
   private readonly entries = new Map<string, KeptHistory>()
+  // B184d: where each chat was left (left-place.ts), apart from its messages: the window says it as the room goes, which
+  // can be after main closed that history for the next room. Forgotten with them, never on disk.
+  private readonly places = new Map<string, LeftPlace>()
   constructor(private readonly limit = keptHistoryLimit) {}
   get size(): number { return this.entries.size }
   keep(chatId: string, history: KeptHistory): void {
@@ -34,7 +38,18 @@ export class KeptHistories {
     this.entries.delete(chatId)
     return history && history.query === query ? history : null
   }
+  // A room left at its bottom has no place.
+  leave(chatId: string, place: LeftPlace | null): void {
+    this.places.delete(chatId)
+    if (!place) return
+    this.places.set(chatId, place)
+    while (this.places.size > this.limit) this.places.delete(this.places.keys().next().value!)
+  }
+  place(chatId: string): LeftPlace | null { return this.places.get(chatId) ?? null }
   // Chats this account no longer has.
-  prune(has: (chatId: string) => boolean): void { for (const chatId of [...this.entries.keys()]) if (!has(chatId)) this.entries.delete(chatId) }
-  clear(): void { this.entries.clear() }
+  prune(has: (chatId: string) => boolean): void {
+    for (const chatId of [...this.entries.keys()]) if (!has(chatId)) this.entries.delete(chatId)
+    for (const chatId of [...this.places.keys()]) if (!has(chatId)) this.places.delete(chatId)
+  }
+  clear(): void { this.entries.clear(); this.places.clear() }
 }

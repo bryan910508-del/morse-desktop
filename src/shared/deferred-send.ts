@@ -6,7 +6,10 @@ import { tr } from './i18n'
 // (pendingOnlineMessages). The server sends the queued text at the time or when the peer is online.
 export type DeferredKind = 'scheduled' | 'online'
 export interface DeferredSendRequest { chatId: string; messageId: string; kind: DeferredKind; text: string; scheduledAt: number | null; silent: boolean; reply: ReplyBinding | null }
-export interface DeferredItem { id: string; kind: DeferredKind; text: string; scheduledAt: number | null; failed: boolean }
+// N-36 §1-3: what a queued message shows. «checking» — on its way to the server, or its result is not known (then it may be
+// sent again under the same id); «waiting» — in the server's queue; «failed» — the server could not send it.
+export type DeferredStatus = 'checking' | 'waiting' | 'failed'
+export interface DeferredItem { id: string; kind: DeferredKind; text: string; scheduledAt: number | null; status: DeferredStatus; retry: boolean }
 export interface DeferredMessagesSnapshot { chatId: string; items: DeferredItem[] }
 
 // Telegram limits scheduled messages to a year ahead.

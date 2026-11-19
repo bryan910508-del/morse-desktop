@@ -70,6 +70,7 @@ import { ChannelMembershipApi } from '../api/channel-membership'
 import { ChannelDeletionApi, firestoreChannelDeletion } from '../api/channel-deletion'
 import { StoryBarApi } from '../api/story-bar'
 import type { StoryBarResult } from '../../shared/story-bar'
+import type { StoryViewRecordsResult } from '../../shared/story-view-records'
 import type { GroupCreateRequest } from '../../shared/group-create'
 import type { GroupMembersRequest } from '../../shared/group-members'
 import type { GroupRemovalRequest } from '../../shared/group-removal'
@@ -193,7 +194,12 @@ import { RoomPresence } from './room-presence'
 import { ChannelOperations } from './channel-operations'
 import { chatDeleteRoute, HistoryClears, type HistoryClearSession } from './history-clears'
 import { KeptHistories } from './kept-histories'
-import { supportConfigPath, supportUidOf } from './support-account'
+import type { LeftPlace } from '../../shared/left-place'
+import { supportConfigPath, supportTarget, supportUidOf } from './support-account'
+import { directChatId } from '../messaging/direct-chat-id'
+
+// A3: a duration as one of a few bands, so the diagnostic line repeats per band rather than per millisecond.
+export function unreadJumpTime(ms: number): string { return ms < 500 ? '<0.5s' : ms < 1000 ? '0.5-1s' : ms < 2000 ? '1-2s' : ms < 5000 ? '2-5s' : '>5s' }
 
 export interface AccountEvents {
   storyStealth(): boolean
@@ -215,6 +221,8 @@ export interface AccountEvents {
   forwardProgress(progress: ForwardProgress): void
   // B277 ②: the stories row changed (story-bar.ts listens to it).
   storyBar?(result: StoryBarResult): void
+  // B550: the own story's counts and open viewer list changed.
+  storyViewRecords?(result: StoryViewRecordsResult): void
   // B488: this account's own name or userId as its profile was just read (tdesktop Session's user, main_session.cpp:205).
   ownProfile?(profile: AccountProfile): void
 }
@@ -544,7 +552,8 @@ export class AccountSession {
     (pending, validate) => this.delivery.detachStoryReply(pending, validate),
     (command, validate) => this.delivery.storyReplyDraftState(command, validate), () => { if (!this.closed) events.changed() })
     void Promise.resolve().then(() => this.storyReplyDraft.refresh()).catch(() => {})
-    this.storyViewRecords = new StoryViewRecords(profile.uid, credentials, request => { this.ownStories.captionDraftSource(request) })
+    this.storyViewRecords = new StoryViewRecords(profile.uid, credentials, request => { this.ownStories.captionDraftSource(request) },
+      result => { if (!this.closed && !this.locked) this.events.storyViewRecords?.(result) })
     this.storyHiddenAudience = new StoryHiddenAudience(profile.uid, credentials, request => { this.ownStories.captionDraftSource(request) })
     this.noteEditComparison = new NoteEditComparison(profile.uid, credentials, () => {
       if (this.closed || this.locked || this.connection !== 'ready') throw new Error(tr('현재 계정과 연결을 확인해 주세요.'))
@@ -1265,7 +1274,7 @@ export class AccountSession {
     this.connection = state
     // A contact's stories are read from Firestore and their reaction and view receipt are written there, so
     // they are not stopped by the socket going down; only what is sent through the socket waits for it.
-    if (state !== 'ready') { this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause(); this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.hiddenUploads.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); this.storyViewRecords.pause(); }
+    if (state !== 'ready') { this.groupPhotoUpload.pause(); this.channelPhotoUpload.pause(); this.channelAccess.pause(); this.channelJoinDecisions.pause(); this.discussionJoin.pause(); this.commentCreation.pause(); this.postCreation.pause(); this.inquirySends.pause(); this.channelOperations.pause(); this.historyClears.pause(); this.hiddenUploads.pause(); this.channelCreation.pause(); this.noteCreation.pause(); this.noteTextSave.pause(); this.storyCaptionSave.pause(); this.noteRemoval.pause(); this.storyRemoval.pause(); this.storyPrivacyMove.pause(); this.storyHiddenChange.pause(); this.storyReplyDraft.pause(); this.storyPublication.pause(); this.storyVideoUpload.pause(); this.noteEditComparison.pause(); this.storyHiddenAudience.pause(); }
     else { void this.channelJoinDecisions.refresh().catch(() => {}); void this.channelAccess.refresh().catch(() => {}); void this.channelPhotoUpload.refresh().catch(() => {}); void this.groupPhotoUpload.refresh().catch(() => {}); void this.discussionJoin.refresh().catch(() => {}); this.postCreation.resume(); this.commentCreation.resume(); this.inquirySends.resume(); this.channelOperations.resume(); this.historyClears.resume(); this.hiddenUploads.resume() }
     // What is read and shown — the contacts, the profiles, their pictures — is not told about a socket that went
     // down: telling them would throw away what is on screen (Contacts.invalidate clears the pictures) and Telegram
@@ -1630,7 +1639,10 @@ export class AccountSession {
   }
   // B87: another account came to the window — what this one kept is not shown again later from memory.
   forgetKeptHistories(): void { this.keptHistories.clear() }
-  closeHistory(chatId: string): void { if (this.selected?.dialog.summary.id === chatId) this.clearHistory(); this.delivery.forget(chatId); this.actions.forget(chatId); this.relistUnwritten() }
+  // B184d: the window says where the room was left (null at its bottom); kept beside the chat's kept history.
+  closeHistory(chatId: string, place: LeftPlace | null = null): void { this.leavePlace(chatId, place); if (this.selected?.dialog.summary.id === chatId) this.clearHistory(); this.delivery.forget(chatId); this.actions.forget(chatId); this.relistUnwritten() }
+  private leavePlace(chatId: string, place: LeftPlace | null): void { if (!this.closed && !this.locked && this.index.has(chatId)) this.keptHistories.leave(chatId, place) }
+  leftPlace(chatId: string): LeftPlace | null { return this.closed || this.locked ? null : this.keptHistories.place(chatId) }
   // B509: the window left a new chat; it goes if nothing was written in it (iOS removePendingChatIfEmpty, Telegram).
   async leavePendingDirect(chatId: string): Promise<boolean> {
     if (this.closed || this.locked || this.selected?.dialog.summary.id === chatId) return false
@@ -1724,11 +1736,23 @@ export class AccountSession {
     if (this.closed || this.connection !== 'ready' || this.status !== 'ready' || !this.index.has(chatId) || history?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
     const cursor = this.index.get(chatId)!.summary.readPositions[this.profile.uid]
     if (!cursor) return null
-    await liveOrLater(history)
-    if (this.selected !== history) throw new Error(tr('대화를 다시 선택해 주세요.'))
-    const target = await history.unreadTarget(cursor, this.profile.uid)
-    if (this.selected !== history) throw new Error(tr('대화를 다시 선택해 주세요.'))
-    return target ? history.jump(target) : null
+    // A3 (0.241.51 Phase1: the «unread» bar 2.1 s after the first rows, not reproduced 11-05): when the first page did not
+    // reach the first unread message the window waits for this round trip before it places the bar. Codes only: the way
+    // it ended and how long it took, once per pair a run (history-check.log).
+    const started = Date.now()
+    const done = (how: string): void => recordHistoryStep('unread-jump', `${how} ${unreadJumpTime(Date.now() - started)}`)
+    try {
+      await liveOrLater(history)
+      if (this.selected !== history) { done('left'); throw new Error(tr('대화를 다시 선택해 주세요.')) }
+      const target = await history.unreadTarget(cursor, this.profile.uid)
+      if (this.selected !== history) { done('left'); throw new Error(tr('대화를 다시 선택해 주세요.')) }
+      const result = target ? await history.jump(target) : null
+      done(result ? 'found' : 'none')
+      return result
+    } catch (error) {
+      if (this.selected === history) done('failed')
+      throw error
+    }
   }
   async jumpMessage(chatId: string, messageId: string): Promise<HistorySnapshot> {
     const history = this.selected
@@ -2712,8 +2736,18 @@ export class AccountSession {
   voiceQueueAccess(chatId:string):void{if(this.closed || this.locked || this.selected?.dialog.summary.id!==chatId)throw new Error(tr('현재 대화를 확인해 주세요.'));this.delivery.voiceQueueAccess(chatId)}
   voiceQueueSource(reference:import('../../shared/voice-queue-preview').VoiceQueueReference){return this.delivery.voiceQueueSource(reference,()=>this.voiceQueueAccess(reference.chatId))}
   voiceCaptureAccess(chatId:string):void{if(this.closed || this.locked || this.selected?.dialog.summary.id!==chatId)throw new Error(tr('현재 대화를 확인해 주세요.'));this.delivery.voiceCaptureAccess(chatId)}
+  // B548: what a picture or a file may be picked, dropped or pasted into — the open chat, or a new 1:1 not made yet (the
+  // window shows it with no history; the first upload makes it, outbox.ts directCreation). The last such chat is kept for
+  // the selection's previews, which name no chat.
+  private attachPending: string | null = null
+  private attachTarget(chatId: string): boolean {
+    if (this.selected?.dialog.summary.id === chatId) return true
+    if (!this.delivery.isPendingDirect(chatId)) return false
+    this.attachPending = chatId
+    return true
+  }
   pickAttachment(chatId: string, mode: AttachmentMode, choose: () => Promise<string[] | null>) {
-    if (this.closed || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    if (this.closed || !this.attachTarget(chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
     return this.delivery.pickAttachment(chatId, mode, choose)
   }
   discardAttachment(id: string) { this.delivery.discardAttachment(id) }
@@ -2727,24 +2761,48 @@ export class AccountSession {
   }
   clearMediaCaches(): void { if (!this.closed) this.photoPreviews.clear() }
   replaceAttachmentImage(chatId: string, id: string, itemId: string, bytes: Uint8Array) {
-    if (this.closed || this.locked || (this.selected?.dialog.summary.id !== chatId && this.delivery.pressedAttachmentChat() !== chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    if (this.closed || this.locked || (!this.attachTarget(chatId) && this.delivery.pressedAttachmentChat() !== chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
     return this.delivery.replaceAttachmentImage(chatId, id, itemId, bytes)
   }
   // B518 «원래대로»: the picture as picked again.
   restoreAttachmentImage(chatId: string, id: string, itemId: string) {
-    if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    if (this.closed || this.locked || !this.attachTarget(chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
     return this.delivery.restoreAttachmentImage(chatId, id, itemId)
   }
   editAttachmentVideo(chatId: string, id: string, itemId: string, edit: VideoEdit) {
-    if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    if (this.closed || this.locked || !this.attachTarget(chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
     return this.delivery.editAttachmentVideo(chatId, id, itemId, edit)
   }
   dropAttachments(chatId: string, paths: string[], mode: AttachmentDropMode) {
-    if (this.closed || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    if (this.closed || !this.attachTarget(chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
     return this.delivery.dropAttachments(chatId, paths, mode)
   }
+  // F-ST-004 B: a file this app wrote (the «문제 보고» report) goes into the open chat the way a dropped file does —
+  // dropAttachments (delivery) makes the draft, sendAttachment queues it (:2797) — with no caption.
+  async sendFileToOpenChat(chatId: string, path: string): Promise<void> {
+    const draft = await this.dropAttachments(chatId, [path], 'file')
+    if (!draft?.items.length) throw new Error(tr('대화와 첨부 내용을 확인해 주세요.'))
+    await this.sendAttachment(chatId, draft.id, '', draft.items.map(item => item.id), null)
+  }
+  // The chat open in this account's window now, if any (the report send waits for the support chat to be it).
+  openChatId(): string | null { return this.closed ? null : this.selected?.dialog.summary.id ?? null }
+  // F-ST-004 §2-3: whether this chat is this account's 1:1 with support (support-account.ts supportTarget).
+  async supportChatCheck(chatId: string): Promise<'support' | 'unavailable' | 'other'> {
+    if (this.closed || !this.reader) return 'unavailable'
+    const supportUid = supportUidOf(await this.reader.getDocument(supportConfigPath, this.credentials.signal))
+    const dialog = this.index.get(chatId)?.summary
+    return supportTarget({ chatId, uid: this.profile.uid, supportUid, dialog: dialog ? { kind: dialog.kind, participantUids: dialog.participantUids } : null,
+      pendingPeer: this.delivery.pendingPeer(chatId) }, directChatId)
+  }
+  // B548: whether a file can go into this chat now — the open chat, or a new 1:1 not made yet (its first upload makes it).
+  canAttachTo(chatId: string): boolean { return !this.closed && (this.selected?.dialog.summary.id === chatId || this.delivery.isPendingDirect(chatId)) }
+  // The Morse ID (@id) the «계정 정보 포함» line carries, or null when this account has none.
+  morseId(): string | null {
+    const id = this.selfProfile.snapshot.profile?.userId || this.profile.userId
+    return id ? `@${id.replace(/^@/, '')}` : null
+  }
   pasteAttachments(chatId: string, items: { name: string; bytes: Uint8Array }[]) {
-    if (this.closed || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    if (this.closed || !this.attachTarget(chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
     return this.delivery.pasteAttachments(chatId, items)
   }
   inquiryAttachmentPreview(path: string, request: Request): Response {
@@ -2752,12 +2810,12 @@ export class AccountSession {
   }
   attachmentPreview(path: string, request: Request): Response {
     // A pressed send's selection is read in its own chat (B280 ③), the screen meanwhile showing another.
-    const chatId = this.delivery.pressedAttachmentChat() ?? this.selected?.dialog.summary.id
+    const chatId = this.delivery.pressedAttachmentChat() ?? this.selected?.dialog.summary.id ?? (this.attachPending && this.delivery.isPendingDirect(this.attachPending) ? this.attachPending : undefined)
     if (this.closed || !chatId) return new Response(null, { status: 403 })
     return this.delivery.attachmentPreview(chatId, path, request)
   }
   pressAttachment(chatId: string, id: string): void {
-    if (this.closed || this.locked || this.selected?.dialog.summary.id !== chatId) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    if (this.closed || this.locked || !this.attachTarget(chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
     this.delivery.pressAttachment(id)
   }
   async sendVoice(request:import('../../shared/voice-send').VoiceSendRequest,source:()=>Uint8Array):Promise<void>{
@@ -2770,7 +2828,7 @@ export class AccountSession {
   // the account may send — not that the chat is still the one on screen. The reply was taken at the press, and is checked
   // again only while its chat is still open (its draft is cleared when the chat closes).
   private pressedSend(chatId: string, reply: ReplyBinding | null): void {
-    if (this.closed || this.locked || !this.index.has(chatId)) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    if (this.closed || this.locked || !(this.index.has(chatId) || this.delivery.isPendingDirect(chatId))) throw new Error(tr('대화를 다시 선택해 주세요.'))
     if (reply && this.selected?.dialog.summary.id === chatId) this.draftReply.validate(chatId, reply)
   }
   async sendRoundVideo(request: RoundVideoSendRequest, bytes: Uint8Array): Promise<void> {
@@ -2780,7 +2838,7 @@ export class AccountSession {
     await this.draftReply.refresh(chatId)
   }
   async sendAttachment(chatId: string, id: string, caption: string, itemIds: string[], reply: ReplyBinding | null, video: import('../../shared/uploads').VideoFacts | null = null): Promise<void> {
-    if (this.closed || this.locked || !this.index.has(chatId) || caption.length > 3000) throw new Error(tr('대화와 첨부 내용을 확인해 주세요.'))
+    if (this.closed || this.locked || !(this.index.has(chatId) || this.delivery.isPendingDirect(chatId)) || caption.length > 3000) throw new Error(tr('대화와 첨부 내용을 확인해 주세요.'))
     await this.delivery.enqueueAttachment(chatId, id, trimChatInput(caption), itemIds, reply, () => this.pressedSend(chatId, reply), video)
     await this.draftReply.refresh(chatId)
   }
@@ -3078,9 +3136,11 @@ export class AccountSession {
   // can see them in — not a secret chat, not the memo space. Anything else and the room is left.
   private syncPresence(): void {
     const summary = this.selected?.dialog.summary
-    const room = summary && !this.closed && !this.locked && this.events.canRead() && summary.kind !== 'secret' && !summary.id.startsWith('memo_') &&
+    const shown = summary && !this.closed && !this.locked && summary.kind !== 'secret' && !summary.id.startsWith('memo_') &&
       summary.participantUids.includes(this.profile.uid) ? summary.id : null
-    this.roomPresence.set(room)
+    const reading = this.events.canRead()
+    // B7: the chat still open and only the window not reading (focus elsewhere for a moment) leaves late (room-presence.ts).
+    this.roomPresence.set(shown && reading ? shown : null, Boolean(shown && !reading && this.roomPresence.room === shown))
   }
   // The composer's typing state for the open chat, written like iOS updateTypingStateIfNeeded.
   reportTyping(chatId: string, typing: boolean): void {
@@ -3120,11 +3180,17 @@ export class AccountSession {
       }
     }
     if (request.reply) this.draftReply.validate(dialog.id, request.reply)
-    const fields = deferredFields(request, this.profile.uid, text, recipientId)
-    try { await reader.createDeferredMessage(deferredCollections[request.kind], request.messageId, fields, this.credentials.signal) }
+    const fields = deferredFields(request, this.profile.uid, text, recipientId), collection = deferredCollections[request.kind]
+    // N-36: the row «확인 중» while this is on its way, kept when its result is lost (DeferredMessages.submit).
+    try {
+      await this.deferred.submit({ chatId: dialog.id, kind: request.kind, id: request.messageId, text, scheduledAt: request.scheduledAt, fields },
+        () => reader.createDeferredMessage(collection, request.messageId, fields, this.credentials.signal),
+        () => reader.deleteDeferredMessage(collection, request.messageId, this.credentials.signal))
+    }
     catch (error) {
-      const failure = error as { uncertain?: boolean; code?: number; detail?: string }
-      recordDeferredStep('create-failed', `${request.kind} grpc-${failure.code ?? 0} ${failure.detail ?? ''}`.trim())
+      const failure = error as { uncertain?: boolean; code?: number }
+      // The code only (review 11-05 16:2x): a write's detail can name a document path.
+      recordDeferredStep('create-failed', `${request.kind} grpc-${failure.code ?? 0}`)
       throw new Error(failure.uncertain ? tr('예약 결과를 확인하지 못했습니다. 예약된 메시지 목록을 확인해 주세요.') : tr('메시지를 보내지 못했어요.'))
     }
     if (request.reply) await this.draftReply.cancel(dialog.id, request.reply.selectionId).catch(() => {})
@@ -3133,8 +3199,36 @@ export class AccountSession {
   async cancelDeferred(chatId: string, kind: DeferredKind, messageId: string): Promise<'done'> {
     const reader = this.reader
     if (this.closed || this.locked || !reader || this.selected?.dialog.summary.id !== chatId || !this.deferred.has(chatId, kind, messageId)) throw new Error(tr('예약된 메시지를 다시 확인해 주세요.'))
-    try { await reader.deleteDeferredMessage(deferredCollections[kind], messageId, this.credentials.signal) }
-    catch { throw new Error(tr('예약 취소에 실패했어요')) }
+    const remove = () => reader.deleteDeferredMessage(deferredCollections[kind], messageId, this.credentials.signal)
+    try {
+      if (!this.deferred.queued(chatId, kind, messageId) && this.deferred.localEntry(chatId, kind, messageId)) await this.deferred.cancelLocal(chatId, kind, messageId, remove)
+      else await remove()
+    } catch { throw new Error(tr('예약을 취소하지 못했어요')) }
+    return 'done'
+  }
+  // N-36 «다시 시도»: one whose result was lost goes again under the same id — unless the server's queue or its outcome
+  // (users/{uid}/deferredOutcomes/{kind}_{id}, which only the server writes) already answers for it.
+  async retryDeferred(chatId: string, kind: DeferredKind, messageId: string): Promise<'done'> {
+    const reader = this.reader, entry = this.deferred.localEntry(chatId, kind, messageId)
+    if (this.closed || this.locked || this.connection !== 'ready' || !reader || this.selected?.dialog.summary.id !== chatId || !entry) throw new Error(tr('예약된 메시지를 다시 확인해 주세요.'))
+    const collection = deferredCollections[kind], signal = this.credentials.signal
+    try {
+      await this.deferred.retry(chatId, kind, messageId, {
+        queued: async () => Boolean(await reader.getDocument(`${documents}/${collection}/${messageId}`, signal)),
+        outcome: async () => {
+          const doc = await reader.getDocument(`${documents}/users/${this.profile.uid}/deferredOutcomes/${kind}_${messageId}`, signal)
+          const state = doc ? stringField(doc.fields, 'state', 16) : ''
+          return state === 'sent' ? 'sent' : doc ? 'rejected' : null
+        },
+        create: () => reader.createDeferredMessage(collection, messageId, entry.fields, signal),
+        remove: () => reader.deleteDeferredMessage(collection, messageId, signal)
+      })
+    } catch (error) {
+      const failure = error as { uncertain?: boolean; code?: number; detail?: string }
+      // The code only: a write's detail can name a document path, and with it an id (review 11-05 16:2x).
+      recordDeferredStep('retry-failed', `${kind} grpc-${failure.code ?? 0}`)
+      throw new Error(failure.uncertain ? tr('예약 결과를 확인하지 못했습니다. 예약된 메시지 목록을 확인해 주세요.') : tr('메시지를 보내지 못했어요.'))
+    }
     return 'done'
   }
   private pinLimit(): number { return this.selfProfile.snapshot.profile?.premium ? premiumPinLimit : freePinLimit }

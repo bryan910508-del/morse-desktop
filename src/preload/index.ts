@@ -13,6 +13,8 @@ const bridge: DesktopBridge = {
   setContentProtection: enabled => ipcRenderer.invoke('morse:content-protection', enabled),
   takeOpenLink: () => ipcRenderer.invoke('morse:take-open-link'),
   takeCrashNotice: () => ipcRenderer.invoke('morse:take-crash-notice'),
+  problemReportPreview: (uid, includeAccount) => ipcRenderer.invoke('morse:problem-report-preview', uid, includeAccount),
+  sendProblemReport: (uid, chatId, token) => ipcRenderer.invoke('morse:send-problem-report', uid, chatId, token),
   openLogsFolder: () => ipcRenderer.invoke('morse:open-logs-folder'),
   createGroup: (uid, request) => ipcRenderer.invoke('morse:create-group', uid, request),
   addGroupMembers: (uid, request) => ipcRenderer.invoke('morse:add-group-members', uid, request),
@@ -173,6 +175,7 @@ const bridge: DesktopBridge = {
   readStoryViewRecords: (uid, request) => ipcRenderer.invoke('morse:read-story-view-records', uid, request),
   readStoryHiddenAudience: (uid, request) => ipcRenderer.invoke('morse:read-story-hidden-audience', uid, request),
   closeStoryViewRecords: (uid, id) => ipcRenderer.invoke('morse:close-story-view-records', uid, id),
+  storyViewers: (uid, id, open) => ipcRenderer.invoke('morse:story-viewers', uid, id, open),
   closeStoryHiddenAudience: (uid, id) => ipcRenderer.invoke('morse:close-story-hidden-audience', uid, id),
   sendStoryReply: (uid, request) => ipcRenderer.invoke('morse:send-story-reply', uid, request),
   saveStoryReplyText: (uid, request) => ipcRenderer.invoke('morse:save-story-reply-text', uid, request),
@@ -448,7 +451,8 @@ const bridge: DesktopBridge = {
   history: (uid, chatId, before) => ipcRenderer.invoke('morse:history', uid, chatId, before),
   newerHistory: (uid, chatId, after) => ipcRenderer.invoke('morse:newer-history', uid, chatId, after),
   latestHistory: (uid, chatId) => ipcRenderer.invoke('morse:latest-history', uid, chatId),
-  closeHistory: (uid, chatId) => ipcRenderer.invoke('morse:close-history', uid, chatId),
+  closeHistory: (uid, chatId, place) => ipcRenderer.invoke('morse:close-history', uid, chatId, place),
+  leftPlace: (uid, chatId) => ipcRenderer.invoke('morse:left-place', uid, chatId),
   searchMessages: (uid, chatId, id, query) => ipcRenderer.invoke('morse:search-messages', uid, chatId, id, query),
   moreSearch: (uid, chatId, id) => ipcRenderer.invoke('morse:more-search', uid, chatId, id),
   sharedMedia: (uid, chatId, id, filter) => ipcRenderer.invoke('morse:shared-media', uid, chatId, id, filter),
@@ -549,6 +553,7 @@ const bridge: DesktopBridge = {
   sendDeferred: (uid, request) => ipcRenderer.invoke('morse:send-deferred', uid, request),
   scheduleEventReminder: (uid, request) => ipcRenderer.invoke('morse:schedule-event-reminder', uid, request),
   cancelDeferred: (uid, chatId, kind, messageId) => ipcRenderer.invoke('morse:cancel-deferred', uid, chatId, kind, messageId),
+  retryDeferred: (uid, chatId, kind, messageId) => ipcRenderer.invoke('morse:retry-deferred', uid, chatId, kind, messageId),
   retryMessage: (uid, chatId, id) => ipcRenderer.invoke('morse:retry-message', uid, chatId, id),
   outgoing: (uid, chatId) => ipcRenderer.invoke('morse:outgoing', uid, chatId),
   discardOutgoing: (uid, chatId, id) => ipcRenderer.invoke('morse:discard-outgoing', uid, chatId, id),
@@ -562,3 +567,11 @@ const bridge: DesktopBridge = {
   }
 }
 contextBridge.exposeInMainWorld('morse', Object.freeze(bridge))
+// F-ST-004 A: the window's own script errors are told to main, which keeps only the class and the stack's frames, masked.
+// Listening changes nothing about how the error is handled.
+const reportProblem = (reason: unknown): void => {
+  const error = reason instanceof Error ? reason : null
+  void ipcRenderer.invoke('morse:record-renderer-problem', error?.name ?? 'Error', error?.stack ?? '').catch(() => {})
+}
+window.addEventListener('error', event => reportProblem(event.error))
+window.addEventListener('unhandledrejection', event => reportProblem(event.reason))

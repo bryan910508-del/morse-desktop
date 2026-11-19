@@ -11,3 +11,22 @@ export function supportUidOf(doc: FirestoreDocument | null | undefined): string 
   const uid = stringField(doc.fields ?? {}, 'uid', 160).trim()
   return /^[A-Za-z0-9_-]{1,128}$/.test(uid) ? uid : null
 }
+
+// F-ST-004 §2-3: a «문제 보고» goes only into this account's 1:1 with support. Main decides it from what it knows — never
+// from the chat the window names: the pair's own room id (directChatId), a listed 1:1 of exactly these two, or a new 1:1
+// not made yet whose peer is support.
+export interface SupportTargetFacts {
+  chatId: string; uid: string; supportUid: string | null
+  dialog?: { kind: string; participantUids: readonly string[] } | null
+  pendingPeer?: string | null
+}
+export function supportTarget(facts: SupportTargetFacts, pairId: (a: string, b: string) => string): 'support' | 'unavailable' | 'other' {
+  const { chatId, uid, supportUid } = facts
+  if (!supportUid || supportUid === uid) return 'unavailable'
+  if (chatId === pairId(uid, supportUid)) return 'support'
+  const dialog = facts.dialog
+  if (dialog && dialog.kind === 'direct' && dialog.participantUids.length === 2 && dialog.participantUids.includes(uid) && dialog.participantUids.includes(supportUid)) return 'support'
+  if (!dialog && facts.pendingPeer === supportUid) return 'support'
+  return 'other'
+}
+

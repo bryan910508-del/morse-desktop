@@ -115,6 +115,7 @@ import { app, BrowserWindow, clipboard, ClipboardItem, dialog, ipcMain, Menu, na
 import { mkdir, readFile, rm, stat as fileStat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { release } from 'node:os'
+import { execFile } from 'node:child_process'
 import { onDeviceFeatures, translationRoute } from '../shared/translation'
 import { operatorMailURL } from '../shared/sanctions'
 import { randomUUID } from 'node:crypto'
@@ -161,6 +162,7 @@ import { contactPhotoBinding, contactPhotoEdit, contactPhotoRemoval } from '../s
 import { replyBinding } from '../shared/reply-draft'
 import { fullscreenAllowed } from './platform/fullscreen-permission'
 import { crashStepsWritten, markCleanExit, startCrashRecording, takeCrashNotice } from './platform/crash-diagnostics'
+import { buildProblemReport, deviceModel, noteSent, readProblems, readSentTimes, recordProblem, reportsPerDay, sentToday, writeOutgoingReport, type BuiltReport } from './platform/problem-report'
 import { applicationMenuShown, composingKey, shortcutAccelerator, shortcutFor, shortcuts, viewerZoomKey, windowShortcutFor, type ShortcutCommand, type WindowCommand } from '../shared/shortcuts'
 import { NativeContextMenus, type ContextMenuItem } from './platform/context-menus'
 import { WindowState } from './platform/window-state'
@@ -199,6 +201,9 @@ import { channelOperationId, channelOperationRequest } from '../shared/channel-o
 import { serverClock } from './network/server-clock'
 import { reactionSettingsPatch } from '../shared/reaction-settings'
 import { accountMayRead } from '../shared/reaction-seen'
+import { leftPlaceOf } from '../shared/left-place'
+// F-ST-004 B: the «문제 보고» files the box has shown, by token (problem-report-preview → send-problem-report).
+const problemPreviews = new Map<string, { uid: string; report: BuiltReport; count: number }>()
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'morse', privileges: {
   standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true
@@ -246,6 +251,7 @@ const accounts = new AccountRegistry(uid => ({
   files: openedFileSystem,
   forwardProgress: progress => emit({ type: 'forward-progress', accountUid: uid, progress }),
   storyBar: result => { if (!screenLocked) emit({ type: 'story-bar-changed', accountUid: uid, result }) },
+  storyViewRecords: result => { if (!screenLocked) emit({ type: 'story-view-records-changed', accountUid: uid, result }) },
   ownProfile: profile => authentication?.profileSeen(uid, profile),
   actions: (chatId, actions) => emit({ type: 'actions-changed', accountUid: uid, chatId, actions }),
   changed: () => { contextMenus.prune(); void publish() },
@@ -516,6 +522,48 @@ function registerIPC(): void {
   handle('snapshot', rendererSnapshot)
   handle('take-open-link', () => { const url = pendingSchemeLink; pendingSchemeLink = null; return url })
   handle('take-crash-notice', () => takeCrashNotice())
+  // F-ST-004 B (contract §7): the «문제 보고» box. The preview builds the file once and keeps it under a token; the send
+  // takes only that token, so the bytes sent are the bytes shown. Three a day, counted on this device.
+  handle('problem-report-preview', async (uid, includeAccount) => {
+    const session = accounts.requireActive(identifier(uid))
+    const morseId = session.morseId()
+    const entries = await readProblems()
+    const device = await deviceModel((command, args) => new Promise((resolve, reject) => {
+      execFile(command, args, { timeout: 2000, windowsHide: true }, (error, stdout) => error ? reject(error) : resolve(String(stdout)))
+    }))
+    const os = process.platform === 'darwin' ? `macOS ${process.getSystemVersion()} (${process.arch})` : process.platform === 'win32' ? `Windows ${release()} (${process.arch})` : `${process.platform} ${release()} (${process.arch})`
+    const report = buildProblemReport({ app: 'desktop', version: app.getVersion(), device, os, created: new Date(), account: includeAccount === true && morseId ? morseId : null }, entries)
+    const token = randomUUID()
+    problemPreviews.set(token, { uid: session.profile.uid, report, count: entries.length })
+    while (problemPreviews.size > 4) problemPreviews.delete(problemPreviews.keys().next().value!)
+    return { token, name: report.name, text: report.text, count: entries.length, leftOut: report.leftOut, hasMorseId: Boolean(morseId), sentToday: sentToday(await readSentTimes()), perDay: reportsPerDay }
+  })
+  handle('send-problem-report', async (uid, chatId, token) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제한 뒤 다시 시도해 주세요.'))
+    const session = accounts.requireActive(identifier(uid))
+    const preview = typeof token === 'string' ? problemPreviews.get(token) : undefined
+    if (!preview || preview.uid !== session.profile.uid || !preview.count) throw new Error(tr('보낼 오류 기록이 없어요'))
+    if (sentToday(await readSentTimes()) >= reportsPerDay) throw new Error(tr('오늘은 더 보낼 수 없어요. 내일 다시 시도해 주세요.'))
+    // F-ST-004 §2-3: only into this account's 1:1 with support — main checks it, whatever chat the window names.
+    const target = identifier(chatId)
+    const kind = await session.supportChatCheck(target)
+    if (kind === 'unavailable') throw new Error(tr('지금은 채팅 문의를 쓸 수 없어요.'))
+    if (kind !== 'support') throw new Error(tr('대화를 다시 선택해 주세요.'))
+    // The window has just opened the support chat; its history becomes the open one a moment later.
+    // A first conversation with support is a new 1:1 not made yet (B548): the file goes in as its first message.
+    for (let i = 0; i < 25 && !session.canAttachTo(target); i++) await new Promise(resolve => setTimeout(resolve, 200))
+    if (!session.canAttachTo(target)) throw new Error(tr('대화를 다시 선택해 주세요.'))
+    const path = await writeOutgoingReport(preview.report)
+    await session.sendFileToOpenChat(target, path)
+    problemPreviews.delete(token as string)
+    await noteSent()
+    return true
+  })
+  // F-ST-004 A: a script error in the window — only its class and stack frames are kept, masked (problem-report.ts).
+  handle('record-renderer-problem', (name, stack) => {
+    recordProblem('renderer-error', { name: typeof name === 'string' ? name.slice(0, 80) : undefined, stack: typeof stack === 'string' ? stack.slice(0, 16 * 1024) : undefined },
+      { uids: accounts.all.map(session => session.profile.uid) })
+  })
   handle('open-logs-folder', () => shell.openPath(app.getPath('logs')).then(() => {}))
   handle('power-saving-state', value => { if (typeof value === 'boolean') compressUploads = value })
   // tdesktop Core::ScreenshotProtection → Platform::SetWindowScreenshotProtection (NSWindowSharingNone,
@@ -1731,6 +1779,7 @@ function registerIPC(): void {
     return accounts.requireActive(identifier(uid)).storyViewRecords.read(storyViewRecordsRequest(raw))
   })
   handle('close-story-view-records', (uid, id) => accounts.requireActive(identifier(uid)).storyViewRecords.dismiss(identifier(id)), true)
+  handle('story-viewers', (uid, id, open) => accounts.requireActive(identifier(uid)).storyViewRecords.viewers(identifier(id), open === true), true)
   handle('read-story-hidden-audience', (uid, raw) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).storyHiddenAudience.read(storyHiddenAudienceRequest(raw))
@@ -2625,9 +2674,13 @@ function registerIPC(): void {
   handle('close-search', (uid, chatId, id) => {
     if (accounts.active?.profile.uid === identifier(uid)) accounts.active.closeSearch(identifier(chatId), identifier(id))
   })
-  handle('close-history', (uid, chatId) => {
+  handle('close-history', (uid, chatId, place) => {
     const accountUid = identifier(uid), id = identifier(chatId)
-    if (accounts.active?.profile.uid === accountUid) accounts.active.closeHistory(id)
+    if (accounts.active?.profile.uid === accountUid) accounts.active.closeHistory(id, leftPlaceOf(place))
+  })
+  handle('left-place', (uid, chatId) => {
+    const accountUid = identifier(uid), id = identifier(chatId)
+    return accounts.active?.profile.uid === accountUid ? accounts.active.leftPlace(id) : null
   })
   handle('refresh-dialogs', uid => accounts.requireActive(identifier(uid)).refresh())
   handle('open-media', (uid, chatId, request) => accounts.requireActive(identifier(uid)).openMedia(identifier(chatId), mediaRequest(request)))
@@ -2876,6 +2929,10 @@ function registerIPC(): void {
   handle('cancel-deferred', (uid, chatId, kind, messageId) => {
     if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
     return accounts.requireActive(identifier(uid)).cancelDeferred(identifier(chatId), deferredKind(kind), identifier(messageId))
+  })
+  handle('retry-deferred', (uid, chatId, kind, messageId) => {
+    if (screenLocked) throw new Error(tr('화면 잠금을 해제해 주세요.'))
+    return accounts.requireActive(identifier(uid)).retryDeferred(identifier(chatId), deferredKind(kind), identifier(messageId))
   })
   handle('retry-message', (uid, chatId, id) => accounts.requireActive(identifier(uid)).retry(identifier(chatId), identifier(id)))
   handle('outgoing', async(uid, chatId) => {const account=accounts.requireActive(identifier(uid)),target=identifier(chatId),value=await account.outgoing(target);voiceQueuePreviews.observe(account.profile.uid,target,value);return value})

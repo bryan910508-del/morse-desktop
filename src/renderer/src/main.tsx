@@ -1,4 +1,4 @@
-import { Component, useEffect, useLayoutEffect, type PropsWithChildren } from 'react'
+import { Component, useEffect, useLayoutEffect, useRef, useState, type PropsWithChildren } from 'react'
 import { accountShown, notificationArrived, type NotificationTarget, type PendingNotification } from './app/notification-open'
 import { createRoot } from 'react-dom/client'
 import './styles/tokens.css'
@@ -20,6 +20,8 @@ import { language, tr } from '../../shared/i18n'
 import { useChannelOperationNotices } from './channels/channel-operations'
 import { installTapRecorder } from './app/tap-recorder'
 import { drawAppBadge } from './app/app-badge-image'
+import { showProblemReportBox } from './settings/problem-report-box'
+import { accountSettled, CrashNotice, crashNoticeWait } from './app/crash-notice'
 
 function takeOpenLink(): void {
   void window.morse.takeOpenLink().then(url => {
@@ -75,12 +77,19 @@ function App() {
   useEffect(() => { if (ready && account) takeOpenLink() }, [ready, account])
   // 0.241.36: the last run ended without quitting — said once, with the logs folder for an inquiry (tdesktop asks at
   // the next launch too, core/crash_report_window.cpp; nothing is sent from here).
-  useEffect(() => {
-    if (!ready) return
-    void window.morse.takeCrashNotice().then(crashed => {
-      if (crashed) controller.toast(tr('지난번에 Morse가 예기치 않게 종료됐어요.'), 'default', { label: tr('기록 폴더 열기'), run: () => { void window.morse.openLogsFolder().catch(() => {}) } })
-    }).catch(() => {})
-  }, [ready])
+  // F-ST-004 B (contract §7-1 2): the notice offers «문제 보고» (R12); the box opens only when pressed. Signed out,
+  // there is no support chat to send to, so the logs folder stays the action. Shown once the account state is known,
+  // or after crashNoticeWait at most (crash-notice.ts).
+  const settled = useDesktop(snapshot => accountSettled(snapshot))
+  const [expired, setExpired] = useState(false)
+  useEffect(() => { if (!ready) return; const timer = setTimeout(() => setExpired(true), crashNoticeWait); return () => clearTimeout(timer) }, [ready])
+  const crashNotice = useRef<CrashNotice | null>(null)
+  crashNotice.current ??= new CrashNotice(() => window.morse.takeCrashNotice(), () => desktop.value?.activeAccountUid ?? null, action => {
+    controller.toast(tr('지난번에 Morse가 예기치 않게 종료됐어요.'), 'default', action === 'report'
+      ? { label: tr('문제 보고'), run: () => { const now = desktop.value?.activeAccountUid; if (now) showProblemReportBox(now) } }
+      : { label: tr('기록 폴더 열기'), run: () => { void window.morse.openLogsFolder().catch(() => {}) } })
+  })
+  useEffect(() => { crashNotice.current?.update({ ready, settled, expired }) }, [ready, settled, expired])
   useEffect(() => desktop.on(event => {
     if (event.type === 'prepare-close') {
       void flushDrafts().then(() => true, () => false).then(ok => window.morse.completeClose(event.requestId, ok)).catch(() => {})

@@ -87,11 +87,21 @@ function OwnStoryMedia({ accountUid, requestId, row, ...props }: { accountUid: s
   return <StoryMediaView kind={kind} source={source} {...props} />
 }
 
-function ViewersBox({ result, contacts, close }: { result: StoryViewRecordsResult; contacts: ContactSummary[]; close(): void }) {
+// B550 (contracts/B550-story-viewers-live.md): the list is listened to while this box is open, so a person who views or
+// reacts meanwhile joins it; closing the box ends that listen (the story's counts go on while it is shown).
+function ViewersBox({ accountUid, initial, contacts, close }: { accountUid: string; initial: StoryViewRecordsResult; contacts: ContactSummary[]; close(): void }) {
+  const [result, setResult] = useState(initial)
+  useEffect(() => {
+    const id = initial.id
+    const stop = window.morse.onEvent(event => { if (event.type === 'story-view-records-changed' && event.accountUid === accountUid && event.result.id === id) setResult(event.result) })
+    void window.morse.storyViewers(accountUid, id, true).catch(() => {})
+    return () => { stop(); void window.morse.storyViewers(accountUid, id, false).catch(() => {}) }
+  }, [accountUid, initial.id])
   const names = new Map(contacts.map(contact => [contact.uid, contact.displayName]))
   const rows = result.current?.rows ?? []
   return <Box title={<>{tr('조회한 사람')}<small className="box-title-count">{(result.current?.counts.viewers ?? 0).toLocaleString(locale())}</small></>} width={380} onClose={close}>
-    {result.outcome !== 'ready' ? <div className="empty-state">{result.message || tr('조회 기록을 확인하지 못했습니다.')}</div>
+    {result.outcome !== 'ready' || result.list === 'unavailable' || result.list === 'over' ? <div className="empty-state">{result.message || tr('조회 기록을 확인하지 못했습니다.')}</div>
+      : result.list !== 'ready' ? <div className="empty-state"><Spinner size={22} /></div>
       : !rows.length ? <div className="empty-state">{tr('아직 조회한 사람이 없습니다.')}</div>
         : <div className="peer-list tall">{rows.map(row => {
           const name = names.get(row.uid) ?? tr('연락처에 없는 사용자')
@@ -265,9 +275,11 @@ function OwnStoryViewer({ accountUid, close }: { accountUid: string; close(): vo
     if (!selected) return
     const id = crypto.randomUUID()
     let alive = true
+    // B550: the counts follow the story while it is shown (story-view-records.ts).
+    const stop = window.morse.onEvent(event => { if (alive && event.type === 'story-view-records-changed' && event.accountUid === accountUid && event.result.id === id) setViews(event.result) })
     void window.morse.readStoryViewRecords(accountUid, { id, requestId: selected.requestId, storyId: selected.row.id, privacy: selected.row.privacy, version: selected.row.version })
-      .then(result => { if (alive) setViews(result) }).catch(() => {})
-    return () => { alive = false; void window.morse.closeStoryViewRecords(accountUid, id).catch(() => {}) }
+      .then(result => { if (alive) setViews(current => current?.id === result.id && current.observedAt > result.observedAt ? current : result) }).catch(() => {})
+    return () => { alive = false; stop(); void window.morse.closeStoryViewRecords(accountUid, id).catch(() => {}) }
   }, [selected])
 
   useShortcut(120, command => {
@@ -397,7 +409,7 @@ function OwnStoryViewer({ accountUid, close }: { accountUid: string; close(): vo
       <button type="button" className="story-tap previous" aria-label={tr('이전')} tabIndex={-1} onClick={previous} />
       <button type="button" className="story-tap next" aria-label={tr('다음')} tabIndex={-1} onClick={next} />
       {selected && <div className="story-owner-bar">
-        <button type="button" className="story-owner-views" disabled={!views} onClick={() => { if (views) controller.showLayer(closeBox => <ViewersBox result={views} contacts={contacts} close={closeBox} />) }}>
+        <button type="button" className="story-owner-views" disabled={!views} onClick={() => { if (views) controller.showLayer(closeBox => <ViewersBox accountUid={accountUid} initial={views} contacts={contacts} close={closeBox} />) }}>
           <Eye size={18} />{views?.current ? tr('{0}명', [views.current.counts.viewers.toLocaleString(locale())]) : tr('조회')}
         </button>
         <span className="story-owner-privacy">{privacyIcons[selected.row.privacy]}{storyPrivacyNames[selected.row.privacy]}</span>

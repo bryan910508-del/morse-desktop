@@ -45,7 +45,7 @@ test('the session applies the rule in the list and builds it again when what kee
   assert.match(session, /if \(value\.unwritten\) \{[\s\S]{0,300}unlisted\.add\(value\.summary\.id\)/)
   assert.match(session, /sending: sends\.sending \|\| sends\.failed/, 'any send of this device, failed too')
   assert.match(session, /chatSendState\(chatId, null\)/, 'not after the room\'s own time: the server dated the room before the upload')
-  assert.match(session, /closeHistory\(chatId: string\): void \{[^\n]*this\.relistUnwritten\(\) \}/)
+  assert.match(session, /closeHistory\(chatId: string[^)]*\): void \{[^\n]*this\.relistUnwritten\(\) \}/)
   assert.match(session, /this\.followPeople\(\); this\.relistUnwritten\(\); events\.changed\(\)/, 'sends and drafts')
 })
 

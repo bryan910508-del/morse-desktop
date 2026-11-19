@@ -54,8 +54,21 @@ export function uploadTimingLine(steps: readonly [string, number][], size: numbe
   return `${steps.map(([name, ms]) => `${name}=${ms}`).join(' ')} total=${steps.reduce((sum, [, ms]) => sum + ms, 0)} kb=${Math.round(size / 1024)} req=${requests}`
 }
 
+// B548: `create` names the peer of a new 1:1 not made yet — prepareMorseChatMedia makes the room before any byte goes up
+// (iOS MorsePendingMediaUploadManager.swift:314-336, Android AccountMediaUploads.kt:521-541; the function makes a missing
+// direct or secret room only from peerUid and chatType, morse-release-authority.js:597-613), since Storage takes chat files
+// only from the room's participants (storage.rules isChatParticipant).
+export function prepareChatMediaRequest(chatId: string, uid: string, create?: { peerUid: string; autoDeleteSeconds?: number }): Record<string, unknown> {
+  const request: Record<string, unknown> = { chatId, expectedUid: uid }
+  if (create) {
+    request.peerUid = create.peerUid; request.chatType = 'direct'
+    if (create.autoDeleteSeconds) { request.autoDeleteSeconds = create.autoDeleteSeconds; request.autoDeleteMyOnly = false }
+  }
+  return request
+}
 export async function uploadAttachment(auth: ReadCredentials, uid: string, upload: UploadDescriptor, bytes: Buffer,
-  saveSession: (url: string) => Promise<void>, progress: (loaded: number) => void, ownerSignal: AbortSignal, wasConfirmed = false): Promise<string> {
+  saveSession: (url: string) => Promise<void>, progress: (loaded: number) => void, ownerSignal: AbortSignal, wasConfirmed = false,
+  create?: { peerUid: string; autoDeleteSeconds?: number }): Promise<string> {
   const signal = AbortSignal.any([ownerSignal, auth.signal])
   const steps: [string, number][] = []
   let mark = Date.now(), requests = 0
@@ -78,7 +91,7 @@ export async function uploadAttachment(auth: ReadCredentials, uid: string, uploa
   // prepareMorseChatMedia checks the room and this account before any byte goes up. One that never left or whose
   // outcome is unknown is a network failure the queue resumes; an answer from the function is a refusal.
   let prepared: Record<string, unknown>
-  try { prepared = await callMorseFunction(auth, 'prepareMorseChatMedia', { chatId: upload.chatId, expectedUid: uid }, signal, { limit: 2 * 1024 * 1024, refreshUnauthenticated: true }) }
+  try { prepared = await callMorseFunction(auth, 'prepareMorseChatMedia', prepareChatMediaRequest(upload.chatId, uid, create), signal, { limit: 2 * 1024 * 1024, refreshUnauthenticated: true }) }
   catch (error) { throw new UploadFailure(error instanceof MorseCallableFailure && error.delivery === 'answered' ? 'upload-permission' : 'upload-network') }
   if (prepared.ok !== true || prepared.chatId !== upload.chatId) throw new UploadFailure('upload-permission')
   lap('prepare')

@@ -15,6 +15,7 @@ import { defaultChatBackground } from '../../../shared/chat-background'
 import { positionMilliseconds } from '../../../shared/model'
 import { readCovers, readCursor } from '../../../shared/read-receipts'
 import { unreadEntry } from '../../../shared/unread-entry'
+import { placeOnScreen, placeToOpen, type LeftPlace } from '../../../shared/left-place'
 import { canForwardMessage } from '../../../shared/forward'
 import { canReply } from '../../../shared/reply-draft'
 import { maxAlbumPhotos } from '../../../shared/uploads'
@@ -63,7 +64,6 @@ import { usePresence } from '../app/presence'
 import { useTyping } from '../app/typing'
 import { PinnedBar, togglePin } from './pinned-bar'
 import { pinnedMessageIds } from '../../../shared/pinned-messages'
-import { DeferredBar } from './deferred-send'
 import { linkLabel, useShownConnection } from '../app/connection'
 import { tr } from '../../../shared/i18n'
 import { translationAvailable } from '../../../shared/translation'
@@ -174,7 +174,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   useEffect(() => { setPressed([]) }, [chatId])
   const dialogRef = useRef(dialog); dialogRef.current = dialog
   const bottom = useRef(true), pagingRef = useRef(false)
-  const pendingScroll = useRef<null | 'bottom' | { key: string; align: 'start' | 'center' }>('bottom')
+  const pendingScroll = useRef<null | 'bottom' | { key: string; align: 'start' | 'center' } | { key: string; distance: number }>('bottom')
   const anchor = useRef<{ key: string; offset: number } | null>(null)
   const revealKeys = useRef<readonly string[]>([])
   const firstUnread = useRef<string | null | undefined>(undefined)
@@ -184,6 +184,10 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   // ShowAtUnreadMsgId → the unread bar's top): the first unread stays at the top as its neighbours are measured, the way
   // a history at its bottom stays there, until the person scrolls.
   const holdStart = useRef<string | null>(null)
+  // B184d (left-place.ts): the place this room was left at, asked for as it opens; the place it opened at, held at its
+  // distance like the first unread while rows are measured, until the person scrolls; and the place the list shows now,
+  // handed over as the room goes (none at its bottom).
+  const leftPlace = useRef<LeftPlace | null>(null), holdPlace = useRef<LeftPlace | null>(null), placeNow = useRef<LeftPlace | null>(null)
   const virtualRef = useRef<Virtualizer<HTMLDivElement, Element> | null>(null)
 
   const captureAnchor = (): void => {
@@ -205,9 +209,9 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       const entry = unreadEntry(next, owner?.unreadCount ?? 0, owner?.readPositions[accountUid], accountUid)
       openAt(entry.kind === 'message' ? entry.id : null)
     } else if (next.focusMessageId && next.focusMessageId !== previous.focusMessageId) {
-      pendingScroll.current = { key: next.focusMessageId, align: 'center' }; bottom.current = false; highlightMessage(next.focusMessageId)
+      pendingScroll.current = { key: next.focusMessageId, align: 'center' }; bottom.current = false; holdPlace.current = null; highlightMessage(next.focusMessageId)
     } else if (next.status !== 'ready') {
-      pendingScroll.current = 'bottom'; bottom.current = true
+      pendingScroll.current = 'bottom'; bottom.current = true; holdPlace.current = null
     } else if (firstUnread.current === undefined && ui().entryMessage?.chatId === chatId) {
       // A notice of this account's own message: the room opens at that message, not at its first unread.
       openAt(null); goToEntryMessage()
@@ -215,15 +219,22 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
       const owner = dialogRef.current
       const entry = unreadEntry(next, owner?.unreadCount ?? 0, owner?.readPositions[accountUid], accountUid)
       if (entry.kind === 'around') { entryJump.current = true; jumpUnread(); return }
-      openAt(entry.kind === 'message' ? entry.id : null)
+      // After a notice's message and the first unread, the place the room was left at, when its message is in this page.
+      const place = entry.kind === 'message' ? null : placeToOpen(leftPlace.current, next.messages.map(message => message.id))
+      if (place) openAtPlace(place); else openAt(entry.kind === 'message' ? entry.id : null)
     } else captureAnchor()
     current.current = next
     setHistory(next)
   }
   const openAt = (id: string | null): void => {
-    firstUnread.current = id; holdStart.current = id
+    firstUnread.current = id; holdStart.current = id; holdPlace.current = null
     pendingScroll.current = id ? { key: id, align: 'start' } : 'bottom'
     bottom.current = !id
+  }
+  const openAtPlace = (place: LeftPlace): void => {
+    firstUnread.current = null; holdStart.current = null; holdPlace.current = place; placeNow.current = place
+    pendingScroll.current = { key: place.messageId, distance: place.distance }
+    bottom.current = false
   }
   // Nothing to go to, or the jump failed: the room opens at the bottom with no divider, from the page it has now.
   const jumpUnread = (): void => {
@@ -271,9 +282,14 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     if (!dialogExists) return
     let alive = true
     firstUnread.current = undefined; holdStart.current = null; entryJump.current = false; entryEpoch.current++; revisions.current.history = -1; revisions.current.actions = -1
+    leftPlace.current = null; holdPlace.current = null; placeNow.current = null
     pendingScroll.current = 'bottom'; bottom.current = true
-    void window.morse.history(accountUid, chatId).then(next => { if (alive) applyHistory(next) })
-      .catch(reason => { if (alive) { current.current = { ...initialHistory, status: 'error', message: errorText(reason, tr('대화를 불러오지 못했습니다.')) }; setHistory(current.current) } })
+    // B184d: the left place is known before the first page is, so that page can open there.
+    void window.morse.leftPlace(accountUid, chatId).catch(() => null).then(place => {
+      if (!alive) return
+      leftPlace.current = place
+      return window.morse.history(accountUid, chatId).then(next => { if (alive) applyHistory(next) })
+    }).catch(reason => { if (alive) { current.current = { ...initialHistory, status: 'error', message: errorText(reason, tr('대화를 불러오지 못했습니다.')) }; setHistory(current.current) } })
     void window.morse.messageActions(accountUid, chatId).then(next => { if (alive) applyActions(next) }).catch(() => {})
     return () => { alive = false }
   }, [accountUid, chatId, dialogExists])
@@ -283,7 +299,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     void window.morse.outgoing(accountUid, chatId).then(next => { if (alive) applyOutgoing(next) }).catch(() => {})
     void window.morse.replyDraft(accountUid, chatId).then(next => { if (alive) applyReply(next) }).catch(() => {})
     return () => {
-      alive = false; void window.morse.closeHistory(accountUid, chatId).catch(() => {})
+      alive = false; void window.morse.closeHistory(accountUid, chatId, bottom.current ? null : placeNow.current).catch(() => {})
       // B509: a new chat left with nothing written goes, as iOS removePendingChatIfEmpty does on leaving the room. The
       // composer's last keystrokes are saved first, so a draft keeps it.
       if (!dialogExists && pendingNow.current?.canDiscard) void flushDrafts().then(() => window.morse.leavePendingDirect(accountUid, chatId)).catch(() => {})
@@ -396,7 +412,17 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     observer.observe(element); setViewport(height)
     return () => observer.disconnect()
   }, [])
+  const scrollToPlace = (index: number, distance: number): void => {
+    const virtual = virtualRef.current, element = scroll.current, item = virtual?.measurementsCache[index]
+    if (virtual && element && item) virtual.scrollToOffset(item.end + distance - element.clientHeight)
+  }
   const holdAtStart = (): void => {
+    const place = holdPlace.current
+    if (place) {
+      const index = revealKeys.current.indexOf(place.messageId)
+      if (index >= 0) scrollToPlace(index, place.distance)
+      return
+    }
     const index = holdStart.current ? revealKeys.current.indexOf(holdStart.current) : -1
     if (index >= 0) virtualRef.current?.scrollToIndex(index, { align: 'start' })
   }
@@ -416,7 +442,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
   useEffect(() => {
     const element = scroll.current
     if (!element) return
-    const release = (): void => { holdStart.current = null }
+    const release = (): void => { holdStart.current = null; holdPlace.current = null }
     const events = ['wheel', 'pointerdown', 'keydown', 'touchstart'] as const
     for (const name of events) element.addEventListener(name, release, { passive: true })
     return () => { for (const name of events) element.removeEventListener(name, release) }
@@ -438,6 +464,9 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     const element = scroll.current
     if (!element || !entries.length) return
     for (const row of element.querySelectorAll<HTMLElement>('[data-index]')) virtual.measureElement(row)
+    // B184d: the message a held place stands on went (deleted, or no longer shown): the room goes to its bottom.
+    const held = holdPlace.current
+    if (held && !entries.some(entry => entry.key === held.messageId)) { holdPlace.current = null; placeNow.current = null; bottom.current = true; pendingScroll.current = 'bottom' }
     const target = pendingScroll.current
     // B306 ②: what joined the bottom of a history followed at its bottom rises into place (item-reveal.ts).
     const keys = entries.map(entry => entry.key), added = appendedCount(revealKeys.current, keys)
@@ -451,7 +480,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     if (target === 'bottom') { virtual.scrollToIndex(entries.length - 1, { align: 'end' }); pendingScroll.current = null }
     else if (target) {
       const index = entries.findIndex(entry => entry.key === target.key)
-      if (index >= 0) virtual.scrollToIndex(index, { align: target.align })
+      if (index >= 0) { if ('distance' in target) scrollToPlace(index, target.distance); else virtual.scrollToIndex(index, { align: target.align }) }
       pendingScroll.current = null
     } else if (anchor.current) {
       const saved = anchor.current; anchor.current = null
@@ -488,6 +517,10 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     if (!element) return
     const distance = element.scrollHeight - element.scrollTop - element.clientHeight
     bottom.current = followsBottom(distance, current.current.newerAvailable)
+    placeNow.current = placeOnScreen(virtual.getVirtualItems().map(item => {
+      const entry = entries[item.index]
+      return { messageId: entry?.kind === 'message' ? entry.key : null, start: item.start, end: item.end }
+    }), element.scrollTop, element.clientHeight, bottom.current)
     setAway(distance > 480)
     scrollDate.check()
     if (element.scrollTop < 400) void loadOlder()
@@ -741,7 +774,8 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     preview: setDragPreview,
     apply: setSelection
   })
-  const canAttach = Boolean(dialog) && !secret && outgoing.canCompose && !editing
+  // B548: a new 1:1 not made yet takes dropped pictures and files too (outbox.ts attachable; the first upload makes it).
+  const canAttach = Boolean(dialog || pending) && !secret && outgoing.canCompose && !editing
 
   function dropMode(target: EventTarget): AttachmentDropMode | null {
     const mode = target instanceof Element ? target.closest('[data-drop-mode]')?.getAttribute('data-drop-mode') : null
@@ -833,7 +867,6 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     {dialog && forum && <CategoryBar accountUid={accountUid} chatId={chatId} forum={forum} selected={forumSelected}
       owner={dialog.kind === 'group' && dialog.createdBy === accountUid && !dialog.discussion} />}
     <PlaybackBar chatId={chatId} />
-    {dialog && !secret && <DeferredBar accountUid={accountUid} chatId={chatId} />}
     {dialog?.historyMessage && <p className="history-banner" role="status">{dialog.historyMessage}</p>}
     <div className="history" ref={historyBox} onDragEnter={dragOver} onDragOver={dragOver} onDrop={drop}
       onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(null) }}>
@@ -887,7 +920,7 @@ export function HistoryWidget({ accountUid, chatId, oneColumn, leftmost }: { acc
     {service && dialog ? <div className="compose compose-readonly">
       <button type="button" className="button flat block" onClick={() => { void setChatFlag(accountUid, dialog.id, { muted: !dialog.muted }) }}>{dialog.muted ? tr('알림 켜기') : tr('알림 끄기')}</button>
     </div>
-    : (dialog || pending) && <Compose accountUid={accountUid} chatId={chatId} dialog={dialog} outgoing={outgoing} reply={reply} editing={editing}
+    : (dialog || pending) && <Compose accountUid={accountUid} chatId={chatId} dialog={dialog} pending={!dialog && Boolean(pending)} outgoing={outgoing} reply={reply} editing={editing}
       onCancelEdit={() => setEditing(null)}
       onEditLast={() => {
         const last = [...entries].reverse().find(entry => entry.kind === 'message' && entry.own && entry.message.kind === 'text' && canMutate(entry.message, dialog))

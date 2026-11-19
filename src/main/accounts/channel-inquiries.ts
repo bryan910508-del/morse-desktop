@@ -686,7 +686,7 @@ export class ChannelInquiries {
     if (!this.scheduled.has(inquiryQueueChatId(request.inquiryId), 'scheduled', request.messageId)) throw new Error(tr('예약된 메시지를 다시 확인해 주세요.'))
     this.allowed()
     try { await this.source.deleteDeferredMessage(deferredCollections.scheduled, request.messageId, this.signal()) }
-    catch { throw new Error(tr('예약 취소에 실패했어요')) }
+    catch { throw new Error(tr('예약을 취소하지 못했어요')) }
   }
   async edit(request: InquiryTextRequest): Promise<void> {
     const state = this.requireThread(request), item = state.value.items.find(entry => entry.id === request.messageId)

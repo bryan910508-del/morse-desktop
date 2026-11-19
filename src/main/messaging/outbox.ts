@@ -380,6 +380,23 @@ export class OutboxPump {
   }
   private composeAllowed(chatId: string): boolean { return this.context().dialogs.get(chatId)?.composeAccess !== false }
   private eligible(chatId: string): boolean { return this.writable(chatId) && this.composeAllowed(chatId) }
+  // B548: a new 1:1 not made yet takes a picture or a file as its first message too — tdesktop asks only what the person
+  // may receive, never whether the history is empty (history_widget.cpp:697-704, data_chat_participant_status.cpp:249-253),
+  // and the phones make the room before the upload (prepareMorseChatMedia with peerUid, iOS
+  // MorsePendingMediaUploadManager.swift:314-336, Android AccountMediaUploads.kt:521-541). A pending direct is never secret.
+  private attachable(chatId: string): boolean {
+    return (this.context().dialogs.has(chatId) || this.pending.has(chatId)) && this.eligible(chatId)
+  }
+  // B548: a new 1:1 this account opened that the server has not made yet.
+  isPendingDirect(chatId: string): boolean { return this.pending.has(chatId) && !this.context().dialogs.has(chatId) }
+  // The person a new 1:1 not made yet is with, or null.
+  pendingPeer(chatId: string): string | null { return this.isPendingDirect(chatId) ? this.pending.get(chatId)!.peerUid : null }
+  // The room the first upload must make (prepareMorseChatMedia), while this chat is still a pending direct.
+  private directCreation(chatId: string, wire: SendWire): { peerUid: string; autoDeleteSeconds?: number } | undefined {
+    const pending = this.pending.get(chatId)
+    if (!pending || this.context().dialogs.has(chatId)) return undefined
+    return { peerUid: pending.peerUid, ...(wire.autoDeleteSeconds ? { autoDeleteSeconds: wire.autoDeleteSeconds } : {}) }
+  }
   private active(signal: AbortSignal): boolean {
     return !this.closed && !signal.aborted && !this.auth.signal.aborted && this.context().ready && this.auth.sender.ready && !this.storageFailed
   }
@@ -820,32 +837,32 @@ export class OutboxPump {
     void this.publish(); this.kick()
   }
   pickAttachment(chatId: string, mode: AttachmentMode, choose: () => Promise<string[] | null>) {
-    return this.staging.pick(chatId, mode, () => this.context().dialogs.has(chatId) && this.eligible(chatId), choose)
+    return this.staging.pick(chatId, mode, () => this.attachable(chatId), choose)
   }
   discardAttachment(id?: string, all = false): void { this.staging.discard(id, all) }
   // B280 ③: «보내기» was pressed — the selection is that send's from here (the photos are made smaller first).
   pressAttachment(id: string): void { this.staging.pressed(id) }
   pressedAttachmentChat(): string | null { return this.staging.pressedChat() }
   replaceAttachmentImage(chatId: string, id: string, itemId: string, bytes: Uint8Array) {
-    if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('대화와 연결을 확인해 주세요.'))
+    if (!this.attachable(chatId)) throw new Error(tr('대화와 연결을 확인해 주세요.'))
     return this.staging.replaceImage(chatId, id, itemId, bytes)
   }
   restoreAttachmentImage(chatId: string, id: string, itemId: string) {
-    if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('대화와 연결을 확인해 주세요.'))
+    if (!this.attachable(chatId)) throw new Error(tr('대화와 연결을 확인해 주세요.'))
     return this.staging.restoreImage(chatId, id, itemId)
   }
   editAttachmentVideo(chatId: string, id: string, itemId: string, edit: VideoEdit) {
-    if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('대화와 연결을 확인해 주세요.'))
-    return this.staging.editVideo(chatId, id, itemId, edit, () => this.context().dialogs.has(chatId) && this.eligible(chatId))
+    if (!this.attachable(chatId)) throw new Error(tr('대화와 연결을 확인해 주세요.'))
+    return this.staging.editVideo(chatId, id, itemId, edit, () => this.attachable(chatId))
   }
   dropAttachments(chatId: string, paths: string[], mode: AttachmentDropMode) {
-    return this.staging.drop(chatId, paths, mode, () => this.context().dialogs.has(chatId) && this.eligible(chatId))
+    return this.staging.drop(chatId, paths, mode, () => this.attachable(chatId))
   }
   pasteAttachments(chatId: string, items: { name: string; bytes: Uint8Array }[]) {
-    return this.staging.receive(chatId, items, () => this.context().dialogs.has(chatId) && this.eligible(chatId))
+    return this.staging.receive(chatId, items, () => this.attachable(chatId))
   }
   attachmentPreview(chatId: string, path: string, request: Request): Response {
-    return this.context().dialogs.has(chatId) && this.eligible(chatId) ? this.staging.response(chatId, path, request) : new Response(null, { status: 403 })
+    return this.attachable(chatId) ? this.staging.response(chatId, path, request) : new Response(null, { status: 403 })
   }
   async enqueueVoice(raw:VoiceSendRequest,source:()=>Uint8Array,validate:()=>void):Promise<void>{
     const input=voiceSendRequest(raw),{id,chatId,reply}=input
@@ -955,7 +972,7 @@ export class OutboxPump {
   }
   private async enqueuePressed(chatId: string, id: string, caption: string, itemIds: string[], reply: ReplyBinding | null, validate: () => void, video: VideoFacts | null, circular: boolean): Promise<void> {
     await this.opening
-    if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('첫 텍스트 메시지를 보낸 뒤 첨부할 수 있습니다.'))
+    if (!this.attachable(chatId)) throw new Error(tr('이 대화에는 지금 메시지를 보낼 수 없습니다.'))
     // B518: the message's own id — the selection's, or one of a mixed selection's messages (AttachmentStaging.messageId).
     const messageId = this.staging.messageId(id, itemIds)
     const request = { id: messageId, chatId, senderId: this.uid, caption, itemIds, reply }
@@ -964,10 +981,18 @@ export class OutboxPump {
     if (await this.store<boolean>({ kind: 'attachment-known', request })) {
       this.staging.sent(id, itemIds); void this.publish(); this.kick(); return
     }
-    if (!this.context().dialogs.has(chatId) || !this.eligible(chatId)) throw new Error(tr('연결 상태가 변경되었습니다.'))
+    if (!this.attachable(chatId)) throw new Error(tr('연결 상태가 변경되었습니다.'))
     validate()
     const { wire, parts } = this.staging.prepare(this.uid, chatId, id, caption, itemIds, video, circular, messageId)
     if (reply) wire.replyToId = reply.messageId
+    // B548: into a pending direct the message names its peer, as a first text does (enqueue above), with the new chat's
+    // auto-delete default; the room itself is made by the first upload (directCreation).
+    const pendingDirect = this.context().dialogs.has(chatId) ? undefined : this.pending.get(chatId)
+    if (pendingDirect) {
+      wire.peerUid = pendingDirect.peerUid; wire.chatType = 'direct'
+      const policy = this.newChatAutoDelete()
+      if (policy.seconds > 0) { wire.autoDeleteSeconds = policy.seconds; wire.autoDeleteMyOnly = false }
+    }
     const category = outgoingCategory(this.context().dialogs.get(chatId))
     if (category) wire.categoryId = category
     // B269: the pictures it is drawn from, kept before it is queued — the row can reach the window, and ask for them, before
@@ -1072,7 +1097,8 @@ export class OutboxPump {
         return
       }
       if (!this.eligible(intent.chatId)) { await this.store({ kind: 'finish', id: intent.id, discarded: true }); continue }
-      if (intent.wire.type === 'text' && intent.wire.peerUid && this.context().dialogs.has(intent.chatId) &&
+      // A first message naming its peer (text, or B548 a picture or a file) goes only into that peer's 1:1.
+      if (intent.wire.peerUid && this.context().dialogs.has(intent.chatId) &&
           !this.matchesDirect({ chatId: intent.chatId, peerUid: intent.wire.peerUid })) {
         await this.store({ kind: 'state', id: intent.id, state: 'failed', reason: 'CONFLICT' }); continue
       }
@@ -1156,7 +1182,7 @@ export class OutboxPump {
             await this.store({ kind: 'upload-session', id: intent.id, index: part.index, session })
           }, loaded => {
             if (this.active(signal)) { this.uploadProgress = { loaded: completed + loaded, total, current: part.index + 1, count: intent.parts!.length }; void this.publish() }
-          }, signal, Boolean(part.url))
+          }, signal, Boolean(part.url), this.directCreation(intent.chatId, intent.wire))
         if (!this.active(signal) || !this.eligible(intent.chatId)) return
         await this.store({ kind: 'upload-complete', id: intent.id, index: part.index, url })
         // F2: what this device sent is here. tdesktop keeps a sent document's own file, so it is loaded in the sender's

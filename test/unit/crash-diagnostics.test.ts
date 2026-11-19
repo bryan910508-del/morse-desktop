@@ -11,10 +11,11 @@ import { crashStepsWritten, markCleanExit, recordCrashStep, startCrashRecording,
 const marker = join(tmpdir(), 'running'), log = join(tmpdir(), 'crash-check.log')
 const stub = app as unknown as { listeners: Map<string, ((...args: unknown[]) => void)[]> }
 
-test('recording starts with nothing uploaded; a clean quit leaves no marker, a run that did not quit is told once', async () => {
+test('recording starts with no native dump (F-ST-004 §2-3); a clean quit leaves no marker, a run that did not quit is told once', async () => {
   rmSync(marker, { force: true }); rmSync(log, { force: true })
+  const before = (crashReporter as unknown as { started: unknown[] }).started.length
   startCrashRecording()
-  assert.deepEqual((crashReporter as unknown as { started: unknown[] }).started.at(-1), { uploadToServer: false, compress: true })
+  assert.equal((crashReporter as unknown as { started: unknown[] }).started.length, before, 'crashReporter is not started: a dump can hold message text')
   assert.equal(takeCrashNotice(), false, 'a first run is not a crash')
   assert.ok(existsSync(marker), 'the running marker is there while the app runs')
   markCleanExit()

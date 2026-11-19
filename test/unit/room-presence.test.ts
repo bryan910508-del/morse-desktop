@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { readFileSync } from 'node:fs'
 import { status } from '@grpc/grpc-js'
 import { RoomPresence } from '../../src/main/accounts/room-presence'
 import { DocumentWriteFailure, FirestoreReader } from '../../src/main/network/firestore-rpc'
@@ -21,6 +22,38 @@ test('the room is announced while it is open in front, refreshed while it stays,
   presence.set(null)
   await new Promise(resolve => setTimeout(resolve, 50))
   assert.deepEqual(calls, ['leave a', 'enter b', 'leave b'], 'left, and nothing more is written')
+  presence.close()
+})
+
+// B7 (tdesktop offlineBlurTimeout, window/window_controller.cpp:507-511, 5000 ms): a window that loses focus for a moment
+// with the room still open writes nothing; one that stays away leaves after the wait; closing or switching leaves at once.
+test('B7: a short loss of focus keeps the room; a long one leaves it once; closing or switching leaves at once', async () => {
+  const calls: string[] = []
+  const presence = new RoomPresence(() => ({ enter: async chatId => { calls.push(`enter ${chatId}`) }, leave: async chatId => { calls.push(`leave ${chatId}`) } }), new AbortController().signal, 10_000, 40)
+  presence.set('a')
+  assert.deepEqual(calls, ['enter a'])
+  presence.set(null, true)
+  await new Promise(resolve => setTimeout(resolve, 15))
+  presence.set('a')
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.deepEqual(calls, ['enter a'], 'back within the wait: no leave, no second enter (the other side sees no flicker)')
+  assert.equal(presence.room, 'a')
+  presence.set(null, true)
+  presence.set(null, true)
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.deepEqual(calls, ['enter a', 'leave a'], 'away past the wait: left once')
+  assert.equal(presence.room, null)
+  presence.set('b')
+  presence.set(null, true)
+  presence.set('c')
+  assert.deepEqual(calls, ['enter a', 'leave a', 'enter b', 'leave b', 'enter c'], 'another room while waiting: the first is left at once')
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.deepEqual(calls.slice(-1), ['enter c'], 'the cancelled wait writes nothing later')
+  presence.set(null, true)
+  presence.set(null)
+  assert.deepEqual(calls.slice(-1), ['leave c'], 'closed, locked or signed out while waiting: left at once')
+  await new Promise(resolve => setTimeout(resolve, 60))
+  assert.deepEqual(calls.slice(-1), ['leave c'], 'and only once')
   presence.close()
 })
 
@@ -64,4 +97,10 @@ test('entering a room writes its watcher record whether or not it exists, and le
   assert.deepEqual(sent[0]?.updateTransforms?.map(transform => transform.fieldPath), ['enteredAt'])
   assert.equal(sent[1]?.delete, watcher)
   reader.close()
+})
+
+test('B7: the session keeps the room only while the same chat stays open and only reading stopped', () => {
+  const session = readFileSync('src/main/accounts/session.ts', 'utf8')
+  assert.match(session, /this\.roomPresence\.set\(shown && reading \? shown : null, Boolean\(shown && !reading && this\.roomPresence\.room === shown\)\)/)
+  assert.match(session, /const shown = summary && !this\.closed && !this\.locked &&/, 'locked or closed is never «blurred»')
 })

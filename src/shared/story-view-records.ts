@@ -7,6 +7,9 @@ export interface StoryViewRecordRow { uid: string; viewed: boolean; reaction: st
 export interface StoryViewRecordData { rows: StoryViewRecordRow[]; counts: { viewers: number; reactions: number; reposts: number; forwards: number }; missing: string[] }
 export interface StoryViewRecordsResult extends StoryViewRecordsRequest {
   outcome: 'ready' | 'changed' | 'absent' | 'expired' | 'unavailable'
+  // B550: the viewer list's own state — listened to only while it is open ('closed' otherwise).
+  // 'over': more than 1000 records — the counts show, the list says so (contract B550 §3-3, the same in all three apps).
+  list: 'closed' | 'loading' | 'ready' | 'over' | 'unavailable'
   observedAt: number
   current: (StoryViewRecordData & { expiresAt: number }) | null
   message: string

@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight, Lock, Megaphone, MessageCircle, ShieldCheck, UserRoundX, Users } from 'lucide-react'
+import { Bug, ChevronDown, ChevronRight, Lock, Megaphone, MessageCircle, ShieldCheck, UserRoundX, Users } from 'lucide-react'
+import { showProblemReportBox } from './problem-report-box'
 import { controller } from '../app/ui'
 import { errorText } from '../app/format'
 import { Box } from '../ui/layers'
@@ -49,6 +50,12 @@ function SupportBox({ accountUid, version, close }: { accountUid: string; versio
     <button type="button" className="support-chat" disabled={busy} onClick={() => { void chat() }}>
       <span className="shared-media-icon">{busy ? <Spinner size={18} /> : <MessageCircle size={20} />}</span>
       <span className="shared-media-text"><strong>{tr('채팅으로 문의하기')}</strong><small>{tr('버그·기능 제안도 같은 대화에 남겨 주세요. 이메일 주소는 표시되지 않아요.')}</small></span>
+    </button>
+    {/* F-ST-004 B (contract §7-1 1): right under the chat, as tdesktop keeps «Ask a Question» in its help group
+        (settings/sections/settings_main.cpp:581-612). */}
+    <button type="button" className="support-chat" onClick={() => { close(); showProblemReportBox(accountUid) }}>
+      <span className="shared-media-icon"><Bug size={20} /></span>
+      <span className="shared-media-text"><strong>{tr('문제 보고')}</strong><small>{tr('앱이 멈추거나 닫힌 기록을 고객 센터에 보내요')}</small></span>
     </button>
     <div className="section-label">{tr('앱 정보')}</div>
     <div className="support-info"><span>{tr('버전')}</span><span>{version}</span></div>

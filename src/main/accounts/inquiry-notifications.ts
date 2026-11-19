@@ -52,6 +52,13 @@ export class InquiryNotifications {
     for (const room of rooms) {
       const before = this.seen.get(room.inquiryId)
       this.seen.set(room.inquiryId, room.at)
+      // B556: a banner already shown goes when its room is read (here or on another device) or the room's newest message
+      // went back — the message it told of was deleted, by either side or the auto-delete sweep, and the server set the
+      // room's line to the one before (morse-message-projections refreshAfterDelete). tdesktop clears a notification
+      // when its item is destroyed and when its history is read (history.cpp:741-743 clearFromItem · :2300
+      // clearIncomingFromHistory); a chat's banner goes when its message document does (notifications.ts watch:gone).
+      const shown = this.shown.get(room.inquiryId)
+      if (shown && (room.unread <= 0 || room.at < shown.at)) this.withdraw(room.inquiryId)
       // Only a message that arrived while this window was watching: a room entering the list carries its history.
       if (!room.at || room.at <= this.since || (before !== undefined && room.at <= before)) continue
       // A room this side has read, or whose newest message is this side's own, announces nothing.

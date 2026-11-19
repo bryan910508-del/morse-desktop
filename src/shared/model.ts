@@ -7,6 +7,7 @@ import type { ChannelAccessRequest, ChannelAccessAction, ChannelAccessEditSnapsh
 import type { ChannelPhotoBinding, ChannelPhotoUploadRequest, ChannelPhotoUploadAction, ChannelPhotoUploadSnapshot } from './channel-photo-upload'
 import type { ShortcutCommand } from './shortcuts'
 import type { Language } from './i18n'
+import type { LeftPlace } from './left-place'
 import type { AuthenticationBridge, AuthenticationSnapshot } from './auth'
 import type { OutgoingSnapshot, PendingDirect } from './delivery'
 import type { ReadCursor, ReadSyncState } from './read-receipts'
@@ -474,6 +475,7 @@ export type DesktopEvent =
   | { type: 'forward-progress'; accountUid: string; progress: ForwardProgress }
   // B277 ②: the stories row as main listens to it.
   | { type: 'story-bar-changed'; accountUid: string; result: import('./story-bar').StoryBarResult }
+  | { type: 'story-view-records-changed'; accountUid: string; result: import('./story-view-records').StoryViewRecordsResult }
   | { type: 'snapshot'; snapshot: DesktopSnapshot }
   | { type: 'messages-changed'; accountUid: string; chatId: string }
   | { type: 'history-changed'; accountUid: string; chatId: string; history: HistorySnapshot }
@@ -512,6 +514,9 @@ export interface DesktopBridge {
   takeOpenLink(): Promise<string | null>
   // 0.241.36: whether the last run ended without quitting (crash-diagnostics.ts), told once; and the logs folder.
   takeCrashNotice(): Promise<boolean>
+  // F-ST-004 B (contract §7): the «문제 보고» file as it will be sent, under a token the send takes.
+  problemReportPreview(accountUid: string, includeAccount: boolean): Promise<ProblemReportPreview>
+  sendProblemReport(accountUid: string, chatId: string, token: string): Promise<boolean>
   openLogsFolder(): Promise<void>
   createGroup(accountUid: string, request: GroupCreateRequest): Promise<'listed' | 'done' | 'unconfirmed'>
   addGroupMembers(accountUid: string, request: GroupMembersRequest): Promise<'done' | 'unconfirmed'>
@@ -685,6 +690,7 @@ export interface DesktopBridge {
   readStoryViewRecords(accountUid: string, request: import('./story-view-records').StoryViewRecordsRequest): Promise<import('./story-view-records').StoryViewRecordsResult>
   readStoryHiddenAudience(accountUid: string, request: import('./story-hidden-audience').StoryHiddenAudienceRequest): Promise<import('./story-hidden-audience').StoryHiddenAudienceResult>
   closeStoryViewRecords(accountUid: string, id: string): Promise<void>
+  storyViewers(accountUid: string, id: string, open: boolean): Promise<void>
   closeStoryHiddenAudience(accountUid: string, id: string): Promise<void>
   sendStoryReply(accountUid: string, request: import('./story-reply-send').StoryReplySendRequest): Promise<import('./story-reply-send').StoryReplySendReceipt>
   saveStoryReplyText(accountUid: string, request: import('./story-reply-text').StoryReplyTextWrite): Promise<import('./story-reply-text').StoryReplyTextRecord>
@@ -939,7 +945,8 @@ export interface DesktopBridge {
   history(accountUid: string, chatId: string, before?: MessagePosition): Promise<HistorySnapshot>
   newerHistory(accountUid: string, chatId: string, after: MessagePosition): Promise<HistorySnapshot>
   latestHistory(accountUid: string, chatId: string): Promise<HistorySnapshot>
-  closeHistory(accountUid: string, chatId: string): Promise<void>
+  closeHistory(accountUid: string, chatId: string, place?: LeftPlace | null): Promise<void>
+  leftPlace(accountUid: string, chatId: string): Promise<LeftPlace | null>
   searchMessages(accountUid: string, chatId: string, searchId: string, query: string): Promise<SearchSnapshot>
   moreSearch(accountUid: string, chatId: string, searchId: string): Promise<SearchSnapshot>
   sharedMedia(accountUid: string, chatId: string, searchId: string, filter: import('./search').SharedMediaFilter): Promise<SearchSnapshot>
@@ -1043,6 +1050,7 @@ export interface DesktopBridge {
   sendDeferred(accountUid: string, request: import('./deferred-send').DeferredSendRequest): Promise<'done'>
   scheduleEventReminder(accountUid: string, request: import('./chat-event').EventReminderRequest): Promise<'done'>
   cancelDeferred(accountUid: string, chatId: string, kind: import('./deferred-send').DeferredKind, messageId: string): Promise<'done'>
+  retryDeferred(accountUid: string, chatId: string, kind: import('./deferred-send').DeferredKind, messageId: string): Promise<'done'>
   retryMessage(accountUid: string, chatId: string, messageId: string): Promise<void>
   outgoing(accountUid: string, chatId: string): Promise<OutgoingSnapshot>
   discardOutgoing(accountUid: string, chatId: string, messageId: string): Promise<void>
@@ -1080,3 +1088,5 @@ export interface ForwardWireSource { kind: 'chat' | 'inquiry'; roomId: string; m
 // B263 §2-2: who a forward came from, as the server wrote it (messageFwdHeader's from_id / from_name / channel_post / date).
 // fromUid only when the original sender lets forwards link to them; hidden: their name only (or none — a deleted account).
 export interface ForwardInfo { fromUid?: string; fromName: string; fromChannelId?: string; channelPostId?: string; date: number | null; hidden: boolean }
+
+export interface ProblemReportPreview { token: string; name: string; text: string; count: number; leftOut: number; hasMorseId: boolean; sentToday: number; perDay: number }

@@ -34,7 +34,8 @@ import type { LocalOutgoing } from '../../../shared/delivery'
 import { showMediaViewer } from '../media/media-viewer'
 import { showAttachmentBox } from '../boxes/send-files-box'
 import { showInquiryAutoDeleteBox } from '../boxes/auto-delete-box'
-import { DeferredItemsBar, showScheduleBox } from '../history/deferred-send'
+import { DeferredButton, showDeferredList, showScheduleBox } from '../history/deferred-send'
+import type { DeferredItem } from '../../../shared/deferred-send'
 import { autoDeleteSummary } from '../../../shared/chat-auto-delete'
 import { InquiryVoiceBar, type InquiryVoiceSend } from './inquiry-voice'
 import { RecordButton, useRecordChoice, type HeldRef } from '../history/record-button'
@@ -42,6 +43,7 @@ import { showsRecordButton } from '../history/record-availability'
 import { RoundVideoRecorder, type RoundVideoTarget } from '../history/round-video-record'
 import { useInquiryPending, useInquirySendState, type PendingEntry } from './inquiry-sends'
 import { tr } from '../../../shared/i18n'
+const noScheduled: DeferredItem[] = []
 
 function InquiryList({ accountUid, channelId }: { accountUid: string; channelId: string }) {
   const [requestId] = useState(() => crypto.randomUUID())
@@ -461,7 +463,6 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
         <span className="ellipsis">{pinnedItem.text || pinnedItem.label || tr('메시지')}</span>
       </span>
     </button>}
-    <DeferredItemsBar items={thread?.scheduled ?? []} drop={async item => { await trackWrite(window.morse.cancelInquiryScheduled(accountUid, { requestId, inquiryId, messageId: item.id })) }} />
     <div className="inquiry-list-area">
     <div ref={list} className="channel-comments-list inquiry-messages" onScroll={() => { const element = list.current; if (element) setAway(follower.scrolled(element) > 480) }}>
       {!thread || (thread.status === 'loading' && !items.length) ? <div className="empty-state"><Spinner size={22} /></div>
@@ -511,6 +512,10 @@ function InquiryThread({ accountUid, channelId, inquiryId, fromList, oneColumn }
             const modifier = event.metaKey || event.ctrlKey
             if (enterToSend ? !event.shiftKey && !modifier && !event.altKey : modifier) { event.preventDefault(); void send() }
           }} />
+        {/* N-36: the room's scheduled messages, only while nothing is typed (TI ChatInterfaceInputContexts.swift:210). */}
+        {!text.trim() && <DeferredButton items={thread?.scheduled ?? noScheduled} open={() => showDeferredList(
+          () => useDesktop(state => { const value = state?.channelInquiries?.thread; return value?.requestId === requestId ? value.scheduled : null }) ?? noScheduled,
+          { drop: async item => { await trackWrite(window.morse.cancelInquiryScheduled(accountUid, { requestId, inquiryId, messageId: item.id })) } })} />}
         <button type="button" className={`icon-button compose-entities${entities ? ' active' : ''}`} data-entity-toggle aria-label={tr('이모지와 스티커')} aria-expanded={entities}
           disabled={!ready} onClick={() => setEntities(value => !value)}><Smile size={22} /></button>
         {entities && <EntityPanel accountUid={accountUid} onEmoji={insertEmoji}

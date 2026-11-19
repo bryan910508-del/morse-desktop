@@ -5,6 +5,11 @@
 // subscribeAllChatWatchers). The typing signal only updates this document and never creates it (iOS 886b1f49), so a
 // «stopped typing» sent after the room was left cannot announce the room again.
 export const presenceRefreshMs = 55000
+// B7: a window that only lost focus (a notification banner, Spotlight, a context menu) leaves its room this much later,
+// and coming back before then writes nothing — tdesktop counts a window inactive offlineBlurTimeout after the blur
+// (Window::Controller::updateIsActiveBlur, window/window_controller.cpp:507-511; mtproto/mtproto_config.h:21, 5000 ms).
+// Closing the chat, opening another, locking or signing out still leaves at once.
+export const presenceBlurLeaveMs = 5000
 
 export interface PresenceWriter {
   enter(chatId: string, signal: AbortSignal): Promise<void>
@@ -14,11 +19,21 @@ export interface PresenceWriter {
 export class RoomPresence {
   private current: string | null = null
   private timer: ReturnType<typeof setInterval> | null = null
-  constructor(private readonly writer: () => PresenceWriter | null, private readonly signal: AbortSignal, private readonly every = presenceRefreshMs) {}
+  private leaving: ReturnType<typeof setTimeout> | null = null
+  constructor(private readonly writer: () => PresenceWriter | null, private readonly signal: AbortSignal, private readonly every = presenceRefreshMs,
+    private readonly blurLeave = presenceBlurLeaveMs) {}
   get room(): string | null { return this.current }
-  // The room this account is in now, or null when it is in none (closed, in the background, locked).
-  set(chatId: string | null): void {
-    if (chatId === this.current) return
+  // The room this account is in now, or null when it is in none (closed, in the background, locked). `blurred`: null only
+  // because the window lost focus with the chat still open — the leave waits blurLeave and is dropped if the room comes back.
+  set(chatId: string | null, blurred = false): void {
+    if (chatId === this.current) { this.cancelLeave(); return }
+    if (chatId === null && blurred && this.current) {
+      if (this.leaving) return
+      this.leaving = setTimeout(() => { this.leaving = null; this.set(null) }, this.blurLeave)
+      this.leaving.unref?.()
+      return
+    }
+    this.cancelLeave()
     const previous = this.current, writer = this.writer()
     this.current = chatId
     this.unschedule()
@@ -32,5 +47,6 @@ export class RoomPresence {
     this.timer.unref?.()
   }
   close(): void { this.set(null) }
+  private cancelLeave(): void { if (this.leaving) clearTimeout(this.leaving); this.leaving = null }
   private unschedule(): void { if (this.timer) clearInterval(this.timer); this.timer = null }
 }

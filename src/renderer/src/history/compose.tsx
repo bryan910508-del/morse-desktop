@@ -25,15 +25,17 @@ import { RecordButton, useRecordChoice, type HeldRef } from './record-button'
 import { showsRecordButton } from './record-availability'
 import { RoundVideoRecorder, type RoundVideoTarget } from './round-video-record'
 import { resetAutoTranslation } from '../app/translations'
-import { showScheduleBox } from './deferred-send'
+import { chatDeferredActions, chatDeferredItems, DeferredButton, showDeferredList, showScheduleBox } from './deferred-send'
+import type { DeferredItem } from '../../../shared/deferred-send'
 import { showEventBox } from './event-box'
 import { tr } from '../../../shared/i18n'
 
 
 // HistoryView::ComposeControls: local draft saved on every change, immediate
 // send into the durable outbox, reply/edit bars and the voice record bar.
-export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, onCancelEdit, onEditLast, onSent, onPressed, onPressSettled }: {
-  accountUid: string; chatId: string; dialog: DialogSummary | null; outgoing: OutgoingSnapshot; reply: ReplyDraftSnapshot
+const noDeferredItems: DeferredItem[] = []
+export function Compose({ accountUid, chatId, dialog, pending = false, outgoing, reply, editing, onCancelEdit, onEditLast, onSent, onPressed, onPressSettled }: {
+  accountUid: string; chatId: string; dialog: DialogSummary | null; pending?: boolean; outgoing: OutgoingSnapshot; reply: ReplyDraftSnapshot
   editing: ChatMessage | null; onCancelEdit(): void; onEditLast(): void; onSent(): void
   // B306: the text is drawn in the history as the field empties (pressed-sends.ts); settled once the queue has answered.
   onPressed?(send: PressedSend): void; onPressSettled?(id: string, stored: boolean): void
@@ -223,13 +225,18 @@ export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, 
   const secret = dialog?.kind === 'secret'
   const blocked = secret ? tr('이 기기에서는 비밀 대화에 메시지를 보낼 수 없습니다.') : outgoing.writingBlocked ? outgoing.message || tr('이 대화에는 지금 메시지를 보낼 수 없습니다.') : ''
   const canAttach = loaded && outgoing.canCompose && !editing && Boolean(dialog) && !secret
+  // B548: pictures and files go into a new 1:1 not made yet as well (its first upload makes it); stickers, voice and the
+  // scheduled sends still wait for the chat, as Android keeps them (DeferredMessage.kt:54).
+  const canAttachFiles = loaded && outgoing.canCompose && !editing && Boolean(dialog || pending) && !secret
   const hasText = value.trim().length > 0
+  const deferredItems = useDesktop(snapshot => snapshot?.deferredMessages?.chatId === chatId ? snapshot.deferredMessages.items : null) ?? noDeferredItems
   const openAttach = (point: { x: number; y: number }): void => popupMenu.open(point, [
     { label: tr('사진 또는 동영상'), icon: <ImageIcon size={18} />, onSelect: () => { void pickFiles(accountUid, chatId, 'media', () => replyRef.current.selection) } },
     { label: tr('파일'), icon: <FileIcon size={18} />, onSelect: () => { void pickFiles(accountUid, chatId, 'file', () => replyRef.current.selection) } },
-    { label: tr('일정 만들기'), icon: <CalendarPlus size={18} />, onSelect: () => showEventBox(accountUid, chatId) },
-    !chatId.startsWith('memo_') && 'separator',
-    !chatId.startsWith('memo_') && { label: autoTranslateChats ? tr('전체번역 끄기') : tr('전체번역'), icon: <Languages size={18} />, onSelect: () => {
+    // B548: a new 1:1 not made yet offers what its first upload can carry — the event and translation wait for the chat.
+    !pending && { label: tr('일정 만들기'), icon: <CalendarPlus size={18} />, onSelect: () => showEventBox(accountUid, chatId) },
+    !pending && !chatId.startsWith('memo_') && 'separator',
+    !pending && !chatId.startsWith('memo_') && { label: autoTranslateChats ? tr('전체번역 끄기') : tr('전체번역'), icon: <Languages size={18} />, onSelect: () => {
       if (!canTranslate) { controller.toast(translationUnavailableNote()); return }
       if (!autoTranslateChats) resetAutoTranslation()
       void window.morse.updatePreferences({ autoTranslateChats: !autoTranslateChats }).catch(reason => controller.toast(errorText(reason, tr('전체번역 설정을 바꾸지 못했습니다.')), 'error'))
@@ -265,7 +272,7 @@ export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, 
       : recording === 'video' ? <RoundVideoRecorder target={roundVideo} held={held.current} onClose={endRecording} />
         : savedVoice ? <VoiceDraftBar key={savedVoice.revision} accountUid={accountUid} chatId={chatId} record={savedVoice} reply={() => replyRef.current} onChange={setVoiceDraft} />
           : <div className="compose-row">
-            <button className="icon-button" aria-label={tr('첨부')} disabled={!canAttach} onClick={event => openAttach(pointFor(event, event.currentTarget))}><Plus size={24} /></button>
+            <button className="icon-button" aria-label={tr('첨부')} disabled={!canAttachFiles} onClick={event => openAttach(pointFor(event, event.currentTarget))}><Plus size={24} /></button>
             <textarea ref={field} className="compose-field" rows={1} value={value} maxLength={30000} data-composer aria-label={tr('메시지 작성')} spellCheck={spellCheck}
               placeholder={loaded ? editing ? tr('메시지 수정') : tr('메시지 입력') : tr('초안을 불러오는 중…')} disabled={!loaded}
               onChange={event => change(event.target.value)} onFocus={() => setFocused(true)} onBlur={() => { setFocused(false); void flush().catch(() => {}) }}
@@ -276,10 +283,12 @@ export function Compose({ accountUid, chatId, dialog, outgoing, reply, editing, 
               // A picture on the clipboard is sent like a dropped one; text and a message being edited paste as usual.
               onPaste={event => {
                 const files = Array.from(event.clipboardData?.files ?? []).filter(file => file.type.startsWith('image/') || file.type.startsWith('video/'))
-                if (!files.length || !canAttach || editing) return
+                if (!files.length || !canAttachFiles || editing) return
                 event.preventDefault()
                 void pasteFiles(accountUid, chatId, files.slice(0, maxAlbumPhotos), () => replyRef.current.selection)
               }} />
+            {/* N-36: the room's queued messages, only while nothing is typed (TI ChatInterfaceInputContexts.swift:210). */}
+            {!hasText && !editing && dialog && !secret && <DeferredButton items={deferredItems} open={() => showDeferredList(chatDeferredItems(chatId), chatDeferredActions(accountUid, chatId))} />}
             <button type="button" className={`icon-button compose-entities${entities ? ' active' : ''}`} data-entity-toggle aria-label={tr('이모지와 스티커')} aria-expanded={entities}
               disabled={!loaded} onClick={() => setEntities(value => !value)}><Smile size={22} /></button>
             {entities && <EntityPanel accountUid={accountUid} onEmoji={insertEmoji} onSticker={item => { if (!editing && canAttach) void sendSticker(item.id) }}
